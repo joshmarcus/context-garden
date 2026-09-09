@@ -572,11 +572,12 @@ def test_explicit_actions_and_status_require_rollup_but_none_does_not(sched, fak
 
 def test_command_validation_must_match_exact_pr_head(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["github"]["automerge_require_current_base"] = False
     sched.cfg.data["products"]["demo"]["validation"] = {
         "provider": "command", "command": "make validate"
     }
     pr.head_sha = gitops.head_sha(sched.worktree_for(t))
-    pr.checks = "FAILURE"
+    pr.checks = ""
     st["validation_head"] = "old"
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "exact PR head" in reason
