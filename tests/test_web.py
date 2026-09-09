@@ -54,6 +54,7 @@ def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
     )
     assert response.status_code == 200
     reservation = response.json()["reservation"]
+    expected = response.json()["expected"]
 
     page = c.get("/tasks/DM-001")
     assert "Manual mode" in page.text
@@ -63,12 +64,12 @@ def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
 
     stale = c.post(
         "/api/tasks/DM-001/manual-mode",
-        json={"enabled": "false", "reservation_id": "stale", "expected_head": ""},
+        json={"enabled": "false", "reservation_id": "stale", "expected": expected},
     )
     assert stale.status_code == 409
     returned = c.post(
         "/api/tasks/DM-001/manual-mode",
-        json={"enabled": "false", "reservation_id": reservation["id"], "expected_head": ""},
+        json={"enabled": "false", "reservation_id": reservation["id"], "expected": expected},
     )
     assert returned.status_code == 200
     assert "Return to automation" not in c.get("/tasks/DM-001").text
