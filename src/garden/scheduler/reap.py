@@ -280,6 +280,8 @@ class ReapMixin:
                     "cost_usd": run.cost_usd, "usage": run.usage})
         discoveries = report.get("discovered") or []
         if isinstance(discoveries, list):
+            from ..deepdives import redact_secrets
+
             diagnosis = "\n\n".join([
                 "## Deep dive diagnosis",
                 str(report.get("likely_cause") or "Not established."),
@@ -287,11 +289,15 @@ class ReapMixin:
                 "\n".join(f"- {item}" for item in report.get("evidence") or []),
                 "## Required outcome",
                 str(report.get("corrective_action") or report.get("recommendation") or ""),
+                "## Complete PR feedback supplied to the investigation",
+                str(inv.get("feedback_markdown") or "No linked PR."),
             ])
+            diagnosis = redact_secrets(diagnosis)
             for item in discoveries:
                 if isinstance(item, dict) and str(item.get("kind") or "task") == "task":
                     item["body"] = (str(item.get("body") or "").rstrip() + "\n\n" + diagnosis).strip()
             run.result["discovered"] = discoveries
+            run.result["_discovery_context"] = diagnosis
             self._file_discovered(task, run, run.result)
             linked = list(dict.fromkeys(run.result.get("_linked_tasks") or []))
             report["links"] = [*report.get("links", []), *(f"/tasks/{task_id}" for task_id in linked)]
