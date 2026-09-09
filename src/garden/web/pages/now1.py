@@ -5,6 +5,7 @@ events off the tick's path."""
 
 from __future__ import annotations
 
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -38,6 +39,15 @@ FORMAT = SimpleNamespace(
 
 def register(app: FastAPI, site: Site) -> None:
     hub, templates, ctx = site.hub, site.templates, site.ctx
+    # One stream event can make the browser request several regions at once.  They are all
+    # views of the same page reading, so build that reading once and let the burst share it.
+    # The short completed-at TTL only joins overlapping requests; a later event gets a fresh
+    # reading, while head and period cannot drift onto different run/event snapshots.
+    partial_lock = threading.Lock()
+    partial_cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+    typical_lock = threading.Lock()
+    typical_cache: tuple[float, dict[str, float]] | None = None
+    burst_seconds = 0.25
 
     def snap(window: str) -> dict[str, Any]:
         s = hub.fresh()
@@ -45,6 +55,46 @@ def register(app: FastAPI, site: Site) -> None:
 
     def page_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
         return ctx(request, page="now", f=FORMAT, snap=snap(window), **kw)
+
+    def partial_snap(window: str) -> dict[str, Any]:
+        with partial_lock:
+            # Sample after acquiring the lock.  If another event arrived while this request
+            # waited for an earlier build, its log/state signature forces a follow-up build
+            # instead of serving the earlier event's completed-at cache entry.
+            signatures = []
+            for path in (hub.store.config.garden_dir / "events.jsonl",
+                         hub.store.config.garden_dir / "state.json"):
+                try:
+                    stat = path.stat()
+                    signatures.extend((stat.st_mtime_ns, stat.st_size))
+                except OSError:
+                    signatures.extend((0, 0))
+            selected = window if window in WINDOW_KEYS else "hour"
+            key = (selected, *signatures)
+            cached = partial_cache.get(key)
+            if cached is not None and cached[0] >= time.monotonic():
+                return cached[1]
+            reading = snap(selected)
+            partial_cache.clear()
+            partial_cache[key] = (time.monotonic() + burst_seconds, reading)
+            return reading
+
+    def partial_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
+        # Region templates use only request, the Now formatters and the snapshot.  Rebuilding
+        # Site.ctx here would also rebuild the global rail and Inbox even though neither is in
+        # a partial response.
+        return {"request": request, "f": FORMAT, "snap": partial_snap(window), **kw}
+
+    def cached_typical(runs: RunStore) -> dict[str, float]:
+        nonlocal typical_cache
+        with typical_lock:
+            if typical_cache is not None and typical_cache[0] >= time.monotonic():
+                return typical_cache[1]
+            import datetime as dt
+
+            reading = now1.typical_seconds(runs.all_runs(), dt.datetime.now(dt.UTC))
+            typical_cache = (time.monotonic() + burst_seconds, reading)
+            return reading
 
     @app.get("/now", response_class=HTMLResponse)
     def now_page(request: Request, window: str = "hour"):
@@ -60,7 +110,7 @@ def register(app: FastAPI, site: Site) -> None:
     def now1_partial(request: Request, region: str, window: str = "hour"):
         if region not in REGIONS:
             raise HTTPException(404)
-        return templates.TemplateResponse(request, f"_now1_{region}.html", page_ctx(request, window))
+        return templates.TemplateResponse(request, f"_now1_{region}.html", partial_ctx(request, window))
 
     @app.get("/partials/now/strip/{task_id}/{run_id}", response_class=HTMLResponse)
     def now1_strip(request: Request, task_id: str, run_id: str):
@@ -71,11 +121,10 @@ def register(app: FastAPI, site: Site) -> None:
         run = next((r for r in runs.runs_for(task_id) if r.run_id == run_id), None)
         if run is None:
             raise HTTPException(404)
-        import datetime as dt
-
-        typical = now1.typical_seconds(runs.all_runs(), dt.datetime.now(dt.UTC))
+        typical = cached_typical(runs)
         strip = now1.strip_for_run(run, s.tasks(), s, typical)
-        return templates.TemplateResponse(request, "_now1_strip.html", ctx(request, page="now", f=FORMAT, s=strip))
+        return templates.TemplateResponse(request, "_now1_strip.html",
+                                          {"request": request, "f": FORMAT, "s": strip})
 
     @app.get("/now/stream")
     def now1_stream(request: Request, start: int | None = None, limit: int | None = None, seconds: float | None = None):
