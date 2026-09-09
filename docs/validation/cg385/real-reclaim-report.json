@@ -1,0 +1,70 @@
+{
+  "after_reclaim": {
+    "events": {
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0
+    },
+    "headroom_mb": 474,
+    "memory.current": 442462208,
+    "memory.peak": 911360000,
+    "memory.pressure": [
+      "some avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+      "full avg10=0.00 avg60=0.00 avg300=0.00 total=0"
+    ],
+    "memory.stat": {
+      "file": 361107456,
+      "inactive_file": 360693760,
+      "shmem": 274432
+    }
+  },
+  "before": {
+    "events": {
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0
+    },
+    "headroom_mb": 218,
+    "memory.current": 710029312,
+    "memory.peak": 911360000,
+    "memory.pressure": [
+      "some avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+      "full avg10=0.00 avg60=0.00 avg300=0.00 total=0"
+    ],
+    "memory.stat": {
+      "file": 629542912,
+      "inactive_file": 629145600,
+      "shmem": 258048
+    }
+  },
+  "cache_file_bytes": 629145600,
+  "cgroup": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/operator-cg385-reclaim-v6.service",
+  "first_tick": [],
+  "minimum_headroom_mb": 346,
+  "reclaim": {
+    "cgroup_after": {
+      "device": 23,
+      "inode": 11812,
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/operator-cg385-reclaim-v6.service"
+    },
+    "cgroup_before": {
+      "device": 23,
+      "inode": 11812,
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/operator-cg385-reclaim-v6.service"
+    },
+    "finished_at": 1788801088.630155,
+    "headroom_after_bytes": 497324032,
+    "headroom_before_bytes": 221675520,
+    "requested_bytes": 268435456,
+    "started_at": 1788801088.6039,
+    "status": "complete",
+    "token": "4350714ef25b4e32aa4534ee361b7ca2"
+  },
+  "second_tick": [
+    "DM-001(work)"
+  ],
+  "synthetic": false,
+  "workload": "real disk-backed page cache and supervised in-process test worker"
+}

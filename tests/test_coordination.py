@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from garden import gitops
 from garden.events import EventLog, digest, metrics, parse_since
 from garden.github import Feedback
 from garden.model import Status
@@ -531,8 +532,24 @@ def test_merge_retargets_children_before_deleting_branch(sched, fake_github, tmp
 
     # DM-001's gates go green so the merge queue takes it
     st1 = sched.state.get("DM-001")
+    parent = sched.store.task("DM-001")
+    wt = sched.worktree_for(parent)
+    base = sched.base_for(parent)
+    review = sched.runs.new_run(parent.id, "local", mode="review", run_id="rev-1")
+    review.status = "done"
+    review.branch, review.base, review.worktree = parent.branch, base, str(wt)
+    review.result = {"verdict": "approve"}
+    review.env_snapshot = {
+        "review_head": gitops.head_sha(wt),
+        "review_base_head": gitops.rev_parse(wt, gitops.base_ref(wt, base)),
+        "review_diff_hash": gitops.diff_hash(wt, base),
+    }
+    review.save()
     st1["last_review"] = {"verdict": "approve", "summary": "ok"}
-    st1["last_review_run"] = "rev-1"
+    st1["last_review_run"] = review.run_id
+    st1["last_review_head"] = review.env_snapshot["review_head"]
+    st1["last_review_base_head"] = review.env_snapshot["review_base_head"]
+    st1["last_diff_hash"] = review.env_snapshot["review_diff_hash"]
     st1["review_rounds"] = 1
     sched.state.save()
     pr1 = fake_github.prs[parent_branch]

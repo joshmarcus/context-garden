@@ -88,11 +88,17 @@ class DispatchMixin:
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
+        queue = self.dispatch_queue()
+        local_queue = any((runner := self.runner_for(task)).detached and runner.name == "local"
+                          for task, _mode, _why in queue)
+        pending_reviews = any(self.state.get(task.id).get("pending_reviews") for task in tasks.values())
+        if local_queue or pending_reviews:
+            self._try_reclaim_for_pending_local_launch()
         # A review uses the same local admission capacity as a worker or a detached
         # check.  Give queued validation its priority-ordered turn before this ready
         # queue can fill a slot again.
         self._drain_pending_reviews(tasks, rep)
-        for task, mode, _why in self.dispatch_queue():
+        for task, mode, _why in queue:
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)
@@ -105,7 +111,7 @@ class DispatchMixin:
                 continue  # manual tasks are taken by a human, not auto-dispatched
             if self.slots_free() <= 0:
                 break
-            if runner.name == "local" and self.local_slots_free() <= 0:
+            if not runner.remote and self.local_slots_free() <= 0:
                 continue  # remote candidates may still run while the operator host drains
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
@@ -361,13 +367,14 @@ class DispatchMixin:
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
         if reserved_run is not None:
             run = reserved_run
-        elif runner.name == "local":
-            run = self._new_local_run(task.id, mode, mode, run_id=run_id)
+        elif not runner.remote:
+            run = self._new_local_run(task.id, mode, mode, run_id=run_id, runner_name=runner.name)
             run.status = "requested"
             run.save()
         else:
             run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id,
                                     initial_status="requested")
+            run.execution_remote = True
         if run.task_id != task.id or run.mode != mode or run.status not in ("requested", "preparing"):
             raise RuntimeError("recovery launch reservation is no longer dispatchable")
         self._dispatching_run = run

@@ -96,32 +96,35 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
     """
     expected = host.lower().rstrip(".")
     value = url.strip()
+    github_ssh_prefix = "ssh://git@ssh.github.com:443/"
+    if expected == "github.com" and value.lower().startswith(github_ssh_prefix):
+        value = "ssh://git@github.com/" + value[len(github_ssh_prefix):]
     patterns = (
         r"https://(?P<host>[^/@:]+)(?::443)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
-        r"ssh://(?:[^@/:]+@)?(?P<host>[^/:]+)(?P<port>:\d+)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
+        r"ssh://(?:[^@/:]+@)?(?P<host>[^/:]+)(?::22)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
         r"(?:[^@:]+@)?(?P<host>[^:]+):(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
     )
     for pattern in patterns:
         match = re.fullmatch(pattern, value, flags=re.IGNORECASE)
-        if not match:
-            continue
-        remote_host = match["host"].lower().rstrip(".")
-        if pattern.startswith("ssh://") and expected == "github.com":
-            # GitHub documents ssh.github.com:443 for networks where port 22 is
-            # blocked. It is the public github.com route, not a separate host.
-            valid_host = (
-                remote_host == "github.com" and (not match["port"] or match["port"] == ":22")
-            ) or (remote_host == "ssh.github.com" and match["port"] == ":443")
-        else:
-            valid_host = remote_host == expected
-        if valid_host:
+        if match and match["host"].lower().rstrip(".") == expected:
             return f"{match['owner']}/{match['repo']}"
     return None
 
 
 def is_git_remote_url(value: str) -> bool:
-    """Whether *value* is an HTTP/SSH Git URL, including SCP-style remotes."""
-    return bool(re.match(r"^(?:[a-z][a-z0-9+.-]*://|[^@/:\s]+@[^/:\s]+:)", value, re.IGNORECASE))
+    """Whether *value* is an HTTP/SSH Git URL, including SCP-style remotes.
+
+    SCP syntax permits an omitted transport username (``host:path``).  Check a
+    Windows drive spelling first, because its colon would otherwise look like
+    that form on hosts which support Windows-path configuration.
+    """
+    if re.match(r"^[a-z]:[\\\\/]", value, re.IGNORECASE):
+        return False
+    return bool(re.match(
+        r"(?:[a-z][a-z0-9+.-]*://|(?:[a-z0-9._-]+@)?[a-z0-9.-]+:[^\s:@])",
+        value,
+        re.IGNORECASE,
+    ))
 
 
 def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | None:

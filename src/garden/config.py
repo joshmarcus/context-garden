@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .github import is_git_remote_url
 
 CONFIG_NAME = "garden.yaml"
 
@@ -42,7 +43,7 @@ def no_live_garden_root(base: Path) -> str:
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
-    "notify.command", "checks", "worker_env.pass", "worker_env.config_files",
+    "notify.command", "checks", "worker_env.pass", "worker_env.config_files", "runner_adapters",
 )
 
 
@@ -140,6 +141,10 @@ DEFAULTS: dict[str, Any] = {
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
     "runner": "local",
+    # Private runner classes are named only by operator configuration.  Their modules are
+    # deliberately not imported while config is being read; resolution happens at runner
+    # construction, after normal scheduler admission and fencing have already applied.
+    "runner_adapters": {},
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
@@ -153,6 +158,9 @@ DEFAULTS: dict[str, Any] = {
         "min_memory_available_mb": 0,
         "min_temp_free_mb": 0,
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
+        "reclaim_max_mb": 512,     # bounded best-effort file-cache reclaim; 0 disables it
+        "reclaim_timeout_seconds": 5,
+        "reclaim_cooldown_seconds": 300,
     },
     "max_attempts": 2,
     "max_consecutive_env_errors": 3,
@@ -371,7 +379,7 @@ class Config:
     def product_repo(self, name: str) -> Path | str:
         """A local path (resolved against root) or a URL for the product's code repo."""
         repo = self.product(name).get("repo", ".")
-        if "://" in str(repo) or re.match(r"^[^@/:\s]+@[^/:\s]+:", str(repo)):
+        if is_git_remote_url(str(repo)):
             return str(repo)
         return (self.root / str(repo)).resolve()
 
@@ -403,6 +411,22 @@ class Config:
     def product_runner(self, name: str) -> str:
         r = str(self.product(name).get("runner") or self.get("runner"))
         return "local" if r == "claude-local" else r
+
+    def runner_adapter(self, name: str) -> dict[str, Any] | None:
+        """Return the trusted operator registration for a private runner, if any.
+
+        Task frontmatter and worker output are intentionally not inputs here: only the
+        layered operator configuration may name code to import.
+        """
+        adapters = self.get("runner_adapters") or {}
+        if not isinstance(adapters, dict):
+            raise ValueError("runner_adapters must be a mapping")
+        registration = adapters.get(name)
+        if registration is None:
+            return None
+        if not isinstance(registration, dict):
+            raise ValueError(f"runner_adapters.{name} must be a mapping")
+        return dict(registration)
 
     def product_harness(self, name: str) -> str:
         return str(self.product(name).get("harness") or self.get("harness") or "claude")

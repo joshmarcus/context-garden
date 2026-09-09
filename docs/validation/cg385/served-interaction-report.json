@@ -1,0 +1,125 @@
+{
+  "environment": "disposable",
+  "events": [
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "Nothing needs a person right now",
+      "outcome": "empty",
+      "state": "empty",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/inbox"
+    },
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "delegation unavailable",
+      "outcome": "failure",
+      "state": "failure",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/config"
+    },
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "last bounded cache reclaim complete",
+      "outcome": "success",
+      "state": "recovery",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/config"
+    },
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "delegation unavailable",
+      "outcome": "failure",
+      "state": "failure",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/config"
+    },
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "last bounded cache reclaim complete",
+      "outcome": "success",
+      "state": "recovery",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/config"
+    },
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "delegation unavailable",
+      "outcome": "failure",
+      "state": "failure",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/config"
+    },
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "last bounded cache reclaim complete",
+      "outcome": "success",
+      "state": "recovery",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/config"
+    },
+    {
+      "kind": "http_request",
+      "method": "GET",
+      "observed": "Now",
+      "outcome": "success",
+      "state": "affected",
+      "status_code": 200,
+      "url": "http://127.0.0.1:46079/now1"
+    }
+  ],
+  "head": "d7ca76b39b3aaaa9817435caa5c3b3965cf32bf9",
+  "scalability": {
+    "cache_expiry_intervals": 3,
+    "executing_processes": 2,
+    "history_sizes": [
+      120,
+      1200
+    ],
+    "latencies": [
+      0.054060894006397575,
+      0.014774687006138265,
+      0.0037015819980297238,
+      0.003382660011993721,
+      0.003175528996507637,
+      0.003117879998171702,
+      0.0033623229974182323,
+      0.05695591699623037
+    ],
+    "load_kind": "controlled",
+    "read_scan_counts": {
+      "reads": 28,
+      "scans": 28
+    },
+    "served_app": "http://127.0.0.1:46079"
+  },
+  "states": {
+    "affected": {
+      "actions": [
+        "GET /now1 with 1,200 retained runs"
+      ],
+      "observed": "served response succeeded under the larger retained history",
+      "status": "pass"
+    },
+    "empty": {
+      "actions": [
+        "GET /inbox with no actionable task"
+      ],
+      "observed": "empty inbox response succeeded",
+      "status": "pass"
+    },
+    "failure_recovery": {
+      "actions": [
+        "GET /config across three failure/recovery cycles"
+      ],
+      "observed": "each failure diagnostic was followed by a successful recovery diagnostic",
+      "status": "pass"
+    }
+  }
+}

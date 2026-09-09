@@ -77,12 +77,21 @@ class Run:
     run_id: str
     dir: str
     runner: str
+    # The configured adapter name identifies the implementation; this capability records
+    # where that implementation executes so aliases cannot evade local host accounting.
+    # ``None`` preserves records written before capabilities were persisted.
+    execution_remote: bool | None = None
     mode: str = "work"  # work | revise | resume | trial | rebase | review | persona | compare | edit | check
     harness: str = ""
     model: str = ""
     difficulty: str = ""  # easy | medium | hard; determines the turn cap
     host: str = ""  # ssh runner: which host
     claimed_at: str = ""  # pull-based remote runner lease
+    queued_at: str = ""  # remote queue entry; legacy records fall back to started_at
+    execution_started_at: str = ""  # first claim; execution timeout never includes queue age
+    lease_updated_at: str = ""  # latest claim/heartbeat accepted by the controller
+    final_received_at: str = ""  # authenticated remote result receipt
+    claim_history: list[dict[str, Any]] = field(default_factory=list)
     lease_expires_at: str = ""
     lease_token: str = ""  # unique claim generation; fences a stale worker after reclaim
     pushed_ref: str = ""  # lease-specific staging ref; only an accepted finish promotes it
@@ -116,6 +125,7 @@ class Run:
     idempotency_key: str = ""  # recovery API: caller identity persisted with this operation
     preparer_pid: int | None = None  # server preparing it; never reported as a worker pid
     fence_paths: list[str] = field(default_factory=list)  # dirs a worker must not write (garden, product clone)
+    fence_manifest_sha256: str = ""  # controller-owned authority for this run's fence
     # What dispatch() cleared from state to start a revise/rebase round (the feedback text,
     # its easy/rebase tags, or that rebase_pending was popped): a quota env_error restores
     # these instead of losing the round's context (see reap._handle_quota_env_error).
@@ -127,6 +137,15 @@ class Run:
     @property
     def path(self) -> Path:
         return Path(self.dir)
+
+    @property
+    def is_local_execution(self) -> bool:
+        """Whether this run occupies the controller host's execution capacity."""
+        if self.execution_remote is not None:
+            return not self.execution_remote
+        # Older records have no capability snapshot. Keep their established built-in
+        # routing and fail closed for an unknown saved alias.
+        return self.runner not in {"manual", "remote", "ssh"}
 
     @property
     def lifecycle_state(self) -> str:
@@ -168,7 +187,7 @@ class Run:
         # The wrapper may exit after a harness leaves children behind. Keep the run active
         # until that entire owned group is gone; otherwise cleanup and slot accounting can
         # race a detached test suite that is still consuming the host.
-        if self.runner == "local":
+        if self.is_local_execution:
             return not _process_group_alive(self.pid)
         if (self.path / "exit_code").exists():
             return True
@@ -187,6 +206,20 @@ class Run:
         if not self.started_at:
             return 0.0
         start = dt.datetime.fromisoformat(self.started_at)
+        end = dt.datetime.fromisoformat(self.finished_at) if self.finished_at else dt.datetime.now(dt.UTC)
+        return max(0.0, (end - start).total_seconds() / 60)
+
+    def execution_minutes(self) -> float:
+        """Elapsed execution age, excluding time spent in a remote pull queue.
+
+        Old claimed records already have ``claimed_at``, which is the compatibility fallback.
+        An old unclaimed record has neither execution timestamp and therefore has zero
+        execution age.  Its historical ``started_at`` is never rewritten.
+        """
+        start_text = self.execution_started_at or self.claimed_at
+        if not start_text:
+            return 0.0
+        start = dt.datetime.fromisoformat(start_text)
         end = dt.datetime.fromisoformat(self.finished_at) if self.finished_at else dt.datetime.now(dt.UTC)
         return max(0.0, (end - start).total_seconds() / 60)
 
@@ -265,7 +298,7 @@ class Run:
         # Never let a corrupt or synthetic run record terminate the process doing the reap.
         if self.pid == os.getpid():
             return
-        if self.pid and (self.runner == "local" and _process_group_alive(self.pid) or _pid_alive(self.pid)):
+        if self.pid and (self.is_local_execution and _process_group_alive(self.pid) or _pid_alive(self.pid)):
             try:
                 os.killpg(self.pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
@@ -285,7 +318,7 @@ class Run:
             return False  # No safely identifiable process to terminate.
         self.kill()
         deadline = time.monotonic() + timeout
-        alive = _process_group_alive if self.runner == "local" else _pid_alive
+        alive = _process_group_alive if self.is_local_execution else _pid_alive
         while time.monotonic() < deadline:
             if not alive(self.pid):
                 return True
@@ -621,6 +654,8 @@ class RunStore:
             status=initial_status,
             started_at=dt.datetime.now(dt.UTC).isoformat(),
         )
+        if runner == "remote":
+            run.queued_at = run.started_at
         run.save()
         return run
 

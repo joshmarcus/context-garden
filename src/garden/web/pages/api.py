@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -68,6 +69,14 @@ def register(app: FastAPI, site: Site) -> None:
     def leased(run: Any) -> bool:
         return bool(run.lease_expires_at and run.lease_expires_at > dt.datetime.now(dt.UTC).isoformat())
 
+    def execution_deadline(run: Any) -> dt.datetime | None:
+        """Fixed controller deadline; heartbeats renew liveness, never execution budget."""
+        started = run.execution_started_at or run.claimed_at
+        timeout = float(hub.store.config.get("timeout_minutes", 90) or 0)
+        if not started or not timeout:
+            return None
+        return dt.datetime.fromisoformat(started) + dt.timedelta(minutes=timeout + 5)
+
     def run_for(run_id: str):
         from ...runs import RunStore
 
@@ -78,6 +87,11 @@ def register(app: FastAPI, site: Site) -> None:
 
     def claimed_run(run_id: str, host: dict[str, Any], lease_token: str):
         run = run_for(run_id)
+        if run.status != "running" or run.process_finished():
+            raise HTTPException(409, "run generation is no longer active")
+        deadline = execution_deadline(run)
+        if deadline is not None and dt.datetime.now(dt.UTC) >= deadline:
+            raise HTTPException(409, "run execution deadline has passed")
         if run.host != host.get("name"):
             raise HTTPException(409, "run is leased to another host")
         if not lease_token or not secrets.compare_digest(run.lease_token, lease_token):
@@ -92,7 +106,7 @@ def register(app: FastAPI, site: Site) -> None:
             # SCP syntax permits an arbitrary transport username. It cannot contain a
             # colon, so this preserves service-account identities without accepting a
             # password-bearing URL form.
-            if re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s:@]+(?:/[^\s:@]+)*", value):
+            if re.fullmatch(r"(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9.-]+:[^\s:@]+(?:/[^\s:@]+)*", value):
                 return value
             if "@" in value or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
                 raise HTTPException(409, "repository remote is not a safe clone URL")
@@ -180,6 +194,9 @@ def register(app: FastAPI, site: Site) -> None:
                     continue
                 if run.host and leased(run):
                     continue
+                deadline = execution_deadline(run)
+                if deadline is not None and now >= deadline:
+                    continue
                 # Checks execute the portable check payload and need no model harness.
                 # Every other remote mode is harness-backed: an empty offer means the
                 # host cannot execute it, rather than acting as a wildcard.
@@ -188,7 +205,12 @@ def register(app: FastAPI, site: Site) -> None:
                 if run.difficulty and tiers and run.difficulty not in tiers:
                     continue
                 run.host = str(body["host"])
-                run.claimed_at = now.isoformat()
+                claim_time = now.isoformat()
+                if not run.claimed_at:
+                    run.claimed_at = claim_time
+                if not run.execution_started_at:
+                    run.execution_started_at = claim_time
+                run.lease_updated_at = claim_time
                 run.lease_expires_at = (now + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
                 run.lease_token = secrets.token_urlsafe(32)
                 fresh = hub.fresh()
@@ -214,6 +236,9 @@ def register(app: FastAPI, site: Site) -> None:
                 # promotes that exact commit. An expired generation can therefore push only
                 # to its abandoned ref, never overwrite work from its replacement.
                 run.pushed_ref = f"refs/heads/garden-worker/{run.run_id}/{secrets.token_urlsafe(12)}"
+                run.claim_history.append({"claimed_at": claim_time, "host": run.host,
+                                          "lease_token_sha256": hashlib.sha256(run.lease_token.encode()).hexdigest(),
+                                          "pushed_ref": run.pushed_ref})
                 try:
                     source = str(configured_repo)
                     scheduler_repo = gitops.ensure_repo(
@@ -231,6 +256,8 @@ def register(app: FastAPI, site: Site) -> None:
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
                     "lease_token": run.lease_token,
                     "heartbeat_seconds": max(0.05, int(hub.store.config.get("workers.lease_seconds", 120)) / 3),
+                    "execution_deadline_at": execution_deadline(run).isoformat()
+                    if execution_deadline(run) is not None else "",
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
                     "branch": run.branch, "base": run.base,
                     "push_ref": run.pushed_ref,
@@ -287,7 +314,13 @@ def register(app: FastAPI, site: Site) -> None:
             if chunk:
                 with (run.path / "stdout.json").open("a") as f:
                     f.write(chunk)
-            run.lease_expires_at = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))).isoformat()
+            now = dt.datetime.now(dt.UTC)
+            lease_end = now + dt.timedelta(seconds=int(hub.store.config.get("workers.lease_seconds", 120)))
+            deadline = execution_deadline(run)
+            if deadline is not None:
+                lease_end = min(lease_end, deadline)
+            run.lease_expires_at = lease_end.isoformat()
+            run.lease_updated_at = now.isoformat()
             run.save()
         return {"ok": True, "lease_expires_at": run.lease_expires_at}
 
@@ -298,6 +331,7 @@ def register(app: FastAPI, site: Site) -> None:
         with hub.action_lock:
             run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
             run.pushed_head = str(body.get("pushed_head") or "")
+            run.final_received_at = dt.datetime.now(dt.UTC).isoformat()
             final = str(body.get("final_text") or "")
             (run.path / "final.md").write_text(final)
             posted = {"result": body.get("result") or {}, "usage": body.get("usage") or {},

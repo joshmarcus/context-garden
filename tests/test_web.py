@@ -216,6 +216,56 @@ def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
     assert response.status_code == 303
     state = Scheduler(Store(garden)).state.get("DM-001")
     assert state["operator_evidence"]["text"] == "verified in disposable environment"
+def test_inbox_journey_separates_automated_deferred_and_operator_work(garden):
+    """A rendered Inbox keeps scheduler-owned notices out of the owner count while
+    retaining the deliberate deferred and recovery actions a person can inspect."""
+    from typer.testing import CliRunner
+
+    from garden.cli import app as cli_app
+    from garden.model import Status
+    from garden.scheduler import State
+
+    def command(*args: str):
+        cwd = os.getcwd()
+        os.chdir(garden)
+        try:
+            return CliRunner().invoke(cli_app, list(args))
+        finally:
+            os.chdir(cwd)
+
+    store = Store(garden)
+    review = store.task("DM-001")
+    review.status = Status.IN_REVIEW
+    review.pr = "https://github.com/test/demo/pull/71"
+    store.save(review)
+    recovery = store.task("DM-002")
+    recovery.status = Status.FAILED
+    store.save(recovery)
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001").update({
+        "head_sha": "head", "last_review_head": "head",
+        "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+        "pending_reviews": [{"kind": "review"}],
+    })
+    state.get("DM-002")["needs_human"] = {
+        "kind": "deployment", "reason": "deploy the verified build to the staging host",
+        "prior_status": "in_review", "at": "2026-09-07T00:00:00+00:00",
+    }
+    state.save()
+    assert command("new-phase", "demo", "p2").exit_code == 0
+    assert command("new-task", "demo/p1", "Deferred work").exit_code == 0
+    assert command("freeze", "demo/p1").exit_code == 0
+
+    page = client(garden).get("/inbox")
+    assert page.status_code == 200
+    assert '<div class="v">0</div><div class="l">need you</div>' in page.text
+    assert "automated review queued: queued: the next tick starts it" in page.text
+    assert "prior automated verdict: request changes" in page.text
+    assert "Deferred work" in page.text and "View freeze policy" in page.text
+    assert "Deployment prerequisite" in page.text
+    assert "Operator recovery: Deployment prerequisite" in page.text
+    assert "Deployment completed, resume" in page.text
+    assert "set-status DM-001 done" not in page.text
 
 
 @pytest.mark.parametrize("history_size", [1546, 6000])
@@ -445,7 +495,7 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
-def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
+def test_review_requires_current_automated_approval_before_it_needs_a_person(garden):
     from garden.model import Status
     from garden.store import Store
 
@@ -454,17 +504,12 @@ def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
     task.pr = "https://github.com/test/demo/pull/71"
     Store(garden).save(task)
     c = client(garden)
-    task_page = c.get("/tasks/DM-001").text
     inbox = c.get("/").text
 
-    assert "Mark done without merging" in task_page
-    assert "Mark this task done without merging its PR?" in task_page
-    assert 'action="/tasks/DM-001/done"' in inbox
-    assert "Mark done without merging" in inbox
-    assert "Mark this task done without merging its PR?" in inbox
-    primary_actions, escape_hatch = inbox.split('class="escape-hatch"')
-    assert 'action="/tasks/DM-001/done"' not in primary_actions
-    assert 'action="/tasks/DM-001/done"' in escape_hatch
+    assert "Automated review" in inbox
+    assert "automated review not recorded yet" in inbox
+    assert "Mark done without merging" not in inbox
+    assert 'action="/tasks/DM-001/done"' not in inbox
 
 
 def test_task_page_lists_stashed_changes(garden):
@@ -1300,7 +1345,7 @@ def test_inbox_triage_flow(garden, monkeypatch):
     assert "awaiting_triage" in next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"]
     c.post("/tasks/DM-001/triage-ready", follow_redirects=False)
     assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "in_review"
-    assert "Review and merge" in c.get("/").text
+    assert "Automated review" in c.get("/").text
 
 
 def test_inbox_shows_a_paused_harness_notice(garden):
@@ -2247,6 +2292,12 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             parsed = dict(line.split() for line in (cgroup / "memory.events").read_text().splitlines())
             events = {name: int(parsed.get(name, 0)) for name in event_names}
         memory = int((cgroup / "memory.current").read_text()) if cgroup and (cgroup / "memory.current").exists() else None
+        memory_peak = int((cgroup / "memory.peak").read_text()) if cgroup and (cgroup / "memory.peak").exists() else None
+        memory_stat = {}
+        if cgroup and (cgroup / "memory.stat").exists():
+            parsed_stat = dict(line.split() for line in (cgroup / "memory.stat").read_text().splitlines())
+            memory_stat = {name: int(parsed_stat.get(name, 0))
+                           for name in ("anon", "file", "shmem", "inactive_file")}
         temp = os.statvfs(tmp_path)
         pids = (cgroup / "cgroup.procs").read_text().split() if cgroup and (cgroup / "cgroup.procs").exists() else []
         descendants = {
@@ -2259,7 +2310,8 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             name: (cgroup / f"{name}.pressure").read_text().splitlines()
             for name in ("cpu", "memory") if cgroup and (cgroup / f"{name}.pressure").exists()
         }
-        return {"events": events, "memory.current": memory, "temp_free": temp.f_bavail * temp.f_frsize,
+        return {"events": events, "memory.current": memory, "memory.peak": memory_peak,
+                "memory.stat": memory_stat, "temp_free": temp.f_bavail * temp.f_frsize,
                 "cgroup.procs": sorted(descendants), "descendants": descendants,
                 "cpu.stat": cpu_stat, "pressure": psi}
 
@@ -2281,7 +2333,11 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
         timings[name] = time.monotonic() - started
         assert response.status_code in (200, 303)
     after = pressure()
-    print("retained-history capacity journey", {"timings": timings, "before": before, "after": after})
+    evidence = {"workload": "real supervised focused-pytest processes", "synthetic": False,
+                "route_timings_seconds": timings, "before": before, "after": after}
+    print("retained-history capacity journey", evidence)
+    if report_path := os.environ.get("CG385_REPORT"):
+        Path(report_path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
     assert max(timings.values()) < 2.0
     assert app.state.hub.scheduler().is_dispatch_paused()

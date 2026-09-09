@@ -1,10 +1,12 @@
 import copy
 import hashlib
 import json
+import shlex
 from pathlib import Path
 
 import pytest
 
+from garden import interaction_replay
 from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
@@ -56,12 +58,14 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     assert st.get("last_review", {}).get("verdict") == "approve"
     run_id = st.get("last_review_run")
     assert run_id
+    assert st.get("last_review_head")
 
     # a new process on the same garden: state.json is the only thing that survives it
     fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
     st2 = fresh.state.get("DM-001")
     assert st2.get("last_review", {}).get("verdict") == "approve"
     assert st2.get("last_review_run") == run_id
+    assert st2.get("last_review_head") == st.get("last_review_head")
 
 
 def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):
@@ -138,6 +142,123 @@ def test_queued_reviews_take_shared_capacity_before_lower_priority_work(sched):
     assert sched.review_slots_free() == 0
     assert not any(run.task_id == lower.id and run.mode == "work" for run in sched.runs.active())
     assert not sched.state.get(critical.id).get("pending_reviews")
+
+
+def test_pending_reviews_admit_remote_independently_of_occupied_local_capacity(sched):
+    """A local hold is per-backend; the reviewer ceiling remains global."""
+    local = sched.store.task("DM-001")
+    remote = sched.store.task("DM-002")
+    for task, order in ((local, 10), (remote, 20)):
+        task.status = Status.IN_REVIEW
+        task.priority = 0
+        task.order = order
+        task.depends_on = []
+        sched.store.save(task)
+        sched.state.get(task.id)["pending_reviews"] = [
+            {"kind": "review", "count_round": True},
+        ]
+    remote.runner = "remote"
+    sched.store.save(remote)
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+
+    occupant = sched.runs.new_run("occupied-local", "local", mode="work")
+    occupant.status = "running"
+    occupant.save()
+    rep = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+
+    assert rep.dispatched == ["DM-002(review)"], rep.errors
+    remote_run = sched.runs.latest(remote.id)
+    assert remote_run is not None and remote_run.runner == "remote" and remote_run.mode == "review"
+    assert sched.state.get(remote.id)["review_rounds"] == 1
+    assert sched.state.get(local.id)["pending_reviews"] == [
+        {"kind": "review", "count_round": True},
+    ]
+    assert sched.state.get(local.id).get("review_rounds", 0) == 0
+    assert sched.review_wait_reason(local)[0] == "slots"  # the remote run holds the global ceiling
+
+    # Releasing only the reviewer ceiling still leaves the local backend accurately held.
+    remote_run.status = "done"
+    remote_run.save()
+    assert sched.review_wait_reason(local)[0] == "local"
+    held = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), held)
+    assert held.dispatched == [] and held.errors == []
+    assert sched.state.get(local.id).get("review_rounds", 0) == 0
+
+    # Once local physical capacity recovers, the original queued round starts exactly once.
+    occupant.status = "done"
+    occupant.save()
+    recovered = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), recovered)
+    assert recovered.dispatched == ["DM-001(review)"], recovered.errors
+    local_run = sched.runs.latest(local.id)
+    assert local_run is not None and local_run.runner == "local" and local_run.mode == "review"
+    assert sched.state.get(local.id)["review_rounds"] == 1
+    assert not sched.state.get(local.id).get("pending_reviews")
+
+
+def test_pending_remote_persona_ignores_occupied_local_capacity(sched):
+    """A queued persona uses its task's remote backend, not local review capacity."""
+    local = sched.store.task("DM-001")
+    local.status = Status.IN_REVIEW
+    local.priority = 0
+    local.order = 10
+    sched.store.save(local)
+    sched.state.get(local.id)["pending_reviews"] = [
+        {"kind": "review", "count_round": True},
+    ]
+
+    remote = sched.store.task("DM-002")
+    remote.status = Status.IN_REVIEW
+    remote.priority = 0
+    remote.order = 20
+    remote.depends_on = []
+    remote.runner = "remote"
+    remote.branch = remote.default_branch()
+    sched.store.save(remote)
+    sched.state.get(remote.id)["pending_reviews"] = [
+        {"kind": "persona", "name": "security", "required": False},
+    ]
+
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    occupant = sched.runs.new_run("occupied-local", "local", mode="work")
+    occupant.status = "running"
+    occupant.save()
+
+    rep = TickReport()
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+
+    assert rep.dispatched == ["DM-002(persona:security)"], rep.errors
+    persona_run = sched.runs.latest(remote.id)
+    assert persona_run is not None
+    assert (persona_run.runner, persona_run.mode) == ("remote", "persona")
+    assert sched.state.get(local.id)["pending_reviews"] == [
+        {"kind": "review", "count_round": True},
+    ]
+    assert sched.state.get(local.id).get("review_rounds", 0) == 0
+
+
+def test_review_atomic_local_admission_race_requeues_without_charging_round(sched, monkeypatch):
+    from garden.scheduler.resources import ResourcePressureError
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    item = {"kind": "review", "count_round": True}
+
+    def lose_atomic_admission(*_args, **_kwargs):
+        raise ResourcePressureError("slot claimed")
+
+    monkeypatch.setattr(sched, "dispatch_review", lose_atomic_admission)
+    rep = TickReport()
+    sched._dispatch_or_defer_reviews(task, [item], rep)
+
+    assert rep.dispatched == [] and rep.errors == []
+    assert sched.state.get(task.id)["pending_reviews"] == [item]
+    assert sched.state.get(task.id).get("review_rounds", 0) == 0
 
 
 
@@ -1631,6 +1752,31 @@ def test_remote_authored_interaction_replay_stays_on_controller_and_records_owne
     command = submitted[0][1]["specs"][0]["command"]
     assert str(sched.worktree_for(task)) in command
     assert str(sched.cfg.garden_dir / "interaction-replays") in command
+
+
+@pytest.mark.parametrize("nonce", ["-leading", "--double-hyphen", "ordinary_urlsafe_value"])
+def test_interaction_replay_command_passes_option_like_nonce_as_a_value(sched, monkeypatch, nonce):
+    """CG-456: replay nonce identity reaches argparse even when it resembles an option."""
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    monkeypatch.setattr("garden.scheduler.review.secrets.token_urlsafe", lambda _size: nonce)
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, _run, _worktree, payload: submitted.append(payload))
+
+    sched.dispatch_review(task)
+
+    command = submitted[0]["specs"][0]["command"]
+    argv = shlex.split(command)
+    replay_argv = argv[argv.index("garden.interaction_replay") + 1:]
+    parsed = interaction_replay.parse_args(replay_argv)
+    assert parsed.nonce == nonce
+    continuation = sched.state.get(task.id)["check_run"]["cont"]
+    assert parsed.head == continuation["head"]
+    assert continuation["nonce"] == nonce
 
 
 def test_remote_authored_portable_check_remains_remote(sched):
