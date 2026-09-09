@@ -96,7 +96,8 @@ class DispatchMixin:
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             try:
-                self.dispatch(task, mode=mode, runner=runner, model_override=(member or {}).get("model") or None,
+                self.dispatch(task, mode=mode, runner=runner,
+                              model_override=member["model"] if member is not None else None,
                               pool_member=(member or {}).get("label") or "")
                 rep.dispatched.append(f"{task.id}({mode})")
             except Exception as e:  # noqa: BLE001
@@ -263,7 +264,10 @@ class DispatchMixin:
             if self.pool_members(tier) and member is None:
                 raise RuntimeError(f"every {tier} tier pool member is paused")
             runner = self.runner_for(task, harness_name=str((member or {}).get("harness") or ""))
-            model_override = model_override if model_override is not None else (member or {}).get("model") or None
+            if model_override is None and member is not None:
+                # An empty configured model (for example ``codex:``) intentionally asks the
+                # harness to use its own default.  It is not a missing value to fall back from.
+                model_override = member["model"]
             pool_member = pool_member or str((member or {}).get("label") or "")
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()

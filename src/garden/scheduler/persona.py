@@ -96,7 +96,7 @@ class PersonaMixin:
         harness_name = str((member or {}).get("harness") or self.cfg.get("review.harness") or "")
         return self.dispatch_aux("persona", task, text, wt, {"persona": name, "target": "pr", "request_changes": request_changes},
                                  harness_name=harness_name, difficulty=str(self.effective("retro.difficulty") or "hard"),
-                                 model_override=(member or {}).get("model") or None,
+                                 model_override=member["model"] if member is not None else None,
                                  pool_member=str((member or {}).get("label") or ""))
 
     def _finding_target_phase(self, phase: Phase) -> Phase:

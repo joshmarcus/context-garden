@@ -160,7 +160,7 @@ class Scheduler(
         return harness_name or task.harness or self.cfg.product_harness(task.product)
 
     def pool_members(self, tier: str, review: bool = False) -> list[dict[str, Any]]:
-        """Normalise a configured tier/review pool, leaving old string tier maps alone."""
+        """Normalise a configured tier/review pool, leaving string tier maps to model_for."""
         raw: Any = self.cfg.get("review.pool") if review else self.effective("models")
         if review:
             entries = raw if isinstance(raw, list) else []
@@ -239,6 +239,11 @@ class Scheduler(
             return str(ov[key])
         models = self.operating_profile().get("models") or {}
         if isinstance(models.get(d), str) and models.get(d):
+            return str(models[d])
+        # Before pools, ``models.<tier>`` was the garden-wide tier override.  Keep that
+        # scalar form working; a list is a pool and has already been selected by dispatch.
+        models = self.effective("models") or {}
+        if isinstance(models, dict) and isinstance(models.get(d), str) and models.get(d):
             return str(models[d])
         return runner.harness.model_for(d)
 

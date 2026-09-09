@@ -228,12 +228,13 @@ class ReviewMixin:
         run.difficulty = review_difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.model = self.model_for(task, runner, review_difficulty)
-        if member and member.get("model"):
+        if member is not None:
             run.model = str(member["model"])
         run.pool_member = str((member or {}).get("label") or "")
         # A review pool names the exact harness/model member.  The legacy per-harness
-        # review_model remains the fallback only when no pool member selected a model.
-        if not (member and member.get("model")) and runner.harness and runner.harness.cfg.get("review_model"):
+        # review_model remains the fallback only when no pool member was selected.  An empty
+        # model is a valid pool member that deliberately keeps the harness's CLI default.
+        if member is None and runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
         run.brief_tokens = max(1, len(text) // 4)
         run.save()
