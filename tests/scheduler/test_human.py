@@ -549,6 +549,16 @@ def test_investigation_is_idempotent_preserves_work_and_report_waits_for_decisio
     assert task.status == Status.CHANGES_REQUESTED
 
 
+def test_investigation_rejects_unsupported_owner_without_mutating_state(sched):
+    task = sched.store.task("DM-001")
+
+    with pytest.raises(RuntimeError, match="owner must be operator or agent"):
+        sched.pause_for_investigation(task, "diagnose", owner="other")
+
+    assert not sched.state.get(task.id).get("investigation")
+    assert not sched.state.get(task.id).get("needs_human")
+
+
 def test_operator_investigation_report_rejects_partial_prose_and_unsupported_recommendation(sched):
     task = sched.store.task("DM-001")
     sched.pause_for_investigation(task, "diagnose", owner="operator")
@@ -579,6 +589,10 @@ def test_troubled_continue_preserves_lifetime_counter_and_rejects_double_action(
     assert st["substantive_revisions"] == 7
     assert st["pending_feedback"] == "- retain me"
     assert st["revision_allowance"] == 1
+    assert st["difficulty_floor"] == "hard"
+    with pytest.raises(RuntimeError, match="below the durable hard escalation floor"):
+        sched.set_difficulty(task, "medium", actor="test")
+    assert task.difficulty == "hard"
     with pytest.raises(RuntimeError, match="no troubled-task decision"):
         sched.continue_troubled(task)
 

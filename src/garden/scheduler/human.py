@@ -348,6 +348,8 @@ class HumanMixin:
                                 origins: dict[str, str] | None = None) -> None:
         """Request an idempotent safe-boundary investigation without touching live work."""
         ensure_open(task)
+        if owner not in ("operator", "agent"):
+            raise RuntimeError("investigation owner must be operator or agent")
         st = self.state.get(task.id)
         existing = st.get("investigation")
         if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active"):
@@ -531,9 +533,15 @@ class HumanMixin:
             raise RuntimeError(f"{task.id} has no troubled-task decision to continue")
         if difficulty:
             levels = ("easy", "medium", "hard")
-            if difficulty not in levels or levels.index(difficulty) < levels.index(task.difficulty):
-                raise RuntimeError("difficulty must preserve or raise the current floor")
+            floor = str(st.get("difficulty_floor") or task.difficulty)
+            if floor not in levels:
+                floor = task.difficulty
+            if (difficulty not in levels
+                    or task.difficulty not in levels
+                    or levels.index(difficulty) < max(levels.index(task.difficulty), levels.index(floor))):
+                raise RuntimeError("difficulty must preserve or raise the durable floor")
             task.difficulty = difficulty
+            st["difficulty_floor"] = difficulty
         decision = {"at": now_iso(), "allowance": allowance, "difficulty": task.difficulty,
                     "counter": int(st.get("substantive_revisions", st.get("revisions", 0)))}
         st.setdefault("troubled_decisions", []).append(decision)
