@@ -176,6 +176,28 @@ def test_discovery_retries_when_task_changes_during_scan(garden, monkeypatch):
     assert next(t for p in products for ph in p.phases for t in ph.tasks if t.id == "DM-001").title == "Edited during scan"
 
 
+def test_discovery_bounds_retries_during_persistent_external_churn(garden, monkeypatch):
+    """A busy writer cannot trap a page request in repeated task parsing."""
+    store = Store(garden)
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    original_scan = Store._scan
+    scans = 0
+
+    def scan_with_external_edit(self):
+        nonlocal scans
+        scans += 1
+        products = original_scan(self)
+        task_path.write_text(task_path.read_text() + f"\n<!-- churn {scans} -->\n")
+        return products
+
+    monkeypatch.setattr(Store, "_scan", scan_with_external_edit)
+    products = store.products()
+
+    assert products
+    assert scans == 3
+    assert store._discovery_sig != store._discovery_signature()
+
+
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
     """The served Inbox owns the manual take journey, including stale-card recovery."""
     from garden.model import Status
