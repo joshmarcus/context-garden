@@ -61,6 +61,14 @@ class PollMixin:
             st.pop("ci_diagnostic", None)
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
+        if self._manual_reserved(task):
+            # Observation continues in Manual mode, including terminal PR state, but every
+            # lifecycle consequence stays parked until the reservation is removed.  A later
+            # ordinary poll sees the same current PR state and applies its normal transition.
+            st["pr_draft"] = bool(pr.is_draft)
+            st["head_sha"] = pr.head_sha
+            st["pr_updated_at"] = pr.updated_at
+            return
         if pr.state == "MERGED":
             final_base = self.final_base_for(task)
             if pr.base and pr.base != final_base:
@@ -80,12 +88,6 @@ class PollMixin:
             self._transition(task, Status.FAILED, f"PR closed without merging: {task.pr}")
             rep.transitions.append(f"{task.id} -> failed (PR closed)")
             self._on_parent_closed(task, rep)
-            return
-        if self._manual_reserved(task):
-            # Keep external PR/check evidence fresh, but do not turn it into lifecycle work.
-            st["pr_draft"] = bool(pr.is_draft)
-            st["head_sha"] = pr.head_sha
-            st["pr_updated_at"] = pr.updated_at
             return
         if not task.status.pr_open:
             return  # merged/closed handled above; the rest (triage, CI, feedback) only applies to the active review flow
