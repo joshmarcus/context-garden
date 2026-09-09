@@ -2458,6 +2458,29 @@ def test_priority_and_difficulty_from_the_task_page(garden):
     assert 'value="9" selected' in page
 
 
+def test_web_difficulty_control_cannot_lower_escalation_floor(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.difficulty = "hard"
+    store.save(task)
+    sched = Scheduler(store, log=print)
+    sched.state.get(task.id)["difficulty_floor"] = "medium"
+    sched.state.save()
+
+    c = client(garden)
+    response = c.post("/tasks/DM-001/difficulty", data={"note": "easy"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert "below+the+durable+medium+escalation+floor" in response.headers["location"]
+    assert Store(garden).task(task.id).difficulty == "hard"
+
+    response = c.post("/tasks/DM-001/difficulty", data={"note": "medium"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert Store(garden).task(task.id).difficulty == "medium"
+
+
 def test_editable_values_apply_on_change_with_a_saved_mark(garden):
     """Every data-autosave form (the walkthrough's Config and task pages among them) carries
     an autosave-mark slot for the JS-driven saved/undo behaviour."""
