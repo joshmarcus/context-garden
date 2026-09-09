@@ -17,7 +17,9 @@ Three rules live here (see docs/architecture.md, beside stacking):
    textual conflict an agent resolved, or a rebase that folded the branch's own commit away as
    already-applied elsewhere — is reviewed as usual.
 3. Automerge is a queue: candidates are ordered oldest-approved-first and only the head is
-   rebased, checked and merged. Once the queue picks a head it keeps it: a head whose rollup
+   processed. The compatibility policy rebases and checks it; an explicit product opt-out
+   merges a clean approved exact head as-is after a fresh GitHub gate. Once the queue picks a
+   head it keeps it: a head whose rollup
    is still running after the pre-merge rebase is "in flight" (a `merge_head` marker holding
    its `automerge_ready_at`), the queue does not pick another head while one is in flight, and
    it merges the head the moment the rollup goes green. A branch already on the base's tip is
@@ -304,10 +306,9 @@ class RebaseMixin:
         return head
 
     def _merge_candidate(self, task: Task, rep: TickReport) -> None:
-        """Pick this candidate as the head: rebase it onto the final base once, right before it
-        merges. A branch already on the base's tip is merged as it stands (no rebase, no push);
-        a rebase that has to move the branch restarts its rollup, so the head goes in flight and
-        merges on a later poll once the rollup is green (see `_advance_merge_head`)."""
+        """Pick this candidate as the head. The compatibility policy rebases onto the final base;
+        an explicit product opt-out merges a clean approved exact head without rewriting it. The
+        queue remains serial and refreshes GitHub before either merge path."""
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if not slug or not number or not self.github.available:
@@ -319,6 +320,13 @@ class RebaseMixin:
         ok, reason = self._automerge_gate(task, pr)
         if not ok:
             self._queue_hold(task, reason)
+            return
+        if not bool(self._github_cfg("automerge_require_current_base", task.product, True)):
+            # Keep the queue serial, but do not rewrite a clean, approved exact head solely
+            # because another PR advanced the base. _advance_merge_head fetches GitHub again;
+            # its gate catches a newly conflicting, pending, failed, or changed head.
+            self._queue_head(task)
+            self._advance_merge_head(task, rep)
             return
         # Rebase once, right before the merge. A clean rebase whose diff is unchanged keeps the
         # verdict (no re-review); a conflict or a failed check takes the task off the queue. The
@@ -341,8 +349,8 @@ class RebaseMixin:
         self._queue_head(task, announce=True)
 
     def _advance_merge_head(self, task: Task, rep: TickReport) -> None:
-        """Act on the in-flight head, which is already on the base's tip. Merge it (no rebase, no
-        push) the moment the gate passes; keep it as head while its rollup is still running; drop
+        """Refresh and act on the queue head. Merge it (no rebase or push) the moment the gate
+        passes; keep it as head while its rollup is still running; drop
         it — logging why — only on a hard reason (a conflict, a failed check, a changed diff now
         in review, a closed PR or a human change request), so the next candidate becomes head."""
         slug = self.slug_for(task)
@@ -401,7 +409,8 @@ class RebaseMixin:
         if not delete_branch:
             self.log(f"{task.id}: keeping the branch on merge; a stacked child PR could not be retargeted")
         try:
-            self.github.merge_pr(slug, number, method=method, delete_branch=delete_branch)
+            self.github.merge_pr(slug, number, method=method, delete_branch=delete_branch,
+                                 expected_head=pr.head_sha)
         except GitHubError as e:
             self._queue_hold(task, f"merge call failed: {e}", keep=True)
             rep.errors.append(f"{task.id}: automerge failed: {e}")
