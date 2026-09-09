@@ -84,7 +84,7 @@ class TrialsMixin:
                                          "run_id": "", "status": "running", "pr": "", "pr_number": 0, "cost": None, "score": None,
                                          "kind": "", "note": ""}
             try:
-                run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model or None)
+                run = self.dispatch(task, mode="trial", runner=runner, branch_override=branch, worktree_override=wt, model_override=model)
             except Exception as e:  # noqa: BLE001
                 # A contender that never got to run at all (its setup command failed, its
                 # worktree could not be prepared) is a harness failure, not a model loss: record
@@ -161,7 +161,7 @@ class TrialsMixin:
         contender."""
         runner = self.runner_for(task, "local", c["harness"])
         run = self.dispatch(task, mode="trial", runner=runner, branch_override=c["branch"],
-                            worktree_override=Path(c["worktree"]), model_override=c["model"] or None)
+                            worktree_override=Path(c["worktree"]), model_override=c["model"])
         c["run_id"] = run.run_id
         c["status"] = "running"
         c.pop("note", None)

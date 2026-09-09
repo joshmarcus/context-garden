@@ -823,8 +823,8 @@ class ReviewMixin:
         run.model = self.model_for(task, runner, review_difficulty)
         if ladder_model:
             run.model = ladder_model
-        elif member is not None and "model" in member:
-            run.model = str(member["model"])
+        elif member is not None:
+            run.model = str(member.get("model") or "")
         elif runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
         run.pool_member = str((member or {}).get("label") or "")
