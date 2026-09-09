@@ -21,6 +21,7 @@ ssh:
 github:
   use_gh: true
   draft_pr: true
+  project_users: [maintainer-two]  # current user is implicit; add only relevant PR authors
   trusted_bots: ["review-app[bot]"] # only opted-in bot findings can request a revise round
   bot_notice_patterns: ["usage limit", "no issues", "looks good"]
   automerge: false                  # retain human approval and merge authority

@@ -291,8 +291,13 @@ class FakeGitHub:
     def find_pr(self, slug, head_branch):
         return self.prs.get(head_branch)
 
-    def list_open_prs(self, slug):
-        return [self.get_pr(slug, pr.number) for pr in self.prs.values() if pr.state == "OPEN"]
+    def list_open_prs(self, slug, project_users=None):
+        authors = {self.me(), *(project_users or [])}
+        return [
+            self.get_pr(slug, pr.number)
+            for pr in self.prs.values()
+            if pr.state == "OPEN" and (pr.author or self.me()) in authors
+        ]
 
     def set_checks(self, branch, state, latency=None):
         """Arm a PR's checks rollup the way a push does on real GitHub: report PENDING for
@@ -318,7 +323,7 @@ class FakeGitHub:
 
     def create_pr(self, slug, head, base, title, body, draft=False, reviewers=None):
         self._n += 1
-        pr = PRInfo(number=self._n, url=f"https://example.com/pull/{self._n}", state="OPEN", title=title, head=head, base=base, body=body, updated_at="t1", is_draft=draft)
+        pr = PRInfo(number=self._n, url=f"https://example.com/pull/{self._n}", state="OPEN", title=title, head=head, base=base, body=body, updated_at="t1", is_draft=draft, author=self.me())
         self.prs[head] = pr
         self.created.append({"head": head, "base": base, "title": title, "body": body})
         if self.check_latency > 0:  # a fresh push starts CI: PENDING until it settles

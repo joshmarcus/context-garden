@@ -578,6 +578,13 @@ files under `tasks/` must not be hand-edited.
     hand is flagged `pending_feedback_rebase`: it adds to the same `rebases` counter, is
     exempt from `max_revisions` and `needs_human` exactly like a conflict rebase, and the
     review that follows it does not count toward `review.max_rounds` either.
+- **Scoped repository observation.** The Board observes open PRs authored by the GitHub login
+  the garden authenticates as plus `github.project_users`. A product can replace the shared
+  list with `products.<name>.github.project_users`, including an empty list for only the
+  authenticated author. Garden queries each author directly instead of listing every open PR
+  in a shared repository. A PR already linked to a task remains relevant and is polled directly
+  even when its author is outside this observation set. Project users affect visibility only;
+  they do not make those users' comments trusted worker instructions.
 - **Feedback detection.** Reviews, line comments and issue comments newer than the task's
   `last_dispatched_at` count, minus the garden's own comments (recognised by a hidden
   marker) and the accounts in `github.bot_logins`, so the scheduler's own review comments
