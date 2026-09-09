@@ -138,13 +138,17 @@ class Store:
 
     def products(self) -> list[Product]:
         if self._products is None:
-            while self._products is None:
+            for attempt in range(3):
                 before = self._discovery_signature()
                 products = self._scan()
                 after = self._discovery_signature()
-                if before == after:
+                if before == after or attempt == 2:
                     self._products = products
-                    self._discovery_sig = after
+                    # Persistent writers must not monopolize a request or scheduler pass.
+                    # Retain the pre-scan signature after the bounded fallback so the next
+                    # operation observes the mismatch and tries for a stable snapshot again.
+                    self._discovery_sig = after if before == after else before
+                    break
         return self._products
 
     def _scan(self) -> list[Product]:
