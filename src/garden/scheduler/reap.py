@@ -1255,6 +1255,38 @@ class ReapMixin:
                     owned.add(latest.run_id)
         return owned
 
+    @staticmethod
+    def _accepted_terminal_remote_result(run: Run) -> bool:
+        """Whether a remote completion belongs to the run's last accepted generation.
+
+        The authenticated finish endpoint writes ``remote_result.json`` and saves its
+        receipt before writing ``exit_code`` last.  New records also retain a hashed claim
+        history entry; require it to describe the still-current token/ref/host.  Legacy
+        records predate that history, so their durable host, token and staging ref are the
+        strongest persisted generation identity.
+        """
+        if run.runner != "remote" or not (run.path / "remote_result.json").exists():
+            return False
+        try:
+            exit_code_text = (run.path / "exit_code").read_text().strip()
+            if not exit_code_text:
+                return False
+            int(exit_code_text)
+        except (OSError, UnicodeError, ValueError):
+            return False
+        if not (run.host and run.lease_token and run.pushed_ref):
+            return False
+        if not run.claim_history:
+            return True
+        latest = run.claim_history[-1]
+        return bool(
+            run.final_received_at
+            and latest.get("host") == run.host
+            and latest.get("pushed_ref") == run.pushed_ref
+            and latest.get("lease_token_sha256")
+            == hashlib.sha256(run.lease_token.encode()).hexdigest()
+        )
+
     def reap_dead_runs(self, rep: TickReport) -> None:
         """Close any `running` run record whose process has already exited and that no
         pointer above (`_owned_run_ids`) still leads a reap to: the generalisation of the
@@ -1265,7 +1297,14 @@ class ReapMixin:
         owned = self._owned_run_ids()
         tasks = self.store.tasks()
         for run in self.runs.active():
-            if run.runner in ("manual", "remote"):
+            if run.runner == "manual":
+                continue
+            task = tasks.get(run.task_id)
+            terminal_remote = bool(
+                run.runner == "remote" and task is not None and task.status.terminal
+                and self._accepted_terminal_remote_result(run)
+            )
+            if run.runner == "remote" and not terminal_remote:
                 continue
             no_exit_code = not (run.path / "exit_code").exists()
             process_missing = run.pid is None
@@ -1276,7 +1315,6 @@ class ReapMixin:
                 # preparation on this record; never close it or let a tick duplicate it.
                 if run.idempotency_key and run.status in ("requested", "preparing"):
                     continue
-                task = tasks.get(run.task_id)
                 # A terminal task can still have a worktree that the terminal sweep
                 # protects with this record (for example while a human finishes a
                 # hand-created run record).  Leave that ownership marker in place so
@@ -1312,6 +1350,9 @@ class ReapMixin:
             try:
                 runner = self.runner_for(probe, run.runner, run.harness)
                 collected = runner.collect(run)
+                if terminal_remote:
+                    run.result = collected.get("result") or {}
+                    run.session_id = str(collected.get("session_id") or run.session_id or "")
                 run.usage = collected.get("usage") or {}
                 run.cost_usd = collected.get("cost_usd")
                 run.model = str(collected.get("model") or run.model)
@@ -1319,13 +1360,23 @@ class ReapMixin:
                 if collected.get("missing_price"):
                     self.log(f"{run.task_id}: no price configured for model {collected['missing_price']!r}; cost_usd left null")
             except Exception as e:  # noqa: BLE001
+                if terminal_remote:
+                    rep.errors.append(
+                        f"{run.task_id}: terminal remote result {run.run_id} could not be collected: {e}"
+                    )
+                    continue
                 run.error = run.error or str(e)
             run.status = "done" if run.exit_code in (0, None) else "failed"
-            note = "closed: no active run pointer references it and its process has exited"
+            note = (
+                "closed: terminal task moved on before its accepted remote result was collected"
+                if terminal_remote else
+                "closed: no active run pointer references it and its process has exited"
+            )
             run.error = f"{run.error} ({note})" if run.error else note
             run.save()
+            event_detail = {"terminal_task": True} if terminal_remote else {}
             self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
-                             usage=run.usage, status=run.status, dangling=True)
+                             usage=run.usage, status=run.status, dangling=True, **event_detail)
             self.log(f"{run.task_id}: {run.mode} run {run.run_id} closed ({run.status}); {note}")
             rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} closed (dangling)")
 
