@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from garden.github import GitHubError, PRInfo
@@ -178,6 +179,7 @@ def test_discovery_retries_when_task_changes_during_scan(garden, monkeypatch):
     assert next(t for p in products for ph in p.phases for t in ph.tasks if t.id == "DM-001").title == "Edited during scan"
 
 
+<<<<<<< HEAD
 def test_discovery_bounds_retries_during_persistent_external_churn(garden, monkeypatch):
     """A busy writer cannot trap a page request in repeated task parsing."""
     store = Store(garden)
@@ -202,6 +204,34 @@ def test_discovery_bounds_retries_during_persistent_external_churn(garden, monke
     store.discovery_snapshot()
 
     assert scans == 6
+
+
+def test_tasks_api_uses_project_effective_stack_policy(garden):
+    store = Store(garden)
+    parent = store.task("DM-001")
+    parent.status = Status.IN_REVIEW
+    parent.branch = "garden/dm-001"
+    parent.pr = "https://github.com/test/demo/pull/1"
+    store.save(parent)
+    store.config.data["stack"] = False
+    store.config.data["products"]["demo"]["configuration"] = {
+        "locks": {"stack": {"reason": "keep dependent work moving", "value": True}},
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(store.config.data))
+
+    response = client(garden).get("/api/tasks")
+
+    tasks = {task["id"]: task for task in response.json()}
+    assert response.status_code == 200
+    assert tasks["DM-002"]["effective_status"] == "ready"
+
+    store = Store(garden)
+    store.config.data["stack"] = True
+    store.config.data["products"]["demo"]["configuration"]["locks"]["stack"]["value"] = False
+    (garden / "garden.yaml").write_text(yaml.safe_dump(store.config.data))
+
+    tasks = {task["id"]: task for task in client(garden).get("/api/tasks").json()}
+    assert tasks["DM-002"]["effective_status"] == "blocked"
 
 
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
