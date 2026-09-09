@@ -470,6 +470,16 @@ class Config:
         return {"provider": str(value.get("provider") or ""),
                 "command": str(value.get("command") or "")}
 
+    def product_checkout(self, name: str) -> dict[str, Any]:
+        """Opt-in checkout policy for a product.
+
+        The default is the historical per-task linked worktree.  ``in_place`` names an
+        explicitly provisioned canonical checkout and a command which is run before every
+        use (unlike ``setup.command``, which is stamped and normally runs once).
+        """
+        value = self.product(name).get("checkout")
+        return dict(value) if isinstance(value, dict) else {}
+
     def harness(self, name: str):
         from .harness import DEFAULT_HARNESSES, Harness
 

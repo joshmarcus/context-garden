@@ -131,7 +131,7 @@ of the loop touch different files.
 | `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now (`/now`, `garden now`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
-| `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
+| `gitops.py`, `canonical.py`, `github.py` | git worktrees and pushes; fenced in-place checkout leases and reconciliation; pull requests through `gh` or the REST API |
 | `kickoff.py` | the kickoff brief and verdict parsing |
 | `planner.py`, `plants.py`, `notify.py`, `host_identity.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; host-alias and shared-text redaction boundary; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
@@ -159,6 +159,25 @@ Git is the database. The split between the four stores is deliberate.
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
 `repos/` (clones of products given as URLs), `trials.jsonl` (model trial records), and
 `reservations.json` (durable id reservations, below).
+
+A product may opt into a provisioned canonical checkout instead of per-task worktrees:
+
+```yaml
+products:
+  widget:
+    checkout:
+      strategy: in_place
+      root: /srv/checkouts/widget       # local runner; SSH uses the host's repos entry
+      reconcile_command: ./prepare-run # optional, runs before every run
+      reconcile_timeout_seconds: 300
+```
+
+This mode is deliberately exclusive. A durable per-checkout lease covers worker, review,
+check and auxiliary sessions across scheduler restarts. Before switching from the configured
+base to the assigned task branch, the garden refuses dirty files, an unrelated branch, a
+symlinked root, or the controller checkout. Reconciliation is bounded, uses the scrubbed
+worker environment, and is followed by a fresh clean-tree/branch readiness check. The
+default remains linked worktrees.
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 

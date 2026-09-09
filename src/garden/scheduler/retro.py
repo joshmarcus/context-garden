@@ -212,35 +212,36 @@ class RetroMixin:
         self.state.save()
         return entry
 
-    def _dispatch_retro_run(self, probe: Task, brief_text: str, worktree: Path, difficulty: str = "hard") -> Run:
-        self.require_maintenance_running()
-        runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
-        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
-        run = self._new_local_run(probe.id, "retro", "retro")
-        run.worktree = str(worktree)
-        run.model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
-        run.difficulty = difficulty
-        run.brief_tokens = max(1, len(brief_text) // 4)
-        run.save()
-        runner.start(run, worktree, brief_text)
-        self.events.emit("dispatch", run.task_id, run=run.run_id, mode="retro", model=run.model,
-                         harness=run.harness, phase=probe.phase)
-        return run
-
     def _dispatch_reconcile(self, entry: dict[str, Any]) -> None:
+        self.require_maintenance_running()
         phase = self.store.phase(entry["product"], entry["phase_name"])
         probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                      product=entry["self_product"], phase="")
-        repo = self.repo_for(probe)
+        runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
+        self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
+        difficulty = str(self.effective("retro.difficulty") or "hard")
+        run = self._new_local_run(probe.id, "retro", "retro")
+        run.model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
+        run.difficulty = difficulty
         base = self.final_base_for(probe)
         branch = f"garden/retro-{phase.product}-{phase.name}"
         wt = self.cfg.worktree_path(f"_retro-{phase.product}-{phase.name}")
-        gitops.fetch(repo)
-        gitops.prepare_worktree(repo, wt, branch, base)
+        canonical = self.prepare_canonical_run(probe, run, runner, branch, base)
+        if canonical is not None:
+            wt = canonical
+        else:
+            repo = self.repo_for(probe)
+            gitops.fetch(repo)
+            gitops.prepare_worktree(repo, wt, branch, base)
         friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
         text = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                reports, task_rows, merged, entry["next_phase"])
-        run = self._dispatch_retro_run(probe, text, wt, difficulty=str(self.effective("retro.difficulty") or "hard"))
+        run.worktree = str(wt)
+        run.brief_tokens = max(1, len(text) // 4)
+        run.save()
+        runner.start(run, wt, text)
+        self.events.emit("dispatch", run.task_id, run=run.run_id, mode="retro", model=run.model,
+                         harness=run.harness, phase=probe.phase)
         entry.update({"stage": "reconciling", "recon_run_id": run.run_id, "recon_task": probe.id,
                       "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})
         self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)

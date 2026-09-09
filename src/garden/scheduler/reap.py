@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
+from ..canonical import CanonicalCheckoutError, configured_root
 from ..checks import to_feedback
 from ..criteria import amend_criteria, apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
@@ -434,7 +435,25 @@ class ReapMixin:
         repo = self.repo_for(task)
 
         if runner.remote or run.completion_mode == "pushed":
-            gitops.fetch(repo)
+            wt = self.worktree_for(task)
+            canonical = None
+            try:
+                # SSH/pull workers publish their result remotely, but checks may still use
+                # an explicitly provisioned local canonical checkout.  Claim and preflight
+                # that checkout before even fetching through it: the legacy materialisation
+                # path below must never reset operator work or a drifted branch.
+                if configured_root(self.cfg.product_checkout(task.product), self.store.root) is not None:
+                    local_runner = self.runner_for(task, "local")
+                    canonical = self.prepare_canonical_run(task, run, local_runner, branch, base)
+                    if canonical is not None:
+                        wt = canonical
+                gitops.fetch(repo)
+            except (gitops.GitError, CanonicalCheckoutError) as e:
+                run.status = "failed"
+                run.error = f"could not prepare local canonical checkout: {e}"
+                run.save()
+                self._retry_or_fail(task, run, rep, run.error)
+                return
             try:
                 if run.pushed_ref:
                     staged = f"refs/remotes/origin/{run.pushed_ref.removeprefix('refs/heads/')}"
@@ -468,7 +487,6 @@ class ReapMixin:
                 return
             run.status = "done"
             run.save()
-            wt = self.worktree_for(task)
             try:
                 if wt.exists():
                     gitops.git("fetch", "origin", cwd=wt)
