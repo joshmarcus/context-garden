@@ -808,7 +808,8 @@ class ReviewMixin:
                     or (run.path / "final.md").exists())
 
     def _queue_review_recovery(self, task: Task, run: Run | None, reason: str, rep: TickReport,
-                               *, started: bool, count_round: bool) -> bool:
+                               *, started: bool, count_round: bool,
+                               refund_round: bool = False) -> bool:
         """Retain one head-bound review continuation, or stop after bounded retries."""
         st = self.state.get(task.id)
         old = st.get("review_recovery") or {}
@@ -817,7 +818,7 @@ class ReviewMixin:
         attempts = int(old.get("attempts", 0)) + 1 if old.get("head") == head else 1
         limit = int(self.cfg.get("review.recovery_attempts", 2) or 0)
         st["review_run"] = ""
-        if run is not None and not started and count_round:
+        if run is not None and count_round and (not started or refund_round):
             st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
         if attempts > limit:
             st.pop("pending_reviews", None)
@@ -833,7 +834,10 @@ class ReviewMixin:
         st["review_recovery"] = {"head": head, "attempts": attempts, "limit": limit,
                                  "retry_at": retry_at, "reason": reason, "owner": "scheduler",
                                  "started": started, "last_run": run.run_id if run else ""}
-        self._queue_pending_reviews(st, [{"kind": "review", "count_round": count_round and not started}])
+        self._queue_pending_reviews(st, [{
+            "kind": "review",
+            "count_round": count_round and (not started or refund_round),
+        }])
         task.log(f"automatic review recovery {attempts}/{limit} queued for the current head: {reason}")
         self.store.save(task)
         self.events.emit("review_recovery", task.id, run=run.run_id if run else "", head=head,
@@ -903,9 +907,9 @@ class ReviewMixin:
             # The reviewer's own account, not the PR: pause the harness, give back the
             # round this dispatch counted (see dispatch_review's count_round, snapshotted
             # on the run since an after-rebase round is exempt and must not be charged),
-            # and rejoin the review queue so it is retried once the harness resumes
-            # instead of the PR silently never getting a verdict for this round.
-            st["review_run"] = ""
+            # and route the continuation through the same bounded recovery policy as
+            # other missing verdicts. The harness pause remains the admission gate, so
+            # the queued retry cannot start until the environment can progress.
             pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
             counted = bool((run.env_snapshot or {}).get("count_round", True))
             self._pause_for_env_error(run, collected)
@@ -913,17 +917,14 @@ class ReviewMixin:
             run.save()
             self.events.emit("run_finished", task.id, run=run.run_id, mode="review", status="env_error",
                              cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
-            if counted:
-                st["review_rounds"] = max(0, int(st.get("review_rounds", 0)) - 1)
-            self._queue_pending_reviews(st, [{"kind": "review", "count_round": counted}])
             note = (f"automated review paused ({collected.get('env_kind') or 'quota'} limit hit on "
                    f"{run.harness or 'the harness'}); will retry once it resumes")
-            task.log(note)
-            self.store.save(task)
             if pending_triage:
                 notify(self.cfg.data, task.id, "awaiting_triage", note, task.pr or "")
-            rep.transitions.append(f"{task.id} review paused (env_error)")
-            return True
+            return self._queue_review_recovery(
+                task, run, note, rep, started=True, count_round=counted,
+                refund_round=True,
+            )
         final = collected.get("final_text") or ""
         if final and not (run.path / "final.md").exists():
             (run.path / "final.md").write_text(final)
