@@ -95,6 +95,30 @@ def test_page_requests_reuse_discovery_until_an_external_task_edit(garden, monke
     assert scans == 2
 
 
+def test_discovery_retries_when_task_changes_during_scan(garden, monkeypatch):
+    """Never pair pre-edit parsed tasks with a post-edit discovery fingerprint."""
+    store = Store(garden)
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    original_scan = Store._scan
+    scans = 0
+
+    def scan_with_external_edit(self):
+        nonlocal scans
+        scans += 1
+        products = original_scan(self)
+        if scans == 1:
+            task_path.write_text(task_path.read_text().replace("title: First task", "title: Edited during scan"))
+        return products
+
+    monkeypatch.setattr(Store, "_scan", scan_with_external_edit)
+
+    products, tasks, _duplicates = store.discovery_snapshot()
+
+    assert scans == 2
+    assert tasks["DM-001"].title == "Edited during scan"
+    assert next(t for p in products for ph in p.phases for t in ph.tasks if t.id == "DM-001").title == "Edited during scan"
+
+
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
     """The served Inbox owns the manual take journey, including stale-card recovery."""
     from garden.model import Status
