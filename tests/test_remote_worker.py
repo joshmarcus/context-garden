@@ -15,8 +15,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from garden import gitops
-from garden.managed_worker import claim_with_retry
+from garden import gitops, managed_worker
 from garden.remote_worker import (
     WorkerRequestError,
     _host_check_data,
@@ -85,17 +84,29 @@ def test_lost_successful_claim_response_replays_one_generation(garden, monkeypat
                 raise WorkerRequestError(response.status_code, response.text)
             return response.status_code, response.json() if response.content else {}
 
-    status, claim = claim_with_retry(
-        LostResponseClient(),
-        {"host": "build-1", "harnesses": ["claude"], "capacity": 1},
-        sleep=lambda _delay: None,
-    )
-    executed = [claim["id"]]
+    executed = []
+    monkeypatch.setattr(managed_worker, "AttributedClient",
+                        lambda _config, _root: LostResponseClient())
+    monkeypatch.setattr(managed_worker, "resources", lambda _root: {
+        "memory_available_bytes": 2 * 1024**3,
+        "disk_free_bytes": 2 * 1024**3,
+    })
+    monkeypatch.setattr(managed_worker, "execute_claim",
+                        lambda claim, *_args, **_kwargs: executed.append(claim))
+    managed_worker.run({
+        "work_dir": str(garden.parent / "managed-host"),
+        "endpoint": "https://garden.example",
+        "worker_token": "secret-token",
+        "host": "build-1",
+        "harnesses": ["claude"],
+        "memory_reserve_mib": 1,
+        "disk_reserve_mib": 1,
+    }, once=True)
     saved = RunStore(store.config.garden_dir).latest("DM-001")
 
-    assert status == 200 and executed == [queued.run_id]
+    assert [claim["id"] for claim in executed] == [queued.run_id]
     assert calls == 2
-    assert saved.lease_token == claim["lease_token"]
+    assert saved.lease_token == executed[0]["lease_token"]
     assert len(saved.claim_history) == 1
 
 
