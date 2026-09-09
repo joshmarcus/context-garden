@@ -560,7 +560,13 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
         receipts = []
-        for receipt_path in sorted(execution_dir.glob("validations/*/result.json")):
+        # PID directory names do not describe completion order. Preserve the host's
+        # observed write order so the controller can make a later rerun authoritative.
+        receipt_paths = sorted(
+            execution_dir.glob("validations/*/result.json"),
+            key=lambda path: (path.stat().st_mtime_ns, str(path)),
+        )
+        for receipt_path in receipt_paths:
             try:
                 receipt = json.loads(receipt_path.read_text())
             except (OSError, json.JSONDecodeError):
