@@ -456,13 +456,19 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     _independent_tasks(sched, 1)
     sched.cfg.data["max_parallel"] = 1
     sched.cfg.data["github"]["automerge"] = True
+    sched.cfg.data["review"]["enabled"] = False
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
-    for _ in range(6):  # worker -> pre-PR check run -> PR (the check gates it, so an extra tick)
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "true",
+    }
+    for _ in range(10):  # worker -> command validation -> PR with an exact-head receipt
         sched.tick()
-        if sched.store.task("DM-001").status == Status.IN_REVIEW:
+        if (sched.store.task("DM-001").status == Status.IN_REVIEW
+                and sched.state.get("DM-001").get("validation_head")):
             break
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     b1 = sched.store.task("DM-001").branch
+    fake_github.prs[b1].head_sha = gitops.head_sha(sched.worktree_for(sched.store.task("DM-001")))
     _advance_main(tmp_path, "moved")  # the branch is behind: the merge needs a rebase first
     _approve(sched, fake_github, "DM-001", b1, "2026-09-05T03:00:00+00:00")
     sched.state.save()
@@ -470,6 +476,7 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     # merge queue: rebase + force-push, then start the pre-PR check as a detached check run.
     rep = sched.tick()
     assert "DM-001(check:merge_rebase)" in rep.dispatched
+    fake_github.prs[b1].head_sha = gitops.head_sha(sched.worktree_for(sched.store.task("DM-001")))
     assert any(r.mode == "check" for r in sched.runs.runs_for("DM-001"))
     assert fake_github.prs[b1].state != "MERGED"  # not merged: the check has not been reaped yet
     assert not sched.state.get("DM-001").get("merge_head")  # the head is not held until checks pass
@@ -479,6 +486,7 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
         if fake_github.prs[b1].state == "MERGED":
             break
     assert fake_github.prs[b1].state == "MERGED"
+    assert sched.state.get("DM-001")["validation_head"] == fake_github.prs[b1].head_sha
     assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
 
 

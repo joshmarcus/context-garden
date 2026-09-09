@@ -574,8 +574,12 @@ class ReapMixin:
                 cmd = str(setup.get(name) or "").strip()
                 if cmd:
                     specs.append({"name": name, "command": cmd})
+        validation = self.cfg.product_validation(task.product)
+        if validation["provider"] == "command":
+            specs.append({"name": "validation", "command": validation["command"]})
         from ..checks import is_publishing_ci_helper
-        if setup.get("worker_push") is not True:
+        publishing_allowed = setup.get("worker_push") is True and validation["provider"] in ("legacy", "actions")
+        if not publishing_allowed:
             specs = [
                 {**spec, "requires_worker_push": True}
                 if is_publishing_ci_helper(str(spec.get("command") or ""))

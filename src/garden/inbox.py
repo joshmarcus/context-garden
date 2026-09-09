@@ -516,12 +516,13 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             ], review=rev, diff_stat=diff_summary)
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
             if st.get("ci_missing"):
-                add("operator", t, "CI has not reported a status for this PR head", [
+                diagnostic = str(st.get("ci_diagnostic") or "CI has not reported a status for this PR head")
+                add("operator", t, diagnostic, [
                     {"label": "Open PR", "kind": "link", "href": t.pr,
                      "detail": "inspect or re-run the configured CI provider; the PR and its feedback remain unchanged"},
                 ], kind="ci_missing", kind_title="CI status missing",
                     kind_blurb="This is an operational prerequisite, not approval of the product outcome.",
-                    reason="No CI rollup has arrived for the current PR head.", evidence=_evidence_lines(t, st, runs))
+                    reason=diagnostic, evidence=_evidence_lines(t, st, runs))
                 continue
             # A current approval is actionable only after every automated review of this
             # head has finished.  A queued or running follow-up remains scheduler-owned.

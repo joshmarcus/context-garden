@@ -45,10 +45,20 @@ class PollMixin:
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
-        # A configured CI analyser implies that a rollup is expected.  An absent rollup is
-        # an operator prerequisite, not an owner review decision; leave unconfigured CI
-        # alone so repositories that do not publish checks keep their normal review flow.
-        st["ci_missing"] = bool(self.cfg.get("checks.ci", []) and not pr.checks)
+        validation = self.cfg.product_validation(task.product)
+        provider = validation["provider"]
+        expects_rollup = provider in ("actions", "status") or (
+            provider == "legacy" and bool(self.cfg.get("checks.ci", []))
+        )
+        st["ci_missing"] = bool(expects_rollup and not pr.checks)
+        if st["ci_missing"]:
+            st["ci_diagnostic"] = (
+                "GitHub Actions returned no result; confirm Actions is enabled and the workflow triggers for this branch"
+                if provider == "actions" else
+                "the configured status provider returned no result; confirm its installation and repository permissions"
+            )
+        else:
+            st.pop("ci_diagnostic", None)
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
@@ -96,7 +106,7 @@ class PollMixin:
         st["pr_updated_at"] = pr.updated_at
         st["head_sha"] = pr.head_sha
         ci_note = ""
-        if pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
+        if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
             st["ci_failed_at"] = pr.updated_at
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
@@ -290,10 +300,23 @@ class PollMixin:
                 return False, "a run is in flight"
         elif any(r.task_id == task.id for r in self.active_runs()):
             return False, "a run is in flight"
-        if self.cfg.product_setup(task.product).get("worker_push") is True and not pr.checks:
-            return False, "worker CI is enabled but the PR has no CI result yet"
-        if pr.checks not in ("SUCCESS", ""):
-            return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
+        validation = self.cfg.product_validation(task.product)
+        provider = validation["provider"]
+        if provider in ("actions", "status"):
+            if not pr.checks:
+                if provider == "actions":
+                    return False, "GitHub Actions has no result (disabled, unavailable, or not triggered)"
+                return False, "the configured status provider has no result (unavailable or insufficient permission)"
+            if pr.checks != "SUCCESS":
+                return False, f"the required {provider} validation is {pr.checks.lower()}"
+        elif provider == "command":
+            if not pr.head_sha or st.get("validation_head") != pr.head_sha:
+                return False, "the configured validation command has no passing result for the exact PR head"
+        elif provider == "legacy":
+            if self.cfg.product_setup(task.product).get("worker_push") is True and not pr.checks:
+                return False, "worker CI is enabled but the PR has no CI result yet"
+            if pr.checks not in ("SUCCESS", ""):
+                return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
         if pr.mergeable != "MERGEABLE":
             return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
         if pr.review_decision == "CHANGES_REQUESTED":

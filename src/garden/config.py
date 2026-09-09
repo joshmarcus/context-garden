@@ -65,6 +65,11 @@ def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
         for name, p in (data.get("products") or {}).items()
         if isinstance(p, dict) and (p.get("setup") or {}).get("command")
     }
+    sig["validation"] = {
+        name: deepcopy(p.get("validation"))
+        for name, p in (data.get("products") or {}).items()
+        if isinstance(p, dict) and p.get("validation") is not None
+    }
     sig["harnesses"] = {
         name: {"bin": h.get("bin"), "command": h.get("command")}
         for name, h in (data.get("harnesses") or {}).items() if isinstance(h, dict)
@@ -104,6 +109,7 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
     products = out.setdefault("products", {})
     if isinstance(products, dict):
         commands = signature.get("setup.command") or {}
+        validations = signature.get("validation") or {}
         for name, product in products.items():
             if not isinstance(product, dict):
                 continue
@@ -115,6 +121,10 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
                 setup["command"] = deepcopy(commands[name])
             else:
                 setup.pop("command", None)
+            if name in validations:
+                product["validation"] = deepcopy(validations[name])
+            else:
+                product.pop("validation", None)
 
     harnesses = out.setdefault("harnesses", {})
     if isinstance(harnesses, dict):
@@ -448,6 +458,18 @@ class Config:
         s = self.product(name).get("setup")
         return dict(s) if isinstance(s, dict) else {}
 
+    def product_validation(self, name: str) -> dict[str, str]:
+        """Return the product's merge-validation policy."""
+        value = self.product(name).get("validation")
+        if value is None:
+            return {"provider": "legacy", "command": ""}
+        if isinstance(value, str):
+            return {"provider": value, "command": ""}
+        if not isinstance(value, dict):
+            raise ValueError(f"products.{name}.validation must be a string or mapping")
+        return {"provider": str(value.get("provider") or ""),
+                "command": str(value.get("command") or "")}
+
     def harness(self, name: str):
         from .harness import DEFAULT_HARNESSES, Harness
 
@@ -573,6 +595,23 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         paths = product.get("protected_paths", [])
         if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
             raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
+        validation = product.get("validation")
+        if validation is not None:
+            if isinstance(validation, str):
+                provider, validation_command = validation, ""
+            elif isinstance(validation, dict):
+                provider = validation.get("provider")
+                validation_command = validation.get("command", "")
+            else:
+                raise ValueError(f"products.{name}.validation must be a string or mapping")
+            if provider not in ("actions", "status", "command", "none"):
+                raise ValueError(
+                    f"products.{name}.validation.provider must be 'actions', 'status', 'command', or 'none'"
+                )
+            if provider == "command" and (not isinstance(validation_command, str) or not validation_command.strip()):
+                raise ValueError(f"products.{name}.validation.command is required for the command provider")
+            if provider != "command" and validation_command:
+                raise ValueError(f"products.{name}.validation.command is only valid with the command provider")
 
 
 def find_root(start: Path | None = None) -> Path:

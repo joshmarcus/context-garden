@@ -184,8 +184,9 @@ class Brief:
         return max(1, chars // 4)
 
 
-def _push_rule(setup: dict) -> str:
-    if setup.get("worker_push") is True:
+def _push_rule(setup: dict, validation: dict | None = None) -> str:
+    provider = str((validation or {}).get("provider") or "legacy")
+    if setup.get("worker_push") is True and provider in ("legacy", "actions"):
         return (
             "You may push ONLY this assigned branch to origin for the configured CI checks, "
             "without force or changing git configuration. Run focused local checks first, "
@@ -194,10 +195,17 @@ def _push_rule(setup: dict) -> str:
             "a pass. Report the commit, run URL and conclusion in your acceptance evidence. "
             "Do NOT open, edit or merge pull requests: the garden runner owns them."
         )
-    return "Do NOT push and do NOT open a pull request: the garden runner does that when you finish."
+    rule = "Do NOT push and do NOT open a pull request: the garden runner does that when you finish."
+    if provider == "status":
+        rule += " The scheduler awaits the configured external status provider; do not start or poll GitHub Actions."
+    elif provider == "command":
+        rule += " The scheduler runs the configured exact-head validation command before opening or updating the PR."
+    elif provider == "none":
+        rule += " This product explicitly has no external CI service; do not start or poll GitHub Actions."
+    return rule
 
 
-def _env_rule(setup: dict) -> str:
+def _env_rule(setup: dict, validation: dict | None = None) -> str:
     """The operating rule about the working environment: it is already prepared, so the worker
     must not install packages or make a virtualenv, and here are the exact commands to run its
     checks (from the product's `setup.test`/`setup.lint`). Nothing here names pip, uv or a venv
@@ -209,7 +217,10 @@ def _env_rule(setup: dict) -> str:
     from .checks import is_publishing_ci_helper
     test = str((setup or {}).get("test") or "")
     publishing_helper_needs_permission = (
-        is_publishing_ci_helper(test) and setup.get("worker_push") is not True
+        is_publishing_ci_helper(test) and (
+            setup.get("worker_push") is not True
+            or str((validation or {}).get("provider") or "legacy") not in ("legacy", "actions")
+        )
     )
     checks = []
     for label, key in (("tests", "test"), ("lint", "lint")):
@@ -403,8 +414,8 @@ def build_brief(
             base=base or cfg.product_base_branch(task.product),
             marker=RESULT_MARKER,
             turn_cap_rule=turn_cap_rule,
-            env_rule=_env_rule(cfg.product_setup(task.product)),
-            push_rule=_push_rule(cfg.product_setup(task.product)),
+            env_rule=_env_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
+            push_rule=_push_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
         )
         sections.append(("rules", rules + "\n" + EVIDENCE_GUIDANCE))
         if review_feedback:
