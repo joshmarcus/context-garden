@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .validation import POLICY_SOURCE_SHA
+from .validation import receipt_has_current_policy
 
 
 @dataclass(frozen=True)
@@ -73,12 +73,7 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             continue
         if required_command and command != required_command:
             continue
-        try:
-            receipt_policy = dict(row["policy"])
-        except (TypeError, KeyError):
-            malformed = True
-            continue
-        if (receipt_policy.get("source_sha") != POLICY_SOURCE_SHA
+        if (not receipt_has_current_policy(row)
                 or row.get("source_dirty") or row.get("source_changed")):
             malformed = True
             continue
