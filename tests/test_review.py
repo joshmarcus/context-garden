@@ -1,10 +1,12 @@
 import copy
 import hashlib
 import json
+import shlex
 from pathlib import Path
 
 import pytest
 
+from garden import interaction_replay
 from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
@@ -1748,6 +1750,31 @@ def test_remote_authored_interaction_replay_stays_on_controller_and_records_owne
     command = submitted[0][1]["specs"][0]["command"]
     assert str(sched.worktree_for(task)) in command
     assert str(sched.cfg.garden_dir / "interaction-replays") in command
+
+
+@pytest.mark.parametrize("nonce", ["-leading", "--double-hyphen", "ordinary_urlsafe_value"])
+def test_interaction_replay_command_passes_option_like_nonce_as_a_value(sched, monkeypatch, nonce):
+    """CG-456: replay nonce identity reaches argparse even when it resembles an option."""
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    monkeypatch.setattr("garden.scheduler.review.secrets.token_urlsafe", lambda _size: nonce)
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    submitted = []
+    runner_type = type(sched.runner_for(task, "local"))
+    monkeypatch.setattr(runner_type, "start_checks",
+                        lambda _self, _run, _worktree, payload: submitted.append(payload))
+
+    sched.dispatch_review(task)
+
+    command = submitted[0]["specs"][0]["command"]
+    argv = shlex.split(command)
+    replay_argv = argv[argv.index("garden.interaction_replay") + 1:]
+    parsed = interaction_replay.parse_args(replay_argv)
+    assert parsed.nonce == nonce
+    continuation = sched.state.get(task.id)["check_run"]["cont"]
+    assert parsed.head == continuation["head"]
+    assert continuation["nonce"] == nonce
 
 
 def test_remote_authored_portable_check_remains_remote(sched):
