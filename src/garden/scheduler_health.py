@@ -94,11 +94,13 @@ def scheduler_health(
     live: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
+    watcher_processes = 0
     for record in records:
         interval = max(1, int(record.get("interval_seconds") or 60))
         stale_after = max(75, interval * 2 + 15)
         age = int(record["age_seconds"])
         alive = process_matches(int(record.get("pid") or 0), str(record.get("process_identity") or ""))
+        watcher_processes += int(alive)
         if age > stale_after:
             if alive or age <= stale_after * 4:
                 stale.append(record)
@@ -107,15 +109,26 @@ def scheduler_health(
         else:
             live.append(record)
 
-    if len(live) > 1:
-        kind, label = "duplicated", f"duplicate standalone watchers ({len(live)})"
-    elif len(live) == 1:
-        kind, label = "healthy", "standalone watcher healthy"
+    # A live but stale process is still a watcher process, so include it when detecting a
+    # duplicate. Failed evidence from a recently exited process is not a duplicate, but it
+    # remains a degraded state until its bounded lease window expires. In either case, never
+    # let one healthy lease hide evidence that the deployment is unhealthy.
+    if watcher_processes > 1:
+        details = ", ".join(
+            part for part in (
+                f"{len(live)} healthy" if live else "",
+                f"{len(failed)} failed" if failed else "",
+                f"{len(stale)} stale" if stale else "",
+            ) if part
+        )
+        kind, label = "duplicated", f"duplicate standalone watchers ({details})"
     elif failed:
         kind, label = "failed", "standalone watcher failed"
     elif stale:
         kind, label = "stale", "standalone watcher stale"
+    elif len(live) == 1:
+        kind, label = "healthy", "standalone watcher healthy"
     else:
         kind, label = "missing", "no standalone watcher detected"
-    evidence = live or failed or stale
+    evidence = [*live, *failed, *stale]
     return {"kind": kind, "label": label, "records": evidence, "checked_at": now.isoformat()}
