@@ -320,6 +320,18 @@ def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout
     assert run.env_snapshot["requires_preflight"] is False
 
 
+def test_read_only_investigation_can_run_in_frozen_phase_but_fix_remains_held(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    phase = sched.store.phase(task.product, task.phase)
+    sched.store.set_phase_frozen(phase, "owner hold")
+    assert sched.store.phase(task.product, task.phase).frozen
+    sched.pause_for_investigation(task, "explain held work", owner="agent")
+    runner = sched.runner_for(task)
+    monkeypatch.setattr(runner, "start", lambda run, cwd, prompt: None)
+    run = sched.dispatch_investigation(task, runner=runner)
+    assert run.mode == "investigation"
+
+
 def test_investigation_after_drain_restores_the_safe_boundary_status(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.status = Status.RUNNING
