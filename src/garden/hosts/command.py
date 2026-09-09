@@ -177,6 +177,10 @@ class _BoundCommandProvider(CommandProvider):
             {"contract_version": CONTRACT_VERSION, "owner": owner, "pool": pool},
             self.options,
         )
+        if not isinstance(rows, list):
+            raise ProviderError("command inspect returned invalid host list")
+        if not all(isinstance(row, dict) for row in rows):
+            raise ProviderError("command inspect returned invalid host row")
         return [self._facts(row) for row in rows]
 
     def inspect(self, provider_id: str) -> HostFacts:
