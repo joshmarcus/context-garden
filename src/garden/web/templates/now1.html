@@ -392,7 +392,7 @@ body.page-now .rail-running { display:none; }
   countdown();
   // ---- what each event kind moves (the design's table)
   var NOW_HANDS = {merge_head: 1, needs_human: 1, harness_paused: 1, dispatch_resumed: 1, resumed: 1, answer: 1, waiting_human: 1};
-  var HEAD = {dispatch: 1, run_finished: 1, dispatch_paused: 1, dispatch_resumed: 1, harness_paused: 1};
+  var HEAD = {dispatch: 1, run_finished: 1, dispatch_paused: 1, dispatch_resumed: 1, harness_paused: 1, profile_changed: 1, config_reloaded: 1};
   var NEXT = {dispatch: 1, transition: 1, review: 1, check: 1, merge_head: 1, automerged: 1, rebase: 1, pr_opened: 1, feedback: 1, conflict: 1, harness_paused: 1, dispatch_resumed: 1};
   var WHERE = {transition: 1, retro_verdict: 1, phase_frozen: 1, phase_closed: 1};
   var PERIOD = {run_finished: 1, review: 1, automerged: 1, answer: 1, triaged: 1, decision_accepted: 1, decision_resolved: 1, dispatch_paused: 1, dispatch_resumed: 1, resumed: 1, moved: 1, budget_set: 1, config_override: 1, suggestion: 1, profile_changed: 1, config_reloaded: 1};
