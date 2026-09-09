@@ -401,9 +401,11 @@ to `/private/tmp`, then keeps every predictable name inside a user-owned private
 Model/reviewer sessions and remote-CI waits remain concurrent under the separate local-run and
 cgroup limits. Heavy work waits explicitly at the boundary; exit, cancellation and crashes
 release its `flock`, so reservations cannot become stale. A supported worker-issued validation
-uses `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` and takes both the host
-lease and a separate owner-scoped lease. The parent model session holds neither lease, so two
-validations in one run serialize without a nested-lock deadlock.
+uses `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <direct pytest command>` and takes
+both the host lease and a separate owner-scoped lease. The parent model session holds neither
+lease, so two validations in one run serialize without a nested-lock deadlock.
+Opaque scripts and build-tool launchers are rejected at this boundary because they could clear
+the current pytest selection policy before delegating; non-pytest tools run directly.
 Raw child commands are still contained by the aggregate cgroup but cannot be recognized as
 heavy and are not serialized. On Linux, with `resources.execution_cgroup`, the
 supervisor moves into a preconfigured delegated cgroup before spawning, verifies finite CPU

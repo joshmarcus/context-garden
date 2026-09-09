@@ -60,7 +60,6 @@ STRESS_NODES = (
     "tests/test_web.py::test_served_incident_controls_retry_and_restart_during_overload",
 )
 POLICY_ADDOPTS = tuple(f"--deselect={node}" for node in STRESS_NODES)
-INDIRECT_LAUNCHERS = frozenset({"env", "make", "tox", "uv"})
 
 
 class ValidationPolicyError(RuntimeError):
@@ -90,12 +89,10 @@ def resolve_validation(argv: list[str], cwd: Path) -> tuple[list[str], dict[str,
     requested = list(argv)
     if not _pytest_command(argv):
         launcher = Path(argv[0]).name
-        if launcher in {"sh", "bash", "dash", *INDIRECT_LAUNCHERS}:
-            raise ValidationPolicyError(
-                f"validation delegated through {launcher!r} cannot be proven non-pytest; "
-                "invoke the underlying command directly through garden.validation"
-            )
-        return argv, {"version": 1, "source_sha": POLICY_SOURCE_SHA, "kind": "non-pytest"}
+        raise ValidationPolicyError(
+            f"validation command {launcher!r} cannot be proven non-pytest; "
+            "invoke pytest directly through garden.validation and run other tools directly"
+        )
 
     opted_in = "--run-stress" in argv
     policy_hook = cwd / "tests" / "conftest.py"
