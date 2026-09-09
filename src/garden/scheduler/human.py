@@ -284,6 +284,7 @@ class HumanMixin:
         count = int(st.get("substantive_revisions", st.get("revisions", 0)))
         every, decision_after = int(policy["every"]), int(policy["decision_after"])
         thresholds = list(st.get("revision_thresholds") or [])
+        decision_thresholds = list(st.get("revision_decision_thresholds") or [])
         if st.get("troubled_decisions") and int(st.get("revision_allowance", 0)) <= 0:
             reason = f"the granted revision allowance is exhausted after {count} substantive revisions"
             self._set_needs_human(task, "troubled_task", reason)
@@ -293,12 +294,26 @@ class HumanMixin:
                              difficulty=task.difficulty, model=task.model or "")
             self.state.save()
             raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
-        if count < every or count % every or count in thresholds:
-            return
         levels = ("easy", "medium", "hard")
         current = task.difficulty if task.difficulty in levels else "medium"
-        if count >= decision_after or current == "hard" or task.model:
-            reason = (f"{count} substantive revision rounds reached the decision threshold"
+        if count >= decision_after and decision_after not in decision_thresholds:
+            reason = f"{count} substantive revision rounds reached the decision threshold"
+            self._set_needs_human(task, "troubled_task", reason)
+            st["troubled"] = {"reason": reason, "counter": count, "at": now_iso(),
+                               "owner": "product owner", "recommendation": "pause and investigate the repeated findings"}
+            decision_thresholds.append(decision_after)
+            st["revision_decision_thresholds"] = decision_thresholds
+            if count % every == 0 and count not in thresholds:
+                thresholds.append(count)
+                st["revision_thresholds"] = thresholds
+            self.events.emit("troubled_task", task.id, counter=count, reason=reason,
+                             difficulty=current, model=task.model or "")
+            self.state.save()
+            raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
+        if count < every or count % every or count in thresholds:
+            return
+        if current == "hard" or task.model:
+            reason = (f"{count} substantive revision rounds reached the top difficulty"
                       if not task.model else
                       f"{count} substantive revision rounds reached an escalation threshold, but explicit model {task.model} is protected")
             self._set_needs_human(task, "troubled_task", reason)

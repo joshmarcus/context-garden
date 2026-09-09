@@ -445,6 +445,39 @@ def test_revision_policy_escalates_each_substantive_threshold_once(sched):
     assert task.difficulty == "hard"
 
 
+def test_revision_policy_decision_threshold_is_independent_of_escalation_interval(sched):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 5}
+    task = sched.store.task("DM-001")
+    task.difficulty = "hard"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["substantive_revisions"] = 5
+
+    with pytest.raises(RuntimeError, match="reached the decision threshold"):
+        sched._apply_revision_policy(task, st)
+
+    assert st["revision_decision_thresholds"] == [5]
+    sched._apply_revision_policy(task, st)
+    assert st["revision_decision_thresholds"] == [5]
+
+
+def test_revision_policy_decision_handles_same_dispatch_escalation_rung(sched):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 5}
+    task = sched.store.task("DM-001")
+    task.difficulty = "easy"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["substantive_revisions"] = 6
+
+    with pytest.raises(RuntimeError, match="reached the decision threshold"):
+        sched._apply_revision_policy(task, st)
+
+    st.pop("needs_human")
+    sched._apply_revision_policy(task, st)
+    assert task.difficulty == "easy"
+    assert st["revision_thresholds"] == [6]
+
+
 def test_difficulty_control_enforces_floor_and_records_deliberate_override(sched):
     task = sched.store.task("DM-001")
     task.difficulty = "medium"
