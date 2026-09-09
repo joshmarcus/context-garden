@@ -9,8 +9,8 @@ from typing import Any
 
 from .brief import brief_gaps
 from .criteria import required_evidence, required_evidence_rows
-from .graph import effective_status
-from .model import Status, Task
+from .graph import effective_status, ready
+from .model import Status, Task, phase_refusal
 from .runs import RunStore
 from .store import Store
 
@@ -31,6 +31,8 @@ GROUPS = [
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
     ("config_hold", "Confirm a held config change", "garden.yaml changed while a worker run was in flight; the executable parts of the change (notify.command, checks, setup commands, harness bin/command, worker_env.pass) are held until the run is reaped or you confirm it.", "decision"),
+    ("manual", "Manual work ready", "These task packets are ready for a person to claim. Taking one records the assignment; finish it from the packet when the work is complete.", "decision"),
+    ("manual_waiting", "Manual work waiting", "These manual tasks are deliberately not claimable yet. Their card says whether a dependency, freeze, or existing claim is holding them.", "notice"),
     ("approve", "Approve planned or discovered work", "Draft tasks waiting for a go.", "decision"),
     ("budget", "Budget", "A phase hit its spending cap; raise it or leave it paused.", "decision"),
 ]
@@ -401,6 +403,8 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
     state = sched.state
     runs = getattr(sched, "runs", None) or RunStore(store.config.garden_dir)
     stack = bool(store.config.get("stack", True))
+    ready_ids = {task.id for task in ready(tasks, stack=stack)}
+    phases = {phase.key: phase for product in store.products() for phase in product.phases}
     items: list[dict[str, Any]] = []
     order = {g[0]: i for i, g in enumerate(GROUPS)}
     titles = {g[0]: g[1] for g in GROUPS}
@@ -425,6 +429,43 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
 
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
+        # `build_inbox` also feeds lightweight reader facades in CLI/tests. Resolve the
+        # configured runner from the task/store rather than requiring a live Scheduler.
+        is_manual = (t.runner or store.config.product_runner(t.product)) == "manual"
+        phase_hold = phase_refusal(phases[t.key], t) if t.key in phases else ""
+        if is_manual and not t.status.terminal and t.status == Status.READY and not st.get("needs_human") and not st.get("decision"):
+            if phase_hold:
+                add("manual_waiting", t, f"waiting: {phase_hold}", [], kind="frozen")
+            elif t.id not in ready_ids:
+                add("manual_waiting", t, "waiting: dependencies must finish before this packet can be claimed", [], kind="blocked")
+            elif any(run.task_id == t.id for run in runs.active()):
+                add("manual_waiting", t, "claimed already; waiting for the existing manual session to finish", [], kind="claimed")
+            else:
+                add("manual", t, "ready for a person · assignment: unclaimed manual session", [
+                    {"label": "Take task", "kind": "take", "command": f"garden take {t.id}"},
+                    {"label": "Open task packet", "kind": "packet", "href": f"/tasks/{t.id}"},
+                ])
+            continue
+        if is_manual and t.status == Status.RUNNING:
+            add("manual_waiting", t, "claimed already; a manual session owns this task packet", [
+                {"label": "Open assigned packet", "kind": "packet", "href": f"/tasks/{t.id}/packet"},
+            ], kind="claimed")
+            continue
+        if is_manual and not t.status.terminal and t.status == Status.CHANGES_REQUESTED and not st.get("needs_human") and not st.get("decision"):
+            if phase_hold:
+                add("manual_waiting", t, f"waiting: {phase_hold}", [], kind="frozen")
+            elif any(run.task_id == t.id for run in runs.active()):
+                add("manual_waiting", t, "claimed already; waiting for the existing manual session to finish", [], kind="claimed")
+            elif int(st.get("revisions", 0)) >= int(store.config.get("max_revisions", 3)):
+                add("manual_waiting", t, "paused: revision limit reached; an Inbox decision is required before this task can resume", [], kind="paused")
+            elif str(st.get("pending_feedback") or "").strip():
+                add("manual", t, "paused for a person · revision feedback is ready to resume manually", [
+                    {"label": "Resume task", "kind": "take", "command": f"garden take {t.id}"},
+                    {"label": "Open task packet", "kind": "packet", "href": f"/tasks/{t.id}"},
+                ])
+            else:
+                add("manual_waiting", t, "paused: revision feedback is required before this task can resume", [], kind="paused")
+            continue
         if st.get("decision") and not t.status.terminal:
             dec = st.get("decision") or {}
             kind = str(dec.get("kind") or "")

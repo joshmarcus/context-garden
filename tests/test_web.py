@@ -49,6 +49,108 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
+    """The served Inbox owns the manual take journey, including stale-card recovery."""
+    from garden.model import Status
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.runner = "manual"
+    store.save(task)
+    blocked = store.task("DM-002")
+    blocked.runner = "manual"
+    store.save(blocked)
+
+    c = client(garden)
+    inbox = c.get("/inbox").text
+    assert "Manual work ready" in inbox
+    assert "Take task" in inbox and "assignment: unclaimed manual session" in inbox
+    assert "Manual work waiting" in inbox
+    assert "dependencies must finish" in inbox
+    blocked_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in blocked_page
+    assert "waiting for its dependencies" in blocked_page
+
+    store.set_phase_frozen(store.phase("demo", "p1"), "release hold")
+    frozen_page = c.get("/tasks/DM-001").text
+    assert 'action="/tasks/DM-001/take"' not in frozen_page
+    assert "cannot be claimed while demo/p1 is frozen" in frozen_page
+    store.set_phase_frozen(store.phase("demo", "p1"), "")
+
+    # Manual claims are independent of full automated-worker capacity.
+    runs = RunStore(garden / ".garden")
+    full_runs = [runs.new_run("DM-002", "local", "work"), runs.new_run("DM-002", "local", "work")]
+    assert Scheduler(Store(garden)).slots_free() == 0
+    taken = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=True)
+    assert taken.status_code == 200
+    assert "DM-001 claimed" in taken.text
+    assert "claimed already; a manual session owns this task packet" in taken.text
+    assert Store(garden).task("DM-001").status == Status.RUNNING
+    run = RunStore(garden / ".garden").latest("DM-001")
+    assert run is not None and run.runner == "manual" and run.mode == "work"
+    packet = c.get("/tasks/DM-001/packet")
+    assert packet.status_code == 200 and "DM-001" in packet.text
+    task_page = c.get("/tasks/DM-001").text
+    assert "Manual session claimed" in task_page and "Finish manual session" in task_page
+    assert "Mark done without merging" not in task_page
+    assert 'action="/tasks/DM-001/take"' not in task_page
+
+    # Replaying a rendered-but-stale take form cannot create a second run.
+    stale = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=False)
+    assert stale.status_code == 409
+    assert "already claimed" in stale.text
+    assert len(RunStore(garden / ".garden").runs_for("DM-001")) == 1
+
+    # A phase freeze and feedback pause are explicit waiting states, never a running claim.
+    store = Store(garden)
+    store.set_phase_frozen(store.phase("demo", "p1"), "release hold")
+    frozen = c.get("/inbox").text
+    assert "waiting: demo/p1 is frozen" in frozen
+    store.set_phase_frozen(store.phase("demo", "p1"), "")
+    for active_run in full_runs:
+        active_run.status = "finished"
+        active_run.save()
+    blocked = store.task("DM-002")
+    blocked.status = Status.CHANGES_REQUESTED
+    store.save(blocked)
+    sched = Scheduler(store)
+    sched.state.get("DM-002")["pending_feedback"] = "- revise the packet"
+    sched.state.save()
+    paused = c.get("/inbox").text
+    assert "paused for a person" in paused and "Resume task" in paused
+    # Revision feedback missing, an Inbox decision, and the revision cap are all waiting
+    # states on the task page too; none retains the second claim surface.
+    sched.state.get("DM-002")["pending_feedback"] = ""
+    sched.state.save()
+    paused_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in paused_page
+    assert "needs revision feedback" in paused_page
+
+    sched.state.get("DM-002")["pending_feedback"] = "- revise the packet"
+    sched.state.get("DM-002")["revisions"] = 999
+    sched.state.save()
+    capped_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in capped_page
+    assert "reached its revision limit" in capped_page
+    capped_inbox = c.get("/inbox").text
+    assert "revision limit reached" in capped_inbox
+    assert "Resume task" not in capped_inbox
+
+    # A malformed completion stays recoverable; the valid result finalizes the assigned run.
+    unsafe_done = c.post("/tasks/DM-001/done", headers={"referer": "http://testserver/tasks/DM-001"},
+                         follow_redirects=True)
+    assert "finish the claimed manual session" in unsafe_done.text
+    assert Store(garden).task("DM-001").status == Status.RUNNING
+    invalid = c.post("/tasks/DM-001/finish-manual", data={"note": "not JSON"},
+                     headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=True)
+    assert "manual result must be valid JSON" in invalid.text
+    finished = c.post("/tasks/DM-001/finish-manual", data={"note": '{"status":"blocked","summary":"waiting on access"}'},
+                      headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=True)
+    assert finished.status_code == 200 and "DM-001 manual session finished" in finished.text
+    assert Store(garden).task("DM-001").status == Status.FAILED
+    assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
+
+
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
     """The served fence journey keeps an operator's committed spec edit during a completed
     worker run: dispatch, operator commit, and reap all happen through the web app's tick."""
