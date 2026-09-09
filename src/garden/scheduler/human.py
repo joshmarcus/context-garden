@@ -312,6 +312,8 @@ class HumanMixin:
         match = re.search(r"/pull/(\d+)$", parsed.path.rstrip("/"))
         if not slug or not match or parsed.scheme != "https" or not parsed.hostname:
             raise RuntimeError("PR attachment needs an accessible PR URL for the configured repository")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise RuntimeError("PR attachment URL has unsupported components")
         number = int(match.group(1))
         # Public GitHub URLs can be checked before a provider request.  Other configured
         # hosts are checked against the canonical URL returned by that provider below.

@@ -360,6 +360,7 @@ def take(
         err.print("[red]--pushed-result materialises its own worktree; do not pass --external-worktree[/red]")
         raise typer.Exit(1)
     if pr_url:
+        sched._refuse_attachment_run_conflict(t)
         slug = sched.slug_for(t)
         pr_number = pull_request_number(pr_url, slug, getattr(slug, "host", "github.com")) if slug else None
         if not pr_number or not sched.github.available:
