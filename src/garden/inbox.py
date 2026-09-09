@@ -385,7 +385,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         recommendation = "Authorize one more bounded revision"
     if stale_check_stop:
         category, owner, recommendation = "Stale bookkeeping", "operator", "Clear the resolved stop"
-        actions.append({"label": "Clear resolved stop", "kind": "recover-check",
+        actions.append({"label": "Recover check and resume pipeline", "kind": "recover-check",
                         "command": f"garden recover-check {t.id}",
                         "detail": "keeps the successful current check and clears only the obsolete stop"})
     elif delegated:

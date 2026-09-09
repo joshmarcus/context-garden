@@ -246,7 +246,8 @@ class PollMixin:
                 # verdict with the GitHub feedback and starts (or reruns instead of) a revise round.
                 self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
                                          base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
-                                         extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
+                                         extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1},
+                                         source_head=pr.head_sha)
                 return
         fb = observed_feedback if observed_feedback is not None else self.github.feedback_since(slug, number, task.last_dispatched_at)
         if fb.ignored:
