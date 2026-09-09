@@ -308,6 +308,42 @@ def test_unavailable_command_is_not_a_base_failure():
     assert not CheckRunMixin._check_did_not_run(SimpleNamespace(status="done"), genuine_failure)
 
 
+def test_missing_setup_command_in_real_base_probe_uses_bounded_check_recovery(sched, fake_github):
+    """A base probe that cannot execute setup has no base-source verdict to park."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["products"]["demo"]["setup"] = {"command": "garden-command-that-does-not-exist"}
+    sched.cfg.data["checks"] = {
+        "pre_pr": [{"name": "guard", "command": "false"}],
+        "ci": [],
+    }
+    task = sched.store.task("DM-001")
+    branch, base = task.default_branch(), "main"
+    worktree = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), branch, base)
+    failed = [{"name": "guard", "status": "fail", "summary": "exit 1", "details": ""}]
+
+    sched._handle_failed_checks(
+        task, None, worktree, branch, base, failed, TickReport(),
+        {"cost": 0.0, "diff_h": "", "body_h": ""},
+    )
+    for _ in range(5):
+        sched.tick(dispatch=False)
+        if sched.state.get(task.id).get("needs_human"):
+            break
+
+    stop = sched.state.get(task.id)["needs_human"]
+    assert stop["kind"] == "check_did_not_run"
+    assert stop["kind"] != "base_broken"
+    probes = [run for run in sched.runs.runs_for(task.id)
+              if run.mode == "check" and run.source_head]
+    assert len(probes) == 2  # initial attempt plus the one bounded retry
+    for probe in probes:
+        assert probe.result["checks"] == [{
+            "name": "setup", "status": "fail", "summary": "setup command failed",
+            "details": probe.result["checks"][0]["details"],
+            "exit_code": 127, "unavailable": True,
+        }]
+
+
 def test_recreated_base_probe_reruns_setup_through_check_payload(sched, fake_github, tmp_path):
     """A real base-probe dispatch carries its materialisation key into run_check_job."""
     sched.cfg.data["stack"] = False
