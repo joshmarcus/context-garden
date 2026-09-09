@@ -35,6 +35,47 @@ INVESTIGATION_RECOMMENDATIONS = frozenset({
 
 
 class HumanMixin:
+    def set_difficulty(self, task: Task, difficulty: str, *, reason: str = "", actor: str = "") -> None:
+        """Set an implementation tier without accidentally lowering an escalation floor.
+
+        A lower tier is reserved for a deliberately simpler follow-up. Its reason is
+        retained in scheduler state and the task log so a later dispatch or restart
+        cannot mistake the change for an accidental downgrade.
+        """
+        levels = ("easy", "medium", "hard")
+        if difficulty not in levels:
+            raise RuntimeError(f"difficulty must be one of {', '.join(levels)}")
+        st = self.state.get(task.id)
+        floor = str(st.get("difficulty_floor") or "")
+        below_floor = floor in levels and levels.index(difficulty) < levels.index(floor)
+        if below_floor and not reason.strip():
+            raise RuntimeError(
+                f"difficulty {difficulty} is below the durable {floor} escalation floor; "
+                "give an explicit reason for a deliberately simpler fix"
+            )
+        old = task.difficulty
+        task.difficulty = difficulty
+        source = actor.strip() or "operator"
+        if below_floor:
+            override = {
+                "at": now_iso(),
+                "from": old,
+                "to": difficulty,
+                "floor": floor,
+                "reason": reason.strip(),
+                "actor": source,
+            }
+            st.setdefault("difficulty_overrides", []).append(override)
+            task.log(
+                f"difficulty {old} -> {difficulty} ({source}; deliberate override below "
+                f"{floor} floor: {reason.strip()})"
+            )
+            self.events.emit("difficulty_floor_overridden", task.id, **override)
+            self.state.save()
+        else:
+            task.log(f"difficulty {old} -> {difficulty}" + (f" ({source})" if actor else ""))
+        self.store.save(task)
+
     @staticmethod
     def _validate_action_actor(actor: str) -> str:
         """Return a recorded action actor, rejecting ambiguous live provenance."""
