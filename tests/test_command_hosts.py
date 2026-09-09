@@ -21,6 +21,7 @@ from garden.hosts import (
 )
 
 DEFAULT_ACQUIRE = object()
+DEFAULT_INSPECT = object()
 
 
 class Wrapper:
@@ -30,6 +31,7 @@ class Wrapper:
         self.ready = True
         self.ready_error = ""
         self.acquire_response = DEFAULT_ACQUIRE
+        self.inspect_response = DEFAULT_INSPECT
         self.admissions = {}
         self.admission = {
             "eligible": True,
@@ -45,7 +47,11 @@ class Wrapper:
         request = json.loads(stdin)
         self.calls.append((tuple(argv), request, timeout_seconds))
         if action == "inspect":
-            value = self.hosts
+            value = (
+                self.hosts
+                if self.inspect_response is DEFAULT_INSPECT
+                else self.inspect_response
+            )
         elif action == "acquire":
             value = (
                 self.acquire_response
@@ -479,6 +485,30 @@ def test_malformed_acquire_response_records_environment_stop_and_recovers(tmp_pa
 
     wrapper.acquire_response = DEFAULT_ACQUIRE
     assert lifecycle.acquire_ready(command_pool(), **kwargs).provider_id == "provider-1"
+
+
+@pytest.mark.parametrize("payload", [None, {}, "host", 7, [None], [{}], ["host"]])
+def test_malformed_inspect_response_records_environment_stop_and_recovers(tmp_path, payload):
+    wrapper = Wrapper()
+    wrapper.inspect_response = payload
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    kwargs = {
+        "workspace": "/work",
+        "revision": "abc",
+        "harness": "codex",
+        "process_terminal": lambda _: True,
+    }
+
+    with pytest.raises(EnvironmentStop, match="command .*invalid host"):
+        lifecycle.acquire_ready(command_pool(), **kwargs)
+    detail = json.loads(path.read_text())["environment_stops"]["workers"]["detail"]
+    assert "command" in detail and "invalid host" in detail
+
+    wrapper.inspect_response = DEFAULT_INSPECT
+    assert lifecycle.acquire_ready(command_pool(), **kwargs).provider_id == "provider-1"
+    assert "workers" not in json.loads(path.read_text())["environment_stops"]
+
 
 def _requirements(**changes):
     value = HostRequirements(
