@@ -28,6 +28,7 @@ from garden.runs import RunStore
 from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.web.app import create_app
+from tests.conftest import git, write
 
 
 def remote_client(garden, monkeypatch, *, validation_timeout=900):
@@ -340,6 +341,61 @@ def test_remote_check_replaces_controller_only_spec_paths(tmp_path):
     assert check_data["specs"][0]["out_dir"] == str(
         repo.parent / "check-1-check-artifacts/0-ui"
     )
+
+
+def test_remote_base_probe_materialises_its_advertised_source(garden, monkeypatch, tmp_path):
+    """A remote base check reads its detached base commit, never the task branch."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    client, store = remote_client(garden, monkeypatch)
+    repo = garden.parent / "repo"
+    write(repo / "source-marker.txt", "base\n")
+    git("add", "source-marker.txt", cwd=repo)
+    git("commit", "-m", "base marker", cwd=repo)
+    git("push", "origin", "main", cwd=repo)
+    base_head = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    git("checkout", "-b", "garden/dm-001", cwd=repo)
+    write(repo / "source-marker.txt", "branch\n")
+    git("commit", "-am", "branch marker", cwd=repo)
+    git("push", "origin", "garden/dm-001", cwd=repo)
+    branch_head = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    git("checkout", "main", cwd=repo)
+
+    def base_check(source_head: str):
+        run = queued_run(store)
+        run.mode, run.harness, run.source_head = "check", "", source_head
+        (run.path / "checks_input.json").write_text(json.dumps({
+            "specs": [{"name": "base-marker", "command": "test \"$(cat source-marker.txt)\" = base"}],
+            "ctx": {}, "timeout": 30, "config": {},
+        }))
+        run.save()
+        return run
+
+    base_check(base_head)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth)
+    assert claim.status_code == 200
+    payload = claim.json()
+    assert payload["source_head"] == base_head
+    assert RunStore(store.config.garden_dir).latest("DM-001").start_head == base_head
+
+    class PostingClient:
+        def post(self, path, body):
+            response = client.post(path, json=body, headers=auth)
+            return response.status_code, response.json()
+
+    execute_claim(payload, tmp_path / "independent-host", PostingClient())
+    completed = RunStore(store.config.garden_dir).runs_for("DM-001")[-1]
+    assert completed.start_head == completed.pushed_head == base_head
+    assert json.loads((completed.path / "checks.json").read_text())[0]["status"] == "pass"
+    assert gitops.git("rev-parse", "origin/garden/dm-001", cwd=repo).strip() == branch_head
+
+    unavailable = base_check("0" * 40)
+    bad_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth)
+    assert bad_claim.status_code == 200
+    with pytest.raises(subprocess.CalledProcessError):
+        execute_claim(bad_claim.json(), tmp_path / "unavailable-source-host", PostingClient())
+    assert unavailable.source_head == "0" * 40
+    assert gitops.git("rev-parse", "origin/garden/dm-001", cwd=repo).strip() == branch_head
 
 
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
