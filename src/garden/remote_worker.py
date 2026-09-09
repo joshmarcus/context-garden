@@ -298,7 +298,8 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         if (repo / ".git").exists():
             stage = "checkout preflight"
             dirty = subprocess.run(
-                ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True,
+                ["git", "--no-optional-locks", "status", "--porcelain"],
+                cwd=repo, capture_output=True, text=True,
                 check=True, pass_fds=(lock_fd,),
             ).stdout.strip()
             unmerged = subprocess.run(

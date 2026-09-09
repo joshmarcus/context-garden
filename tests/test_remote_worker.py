@@ -1239,7 +1239,7 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert "@build-1" in client.get(f"/runs/DM-001/{saved.run_id}").text
 
 
-@pytest.mark.parametrize("checkout_state", ["dirty", "unmerged"])
+@pytest.mark.parametrize("checkout_state", ["untracked", "tracked-dirty", "unmerged"])
 def test_materialization_failure_is_preserved_and_clean_generation_retries(
     garden, monkeypatch, tmp_path, fake_github, checkout_state,
 ):
@@ -1262,6 +1262,14 @@ def test_materialization_failure_is_preserved_and_clean_generation_retries(
     subprocess.run(["git", "checkout", "-B", "main", "origin/main"], cwd=repo, check=True)
     poisoned = repo / "unpublished.txt"
     poisoned.write_text("preserve me\n")
+    if checkout_state == "tracked-dirty":
+        subprocess.run(["git", "add", "unpublished.txt"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=garden", "-c", "user.email=garden@localhost",
+             "commit", "-m", "unpublished local commit"],
+            cwd=repo, check=True,
+        )
+        poisoned.write_text("preserve my tracked edit\n")
     if checkout_state == "unmerged":
         blobs = []
         for content in ("base\n", "ours\n", "theirs\n"):
@@ -1301,7 +1309,8 @@ def test_materialization_failure_is_preserved_and_clean_generation_retries(
     checkouts = [path for path in preserved if path.is_dir()]
     assert len(checkouts) == 1
     archived = checkouts[0]
-    assert (archived / "unpublished.txt").read_text() == "preserve me\n"
+    expected = "preserve my tracked edit\n" if checkout_state == "tracked-dirty" else "preserve me\n"
+    assert (archived / "unpublished.txt").read_text() == expected
     assert (archived / ".git" / "index").read_bytes() == index_before
     assert list(archived.parent.glob(f"{archived.name}.setup-marker"))
     assert not repo.exists()
