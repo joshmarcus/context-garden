@@ -624,7 +624,8 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     page = c.get("/now").text
     assert 'data-poll="' not in page and 'new EventSource("/now/stream")' in page
     head_events = re.search(r"var HEAD = \{([^}]+)\}", page).group(1)
-    assert "profile_changed: 1" in head_events and "config_reloaded: 1" in head_events
+    for event in ("profile_changed", "config_reloaded", "config_override", "config_override_cleared"):
+        assert f"{event}: 1" in head_events
     assert 'if (HEAD[k] || k === "transition") regions.head()' in page
 
 
