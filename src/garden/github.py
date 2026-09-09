@@ -199,6 +199,12 @@ def is_safe_pr_url(url: str) -> bool:
     )
 
 
+def _check_error_state(exc: GitHubError) -> str:
+    """Represent a failed check-rollup request without implying that no checks exist."""
+    message = str(exc)
+    return "PERMISSION" if " 401 " in message or " 403 " in message else "UNAVAILABLE"
+
+
 # Appended to every comment the garden posts, so its own comments can be told apart from a
 # person's even when both use the same GitHub login. Invisible on GitHub (an HTML comment).
 GARDEN_MARKER = "<!-- context-garden -->"
@@ -451,8 +457,7 @@ class GitHub:
             try:
                 result.append(self.get_pr(slug, basic.number))
             except GitHubError as exc:
-                message = str(exc)
-                basic.checks = "PERMISSION" if " 401 " in message or " 403 " in message else "UNAVAILABLE"
+                basic.checks = _check_error_state(exc)
                 result.append(basic)
         return result
 
@@ -482,8 +487,8 @@ class GitHub:
                           for c in runs.get("check_runs", [])]
                 info.checks = _rollup_state(rollup)
                 info.failed_checks = _rollup_failed(rollup)
-            except GitHubError:
-                pass
+            except GitHubError as exc:
+                info.checks = _check_error_state(exc)
         try:
             reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
             latest: dict[str, str] = {}
@@ -503,7 +508,8 @@ class GitHub:
         return PRInfo(
             number=p["number"], url=p["html_url"], state=state, title=p.get("title", ""),
             head=p.get("head", {}).get("ref", ""), base=p.get("base", {}).get("ref", ""),
-            mergeable=("MERGEABLE" if p.get("mergeable") else "") if p.get("mergeable") is not None else "",
+            mergeable=("MERGEABLE" if p.get("mergeable") else "CONFLICTING")
+            if p.get("mergeable") is not None else "",
             updated_at=p.get("updated_at", ""), is_draft=bool(p.get("draft")), node_id=str(p.get("node_id") or ""),
         )
 
