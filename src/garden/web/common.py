@@ -26,6 +26,7 @@ from ..model import Status, dispatch_sort_key, now_iso
 from ..profiles import describe as describe_stop
 from ..runs import RunStore
 from ..scheduler import Scheduler, State
+from ..scheduler_health import scheduler_health
 from ..store import Store
 from .trust import sanitize_html
 
@@ -164,7 +165,16 @@ class Hub:
 
     def tick_state(self) -> dict[str, Any]:
         """The last pass as a message for the Now page's stream (`seq` tells one from the next)."""
-        return {"seq": self.tick_seq, **self.tick_record, "next_at": self.next_tick_at()}
+        return {"seq": self.tick_seq, **self.tick_record, "next_at": self.next_tick_at(),
+                "scheduler_status": self.scheduler_health()}
+
+    def scheduler_health(self) -> dict[str, Any]:
+        """Report embedded-watch state separately from effective scheduler health."""
+        standalone = scheduler_health(self.store.config.garden_dir)
+        effective = ({"kind": "healthy", "label": "embedded watcher healthy"}
+                     if self.watch else standalone)
+        return {"embedded": "on" if self.watch else "off", "effective": effective,
+                "standalone": standalone}
 
     def _loop(self) -> None:
         interval = int(self.store.config.get("tick_interval", 60))
@@ -323,6 +333,7 @@ class Site:
             "root": str(s.root),
             "watch": hub.watch,
             "last_tick": hub.last_tick,
+            "scheduler_status": hub.scheduler_health(),
             "server_now": now_iso(),  # the clock every live elapsed counter is offset against
             "products": s.products(),
             "has_design": any(product_design_root(s, p.name).is_dir() for p in s.products()),

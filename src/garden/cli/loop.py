@@ -12,6 +12,7 @@ from rich.table import Table
 
 from ..github import pull_request_number
 from ..model import Status, now_iso
+from ..scheduler_health import WatchHeartbeat
 from .common import (
     PANEL_BOARD,
     PANEL_DECIDE,
@@ -283,18 +284,26 @@ def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: 
     store = _store()
     interval = interval or int(store.config.get("tick_interval", 60))
     sched = _scheduler(store)
+    heartbeat = WatchHeartbeat(store.config.garden_dir, interval)
     console.print(f"watching {store.root} every {interval}s (ctrl-c to stop)")
-    start_rep = sched.reap_on_start()  # reap any run the last process finished but never reaped
-    if start_rep.changed:
-        console.print(f"[dim]{now_iso()}[/dim] start-up reap: {start_rep.summary()}")
     try:
+        heartbeat.write("starting")
+        start_rep = sched.reap_on_start()  # reap any run the last process finished but never reaped
+        if start_rep.changed:
+            console.print(f"[dim]{now_iso()}[/dim] start-up reap: {start_rep.summary()}")
         while True:
+            heartbeat.write("running")
             rep = sched.tick()
+            heartbeat.write("running", last_tick=now_iso())
             if rep.changed:
                 console.print(f"[dim]{now_iso()}[/dim] {rep.summary()}")
             time.sleep(interval)
     except KeyboardInterrupt:
+        heartbeat.remove()
         console.print("stopped")
+    except Exception as exc:
+        heartbeat.write("failed", error=str(exc))
+        raise
 
 
 @app.command(rich_help_panel=PANEL_LOOP)
