@@ -467,7 +467,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 
-def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
+def test_scheduler_leaves_ui_verification_to_reviewer_and_preserves_explicit_checks(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.title = "Tighten inbox layout"
     task.extra["visual_scope"] = {"behavior": "Tighter inbox layout"}
@@ -480,32 +480,33 @@ def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/web/templates/inbox.html"])
-    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
-                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
-    assert ui["worktree"] == str(worktree)
-    assert "garden_root" not in ui
-    assert ui["pages"] == ["inbox"]
+    run = sched._dispatch_check_run(
+        task, worktree=worktree, branch="garden/test", base="main",
+        specs=[{"name": "focused", "command": "true"}], stage="pre_pr", cont={}, rep=TickReport(),
+    )
+    assert captured[-1]["specs"] == [{"name": "focused", "command": "true"}]
+    assert run.env_snapshot["validation_plan"]["pages"] == ["inbox"]
+    assert run.env_snapshot["validation_plan"]["evidence_policy"] == "reviewer_judgment"
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/model.py"])
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+    assert captured[-1]["specs"] == []
 
     # A generic criterion can preserve milestone validation, but does not make this
     # backend-only PR capture the walkthrough inventory.
     task.extra["requires"] = ["captures"]
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+    assert captured[-1]["specs"] == []
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/web/static/site.css"])
-    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
-                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
-    assert ui["pages"] == ["board", "inbox"]
+    run = sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                                    specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    assert captured[-1]["specs"] == []
+    assert run.env_snapshot["validation_plan"]["pages"] == ["board", "inbox"]
 
 
 def test_explicit_empty_ui_capture_selection_captures_no_pages(garden, tmp_path):

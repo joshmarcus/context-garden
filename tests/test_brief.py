@@ -104,15 +104,14 @@ def test_worker_criteria_amendment_replaces_only_the_named_checklist_line():
     assert applied == [{"index": 0, "text": "New criterion.", "reason": "Old one was false."}]
 
 
-def test_brief_states_the_pr_body_contract(garden):
+def test_brief_keeps_pr_body_guidance_advisory(garden):
     store = Store(garden)
     b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main")
-    # the permanent-description contract and where friction/process narration go
-    assert "permanent description" in b.text
-    assert "as if the change were right the first time" in b.text
-    assert "omit `pr_body` unless the description itself must change" in b.text
+    assert "Prefer a durable description of what changed and why" in b.text
+    assert "editorial advice" in b.text
+    assert "do not by themselves make correct source fail review" in b.text
+    assert "omit `pr_body` unless the description itself should change" in b.text
     assert '"friction"' in b.text and "`friction` items" in b.text
-    # the JSON schema line advertises the friction field
     assert '"friction": ["<short friction item>"]' in b.text
 
 
