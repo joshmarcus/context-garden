@@ -330,6 +330,17 @@ class GitHub:
             raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
         return r.json() if r.content else None
 
+    def _rest_pages(self, path: str) -> list[dict[str, Any]]:
+        """Collect every page from a REST list endpoint."""
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            batch = self._rest("GET", path, params={"per_page": 100, "page": page}) or []
+            items.extend(batch)
+            if len(batch) < 100:
+                return items
+            page += 1
+
     def me(self) -> str:
         if self._me is None:
             try:
@@ -557,9 +568,9 @@ class GitHub:
             comments = json.loads(self._gh("api", f"repos/{slug}/pulls/{number}/comments", "--paginate") or "[]")
             issue_comments = json.loads(self._gh("api", f"repos/{slug}/issues/{number}/comments", "--paginate") or "[]")
         else:
-            reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
-            comments = self._rest("GET", f"/repos/{slug}/pulls/{number}/comments", params={"per_page": 100}) or []
-            issue_comments = self._rest("GET", f"/repos/{slug}/issues/{number}/comments", params={"per_page": 100}) or []
+            reviews = self._rest_pages(f"/repos/{slug}/pulls/{number}/reviews")
+            comments = self._rest_pages(f"/repos/{slug}/pulls/{number}/comments")
+            issue_comments = self._rest_pages(f"/repos/{slug}/issues/{number}/comments")
         for r in reviews:
             author = r.get("user", {}).get("login", "")
             created = r.get("submitted_at", "") or ""
