@@ -541,6 +541,68 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
 
 
+def test_six_idle_claim_polls_with_concurrent_ui_only_materialize_active_runs(
+    garden, monkeypatch,
+):
+    """Claim admission excludes terminal history while preserving generation fencing."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    client, store = remote_client(garden, monkeypatch)
+    runs = RunStore(store.config.garden_dir)
+    for number in range(200):
+        terminal = runs.new_run("DM-002", "remote", run_id=f"terminal-{number:04d}")
+        terminal.status = "done"
+        terminal.finished_at = "2026-01-01T00:00:00+00:00"
+        terminal.save()
+    run = queued_run(store)
+    original_active = RunStore.active
+    active_sizes = []
+
+    def bounded_active(self):
+        active = original_active(self)
+        active_sizes.append(len(active))
+        assert all(item.status in ("requested", "preparing", "running") for item in active)
+        return active
+
+    monkeypatch.setattr(RunStore, "active", bounded_active)
+    auth = {"Authorization": "Bearer secret-token"}
+    offer = {"host": "build-1", "harnesses": ["claude"]}
+
+    first = client.post("/api/runs/claim", json=offer, headers=auth)
+    assert first.status_code == 200
+    first_token = first.json()["lease_token"]
+
+    claimed = RunStore(store.config.garden_dir).latest("DM-001")
+    claimed.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    claimed.recovery_expires_at = claimed.lease_expires_at
+    claimed.save()
+    replacement = client.post("/api/runs/claim", json=offer, headers=auth)
+    assert replacement.status_code == 200
+    replacement_token = replacement.json()["lease_token"]
+    assert replacement_token != first_token
+    assert client.post(
+        f"/api/runs/{run.run_id}/heartbeat",
+        json={"lease_token": first_token},
+        headers=auth,
+    ).status_code == 409
+    assert client.post(
+        f"/api/runs/{run.run_id}/heartbeat",
+        json={"lease_token": replacement_token},
+        headers=auth,
+    ).status_code == 200
+
+    with ThreadPoolExecutor(max_workers=7) as pool:
+        idle = [
+            pool.submit(client.post, "/api/runs/claim", json=offer, headers=auth)
+            for _ in range(6)
+        ]
+        page = pool.submit(client.get, "/now")
+        assert [future.result().status_code for future in idle] == [204] * 6
+        assert page.result().status_code == 200
+
+    assert active_sizes and max(active_sizes) == 1
+
+
 def test_claim_and_heartbeat_persist_only_bounded_host_facts(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)
