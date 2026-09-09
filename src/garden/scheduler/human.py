@@ -685,8 +685,11 @@ class HumanMixin:
                 "external PR is missing immutable head or base metadata; "
                 "attachment needs one resolved head branch and SHA"
             )
-        if pr.head_repo and pr.head_repo.lower() != slug.lower():
-            raise RuntimeError("PR attachment refuses a fork head that the scheduler cannot revise")
+        if not pr.head_repo or pr.head_repo.lower() != slug.lower():
+            raise RuntimeError(
+                "PR attachment needs a verified head repository and refuses a fork head "
+                "that the scheduler cannot revise"
+            )
         return pr
 
     def _refuse_attachment_run_conflict(self, task: Task) -> None:
