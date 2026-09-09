@@ -300,6 +300,11 @@ class Scheduler(
         root = configured_root(checkout, self.store.root) if not runner.remote else None
         if root is None:
             return None
+        # Publish the concrete checkout identity before consulting the durable run store.
+        # Another scheduler may be preparing a run concurrently; without this save it sees
+        # an active owner with no path, mistakes the lease for stale, and reclaims it.
+        run.worktree = str(root)
+        run.save()
         active_ids = {
             item.run_id for item in self.runs.active()
             if item.run_id != run.run_id and item.worktree

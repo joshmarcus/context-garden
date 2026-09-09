@@ -59,6 +59,34 @@ def test_canonical_claim_survives_restart_and_refuses_competitor(tmp_path):
     assert json.loads(lease_path(root).read_text())["run_id"] == "run-a"
 
 
+def test_local_preparing_owner_is_durable_before_competing_claim(garden):
+    repo = (garden / "../repo").resolve()
+    first_scheduler = Scheduler(_enable(garden, repo))
+    task = first_scheduler.store.task("DM-001")
+    first = first_scheduler.runs.new_run(task.id, "local", initial_status="preparing")
+    first_scheduler.prepare_canonical_run(
+        task, first, first_scheduler.runner_for(task, "local"), task.default_branch(), "main"
+    )
+
+    restarted = Scheduler(Store(garden))
+    competitor_task = restarted.store.task("DM-002")
+    competitor = restarted.runs.new_run(
+        competitor_task.id, "local", initial_status="preparing"
+    )
+    with pytest.raises(CanonicalCheckoutError, match=f"active run {first.run_id}"):
+        restarted.prepare_canonical_run(
+            competitor_task,
+            competitor,
+            restarted.runner_for(competitor_task, "local"),
+            competitor_task.default_branch(),
+            "main",
+        )
+
+    persisted = restarted.runs.runs_for(task.id)[-1]
+    assert persisted.worktree == str(repo)
+    assert json.loads(lease_path(repo).read_text())["run_id"] == first.run_id
+
+
 def test_interrupted_reconciliation_is_bounded_and_stale_lease_recovers(tmp_path):
     root = tmp_path / "checkout"
     root.mkdir()
@@ -172,6 +200,26 @@ def test_ssh_canonical_lease_survives_process_exit_until_run_is_reaped(garden, t
     runner.start(third, tmp_path, "brief")
     assert _wait_run(third) == 0
     assert (lease / "run-id").read_text() == f"{third.run_id}\n"
+
+
+def test_ssh_reap_refuses_dirty_local_canonical_checkout(garden, fake_github, tmp_path):
+    _remote_clone(garden)
+    repo = (garden / "../repo").resolve()
+    scheduler = Scheduler(_enable(garden, repo), github=fake_github)
+    task = scheduler.store.task("DM-001")
+    runner = scheduler.runner_for(task, "ssh")
+    runner.config["timeout_minutes"] = 0
+
+    run = scheduler.dispatch(task, runner=runner)
+    (repo / "README.md").write_text("operator edit that must survive\n")
+    assert _wait_run(run) == 0
+
+    scheduler.tick()
+
+    assert (repo / "README.md").read_text() == "operator edit that must survive\n"
+    saved = next(item for item in scheduler.runs.runs_for(task.id) if item.run_id == run.run_id)
+    assert saved.status == "failed"
+    assert "uncommitted work" in saved.error
 
 
 def test_remote_canonical_owner_remains_protected_during_interrupted_reap(garden):
