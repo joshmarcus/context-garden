@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ class Store:
         self.config = config or Config.load(self.root)
         self._tasks: dict[str, Task] | None = None
         self._products: list[Product] | None = None
+        self._discovery_sig: tuple[tuple[str, int, int], ...] | None = None
         # Ids claimed by more than one task file, found on the last scan: quarantined out of
         # `_tasks` (they are ambiguous, so they cannot dispatch) and surfaced by `duplicate_ids`.
         self._duplicate_ids: dict[str, list[Path]] = {}
@@ -46,6 +48,42 @@ class Store:
         Scheduler._reload_config_if_safe, CG-242)."""
         self._tasks = None
         self._products = None
+        self._discovery_sig = None
+
+    def refresh_tasks_if_changed(self) -> None:
+        """Invalidate cached discovery when files consumed by ``_scan`` changed."""
+        if self._products is not None and self._discovery_signature() != self._discovery_sig:
+            self.invalidate_tasks()
+
+    def discovery_snapshot(self) -> tuple[list[Product], dict[str, Task], dict[str, list[Path]]]:
+        """Return an isolated copy of one current task-tree scan.
+
+        Web requests may mutate tasks through actions, so they cannot safely share the
+        cached objects themselves.  Copying the parsed model is substantially cheaper than
+        reparsing every task's YAML while preserving request isolation.
+        """
+        self.refresh_tasks_if_changed()
+        self.tasks()  # populate duplicate-id quarantine before copying the product tree
+        products = deepcopy(self.products())
+        tasks = {task.id: task for product in products for phase in product.phases for task in phase.tasks
+                 if task.id not in self._duplicate_ids}
+        return products, tasks, deepcopy(self._duplicate_ids)
+
+    def _discovery_signature(self) -> tuple[tuple[str, int, int], ...]:
+        """Metadata fingerprint for product, phase, task, spec and phase-doc discovery."""
+        paths = [*self.root.glob("*/product.md"), *self.root.glob("*/*/goals.md"),
+                 *self.root.glob("*/*/tasks/*.md"), *self.root.glob("*/*/specs/*.md"),
+                 *self.root.glob("*/*/docs/**/*")]
+        found = []
+        for path in paths:
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            found.append((str(path.relative_to(self.root)), stat.st_mtime_ns, stat.st_size))
+        return tuple(sorted(found))
 
     def _config_signature(self) -> dict[str, int]:
         """The mtime (nanoseconds) of each garden*.yaml file that currently exists, keyed by
@@ -101,6 +139,7 @@ class Store:
     def products(self) -> list[Product]:
         if self._products is None:
             self._products = self._scan()
+            self._discovery_sig = self._discovery_signature()
         return self._products
 
     def _scan(self) -> list[Product]:
