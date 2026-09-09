@@ -1117,12 +1117,15 @@ class ReapMixin:
         if run.mode == "work":
             task.attempts = max(0, task.attempts - 1)
         harness_name = run.harness or ""
-        self._pause_for_env_error(run, collected)
+        if kind not in {"resource", "materialization"}:
+            self._pause_for_env_error(run, collected)
         if kind == "resource":
             note = "environment stop (resource): the host exhausted memory or temporary storage; branch not blamed and attempt not counted"
+        elif kind == "materialization":
+            note = "environment stop (materialization): the worker could not prepare an isolated checkout; branch not blamed and attempt not counted"
         else:
             note = f"environment stop ({kind}): {kind} limit hit on {harness_name or 'the harness'}; not counted as an attempt"
-        if harness_name and kind != "resource":
+        if harness_name and kind not in {"resource", "materialization"}:
             note += f"; dispatch paused for {harness_name} until a probe succeeds"
 
         st = self.state.get(task.id)

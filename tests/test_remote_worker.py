@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -16,6 +18,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops, managed_worker
+from garden.harness import Harness
 from garden.remote_worker import (
     WorkerRequestError,
     _host_check_data,
@@ -527,8 +530,13 @@ def test_remote_base_probe_materialises_its_advertised_source(garden, monkeypatc
     unavailable = base_check("0" * 40)
     bad_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth)
     assert bad_claim.status_code == 200
-    with pytest.raises(subprocess.CalledProcessError):
-        execute_claim(bad_claim.json(), tmp_path / "unavailable-source-host", PostingClient())
+    execute_claim(bad_claim.json(), tmp_path / "unavailable-source-host", PostingClient())
+    unavailable = RunStore(store.config.garden_dir).runs_for("DM-001")[-1]
+    posted = json.loads((unavailable.path / "remote_result.json").read_text())
+    assert posted["env_error"] is True and posted["env_kind"] == "materialization"
+    assert "checkout" in posted["error"]
+    checks = json.loads((unavailable.path / "checks.json").read_text())
+    assert checks[0]["summary"] == "check execution did not complete"
     assert unavailable.source_head == "0" * 40
     assert gitops.git("rev-parse", "origin/garden/dm-001", cwd=repo).strip() == branch_head
 
@@ -1229,6 +1237,220 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert modes["check"].result["checks"][0]["status"] == "pass"
     assert modes["review"].status == "done"
     assert "@build-1" in client.get(f"/runs/DM-001/{saved.run_id}").text
+
+
+@pytest.mark.parametrize("checkout_state", ["dirty", "unmerged"])
+def test_materialization_failure_is_preserved_and_clean_generation_retries(
+    garden, monkeypatch, tmp_path, fake_github, checkout_state,
+):
+    """A poisoned warm checkout reports infrastructure failure without launching an author."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    client, store = remote_client(garden, monkeypatch)
+    scheduler = Scheduler(store, github=fake_github)
+    scheduler.tick()
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post(
+        "/api/runs/claim",
+        json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy", "medium", "hard"]},
+        headers=auth,
+    ).json()
+    claim["setup"] = {"command": "mkdir -p .venv && touch .venv/prepared"}
+    host_root = tmp_path / f"{checkout_state}-host"
+    repo = host_root / "repos" / "DM-001"
+    repo.parent.mkdir(parents=True)
+    subprocess.run(["git", "clone", claim["repo"], str(repo)], check=True)
+    subprocess.run(["git", "checkout", "-B", "main", "origin/main"], cwd=repo, check=True)
+    poisoned = repo / "unpublished.txt"
+    poisoned.write_text("preserve me\n")
+    if checkout_state == "unmerged":
+        blobs = []
+        for content in ("base\n", "ours\n", "theirs\n"):
+            blobs.append(subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"], cwd=repo, input=content,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip())
+        entries = "".join(f"100644 {blob} {stage}\tconflict.txt\n"
+                          for stage, blob in enumerate(blobs, 1))
+        subprocess.run(["git", "update-index", "--index-info"], cwd=repo, input=entries,
+                       text=True, check=True)
+    index_before = (repo / ".git" / "index").read_bytes()
+    from garden.runner.base import setup_marker
+    marker = setup_marker(repo)
+    marker.write_text("stale prepared checkout")
+
+    finish_posts = []
+
+    class PostingClient:
+        def post(self, path, body):
+            response = client.post(path, json=body, headers=auth)
+            if path.endswith("/finish") and response.status_code == 200:
+                finish_posts.append(body)
+            return response.status_code, response.json()
+
+    original_command = Harness.command
+    monkeypatch.setattr(Harness, "command", lambda *args, **kwargs: pytest.fail("author launched"))
+    execute_claim(claim, host_root, PostingClient(), setup_command=claim["setup"]["command"])
+    monkeypatch.setattr(Harness, "command", original_command)
+
+    assert len(finish_posts) == 1
+    first = RunStore(store.config.garden_dir).runs_for("DM-001")[-1]
+    posted = json.loads((first.path / "remote_result.json").read_text())
+    assert posted["env_error"] is True and posted["env_kind"] == "materialization"
+    assert first.read_exit_code() == 1 and not first.pushed_head
+    preserved = list((host_root / "preserved-materializations" / "DM-001").iterdir())
+    checkouts = [path for path in preserved if path.is_dir()]
+    assert len(checkouts) == 1
+    archived = checkouts[0]
+    assert (archived / "unpublished.txt").read_text() == "preserve me\n"
+    assert (archived / ".git" / "index").read_bytes() == index_before
+    assert list(archived.parent.glob(f"{archived.name}.setup-marker"))
+    assert not repo.exists()
+
+    report = scheduler.tick()
+    refreshed_runs = RunStore(store.config.garden_dir).runs_for("DM-001")
+    refreshed_first = next(run for run in refreshed_runs if run.run_id == first.run_id)
+    assert refreshed_first.status == "env_error"
+    assert scheduler.state.get("DM-001")["consecutive_env_errors"] == 1
+    assert any("env_error: materialization" in item for item in report.transitions)
+    scheduler.tick()
+    replacement = RunStore(store.config.garden_dir).latest("DM-001")
+    assert replacement.run_id != first.run_id and replacement.status == "running"
+
+    clean_claim = client.post(
+        "/api/runs/claim",
+        json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy", "medium", "hard"]},
+        headers=auth,
+    ).json()
+    clean_claim["setup"] = claim["setup"]
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
+    execute_claim(clean_claim, host_root, PostingClient(),
+                  setup_command=clean_claim["setup"]["command"])
+    clean = RunStore(store.config.garden_dir).latest("DM-001")
+    assert clean.read_exit_code() == 0 and clean.pushed_head
+    assert (host_root / "repos" / "DM-001" / ".git").exists()
+    assert (host_root / "repos" / "DM-001" / ".venv" / "prepared").exists()
+
+
+def test_live_checkout_owner_is_refused_without_quarantine_or_author_launch(tmp_path, monkeypatch):
+    root = tmp_path / "host"
+    lock_path = root / "repo-locks" / "T-1.lock"
+    lock_path.parent.mkdir(parents=True)
+    posts = []
+
+    class Client:
+        def post(self, path, body):
+            posts.append((path, body))
+            return 200, {}
+
+    run = {"id": "run-1", "task_id": "T-1", "lease_token": "current",
+           "heartbeat_seconds": 3600}
+    monkeypatch.setattr(Harness, "command", lambda *args, **kwargs: pytest.fail("author launched"))
+    with lock_path.open("a") as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        execute_claim(run, root, Client())
+
+    finishes = [(path, body) for path, body in posts if path.endswith("/finish")]
+    assert len(finishes) == 1
+    assert finishes[0][1]["env_kind"] == "materialization"
+    assert "still owned" in finishes[0][1]["error"]
+    assert not (root / "preserved-materializations").exists()
+
+
+def test_orphaned_author_keeps_checkout_lock_and_new_claim_refuses_mutation(tmp_path, monkeypatch):
+    """The supervisor passes repo ownership to the real author, not only its own process."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "T-1"
+    repo.mkdir(parents=True)
+    unpublished = repo / "unpublished.txt"
+    unpublished.write_text("still active\n")
+    lock_path = root / "repo-locks" / "T-1.lock"
+    lock_path.parent.mkdir(parents=True)
+    owner = lock_path.open("a")
+    fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    run_dir = root / "runs" / "supervisor"
+    run_dir.mkdir(parents=True)
+    child_pid_path = root / "author.pid"
+    child = root / "author.py"
+    child.write_text(
+        "import os, signal, time\n"
+        "from pathlib import Path\n"
+        f"Path({str(child_pid_path)!r}).write_text(str(os.getpid()))\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "while True: time.sleep(.1)\n"
+    )
+    env = dict(os.environ)
+    env["GARDEN_PRESERVE_FDS"] = str(owner.fileno())
+    supervisor = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir),
+         f"{sys.executable} {child}"], env=env, pass_fds=(owner.fileno(),),
+    )
+    owner.close()
+    author_pid = None
+    try:
+        deadline = time.monotonic() + 5
+        while not child_pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert child_pid_path.exists()
+        author_pid = int(child_pid_path.read_text())
+        supervisor.kill()
+        supervisor.wait(timeout=5)
+
+        posts = []
+
+        class Client:
+            def post(self, path, body):
+                posts.append((path, body))
+                return 200, {}
+
+        claim = {"id": "replacement", "task_id": "T-1", "lease_token": "current",
+                 "heartbeat_seconds": 3600}
+        execute_claim(claim, root, Client())
+        finishes = [body for path, body in posts if path.endswith("/finish")]
+        assert len(finishes) == 1 and "still owned" in finishes[0]["error"]
+        assert unpublished.read_text() == "still active\n"
+        assert not (root / "preserved-materializations").exists()
+    finally:
+        if supervisor.poll() is None:
+            supervisor.kill()
+            supervisor.wait(timeout=5)
+        if author_pid is not None:
+            try:
+                os.kill(author_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    deadline = time.monotonic() + 5
+    while True:
+        with lock_path.open("a") as released:
+            try:
+                fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                pass
+        assert time.monotonic() < deadline
+        time.sleep(.02)
+
+
+def test_stale_lease_cannot_quarantine_dirty_checkout(tmp_path):
+    root = tmp_path / "host"
+    repo = root / "repos" / "T-1"
+    repo.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    unpublished = repo / "unpublished.txt"
+    unpublished.write_text("keep\n")
+
+    class ReplacedClient:
+        def post(self, path, body):
+            raise WorkerRequestError(409, "run lease has been replaced")
+
+    run = {"id": "run-1", "task_id": "T-1", "lease_token": "stale",
+           "heartbeat_seconds": 3600}
+    with pytest.raises(WorkerRequestError, match="409"):
+        execute_claim(run, root, ReplacedClient())
+
+    assert unpublished.read_text() == "keep\n"
+    assert not (root / "preserved-materializations").exists()
 
 
 
