@@ -1,5 +1,5 @@
 {
-  "head": "d0343167b242c7155cf0690730c6275ae5483c3a",
+  "head": "d2d2ce76aded9c22e64cec2a71d981f68a303ab2",
   "environment": "disposable local garden fixture served at an ephemeral 127.0.0.1 port",
   "command": "python scripts/capture_cg410.py (served interaction; preserves existing inspected captures)",
   "states": [
@@ -37,6 +37,15 @@
       "url": "/tasks/DM-001",
       "status_code": 200,
       "observed": "frozen manual task page offers no Take action"
+    },
+    {
+      "kind": "http_request",
+      "state": "paused",
+      "outcome": "safe_waiting",
+      "method": "GET",
+      "url": "/inbox",
+      "status_code": 200,
+      "observed": "revision-capped manual work is shown as paused with no Resume action"
     },
     {
       "kind": "http_request",
