@@ -49,6 +49,10 @@ class TrialsMixin:
     # ---- model trials ------------------------------------------------------
     def start_trial(self, task: Task, contenders: list[str], again: bool = False, keep_prs: bool = False) -> list[Run]:
         self.require_maintenance_running()
+        # A trial restart closes contender PRs and clears cached lifecycle state before it
+        # dispatches fresh contenders.  Check the shared phase gate first so a frozen task
+        # remains an intact hold rather than being reset and then refused by dispatch().
+        self._refuse_if_closed_or_frozen(task)
         if len(contenders) < 2:
             raise RuntimeError("a trial needs at least two contenders")
         default_h = task.harness or self.cfg.product_harness(task.product)
