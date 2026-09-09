@@ -759,6 +759,7 @@ class ReviewMixin:
             clarifies_review_run=source.run_id,
         )
         rep.transitions.append(f"{task.id} review re-asked to classify unverified observations")
+        return True
 
     @staticmethod
     def _review_execution_started(run: Run) -> bool:
@@ -835,11 +836,11 @@ class ReviewMixin:
                 return self._queue_review_recovery(
                     task, run, run.error or run.status, rep,
                     started=self._review_execution_started(run),
-                     count_round=bool((run.env_snapshot or {}).get("count_round", True)),
-                 )
-             emitted = any(event.get("run") == run.run_id for event in self.events.read(
-                 task_id=task.id, kinds=["run_finished"]))
-             return self._apply_review(task, run, run.result, rep, emitted=emitted)
+                    count_round=bool((run.env_snapshot or {}).get("count_round", True)),
+                )
+            emitted = any(event.get("run") == run.run_id for event in self.events.read(
+                task_id=task.id, kinds=["run_finished"]))
+            return self._apply_review(task, run, run.result, rep, emitted=emitted)
         runner = self.runner_for(task, run.runner, run.harness)
         if not self._finished_or_timed_out(run, runner):
             return False
