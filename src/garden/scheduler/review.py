@@ -330,7 +330,8 @@ class ReviewMixin:
         """
         return sorted(
             (task for task in self.store.tasks().values()
-             if not self.state.get(task.id).get("needs_human")
+             if not task.status.terminal
+             and not self.state.get(task.id).get("needs_human")
              and self.state.get(task.id).get("pending_reviews")),
             key=dispatch_sort_key,
         )
@@ -392,6 +393,9 @@ class ReviewMixin:
             if self.review_slots_free() <= 0:
                 break
             st = self.state.get(task.id)
+            if task.status.terminal:
+                self._retire_terminal_review_recovery(task)
+                continue
             if st.get("needs_human"):
                 continue
             pending = list(st.get("pending_reviews") or [])
@@ -401,6 +405,35 @@ class ReviewMixin:
                 continue
             st["pending_reviews"] = []
             self._dispatch_or_defer_reviews(task, pending, rep, from_pending=True)
+
+    def _retire_terminal_review_recovery(self, task: Task) -> bool:
+        """Discard queued review intent once its task has reached a terminal state.
+
+        ``_transition`` is the normal boundary, while the pending-review drain also calls
+        this helper to repair state left by an older controller or an interrupted write.
+        The event retains why the continuation disappeared without allowing it to revive a
+        completed or cancelled task.
+        """
+        st = self.state.get(task.id)
+        pending = list(st.get("pending_reviews") or [])
+        recovery = st.get("review_recovery") or {}
+        if not pending and not recovery:
+            return False
+        st.pop("pending_reviews", None)
+        st.pop("review_recovery", None)
+        self.state.save()
+        reason = f"automatic review recovery retired because task is {task.status.value}"
+        task.log(reason)
+        self.store.save(task)
+        self.events.emit(
+            "review_recovery_retired",
+            task.id,
+            status=task.status.value,
+            reason=reason,
+            pending=len(pending),
+            head=str(recovery.get("head") or ""),
+        )
+        return True
 
     def _audit_review_continuations(self, tasks: dict[str, Task], rep: TickReport) -> None:
         """Restore a reviewable current head that has neither a verdict nor a continuation."""

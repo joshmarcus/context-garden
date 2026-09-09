@@ -447,6 +447,51 @@ def test_review_audit_replaces_stale_head_recovery_with_a_fresh_counted_round(sc
     assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == 1
 
 
+@pytest.mark.parametrize("terminal", [Status.DONE, Status.CANCELLED])
+def test_terminal_transition_retires_queued_review_recovery(sched, terminal):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({
+        "pending_reviews": [{"kind": "review", "count_round": True}],
+        "review_recovery": {
+            "head": "current-head",
+            "attempts": 1,
+            "reason": "unclaimed timeout",
+            "owner": "scheduler",
+        },
+    })
+    review_runs_before = len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"])
+
+    sched._transition(task, terminal, "terminal during automatic review recovery")
+    sched.tick()
+
+    assert not st.get("pending_reviews")
+    assert not st.get("review_recovery")
+    assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == review_runs_before
+    retired = sched.events.read(task_id=task.id, kinds=["review_recovery_retired"])
+    assert len(retired) == 1
+    assert retired[0]["status"] == terminal.value
+    assert "automatic review recovery retired" in task.body
+
+
+def test_pending_review_drain_repairs_terminal_recovery_state_without_dispatch(sched):
+    """A restart may expose terminal state written by a controller predating cleanup."""
+    task = sched.store.task("DM-001")
+    task.status = Status.CANCELLED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["pending_reviews"] = [{"kind": "review", "count_round": True}]
+    st["review_recovery"] = {"head": "old-head", "attempts": 1}
+
+    sched._drain_pending_reviews(sched.store.tasks(), TickReport())
+
+    assert not st.get("pending_reviews")
+    assert not st.get("review_recovery")
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "review"]
+
+
 def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):
     """A review uses the next configured harness:model pair, not the PR's harness."""
     _review_ladder(sched)
