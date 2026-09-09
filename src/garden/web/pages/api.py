@@ -19,7 +19,6 @@ from fastapi.responses import JSONResponse, Response
 from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
-from ...graph import effective_status
 from ...model import effective_owner
 from ...runs import Run
 from ..common import Site

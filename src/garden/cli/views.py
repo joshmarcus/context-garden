@@ -196,6 +196,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         print(t.render())
         return
     tasks = store.tasks()
+    sched = _scheduler(store)
     owner, source = effective_owner(t, store.phase(t.product, t.phase))
     console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={priority_label(t.priority)}  difficulty={t.difficulty}  {t.key}  owner={owner or '-'} ({source})")
     console.print(f"file: {store.rel(t.path)}")
