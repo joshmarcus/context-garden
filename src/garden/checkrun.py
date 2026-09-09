@@ -74,23 +74,10 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     run_dir = Path(argv[0])
-    exit_code = 0
-    try:
-        payload = json.loads((run_dir / "checks_input.json").read_text())
-        results = run_check_job(payload)
-    except Exception as e:  # noqa: BLE001
-        # Reap needs a result even when the job infrastructure itself fails. Without
-        # one, it can only say no file arrived and a revise brief loses the traceback
-        # that tells the worker what is actually broken.
-        results = [{
-            "name": "checks",
-            "status": "error",
-            "summary": f"check runner crashed: {type(e).__name__}: {e}",
-            "details": f"{type(e).__name__}: {e}",
-        }]
-        exit_code = 1
+    payload = json.loads((run_dir / "checks_input.json").read_text())
+    results = run_check_job(payload)
     (run_dir / "checks.json").write_text(json.dumps(results, indent=2))
-    return exit_code
+    return 0
 
 
 if __name__ == "__main__":
