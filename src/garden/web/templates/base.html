@@ -149,7 +149,7 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--mute
 .profile-slider .profile-current { display:flex; align-items:baseline; justify-content:space-between; gap:8px; font:12px/1.25 var(--mono); }
 .profile-slider output { color:var(--ink); font-weight:700; text-transform:capitalize; }
 .profile-slider input[type=range] { width:100%; height:44px; margin:0; accent-color:var(--accent); cursor:pointer; }
-.profile-stops { display:flex; justify-content:space-between; gap:4px; font:10.5px/1.2 var(--mono); color:var(--muted); }
+.profile-stops { display:grid; grid-template-columns:repeat(var(--profile-stops), minmax(0, 1fr)); gap:3px; font:9.5px/1.2 var(--mono); color:var(--muted); }
 .profile-stops span { min-width:0; text-align:center; overflow-wrap:anywhere; }
 .profile-stops span:first-child { text-align:left; }.profile-stops span:last-child { text-align:right; }
 .profile-note { display:block; margin-top:3px; font:11.5px/1.4 var(--mono); color:var(--faint); }
@@ -381,15 +381,16 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <h4>Operating profile</h4>
     {% set profile_option_values = operating_profile_options|map(attribute='value')|list %}
     {% set selected_index = profile_option_values.index(operating_profile) if operating_profile in profile_option_values else 0 %}
-    <form method="post" action="/config/operating-profile" class="profile-slider" data-profile-slider data-selected="{{ operating_profile }}" data-profile-options='{{ operating_profile_options|tojson }}'>
+    <form method="post" action="/config/operating-profile" class="profile-slider" data-profile-slider data-selected="{{ operating_profile }}" data-profile-source="{{ operating_profile_source }}" data-profile-options='{{ operating_profile_options|tojson }}' style="--profile-stops:{{ operating_profile_options|length }}">
       <div class="profile-current"><span>Selected</span><output for="operating-profile-slider">{{ operating_profile_label }}</output></div>
       <input id="operating-profile-slider" type="range" min="0" max="{{ operating_profile_options|length - 1 }}" step="1" value="{{ selected_index }}" aria-label="{{ operating_profile_label ~ ' operating profile' if operating_profile else 'No operating profile; plain garden.yaml values' }}" aria-valuetext="{{ operating_profile_label ~ ' operating profile' if operating_profile else 'No operating profile; plain garden.yaml values' }}">
       <input type="hidden" name="value" value="{{ operating_profile }}">
-      <div class="profile-stops" aria-hidden="true">{% for option in operating_profile_options %}<span>{{ option.label }}</span>{% endfor %}</div>
+      <div class="profile-stops" aria-hidden="true">{% for option in operating_profile_options %}<span>{{ option.stop_label|default(option.label) }}</span>{% endfor %}</div>
       <noscript><select name="value" aria-label="Operating profile">{% for option in operating_profile_options %}<option value="{{ option.value }}" {% if option.value == operating_profile %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
-    {% if operating_profile_meaning %}<span class="profile-note">{{ operating_profile_source }} requests {{ operating_profile_meaning }}.</span>{% elif operating_profile %}<span class="profile-note">{{ operating_profile_source }} names an unavailable profile; using plain garden.yaml values.</span>{% else %}<span class="profile-note">No profile requested; using plain garden.yaml values.</span>{% endif %}
+    <span class="profile-note" data-profile-tradeoff>{{ operating_profile_tradeoff }}</span>
+    <span class="profile-note" data-profile-meaning>{% if operating_profile_meaning %}{{ operating_profile_source }} requests {{ operating_profile_meaning }}.{% elif operating_profile %}{{ operating_profile_source }} names an unavailable profile; using plain garden.yaml values.{% else %}No profile requested; using plain garden.yaml values.{% endif %}</span>
     {% if operating_profile_overrides %}<span class="profile-note">Specific overrides still apply: {{ operating_profile_overrides|join(', ') }}.</span>{% endif %}
     <span class="profile-note">Profile changes do not resume dispatch or raise resource caps.</span>
     {% if operating_profile_spend_rate %}<span class="faint" style="display:block">${{ '%.2f' % operating_profile_spend_rate }}/hr last hour</span>{% endif %}
@@ -557,12 +558,15 @@ document.querySelectorAll("form[data-profile-slider]").forEach(form => {
   const value = form.elements.namedItem("value");
   const output = form.querySelector("output");
   const mark = form.querySelector(".autosave-mark");
+  const tradeoff = form.parentElement.querySelector("[data-profile-tradeoff]");
+  const meaning = form.parentElement.querySelector("[data-profile-meaning]");
   const options = JSON.parse(form.dataset.profileOptions || "[]");
   let saved = form.dataset.selected || value.value;
+  let savedSource = form.dataset.profileSource;
   let queued = null;
   let saving = false;
 
-  function setVisible(name) {
+  function setVisible(name, source) {
     const option = options.find(option => option.value === name);
     const label = option ? option.label : name;
     value.value = name;
@@ -572,6 +576,12 @@ document.querySelectorAll("form[data-profile-slider]").forEach(form => {
       : "No operating profile; plain garden.yaml values";
     slider.setAttribute("aria-label", accessibleValue);
     slider.setAttribute("aria-valuetext", accessibleValue);
+    if (option && tradeoff) tradeoff.textContent = option.tradeoff;
+    if (option && meaning) {
+      if (option.meaning) meaning.textContent = (source || "live override") + " requests " + option.meaning + ".";
+      else if (name) meaning.textContent = (source || "live override") + " names an unavailable profile; using plain garden.yaml values.";
+      else meaning.textContent = "No profile requested; using plain garden.yaml values.";
+    }
   }
   async function save(name) {
     saving = true;
@@ -580,14 +590,18 @@ document.querySelectorAll("form[data-profile-slider]").forEach(form => {
       const res = await fetch(form.action, {method: "POST", headers: {Accept: "application/json"}, body: new URLSearchParams({value: name})});
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setVisible(saved); slider.value = String(options.findIndex(option => option.value === saved));
+        setVisible(saved, savedSource); slider.value = String(options.findIndex(option => option.value === saved));
         if (mark) { mark.className = "autosave-mark err"; mark.textContent = data.detail || "save failed"; }
       } else {
-        saved = name;
+        const data = await res.json();
+        saved = data.value;
+        savedSource = data.source;
+        setVisible(saved, savedSource);
+        slider.value = String(options.findIndex(option => option.value === saved));
         if (mark) { mark.className = "autosave-mark ok"; mark.textContent = "saved ✓"; }
       }
     } catch (e) {
-      setVisible(saved); slider.value = String(options.findIndex(option => option.value === saved));
+      setVisible(saved, savedSource); slider.value = String(options.findIndex(option => option.value === saved));
       if (mark) { mark.className = "autosave-mark err"; mark.textContent = "save failed (offline?)"; }
     } finally {
       saving = false;

@@ -262,17 +262,59 @@ class Site:
         rail_events = history if history is not None else EventLog(s.config.garden_dir / "events.jsonl").read()
         rail_events += ops.to_cost_events(ops.read_records(ops.default_path(s.root)))
         rail_metrics = metrics(rail_events, s.tasks())
-        profile_options = [
-            {"value": "", "label": "Plain config"},
-            *[{"value": name, "label": name.capitalize()} for name in stops],
-        ]
+        profile_tradeoffs = {
+            "economy": (
+                "Economy favors fewer concurrent runs and lower-cost models; "
+                "completion time and total cost can still vary."
+            ),
+            "balanced": (
+                "Balanced mixes concurrency, model capability, and cost; "
+                "completion time and total cost can still vary."
+            ),
+            "fast": (
+                "Fast favors more concurrency and higher-capability models; "
+                "it may cost more and does not guarantee faster completion."
+            ),
+        }
+
+        def profile_tradeoff_for(name: str) -> str:
+            if name in profile_tradeoffs:
+                return profile_tradeoffs[name]
+            if name:
+                return (
+                    "This custom profile changes the requested concurrency and model mix; "
+                    "its completion time and total cost can vary."
+                )
+            return (
+                "Plain config uses individually configured concurrency and models; "
+                "completion time and total cost depend on those settings."
+            )
+
+        profile_options = [{
+            "value": "",
+            "label": "Plain config",
+            "stop_label": "Plain",
+            "tradeoff": profile_tradeoff_for(""),
+            "meaning": "No profile requested; using plain garden.yaml values.",
+        }]
+        profile_options.extend({
+            "value": name,
+            "label": name.capitalize(),
+            "tradeoff": profile_tradeoff_for(name),
+            "meaning": describe_stop(stop),
+        } for name, stop in stops.items())
         # A live override may name a custom stop that was later removed from
         # garden.yaml.  The scheduler deliberately treats that as an empty
         # profile until the operator chooses another stop; keep it visible in
         # the rail rather than making the rendered control claim a different
         # selection (or fail to render).
         if active and active not in stops:
-            profile_options.append({"value": active, "label": f"Unavailable: {active}"})
+            profile_options.append({
+                "value": active,
+                "label": f"Unavailable: {active}",
+                "tradeoff": profile_tradeoff_for(active),
+                "meaning": "",
+            })
         active_option = next(option for option in profile_options if option["value"] == active)
         return {
             "request": request,
@@ -313,6 +355,7 @@ class Site:
                 else ("garden.yaml" if active else "plain garden.yaml values")
             ),
             "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
+            "operating_profile_tradeoff": profile_tradeoff_for(active),
             "operating_profile_overrides": overridden_facets,
             "operating_profile_spend_rate": run_store.spend_since(parse_since("1h")),
             "rail_metrics": rail_metrics,

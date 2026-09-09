@@ -2401,6 +2401,7 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     assert 'action="/config/operating-profile"' in home
     assert '<output for="operating-profile-slider">Plain config</output>' in home
     assert 'aria-valuetext="No operating profile; plain garden.yaml values"' in home
+    assert "completion time and total cost depend on those settings" in home
     assert "Profile changes do not resume dispatch or raise resource caps." in home
     for name in ("economy", "balanced", "fast"):
         assert f">{name.capitalize()}</span>" in home
@@ -2415,6 +2416,7 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     assert "live override: <strong>fast</strong>" in config_page
     home = c.get("/").text
     assert '<output for="operating-profile-slider">Fast</output>' in home
+    assert "does not guarantee faster completion" in home
     assert "live override requests 7 workers" in home
 
     # the Parallelism and observe-profile panels say the *stop*, not garden.yaml, answers
@@ -2436,6 +2438,32 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     r = c.post("/config/operating-profile", data={"value": ""}, follow_redirects=False)
     assert r.status_code == 303
     assert "no live override" in c.get("/config").text
+
+
+def test_operating_profile_clear_reports_configured_profile(garden):
+    """Clearing a live override reports the garden.yaml profile that becomes active."""
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["operating_profile"] = "balanced"
+    config_path.write_text(yaml.safe_dump(config))
+
+    c = client(garden)
+    assert c.post(
+        "/config/operating-profile",
+        data={"value": "fast"},
+        headers={"Accept": "application/json"},
+    ).json()["value"] == "fast"
+    response = c.post(
+        "/config/operating-profile",
+        data={"value": ""},
+        headers={"Accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": "balanced", "source": "garden.yaml", "status": "saved"}
+    assert '<output for="operating-profile-slider">Balanced</output>' in c.get("/").text
 
 
 def test_operating_profile_slider_supports_extra_stops_and_json_errors(garden):
@@ -2511,6 +2539,12 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.get_by_text("saved ✓").wait_for()
             assert slider.get_attribute("aria-valuetext") == "Fast operating profile"
             assert "fast" in page.locator(".profile-current").inner_text().lower()
+            assert "does not guarantee faster completion" in page.locator(
+                "[data-profile-tradeoff]"
+            ).inner_text()
+            assert "live override requests 7 workers" in page.locator(
+                "[data-profile-meaning]"
+            ).inner_text()
             page.screenshot(path=str(tmp_path / "profile-slider-1280-light.png"), full_page=True)
             # Keep the first request unresolved while choosing a second stop.  Its failure
             # must not leave the old saved stop visible after the queued save succeeds.
@@ -2567,7 +2601,9 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
                   const input = document.querySelector("#operating-profile-slider");
                   input.value = "1";  // Economy, the value saved before the pending request.
                   input.dispatchEvent(new Event("change", {bubbles: true}));
-                  window.resolveProfileSave(new Response("", {status: 200}));
+                  window.resolveProfileSave(new Response(JSON.stringify({value: "fast", source: "live override", status: "saved"}), {
+                    status: 200, headers: {"Content-Type": "application/json"},
+                  }));
                 }
             """)
             page.wait_for_function("window.profileSaveCalls.length === 2")
@@ -2575,6 +2611,26 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.get_by_text("saved ✓").wait_for()
             page.reload(wait_until="networkidle")
             assert "economy" in page.locator(".profile-current").inner_text().lower()
+            # Clearing the live override reveals a profile named by garden.yaml.
+            # The successful response must immediately reconcile the control and
+            # its explanation to that effective value, before any reload.
+            page.evaluate("""
+                () => {
+                  window.fetch = () => Promise.resolve(new Response(JSON.stringify({
+                    value: "balanced", source: "garden.yaml", status: "saved",
+                  }), {status: 200, headers: {"Content-Type": "application/json"}}));
+                }
+            """)
+            slider.press("Home")
+            page.get_by_text("saving…").wait_for()
+            page.get_by_text("saved ✓").wait_for()
+            assert slider.get_attribute("aria-valuetext") == "Balanced operating profile"
+            assert "Balanced mixes concurrency" in page.locator(
+                "[data-profile-tradeoff]"
+            ).inner_text()
+            assert "garden.yaml requests 5 workers" in page.locator(
+                "[data-profile-meaning]"
+            ).inner_text()
             page.set_viewport_size({"width": 390, "height": 844})
             page.screenshot(path=str(tmp_path / "profile-slider-390-light.png"), full_page=True)
             page.emulate_media(color_scheme="dark")
