@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
@@ -36,6 +37,12 @@ FINDING_MARKER_RE = re.compile(r"\[P\d+\]")
 
 class GitHubError(Exception):
     pass
+
+
+class GitHubRateLimit(GitHubError):
+    def __init__(self, message: str, reset_at: float):
+        super().__init__(message)
+        self.reset_at = reset_at
 
 
 @dataclass
@@ -221,6 +228,9 @@ class GitHub:
         self.trusted_authors = {str(a).strip() for a in (trusted_authors or []) if str(a).strip()}
         self.trusted_bots = {str(b).strip() for b in (trusted_bots or []) if str(b).strip()}
         self._me: str | None = None
+        # Controller-process cache: workers never query GitHub, and concurrent/repeated
+        # task polls for one immutable revision share the same bounded status answer.
+        self._check_cache: dict[tuple[str, str, str], tuple[float, str, list[str]]] = {}
 
     @property
     def available(self) -> bool:
@@ -260,6 +270,16 @@ class GitHub:
             base = base.removesuffix("/v3")
         r = httpx.request(method, base + path, headers=headers, timeout=30, **kw)
         if r.status_code >= 400:
+            if r.status_code in (403, 429):
+                reset = r.headers.get("x-ratelimit-reset") or ""
+                retry = r.headers.get("retry-after") or ""
+                try:
+                    reset_at = float(reset) if reset else time.time() + float(retry or 60)
+                except ValueError:
+                    reset_at = time.time() + 60
+                raise GitHubRateLimit(
+                    f"{method} {path}: status unavailable until rate-limit reset", reset_at
+                )
             raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
         return r.json() if r.content else None
 
@@ -352,14 +372,34 @@ class GitHub:
         info.body = p.get("body") or ""
         info.head_sha = (p.get("head") or {}).get("sha", "")
         if info.head_sha:
-            try:
-                runs = self._rest("GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs", params={"per_page": 100}) or {}
-                rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"), "state": c.get("status")}
-                          for c in runs.get("check_runs", [])]
-                info.checks = _rollup_state(rollup)
-                info.failed_checks = _rollup_failed(rollup)
-            except GitHubError:
-                pass
+            cache_key = (self.host, slug.lower(), info.head_sha)
+            cached = self._check_cache.get(cache_key)
+            if cached and cached[0] > time.time():
+                info.checks, info.failed_checks = cached[1], list(cached[2])
+            else:
+                try:
+                    runs = self._rest("GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs",
+                                      params={"per_page": 100}) or {}
+                    rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"),
+                               "state": c.get("status")} for c in runs.get("check_runs", [])]
+                    info.checks = _rollup_state(rollup)
+                    info.failed_checks = _rollup_failed(rollup)
+                    ttl = 60 if info.checks in {"SUCCESS", "FAILURE"} else 15
+                    self._check_cache[cache_key] = (
+                        time.time() + ttl, info.checks, list(info.failed_checks)
+                    )
+                except GitHubRateLimit as exc:
+                    info.checks = "PENDING"
+                    info.failed_checks = [str(exc)]
+                    self._check_cache[cache_key] = (
+                        max(time.time() + 1, exc.reset_at), info.checks, list(info.failed_checks)
+                    )
+                except GitHubError as exc:
+                    info.checks = "PENDING"
+                    info.failed_checks = [f"GitHub status unavailable: {exc}"]
+                    self._check_cache[cache_key] = (
+                        time.time() + 15, info.checks, list(info.failed_checks)
+                    )
         try:
             reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
             latest: dict[str, str] = {}

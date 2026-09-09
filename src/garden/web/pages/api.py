@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime as dt
 import json
 import math
 import os
 import re
 import secrets
+import shlex
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -304,12 +307,44 @@ def register(app: FastAPI, site: Site) -> None:
                       "cost_usd": body.get("cost_usd"), "final_text": final,
                       "error": str(body.get("error") or ""), "session_id": str(body.get("session_id") or "")}
             (run.path / "remote_result.json").write_text(json.dumps(posted))
+            validation_policy = dict(hub.store.config.get("ci.worker_check", {}) or {})
+            required_command = str(validation_policy.get("command") or "").strip()
             for index, receipt in enumerate(body.get("validation_receipts") or []):
-                if not isinstance(receipt, dict):
-                    continue
+                selection = receipt.get("selection") if isinstance(receipt, dict) else None
+                artifacts = receipt.get("artifacts") if isinstance(receipt, dict) else None
+                if (not isinstance(receipt, dict) or str(receipt.get("source_sha") or "") != run.pushed_head
+                        or not str(receipt.get("command") or "")
+                        or not isinstance(selection, list) or not selection
+                        or any(not isinstance(arg, str) for arg in selection)
+                        or required_command and str(receipt.get("command") or "") != required_command
+                        or required_command and selection != shlex.split(required_command)
+                        or not isinstance(artifacts, dict) or not artifacts):
+                    raise HTTPException(422, "invalid validation receipt for pushed head or configured selection")
+                decoded_artifacts: dict[str, bytes] = {}
+                total_size = 0
+                for name, encoded in artifacts.items():
+                    if not isinstance(name, str) or Path(name).name != name or not isinstance(encoded, str):
+                        raise HTTPException(422, "invalid validation artifact")
+                    try:
+                        data = base64.b64decode(encoded, validate=True)
+                    except (ValueError, binascii.Error):
+                        raise HTTPException(422, "invalid validation artifact encoding") from None
+                    total_size += len(data)
+                    if len(data) > 2_000_000 or total_size > 5_000_000:
+                        raise HTTPException(422, "validation artifact is too large")
+                    decoded_artifacts[name] = data
+                try:
+                    execution = json.loads(decoded_artifacts["execution.json"])
+                except (KeyError, UnicodeDecodeError, json.JSONDecodeError):
+                    raise HTTPException(422, "validation supervisor evidence is missing or malformed") from None
+                if not isinstance(execution, dict) or execution.get("state") not in {"finished", "timeout"}:
+                    raise HTTPException(422, "validation supervisor did not finish")
                 target = run.path / "validations" / f"remote-{index}" / "result.json"
                 target.parent.mkdir(parents=True, exist_ok=True)
-                durable = {**receipt, "log_location": str(target.parent)}
+                for name, data in decoded_artifacts.items():
+                    (target.parent / name).write_bytes(data)
+                durable = {k: v for k, v in receipt.items() if k != "artifacts"}
+                durable["log_location"] = str(target.parent)
                 target.write_text(json.dumps(durable, sort_keys=True) + "\n")
             if run.mode == "check":
                 (run.path / "checks.json").write_text(json.dumps((body.get("result") or {}).get("checks") or []))

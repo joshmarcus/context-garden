@@ -7,6 +7,7 @@ immutable revision passed; analysers may still turn a known failure into useful 
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -51,6 +52,7 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
     supervisor, not parsed from an author's result prose.
     """
     required_command = str(policy.get("command") or "").strip()
+    required_selection = list(policy.get("selection") or (shlex.split(required_command) if required_command else []))
     candidates = sorted((garden_dir / "runs" / task_id).glob("*/validations/*/result.json"), reverse=True)
     mismatched = False
     malformed = False
@@ -59,6 +61,7 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             row = json.loads(path.read_text())
             receipt_sha = str(row["source_sha"])
             command = str(row["command"])
+            selection = row["selection"]
             exit_code = int(row["exit_code"])
             log = str(row["log_location"])
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
@@ -68,6 +71,20 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             mismatched = True
             continue
         if required_command and command != required_command:
+            continue
+        if (not isinstance(selection, list) or not selection
+                or any(not isinstance(arg, str) for arg in selection)
+                or required_selection and selection != required_selection):
+            malformed = True
+            continue
+        log_path = Path(log)
+        try:
+            execution = json.loads((log_path / "execution.json").read_text())
+            durable_log = log_path.is_dir() and execution.get("state") in {"finished", "timeout"}
+        except (AttributeError, OSError, json.JSONDecodeError):
+            durable_log = False
+        if not durable_log:
+            malformed = True
             continue
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
         run_id = path.parents[2].name

@@ -5,6 +5,7 @@ import json
 
 from garden.github import Feedback
 from garden.model import Status
+from garden.scheduler.report import TickReport
 from tests.scheduler.conftest import statuses
 
 
@@ -151,11 +152,29 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
     work = next(run for run in sched.runs.runs_for("DM-001") if run.mode == "work")
     receipt = work.path / "validations" / "123" / "result.json"
     receipt.parent.mkdir(parents=True)
+    (receipt.parent / "execution.json").write_text('{"state":"finished"}')
     receipt.write_text(json.dumps({"source_sha": st["head_sha"], "command": "pytest -q",
-                                   "exit_code": 0, "log_location": str(receipt.parent)}))
+                                   "selection": ["pytest", "-q"], "exit_code": 0,
+                                   "log_location": str(receipt.parent)}))
     rep = sched.tick()
     assert "DM-001(review)" in rep.dispatched
     assert sched.state.get("DM-001")["ci_status"]["green"] is True
+
+
+def test_poll_records_changed_head_when_updated_at_is_unchanged(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    old_updated = pr.updated_at
+    fake_github.remote = None
+    pr.head_sha = "replacement-head"
+
+    task = sched.store.task("DM-001")
+    sched.poll(task, TickReport())
+
+    st = sched.state.get("DM-001")
+    assert pr.updated_at == old_updated
+    assert st["head_sha"] == "replacement-head"
 
 
 def test_worker_check_old_green_does_not_clear_merge_gate(sched, fake_github):

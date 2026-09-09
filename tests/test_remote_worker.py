@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import json
 import sys
@@ -20,7 +21,7 @@ from garden.store import Store
 from garden.web.app import create_app
 
 
-def remote_client(garden, monkeypatch, *, validation_timeout=900):
+def remote_client(garden, monkeypatch, *, validation_timeout=900, worker_check=False):
     path = garden / "garden.yaml"
     cfg = yaml.safe_load(path.read_text())
     cfg["workers"] = {"lease_seconds": 60, "hosts": [{"name": "build-1", "token_env": "BUILD_TOKEN", "max_parallel": 1}]}
@@ -30,6 +31,9 @@ def remote_client(garden, monkeypatch, *, validation_timeout=900):
         {"name": "remote-context", "command": "test \"$GARDEN_BRANCH\" = garden/dm-001-first-task"}
     ], "ci": [], "timeout_seconds": validation_timeout}
     cfg["review"] = {"enabled": True, "max_rounds": 1}
+    if worker_check:
+        cfg["ci"] = {"status_provider": "worker_check", "required": True,
+                     "worker_check": {"command": "pytest -q"}}
     path.write_text(yaml.safe_dump(cfg))
     monkeypatch.setenv("BUILD_TOKEN", "secret-token")
     return TestClient(create_app(Store(garden), watch=False, host="testserver")), Store(garden)
@@ -190,7 +194,8 @@ def test_worker_with_no_harnesses_can_claim_check_run(garden, monkeypatch):
 
 
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
-    client, store = remote_client(garden, monkeypatch, validation_timeout=731)
+    client, store = remote_client(garden, monkeypatch, validation_timeout=731,
+                                  worker_check=True)
     run = queued_run(store)
     auth = {"Authorization": "Bearer secret-token"}
 
@@ -213,7 +218,9 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
                        "usage": {"input_tokens": 2}, "cost_usd": 0.1, "pushed_head": "abc",
                        "validation_receipts": [{"source_sha": "abc", "command": "pytest -q",
                                                 "selection": ["pytest", "-q"], "exit_code": 0,
-                                                "log_location": "/remote/path"}]}, headers=auth)
+                                                "log_location": "/remote/path",
+                                                "artifacts": {"execution.json": base64.b64encode(
+                                                    b'{"state":"finished"}').decode()}}]}, headers=auth)
     assert done.status_code == 200
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.host == "build-1" and saved.pushed_head == "abc"
@@ -221,6 +228,7 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     receipt = json.loads((saved.path / "validations" / "remote-0" / "result.json").read_text())
     assert receipt["source_sha"] == "abc" and receipt["exit_code"] == 0
     assert receipt["log_location"].endswith("validations/remote-0")
+    assert (saved.path / "validations" / "remote-0" / "execution.json").exists()
     saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
     saved.save()
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204

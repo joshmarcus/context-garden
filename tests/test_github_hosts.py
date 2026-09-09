@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from garden.github import GitHub, GitHubError, GitHubRouter, RepositorySlug, repo_slug_from_remote
+from garden.github import (
+    GitHub,
+    GitHubError,
+    GitHubRateLimit,
+    GitHubRouter,
+    RepositorySlug,
+    repo_slug_from_remote,
+)
 
 
 @pytest.mark.parametrize("remote", [
@@ -138,6 +145,41 @@ def test_missing_scoped_token_never_falls_back_to_the_ambient_token(monkeypatch)
     assert not gh.available
     with pytest.raises(GitHubError, match="no GitHub token"):
         gh.find_pr("team/repo", "branch")
+
+
+def test_exact_head_check_reads_are_coalesced_and_recover_after_rate_limit(monkeypatch):
+    gh = GitHub(use_gh=False, host="forge-one.test", token="one")
+    now = [100.0]
+    check_calls = []
+    limited = [True]
+    pull = {"number": 1, "html_url": "https://forge-one.test/team/repo/pull/1",
+            "state": "open", "head": {"ref": "topic", "sha": "abc"},
+            "base": {"ref": "main"}, "updated_at": "t1"}
+
+    def rest(_method, path, **_kwargs):
+        if path.endswith("/pulls/1"):
+            return pull
+        if path.endswith("/reviews"):
+            return []
+        check_calls.append(path)
+        if limited[0]:
+            raise GitHubRateLimit("status unavailable until rate-limit reset", 120.0)
+        return {"check_runs": [{"name": "tests", "status": "completed",
+                                "conclusion": "success"}]}
+
+    monkeypatch.setattr("garden.github.time.time", lambda: now[0])
+    monkeypatch.setattr(gh, "_rest", rest)
+    first = gh.get_pr("team/repo", 1)
+    second = gh.get_pr("team/repo", 1)
+    assert first.checks == second.checks == "PENDING"
+    assert "rate-limit reset" in first.failed_checks[0]
+    assert len(check_calls) == 1
+
+    now[0] = 121.0
+    limited[0] = False
+    recovered = gh.get_pr("team/repo", 1)
+    assert recovered.checks == "SUCCESS"
+    assert len(check_calls) == 2
 
 
 @pytest.mark.parametrize("api_base", [

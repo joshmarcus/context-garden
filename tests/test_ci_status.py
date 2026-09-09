@@ -25,16 +25,20 @@ def test_github_status_fails_closed_for_missing_unknown_and_failure():
 def test_worker_check_is_exact_head_and_authoritative(tmp_path):
     result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "1" / "result.json"
     result.parent.mkdir(parents=True)
+    (result.parent / "execution.json").write_text('{"state":"finished"}')
     result.write_text(json.dumps({"source_sha": "old", "command": "pytest -q",
-                                  "exit_code": 0, "log_location": "/logs/1"}))
+                                  "selection": ["pytest", "-q"], "exit_code": 0,
+                                  "log_location": str(result.parent)}))
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
     assert status.state == "mismatched" and status.stale and not status.green
 
     result.write_text(json.dumps({"source_sha": "new", "command": "pytest -q",
-                                  "exit_code": 1, "log_location": "/logs/1"}))
+                                  "selection": ["pytest", "-q"], "exit_code": 1,
+                                  "log_location": str(result.parent)}))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "failure"
     result.write_text(json.dumps({"source_sha": "new", "command": "pytest -q",
-                                  "exit_code": 0, "log_location": "/logs/1"}))
+                                  "selection": ["pytest", "-q"], "exit_code": 0,
+                                  "log_location": str(result.parent)}))
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
     assert status.green and status.exists_for_sha and status.evidence_url == "/runs/CG-1/run"
 
@@ -45,7 +49,8 @@ def test_worker_check_rejects_malformed_or_wrong_command(tmp_path):
     result.write_text("not json")
     assert worker_check_status(tmp_path, "CG-1", "new", {}).state == "malformed"
     result.write_text(json.dumps({"source_sha": "new", "command": "focused",
-                                  "exit_code": 0, "log_location": "/logs/1"}))
+                                  "selection": ["focused"], "exit_code": 0,
+                                  "log_location": str(result.parent)}))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "ordinary"}).state == "missing"
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import fnmatch
 import json
 import os
@@ -251,6 +252,17 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             except (OSError, json.JSONDecodeError):
                 continue
             if isinstance(receipt, dict):
+                artifacts: dict[str, str] = {}
+                total = 0
+                for artifact in sorted(receipt_path.parent.iterdir()):
+                    if not artifact.is_file() or artifact.name == "result.json":
+                        continue
+                    data = artifact.read_bytes()
+                    if len(data) > 2_000_000 or total + len(data) > 5_000_000:
+                        continue
+                    artifacts[artifact.name] = base64.b64encode(data).decode("ascii")
+                    total += len(data)
+                receipt["artifacts"] = artifacts
                 receipts.append(receipt)
         heartbeat.ensure_current()
         client.post(f"/api/runs/{run['id']}/finish", {"lease_token": run["lease_token"],
