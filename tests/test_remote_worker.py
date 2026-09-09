@@ -449,6 +449,7 @@ def test_remote_queue_age_is_not_execution_age_and_timestamps_survive_reclaim(
     first_execution_at = claimed.execution_started_at
 
     claimed.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    claimed.recovery_expires_at = claimed.lease_expires_at
     claimed.save()
     second = client.post("/api/runs/claim", json=offer, headers=auth).json()
     reclaimed = RunStore(store.config.garden_dir).latest("DM-001")
@@ -691,7 +692,7 @@ def test_cancelled_remote_lease_is_explicitly_rejected(garden, monkeypatch):
     rejected = client.post(f"/api/runs/{run.run_id}/heartbeat",
                            json={"lease_token": claim["lease_token"]}, headers=auth)
     assert rejected.status_code == 409
-    assert "revoked" in rejected.text
+    assert "generation is no longer active" in rejected.text
 
 
 def test_transcript_replay_is_ordered_and_idempotent(garden, monkeypatch):
