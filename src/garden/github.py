@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
@@ -56,13 +56,8 @@ class PRInfo:
     body: str = ""
     head_sha: str = ""
     merge_commit_sha: str = ""
-    # The repository which owns ``head``.  An empty value is retained for older
-    # providers, but providers that expose it let attachment reject fork heads:
-    # a scheduler cannot safely revise a branch it cannot push.
-    head_repo: str = ""
     is_draft: bool = False
     node_id: str = ""
-    author: str = ""
 
 
 @dataclass
@@ -74,10 +69,6 @@ class Feedback:
     # comment by an author the garden does not trust (`reason: untrusted`). Not feedback,
     # but worth a line in the task log so a human can see what was skipped and why.
     ignored: list[dict[str, Any]] = field(default_factory=list)
-    # The newest provider timestamp completely read to produce this response.  It is
-    # deliberately independent of the filtered items: an excluded author must not make
-    # the scheduler reread the same provider range forever.
-    high_water: str = ""
 
     def __bool__(self) -> bool:
         return bool(self.items)
@@ -252,17 +243,12 @@ class GitHubLike(Protocol):
     def me(self) -> str: ...
     def is_authenticated(self) -> bool: ...
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None: ...
-    def find_open_pr(self, slug: str, head_branch: str) -> PRInfo | None: ...
-    def find_open_pr_by_base(self, slug: str, base_branch: str) -> PRInfo | None: ...
-    def list_open_prs(self, slug: str, project_users: list[str] | None = ...) -> list[PRInfo]: ...
+    def list_open_prs(self, slug: str) -> list[PRInfo]: ...
     def get_pr(self, slug: str, number: int) -> PRInfo: ...
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str,
                   draft: bool = ..., reviewers: list[str] | None = ...) -> PRInfo: ...
     def feedback_since(self, slug: str, number: int, since_iso: str,
-                       exclude_logins: set[str] | None = ..., *,
-                       inclusive: bool = ...) -> Feedback: ...
-    def incremental_feedback_since(self, slug: str, number: int, since_iso: str,
-                                   exclude_logins: set[str] | None = ...) -> Feedback: ...
+                       exclude_logins: set[str] | None = ...) -> Feedback: ...
     def complete_feedback(self, slug: str, number: int) -> dict[str, Any]: ...
     def update_pr(self, slug: str, number: int, title: str = ..., body: str = ..., base: str = ...) -> None: ...
     def mark_ready(self, slug: str, number: int) -> None: ...
@@ -361,13 +347,12 @@ class GitHub:
             raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}{suffix}")
         return r.json() if r.content else None
 
-    def _rest_pages(self, path: str, *, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    def _rest_pages(self, path: str) -> list[dict[str, Any]]:
         """Collect every page from a REST list endpoint."""
         items: list[dict[str, Any]] = []
         page = 1
         while True:
-            query = {"per_page": 100, "page": page, **(params or {})}
-            batch = self._rest("GET", path, params=query) or []
+            batch = self._rest("GET", path, params={"per_page": 100, "page": page}) or []
             items.extend(batch)
             if len(batch) < 100:
                 return items
@@ -386,82 +371,26 @@ class GitHub:
             wait = max(1, int(self._rate_limit_until - now))
             return "PENDING", [f"GitHub status unavailable; rate limit resets in {wait}s"]
         try:
-            rollup: list[dict[str, Any]] = []
-            errors: list[GitHubError] = []
             if self.gh:
-                try:
-                    runs = self._gh_object_pages(
-                        f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
-                        "check_runs",
-                    )
-                    rollup.extend({"name": item.get("name"),
-                                   "conclusion": item.get("conclusion"),
-                                   "state": item.get("status")} for item in runs)
-                except GitHubError as exc:
-                    errors.append(exc)
-                try:
-                    statuses = self._gh_object_pages(
-                        f"repos/{slug}/commits/{sha}/status?per_page=100",
-                        "statuses",
-                    )
-                    rollup.extend({"name": item.get("context"), "state": item.get("state")}
-                                  for item in statuses)
-                except GitHubError as exc:
-                    errors.append(exc)
+                payload = json.loads(self._gh(
+                    "api", f"repos/{slug}/commits/{sha}/check-runs", "-X", "GET",
+                    "-f", "per_page=100",
+                ) or "{}")
+                status_payload = json.loads(self._gh(
+                    "api", f"repos/{slug}/commits/{sha}/status", "-X", "GET",
+                    "-f", "per_page=100",
+                ) or "{}")
             else:
-                for suffix, field in (("check-runs", "check_runs"), ("status", "statuses")):
-                    try:
-                        items: list[dict[str, Any]] = []
-                        page = 1
-                        while True:
-                            payload = self._rest(
-                                "GET", f"/repos/{slug}/commits/{sha}/{suffix}",
-                                params={"per_page": 100, "page": page},
-                            ) or {}
-                            batch = payload.get(field) if isinstance(payload, dict) else None
-                            if (not isinstance(batch, list)
-                                    or any(not isinstance(item, dict) for item in batch)):
-                                raise ValueError("malformed paginated GitHub response")
-                            items.extend(batch)
-                            raw_total = payload.get("total_count")
-                            total = int(raw_total) if raw_total is not None else None
-                            if total is not None and (total < 0 or total < len(items)):
-                                raise ValueError("malformed paginated GitHub response")
-                            if total is not None and len(items) >= total:
-                                break
-                            if not batch and total is not None:
-                                raise ValueError("incomplete paginated GitHub response")
-                            if total is None and len(batch) < 100:
-                                break
-                            page += 1
-                        if field == "check_runs":
-                            rollup.extend({"name": item.get("name"),
-                                           "conclusion": item.get("conclusion"),
-                                           "state": item.get("status")} for item in items)
-                        else:
-                            rollup.extend({"name": item.get("context"),
-                                           "state": item.get("state")} for item in items)
-                    except GitHubError as exc:
-                        errors.append(exc)
-                        message = str(exc)
-                        if ("rate limit" in message.lower()
-                                or re.search(r"rate_limit_reset=(\d+)", message)):
-                            break
-            if not errors:
-                state, failures = _rollup_state(rollup), _rollup_failed(rollup)
-            else:
-                messages = [str(exc) for exc in errors]
-                reset = next((match for message in messages
-                              if (match := re.search(r"rate_limit_reset=(\d+)", message))), None)
-                if reset or any("rate limit" in message.lower() for message in messages):
-                    self._rate_limit_until = max(
-                        now + 10.0, float(reset.group(1)) if reset else now + 60.0,
-                    )
-                    state, failures = "PENDING", ["GitHub status unavailable; rate limited"]
-                else:
-                    states = [_check_error_state(exc) for exc in errors]
-                    state = "PERMISSION" if "PERMISSION" in states else "UNAVAILABLE"
-                    failures = []
+                payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/check-runs",
+                                     params={"per_page": 100}) or {}
+                status_payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/status",
+                                            params={"per_page": 100}) or {}
+            runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+            rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"),
+                       "state": c.get("status")} for c in runs]
+            statuses = status_payload.get("statuses", []) if isinstance(status_payload, dict) else []
+            rollup.extend({"name": s.get("context"), "state": s.get("state")} for s in statuses)
+            state, failures = _rollup_state(rollup), _rollup_failed(rollup)
             self._check_cache[key] = (now + 10.0, state, failures)
             return state, failures
         except (GitHubError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -548,122 +477,52 @@ class GitHub:
         prs.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
         return self._pr_from_rest(prs[0])
 
-    def find_open_pr(self, slug: str, head_branch: str) -> PRInfo | None:
-        """Return an open PR for ``head_branch``, regardless of its author.
+    def list_open_prs(self, slug: str) -> list[PRInfo]:
+        """Return open pull requests with whatever review/check state is available.
 
-        Unlike ``list_open_prs``, this exact-head safety query is deliberately not scoped
-        to Garden's configured project users. It is used before destructive branch
-        operations, where a newly opened PR from any repository collaborator is a claim.
+        REST's list endpoint omits those details, so enrich its rows independently. A
+        missing permission for one PR's review or check is represented by ``get_pr``;
+        failure to fetch the PR itself propagates so callers can retain stale facts.
         """
         if self.gh:
             out = self._gh(
-                "pr", "list", "-R", self._repo(slug), "--head", head_branch,
-                "--state", "open",
-                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt,isDraft",
-                "--limit", "1",
+                "pr", "list", "-R", self._repo(slug), "--state", "open",
+                "--json", "number,url,state,title,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,statusCheckRollup,updatedAt,isDraft",
+                "--limit", "1000",
             )
-            prs = json.loads(out or "[]")
-            if not prs:
-                return None
-            p = prs[0]
-            return PRInfo(
-                number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
-                head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
-                review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
-                updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
-            )
-        owner = slug.split("/")[0]
-        prs = self._rest(
-            "GET", f"/repos/{slug}/pulls",
-            params={"head": f"{owner}:{head_branch}", "state": "open", "per_page": 1},
-        )
-        return self._pr_from_rest(prs[0]) if prs else None
-
-    def find_open_pr_by_base(self, slug: str, base_branch: str) -> PRInfo | None:
-        """Return an open PR targeting ``base_branch``, regardless of its author."""
-        if self.gh:
-            out = self._gh(
-                "pr", "list", "-R", self._repo(slug), "--base", base_branch,
-                "--state", "open",
-                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt,isDraft",
-                "--limit", "1",
-            )
-            prs = json.loads(out or "[]")
-            if not prs:
-                return None
-            p = prs[0]
-            return PRInfo(
-                number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
-                head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
-                review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
-                updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
-            )
-        prs = self._rest(
-            "GET", f"/repos/{slug}/pulls",
-            params={"base": base_branch, "state": "open", "per_page": 1},
-        )
-        return self._pr_from_rest(prs[0]) if prs else None
-
-    def list_open_prs(self, slug: str, project_users: list[str] | None = None) -> list[PRInfo]:
-        """Return relevant open pull requests with review/check state when available.
-
-        Repository observations are scoped to the authenticated user plus configured
-        project users. This avoids a repository-wide scan in large shared repositories.
-        REST search results omit PR details, so enrich those rows independently. A missing
-        permission for one PR's review or check is represented by ``get_pr``; failure to
-        fetch the PR itself propagates so callers can retain stale facts.
-        """
-        authors = {str(user).strip() for user in (project_users or []) if str(user).strip()}
-        current_user = self.me()
-        if current_user:
-            authors.add(current_user)
-        if not authors:
-            raise GitHubError("cannot scope open PRs: authenticated GitHub user is unknown and github.project_users is empty")
-        if self.gh:
-            rows: dict[int, PRInfo] = {}
-            for author in sorted(authors):
-                out = self._gh(
-                    "pr", "list", "-R", self._repo(slug), "--state", "open", "--author", author,
-                    "--json", "number,url,state,title,author,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,statusCheckRollup,updatedAt,isDraft",
-                    "--limit", "1000",
+            return [
+                PRInfo(
+                    number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
+                    head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
+                    review_decision=p.get("reviewDecision") or "",
+                    mergeable=p.get("mergeable") or "", head_sha=p.get("headRefOid") or "",
+                    checks=_rollup_state(p.get("statusCheckRollup") or []),
+                    failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
+                    updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
                 )
-                for p in json.loads(out or "[]"):
-                    rows[p["number"]] = PRInfo(
-                        number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
-                        head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
-                        review_decision=p.get("reviewDecision") or "",
-                        mergeable=p.get("mergeable") or "", head_sha=p.get("headRefOid") or "",
-                        checks=_rollup_state(p.get("statusCheckRollup") or []),
-                        failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
-                        updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
-                        author=str((p.get("author") or {}).get("login") or author),
-                    )
-            return sorted(rows.values(), key=lambda pr: pr.updated_at, reverse=True)
-        numbers: set[int] = set()
-        for author in sorted(authors):
-            page = 1
-            while True:
-                response = self._rest(
-                    "GET", "/search/issues",
-                    params={
-                        "q": f"repo:{slug} is:pr is:open author:{author}",
-                        "per_page": 100,
-                        "page": page,
-                    },
-                ) or {}
-                batch = response.get("items", [])
-                numbers.update(int(item["number"]) for item in batch)
-                if len(batch) < 100:
-                    break
-                page += 1
-        result = [self.get_pr(slug, number) for number in sorted(numbers)]
-        return sorted(result, key=lambda pr: pr.updated_at, reverse=True)
+                for p in json.loads(out or "[]")
+            ]
+        listed = []
+        page = 1
+        while True:
+            batch = self._rest(
+                "GET", f"/repos/{slug}/pulls", params={"state": "open", "per_page": 100, "page": page}
+            ) or []
+            listed.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        result: list[PRInfo] = []
+        for item in listed:
+            basic = self._pr_from_rest(item)
+            result.append(self.get_pr(slug, basic.number))
+        return result
 
     def get_pr(self, slug: str, number: int) -> PRInfo:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-                "--json", "number,url,state,title,body,author,headRefName,headRefOid,headRepository,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
+                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
             checks, failed_checks = self._checks_for_sha(slug, p.get("headRefOid") or "")
@@ -674,16 +533,13 @@ class GitHub:
                 checks=checks, failed_checks=failed_checks, updated_at=p.get("updatedAt", ""),
                 body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
                 merge_commit_sha=(p.get("mergeCommit") or {}).get("oid", ""),
-                head_repo=str((p.get("headRepository") or {}).get("nameWithOwner") or ""),
                 is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
-                author=str((p.get("author") or {}).get("login") or ""),
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
         info = self._pr_from_rest(p)
         info.body = p.get("body") or ""
         info.head_sha = (p.get("head") or {}).get("sha", "")
         info.merge_commit_sha = p.get("merge_commit_sha") or ""
-        info.head_repo = str(((p.get("head") or {}).get("repo") or {}).get("full_name") or "")
         if info.head_sha:
             info.checks, info.failed_checks = self._checks_for_sha(slug, info.head_sha)
         try:
@@ -708,7 +564,6 @@ class GitHub:
             mergeable=("MERGEABLE" if p.get("mergeable") else "CONFLICTING")
             if p.get("mergeable") is not None else "",
             updated_at=p.get("updated_at", ""), is_draft=bool(p.get("draft")), node_id=str(p.get("node_id") or ""),
-            author=str((p.get("user") or {}).get("login") or ""),
         )
 
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str, draft: bool = False,
@@ -732,8 +587,7 @@ class GitHub:
                 pass
         return self._pr_from_rest(p)
 
-    def feedback_since(self, slug: str, number: int, since_iso: str,
-                       exclude_logins: set[str] | None = None, *, inclusive: bool = False) -> Feedback:
+    def feedback_since(self, slug: str, number: int, since_iso: str, exclude_logins: set[str] | None = None) -> Feedback:
         """Reviews, review (line) comments and issue comments newer than `since_iso`, from
         trusted authors only (see `is_trusted`); the rest is returned as `ignored`."""
         # The garden's own comments are recognised by GARDEN_MARKER, not by login: the person
@@ -745,7 +599,7 @@ class GitHub:
         ignored: list[dict[str, Any]] = []
 
         def newer(created: str) -> bool:
-            return created >= since_iso if since_iso and inclusive else (created > since_iso if since_iso else True)
+            return created > since_iso if since_iso else True
 
         def keep(author: str, created: str, body: str) -> bool:
             if not body.strip() or GARDEN_MARKER in body:
@@ -769,9 +623,9 @@ class GitHub:
             return any(p in low for p in self.bot_notice_patterns)
 
         if self.gh:
-            reviews = self._gh_pages(f"repos/{slug}/pulls/{number}/reviews")
-            comments = self._gh_pages(f"repos/{slug}/pulls/{number}/comments")
-            issue_comments = self._gh_pages(f"repos/{slug}/issues/{number}/comments")
+            reviews = json.loads(self._gh("api", f"repos/{slug}/pulls/{number}/reviews", "--paginate") or "[]")
+            comments = json.loads(self._gh("api", f"repos/{slug}/pulls/{number}/comments", "--paginate") or "[]")
+            issue_comments = json.loads(self._gh("api", f"repos/{slug}/issues/{number}/comments", "--paginate") or "[]")
         else:
             reviews = self._rest_pages(f"/repos/{slug}/pulls/{number}/reviews")
             comments = self._rest_pages(f"/repos/{slug}/pulls/{number}/comments")
@@ -807,149 +661,7 @@ class GitHub:
                     items.append({"id": f"comment:{c.get('id', '')}", "kind": "comment", "author": author, "body": body, "created": c["created_at"]})
         items.sort(key=lambda i: i.get("created", ""))
         ignored.sort(key=lambda i: i.get("created", ""))
-        timestamps = [str(row.get("submitted_at") or row.get("created_at") or "")
-                      for row in [*reviews, *comments, *issue_comments]]
-        return Feedback(items=items, ignored=ignored, high_water=max(timestamps, default=""))
-
-    def incremental_feedback_since(self, slug: str, number: int, since_iso: str,
-                                   exclude_logins: set[str] | None = None) -> Feedback:
-        """Read feedback added at or after a durable high-water timestamp.
-
-        The two comment endpoints provide a ``since`` filter.  Reviews do not, so use
-        GraphQL's backwards pagination and stop once the oldest returned review predates
-        the cursor.  Keeping the cursor timestamp inclusive and letting stable IDs
-        deduplicate it prevents a same-second comment from being lost after a restart.
-        """
-        if not since_iso:
-            return self.feedback_since(slug, number, "", exclude_logins)
-        # GitHub's REST ``since`` is exclusive. Request one second earlier so comments
-        # sharing the cursor timestamp arrive for identity-based deduplication.
-        try:
-            since = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
-            request_since = (since.astimezone(UTC).timestamp() - 1)
-            request_since_iso = datetime.fromtimestamp(request_since, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        except ValueError:
-            # Older test providers sometimes use synthetic timestamps. They still get
-            # the safe complete path rather than a cursor that could skip feedback.
-            return self.feedback_since(slug, number, "", exclude_logins)
-        reviews = self._reviews_since(slug, number, since_iso)
-        query = urlencode({"since": request_since_iso, "per_page": "100"})
-        review_path = f"repos/{slug}/pulls/{number}/comments?{query}"
-        issue_path = f"repos/{slug}/issues/{number}/comments?{query}"
-        if self.gh:
-            comments = self._gh_pages(review_path)
-            issue_comments = self._gh_pages(issue_path)
-        else:
-            comments = self._rest_pages(f"/repos/{slug}/pulls/{number}/comments",
-                                        params={"since": request_since_iso})
-            issue_comments = self._rest_pages(f"/repos/{slug}/issues/{number}/comments",
-                                              params={"since": request_since_iso})
-        return self._feedback_from_rows(reviews, comments, issue_comments, since_iso,
-                                        exclude_logins, inclusive=True)
-
-    def _gh_pages(self, path: str) -> list[dict[str, Any]]:
-        """Read all CLI pages as one JSON document, including a cursor boundary page."""
-        data = json.loads(self._gh("api", path, "--paginate", "--slurp") or "[]")
-        return [row for page in data for row in page] if data and isinstance(data[0], list) else data
-
-    def _gh_object_pages(self, path: str, field: str) -> list[dict[str, Any]]:
-        """Collect one list field from every object page returned by ``gh api``."""
-        pages = json.loads(self._gh("api", path, "--paginate", "--slurp") or "null")
-        if not isinstance(pages, list) or not pages:
-            raise ValueError("malformed paginated GitHub response")
-        rows: list[dict[str, Any]] = []
-        for page in pages:
-            batch = page.get(field) if isinstance(page, dict) else None
-            if not isinstance(batch, list) or any(not isinstance(row, dict) for row in batch):
-                raise ValueError("malformed paginated GitHub response")
-            rows.extend(batch)
-        return rows
-
-    def _reviews_since(self, slug: str, number: int, since_iso: str) -> list[dict[str, Any]]:
-        owner, name = slug.split("/", 1)
-        query = """query($owner:String!,$name:String!,$number:Int!,$before:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(last:100,before:$before){pageInfo{hasPreviousPage startCursor}nodes{databaseId author{login} submittedAt state body commit{oid}}}}}}"""
-        before: str | None = None
-        rows: list[dict[str, Any]] = []
-        while True:
-            if self.gh:
-                args = ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
-                        "-f", f"name={name}", "-F", f"number={number}"]
-                if before:
-                    args += ["-f", f"before={before}"]
-                data = json.loads(self._gh(*args) or "{}")
-            else:
-                data = self._rest("POST", "/graphql", json={"query": query, "variables": {
-                    "owner": owner, "name": name, "number": number, "before": before,
-                }}) or {}
-            if data.get("errors"):
-                raise GitHubError(str(data["errors"])[:300])
-            reviews = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviews") or {}
-            batch = reviews.get("nodes") or []
-            rows.extend({"id": row.get("databaseId"), "user": row.get("author") or {},
-                         "submitted_at": row.get("submittedAt") or "", "state": row.get("state") or "",
-                         "body": row.get("body") or "", "commit_id": (row.get("commit") or {}).get("oid")}
-                        for row in batch)
-            created = [str(row.get("submittedAt") or "") for row in batch]
-            page = reviews.get("pageInfo") or {}
-            if not page.get("hasPreviousPage") or not created or min(created) < since_iso:
-                return rows
-            before = page.get("startCursor")
-            if not before:
-                raise GitHubError("review pagination returned no cursor")
-
-    def _feedback_from_rows(self, reviews: list[dict[str, Any]], comments: list[dict[str, Any]],
-                            issue_comments: list[dict[str, Any]], since_iso: str,
-                            exclude_logins: set[str] | None, *, inclusive: bool) -> Feedback:
-        """Filter provider rows consistently for full and cursor-based fetches."""
-        exclude = set(exclude_logins or set()) | self.bot_logins
-        items: list[dict[str, Any]] = []
-        ignored: list[dict[str, Any]] = []
-
-        def newer(created: str) -> bool:
-            return created >= since_iso if inclusive else created > since_iso
-
-        def accepted(author: str, created: str, body: str) -> bool:
-            return bool(body.strip()) and GARDEN_MARKER not in body and author not in exclude and newer(created)
-
-        def skipped(author: str, created: str, body: str) -> bool:
-            if self.is_trusted(author):
-                return False
-            ignored.append({"author": author, "body": body, "created": created, "reason": "untrusted"})
-            return True
-
-        def notice(author: str, body: str) -> bool:
-            return (author.endswith("[bot]") and not FINDING_MARKER_RE.search(body)
-                    and any(pattern in body.lower() for pattern in self.bot_notice_patterns))
-
-        for row in reviews:
-            author = str((row.get("user") or {}).get("login") or "")
-            created, body, state = str(row.get("submitted_at") or ""), str(row.get("body") or ""), str(row.get("state") or "")
-            changes_requested = state == "CHANGES_REQUESTED" and newer(created) and author not in exclude
-            if changes_requested and not skipped(author, created, body or "(changes requested)"):
-                items.append({"id": f"review:{row.get('id', '')}", "kind": "review", "state": state, "author": author,
-                              "body": body or "(changes requested)", "created": created, "commit_id": row.get("commit_id")})
-            elif accepted(author, created, body) and not skipped(author, created, body):
-                entry = {"id": f"review:{row.get('id', '')}", "kind": "review", "state": state, "author": author,
-                         "body": body, "created": created, "commit_id": row.get("commit_id")}
-                (ignored if notice(author, body) else items).append(
-                    {"author": author, "body": body, "created": created, "reason": "notice"} if notice(author, body) else entry)
-        for row in comments:
-            author, created, body = str((row.get("user") or {}).get("login") or ""), str(row.get("created_at") or ""), str(row.get("body") or "")
-            if accepted(author, created, body) and not skipped(author, created, body):
-                items.append({"id": f"line:{row.get('id', '')}", "kind": "line comment", "author": author, "body": body,
-                              "path": row.get("path"), "line": row.get("line") or row.get("original_line"), "created": created,
-                              "commit_id": row.get("commit_id") or row.get("original_commit_id")})
-        for row in issue_comments:
-            author, created, body = str((row.get("user") or {}).get("login") or ""), str(row.get("created_at") or ""), str(row.get("body") or "")
-            if accepted(author, created, body) and not skipped(author, created, body):
-                entry = {"id": f"comment:{row.get('id', '')}", "kind": "comment", "author": author, "body": body, "created": created}
-                (ignored if notice(author, body) else items).append(
-                    {"author": author, "body": body, "created": created, "reason": "notice"} if notice(author, body) else entry)
-        timestamps = [str(row.get("submitted_at") or row.get("created_at") or "")
-                      for row in [*reviews, *comments, *issue_comments]]
-        return Feedback(items=sorted(items, key=lambda item: item.get("created", "")),
-                        ignored=sorted(ignored, key=lambda item: item.get("created", "")),
-                        high_water=max(timestamps, default=""))
+        return Feedback(items=items, ignored=ignored)
 
     def _all_rest(self, path: str) -> list[dict[str, Any]]:
         """Read every REST page. This is deliberately separate from incremental polling."""
