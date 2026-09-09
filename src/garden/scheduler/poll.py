@@ -564,6 +564,13 @@ class PollMixin:
                 continue
             if pr.state != "OPEN":
                 continue
+            try:
+                self._refuse_if_closed_or_frozen(child)
+            except RuntimeError:
+                # A held child keeps its PR and stack base unchanged.  Returning False
+                # also preserves the parent branch, so GitHub cannot close that PR
+                # before the phase is unfrozen and the ordinary restack can resume.
+                return False
             if self.external_stack_owner(child):
                 if pr.base == parent_branch:
                     reason = (f"external stack owner must retarget its PR from {parent_branch} "
