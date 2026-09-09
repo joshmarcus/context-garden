@@ -20,18 +20,22 @@ from garden.runner.local import LocalRunner
 from garden.runner.manual import ManualRunner
 from garden.runs import Run
 
+_EXECUTION_LEASE_ENV = frozenset({
+    "GARDEN_EXECUTION_RUN_DIR",
+    "GARDEN_EXECUTION_OWNER",
+    "GARDEN_HEAVY_EXECUTION",
+    "GARDEN_OWNER_SCOPED",
+    "GARDEN_EXECUTION_TIMEOUT_SECONDS",
+    "GARDEN_VALIDATION_INHERITS_LEASE",
+})
+
 
 def _synthetic_child_env(
     env: dict[str, str] | None = None, **updates: str,
 ) -> dict[str, str]:
     """Build a child fixture env without borrowing the enclosing validation identity."""
-    inherited_execution = {
-        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
-        "GARDEN_OWNER_SCOPED", "GARDEN_EXECUTION_TIMEOUT_SECONDS",
-        "GARDEN_VALIDATION_INHERITS_LEASE",
-    }
     child = dict(os.environ if env is None else env)
-    for key in inherited_execution:
+    for key in _EXECUTION_LEASE_ENV:
         child.pop(key, None)
     child.update(updates)
     return child
@@ -70,13 +74,27 @@ def _stop_and_reap_local_run(run: Run) -> None:
 
 def _standalone_supervisor_env(**updates: str) -> dict[str, str]:
     """Build fixture env without inheriting the containing run's execution lease."""
-    inherited_execution = {
-        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
-        "GARDEN_OWNER_SCOPED",
+    return _synthetic_child_env(**updates)
+
+
+def test_synthetic_child_env_drops_enclosing_validation_lease(monkeypatch):
+    """Runner fixtures receive a new lease instead of contending with pytest's owner."""
+    inherited = {
+        "GARDEN_EXECUTION_RUN_DIR": "/outer/run",
+        "GARDEN_EXECUTION_OWNER": "outer-owner",
+        "GARDEN_HEAVY_EXECUTION": "1",
+        "GARDEN_OWNER_SCOPED": "1",
+        "GARDEN_EXECUTION_TIMEOUT_SECONDS": "900",
+        "GARDEN_VALIDATION_INHERITS_LEASE": "1",
     }
-    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
-    env.update(updates)
-    return env
+    for key, value in inherited.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("UNRELATED_FIXTURE_VALUE", "kept")
+
+    child = _synthetic_child_env()
+
+    assert _EXECUTION_LEASE_ENV.isdisjoint(child)
+    assert child["UNRELATED_FIXTURE_VALUE"] == "kept"
 
 
 @contextmanager
