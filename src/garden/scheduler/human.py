@@ -48,12 +48,13 @@ class HumanMixin:
     def manual_return_guard(self, task: Task) -> dict[str, Any]:
         """Return the task/PR state a guarded Manual-mode return must still match."""
         st = self.state.get(task.id)
+        observed = st.get("manual_observed_pr") or {}
         return {
             "status": task.status.value,
             "pr": task.pr or "",
             "pr_number": int(st.get("pr_number") or 0),
             "pr_state": str(st.get("pr_state") or ""),
-            "head_sha": str(st.get("head_sha") or ""),
+            "head_sha": str(observed.get("head_sha") or st.get("head_sha") or ""),
         }
 
     def return_to_automation(
@@ -82,6 +83,7 @@ class HumanMixin:
                     raise RuntimeError(f"{task_id} is already reserved in Manual mode")
                 reservation = {"id": uuid.uuid4().hex, "actor": actor, "note": note.strip()[:240], "at": now_iso()}
                 st["manual_reservation"] = reservation
+                st.pop("manual_observed_pr", None)
                 active = [run.run_id for run in self.runs.active() if run.task_id == task_id]
                 self.events.emit("manual_reserved", task_id, actor=actor, note=reservation["note"], active_runs=active)
                 suffix = f": {reservation['note']}" if reservation["note"] else ""
@@ -110,6 +112,7 @@ class HumanMixin:
             if normalized_expected != current_guard:
                 raise RuntimeError("the observed task or PR state changed; reload before returning to automation")
             st.pop("manual_reservation", None)
+            st.pop("manual_observed_pr", None)
             self.events.emit("manual_returned", task_id, actor=existing.get("actor"), head=current_guard["head_sha"])
             current.log("returned from Manual mode to automation")
             self.store.save(current)
