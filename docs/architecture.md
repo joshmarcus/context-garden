@@ -75,8 +75,9 @@ flowchart LR
   blockers, and `garden maintenance-resume` explicitly permits normal collection again.
 - **GitHub** holds the pull requests and the review conversation. Only the scheduler opens
   PRs and talks to it through the `gh` CLI when it is installed and logged in, otherwise
-  the REST API with `GITHUB_TOKEN`. Local workers never push or open PRs; a remote SSH
-  worker pushes its assigned branch, but does not open a PR.
+  the REST API with `GITHUB_TOKEN`. Local workers normally leave branch publication to the
+  scheduler, but `setup.worker_push: true` explicitly permits an assigned-branch CI push;
+  a remote SSH worker pushes its assigned branch, but does not open a PR.
 - **The filesystem** carries everything between those three: the garden's markdown, the
   run directories, the git worktrees, the JSON side-store and the event log. There is no
   queue, no database and no socket.
@@ -307,7 +308,7 @@ output. Details of the transport are in `docs/worker-protocol.md`; the decisions
 | `status: needs_input` | stores the question, session id, host and harness | `waiting_human` (holds no slot) |
 | `status: wont_do` or `no_change` | stores the reason and the worker's final message as a decision for the person | `waiting_human`; Accept ends a `wont_do` in the terminal `wont_do` status (closing any PR) or resumes a `no_change` to the PR/review; Reject sends it back to a revise run with the person's note |
 | `status: done` but no commits ahead of the base | marks the run failed | `ready` or `failed`, as above |
-| `status: done` with commits | files discovered work as tasks, commits leftovers, pushes, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
+| `status: done` with commits | files discovered work as tasks, preserves any uncommitted leftovers as a named recovery stash, pushes committed work, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
 | still running after `timeout_minutes` + 5 | kills the process group | `ready` or `failed` |
 | no output or worktree change for `idle_kill_minutes` | shown as "idle N min" past `idle_minutes`, then kills the process group like a timeout | `ready` or `failed` |
 
@@ -341,12 +342,13 @@ The queue is revise runs first (tasks in `changes_requested` with feedback waiti
 flagged for a human, under `max_revisions`), then the ready set from `graph.ready()`:
 approved tasks whose dependencies are all `done`, or, with `stack: true`, whose single
 unfinished dependency has an open PR to build on. Order is priority, then id. Each
-candidate is skipped when no slot is free (`max_parallel` minus every active run that is
-not human-driven, review and persona runs included), when its phase is over budget, or when
+candidate is skipped when no worker slot is free (`max_parallel` minus active worker runs;
+review and persona runs use their separate `review_parallel` pool), when its phase is over budget, or when
 its runner is `manual` (a person takes those with `garden take`).
 
-Local admission is also host-wide: `resources.max_parallel` counts workers, reviews,
-personas and checks together, including automatic base probes and direct CLI dispatches.
+When configured, local admission is also host-wide: `resources.max_parallel` counts workers,
+reviews, personas and checks together, including automatic base probes and direct CLI dispatches.
+The default `null` preserves the separate worker and review pools described above.
 Optional available-memory and work-dir temp-free thresholds defer every new local launch.
 The capacity check and new running record are published under one filesystem lock, so a
 service action and concurrent CLI commands cannot all claim the final slot.
@@ -460,12 +462,13 @@ files under `tasks/` must not be hand-edited.
     before it can automerge. Merging a child into the parent's branch would put commits
     there that the parent's worktree does not have, and the parent's next rebase round
     would force-push them away.
-  - **A self or tool product needs a second round.** A PR against a product with `self: true`
-    (the garden's own repo) or `provides_tool: true` (the product that ships the `garden`
-    binary) can change the loop that merges it, so `automerge_min_review_rounds` is 2 there
-    by default — one approving LLM review is not enough (`_needs_second_review_round`). An
-    explicit per-product `automerge_min_review_rounds` overrides the default; otherwise the
-    PR waits for a second approving round or a person merging it by hand.
+  - **A self product needs an independent second opinion.** A PR against a product with
+    `self: true` (the garden's own repo) can change the loop that merges it. By default it
+    needs one approving automated review plus a current-head persona review or human GitHub
+    approval; a second automated review from the same product does not satisfy that gate.
+    An explicit per-product `automerge_min_review_rounds` overrides the default self-product
+    review policy. A `provides_tool: true` product instead keeps the ordinary default of two
+    approving automated rounds unless that setting overrides it.
   - **A rebase round keeps remote-only commits.** A rebase round rewrites a branch in the
     worktree and force-pushes it, so before rebasing the scheduler folds in any commits
     that exist only on `origin/<branch>` by rebasing the worktree's commits onto it first.
@@ -821,8 +824,12 @@ live work.
 - `model`, `store`, `graph` and `brief` make no network calls and no subprocess calls
   beyond git, so briefs and readiness are testable offline.
 - Only `scheduler` changes a task's status; the CLI, web and TUI call it.
-- Workers commit and never push; the scheduler pushes and never commits code of its own
-  (it only commits a worker's leftover changes before pushing).
+- Local workers commit in their worktree; by default the scheduler publishes the branch.
+  A product may set `setup.worker_push: true` when its worker needs to push the assigned
+  branch (for example to await CI). SSH workers push their host-side branch, and pull-based
+  remote workers push a lease-specific staging ref that the scheduler promotes. The scheduler
+  does not commit code on a worker's behalf: uncommitted leftovers are preserved as named
+  recovery stashes for explicit restoration.
 - A worker runs in a scrubbed environment (`runner.base.scrubbed_env`): an allowlist of the
   scheduler's variables (`runner.base.PASS_ENV`, widened by `worker_env.pass`) plus the
   product's `setup.env`, never its GitHub token, cloud credentials or ssh agent, and never

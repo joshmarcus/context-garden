@@ -15,7 +15,7 @@ runner instead uses HTTPS and shares no filesystem with the scheduler.
 | scheduler to worker | the **working directory** | a git worktree on the task's branch, based on the right base |
 | scheduler to worker | two **environment variables** | `GARDEN_TASK_ID`, `GARDEN_RUN_ID` (informational) |
 | worker to scheduler | **stdout** | the harness's structured output: the final message, token usage, cost, session id |
-| worker to scheduler | the **worktree** | commits on the task branch (CI pushes only when explicitly enabled) |
+| worker to scheduler | the **worktree** | commits on the task branch; publication is handled by the configured transport |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
 
 ## Independent hosts
@@ -65,9 +65,12 @@ workers:
 the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
-the whole result contract. Except for explicitly enabled worker CI pushes (`docs/worker-ci.md`), publication
-(the branch, pull request and review comments) is done by the scheduler from what it finds
-in the run directory and the worktree.
+the whole result contract. For the local runner, publication of the task branch, pull request
+and review comments is done by the scheduler. A product may explicitly set
+`products.<name>.setup.worker_push: true` for a local worker that must publish its assigned
+branch for CI; this does not grant PR-management credentials. The SSH runner pushes its
+host-side branch, while the remote runner pushes a lease-specific staging ref for scheduler
+promotion. Review comments and pull requests remain scheduler-owned.
 
 ## Required review evidence
 
@@ -372,8 +375,11 @@ exits, `garden serve` may be restarted, the laptop may sleep. The run's existenc
 
 The web UI's "Running now" list and `garden runs` read the same `run.json` files. The
 worker, meanwhile, sees a normal repository checkout on a branch and a prompt that ends
-with the operating rules: commit in small steps, do not push, do not open a PR, do not
-edit `tasks/`, run the project's checks, and finish with the result line.
+with the operating rules: commit in small steps, do not open a PR, do not edit `tasks/`,
+run the project's checks, and finish with the result line. Local workers normally leave
+branch publication to the scheduler; an explicitly configured `setup.worker_push: true`
+may permit the assigned-branch CI push. SSH and remote workers follow their transport's
+push rules above.
 
 ### 4. What the worker sends back
 
@@ -464,8 +470,10 @@ On the next tick after `exit_code` appears, the scheduler:
 2. Decides from the exit code and the result line (the table is in
    `docs/architecture.md`): retry or fail, `waiting_human`, or carry on.
 3. Files discovered work as task files in the same phase.
-4. Commits anything the worker left uncommitted (`<id>: leftover changes from worker run
-   ...`), counts commits ahead of the base, and fails the run if there are none.
+4. Preserves anything the worker left uncommitted as a named recovery stash, records its
+   SHA and restore command in the run and task state, counts committed work ahead of the
+   base, and fails the run if there are none. A later dispatch also stashes dirty leftovers
+   before syncing a reused worktree; nothing is silently folded into the PR.
 5. Pushes the branch. From here on the branch exists outside the machine.
 6. Runs `checks.pre_pr` in the worktree (tests, lint: no model). A failure becomes
    feedback and the task goes to `changes_requested` before any PR exists.
@@ -534,8 +542,8 @@ blocking finding keeps the task's tier.
 in a heredoc and pipes it to `ssh <host> sh -s`. On the host, the script refreshes that
 host's clone of the product repo, creates or reuses a worktree under
 `<repo>/.garden-worktrees/<id>` on the task branch, runs the harness with the brief on
-stdin, commits leftovers and pushes the branch itself (the host has push access; the
-scheduler's machine may not). The harness and the setup command run under the same
+stdin, preserves uncommitted leftovers for recovery, and pushes the branch itself (the host
+has push access; the scheduler's machine may not). The harness and the setup command run under the same
 allowlist as the local worker (`runner.base.PASS_ENV` plus `worker_env.pass` and
 `setup.env`), applied in shell: every other variable of the remote login environment is
 unset before they run, so a host's ambient tokens do not reach the worker either, and (as
@@ -600,9 +608,9 @@ reach `ready`, whatever `plan.auto_approve` says.
 
 | the scheduler never | the worker never |
 |---|---|
-| calls a model, or reads a transcript | pushes, opens a PR, or comments on one |
+| calls a model, or reads a transcript | opens a PR or comments on one; a local worker normally leaves publication to the scheduler |
 | holds a connection to a worker | edits files under `tasks/` |
-| edits code in a worktree (it only commits leftovers before pushing) | reads the whole garden; it gets the brief and the reading list |
+| edits code in a worktree (uncommitted leftovers are stashed, not committed) | reads the whole garden; it gets the brief and the reading list |
 | retries without a cap | waits for the scheduler; it finishes and exits |
 | lets an answer or a brief widen the fence | writes or commits outside its own worktree (the runner denies it; a slip is reverted, §2a) |
 
