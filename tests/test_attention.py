@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from garden.github import PRInfo
 from garden.inbox import attention_view, build_inbox, needs_human_info
 from garden.model import Status
 from garden.runs import RunStore
@@ -428,6 +430,9 @@ def test_stale_successful_check_stop_can_be_cleared_without_rerunning(garden):
     _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "older timeout"},
                checks="SUCCESS", head_sha="abcdef123456")
     sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=7, url="https://example.com/pull/7", state="OPEN", head_sha="abcdef123456"
+    )
     card = next(item for item in build_inbox(sched.store, sched) if item["task"] == "DM-001")
     assert card["category"] == "Stale bookkeeping"
     recover = next(action for action in card["actions"] if action["kind"] == "recover-check")
@@ -436,12 +441,30 @@ def test_stale_successful_check_stop_can_be_cleared_without_rerunning(garden):
     page = client.get("/").text
     assert "Recover check and resume pipeline" in page and "stale" in page.lower()
 
-    response = client.post("/tasks/DM-001/recover-check", follow_redirects=False)
-
-    assert response.status_code == 303
-    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert sched.recover_waiting_check(sched.store.task("DM-001")) == (
+        "stale check metadata cleared; restored in_review"
+    )
+    state = sched.state.get("DM-001")
     assert not state.get("needs_human")
     assert Store(garden).task("DM-001").status == Status.IN_REVIEW
+
+
+def test_stale_successful_check_stop_refuses_a_changed_live_head(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "older timeout"},
+               checks="SUCCESS", head_sha="old-head")
+    sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=7, url="https://example.com/pull/7", state="OPEN", head_sha="new-head"
+    )
+
+    with pytest.raises(RuntimeError, match="different PR head"):
+        sched.recover_waiting_check(sched.store.task("DM-001"))
+
+    state = sched.state.get("DM-001")
+    assert state["needs_human"]["reason"] == "older timeout"
+    assert state["checks"] == "SUCCESS"
 
 
 def test_explicit_hold_and_real_question_name_the_correct_owner(garden):

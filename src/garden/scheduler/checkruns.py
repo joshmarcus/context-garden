@@ -21,6 +21,7 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
+from ..github import GitHubError
 from ..model import Status, Task, ensure_open, now_iso
 from ..preflight import _is_ui_path as _is_preflight_ui_path
 from ..preflight import capture_infrastructure_reason, mechanical_results
@@ -45,6 +46,33 @@ class CheckRunMixin:
     # ---- dispatch / reap ---------------------------------------------------
     def _run_by_id(self, task: Task, run_id: str) -> Run | None:
         return next((r for r in self.runs.runs_for(task.id) if r.run_id == run_id), None)
+
+    def _require_current_success_head(self, task: Task, expected_head: str) -> None:
+        """Fail closed before treating cached successful PR checks as current."""
+        if not expected_head:
+            raise RuntimeError(
+                f"{task.id} successful check has no recorded source head; its stop was not cleared"
+            )
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if not self.github.available or not slug or not number:
+            raise RuntimeError(
+                f"{task.id} current PR head could not be established; its check stop was not cleared"
+            )
+        try:
+            current_head = str(self.github.get_pr(slug, number).head_sha or "")
+        except (GitHubError, KeyError, OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"{task.id} current PR head could not be established; its check stop was not cleared"
+            ) from exc
+        if not current_head:
+            raise RuntimeError(
+                f"{task.id} current PR head could not be established; its check stop was not cleared"
+            )
+        if expected_head != current_head:
+            raise RuntimeError(
+                f"{task.id} moved to a different PR head; its successful check stop was not cleared"
+            )
 
     def _pre_pr_cont(self, worker_run: Run | None, worktree: Path, branch: str, base: str, cost: str,
                      diff_h: str | None = None, body_h: str | None = None, stalled: bool = False) -> dict[str, Any]:
@@ -223,12 +251,16 @@ class CheckRunMixin:
                 return (f"recovery check {recovery_run_id} does not match stopped check {stopped_run_id}; "
                         "left both continuations untouched")
 
-            st.pop("check_run", None)
-            st.pop("needs_human", None)
-            st.pop("recovery_check", None)
             failed_checks = [str(name) for name in st.get("failed_checks") or [] if str(name)]
             ci_failed = str(st.get("checks") or "").upper() == "FAILURE"
             feedback = str(st.get("pending_feedback") or "").strip()
+            if task.pr and not (feedback or ci_failed or failed_checks):
+                expected_head = str(recovery.get("source_head") or st.get("head_sha") or "")
+                self._require_current_success_head(task, expected_head)
+
+            st.pop("check_run", None)
+            st.pop("needs_human", None)
+            st.pop("recovery_check", None)
             if feedback or ci_failed or failed_checks:
                 if not feedback:
                     names = ", ".join(failed_checks) or "unknown"
@@ -258,6 +290,9 @@ class CheckRunMixin:
 
         if any(run.task_id == task.id for run in self.runs.active()):
             raise RuntimeError(f"{task.id} has active work; stale recovery was not applied")
+        if (task.pr and str(st.get("checks") or "").upper() == "SUCCESS"
+                and not st.get("pending_feedback") and not st.get("failed_checks")):
+            self._require_current_success_head(task, str(st.get("head_sha") or ""))
         st.pop("check_run", None)
         stop = st.get("needs_human") or {}
         if isinstance(stop, dict) and stop.get("kind") == "check_did_not_run":
