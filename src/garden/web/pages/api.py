@@ -92,7 +92,7 @@ def register(app: FastAPI, site: Site) -> None:
             # SCP syntax permits an arbitrary transport username. It cannot contain a
             # colon, so this preserves service-account identities without accepting a
             # password-bearing URL form.
-            if re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s:@]+(?:/[^\s:@]+)*", value):
+            if re.fullmatch(r"(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9.-]+:[^\s:@]+(?:/[^\s:@]+)*", value):
                 return value
             if "@" in value or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", value):
                 raise HTTPException(409, "repository remote is not a safe clone URL")

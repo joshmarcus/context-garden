@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import socket
 import sys
 import threading
 import time
@@ -90,6 +92,121 @@ def test_claim_resolves_controller_repository_before_reading_branch_head(
     if reference != "../repo":
         assert response.json()["repo"] == reference
         assert (store.config.repos_dir / "project/.git").is_dir()
+
+
+@pytest.mark.parametrize("task_override,reference", [
+    (False, "acct-1234@forge-one.test:team/repo.git"),
+    (False, "forge-one.test:team/repo.git"),
+    (True, "acct-1234@forge-one.test:team/repo.git"),
+    (True, "forge-one.test:team/repo.git"),
+])
+def test_claim_preserves_configured_scp_repository_reference(
+    garden, monkeypatch, task_override, reference,
+):
+    if task_override:
+        store = Store(garden)
+        task = store.tasks()["DM-001"]
+        task.repo = reference
+        store.save(task)
+    else:
+        path = garden / "garden.yaml"
+        cfg = yaml.safe_load(path.read_text())
+        cfg["products"]["demo"]["repo"] = reference
+        path.write_text(yaml.safe_dump(cfg))
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+    repo = garden.parent / "repo"
+    monkeypatch.setattr("garden.web.pages.api.gitops.ensure_repo", lambda *_args, **_kwargs: repo)
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["repo"] == reference
+
+
+@pytest.mark.parametrize("reference", [
+    "acct-1234@forge-one.test:team/repo.git",
+    "forge-one.test:team/repo.git",
+])
+def test_claim_preserves_scp_repository_over_served_http(garden, monkeypatch, reference):
+    """A real HTTP claim keeps each supported SCP spelling unchanged.
+
+    An unknown bearer must not consume the queued run; the valid bearer then recovers
+    the same claim.  Set ``GARDEN_SCP_CLAIM_INTERACTION_ARTIFACT`` to retain this
+    disposable interaction's structured transcript outside the pytest temporary tree.
+    """
+    import httpx
+    import uvicorn
+
+    path = garden / "garden.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["products"]["demo"]["repo"] = reference
+    path.write_text(yaml.safe_dump(cfg))
+    client, store = remote_client(garden, monkeypatch)
+    client.close()
+    queued_run(store)
+    repo = garden.parent / "repo"
+    monkeypatch.setattr("garden.web.pages.api.gitops.ensure_repo", lambda *_args, **_kwargs: repo)
+    application = create_app(store, watch=False, host="127.0.0.1")
+    server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    events = []
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert server.started
+        with httpx.Client(base_url=url, timeout=15) as served:
+            offer = {"host": "build-1", "harnesses": ["claude"]}
+            failed = served.post("/api/runs/claim", json=offer,
+                                 headers={"Authorization": "Bearer wrong-token"})
+            assert failed.status_code == 403
+            events.append({"kind": "http_request", "state": "failure", "outcome": "failure",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 403,
+                           "observed": "unknown bearer did not claim the queued run"})
+            claimed = served.post("/api/runs/claim", json=offer,
+                                  headers={"Authorization": "Bearer secret-token"})
+            assert claimed.status_code == 200
+            assert claimed.json()["repo"] == reference
+            events.append({"kind": "http_request", "state": "affected", "outcome": "success",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 200,
+                           "observed": f"claim returned the exact configured remote {reference}"})
+            events.append({"kind": "http_request", "state": "recovery", "outcome": "success",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 200,
+                           "observed": "valid bearer claimed the run rejected for the unknown bearer"})
+            empty = served.post("/api/runs/claim", json=offer,
+                                headers={"Authorization": "Bearer secret-token"})
+            assert empty.status_code == 204
+            events.append({"kind": "http_request", "state": "empty", "outcome": "empty",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 204,
+                           "observed": "no additional compatible queued run was available"})
+        if destination := os.environ.get("GARDEN_SCP_CLAIM_INTERACTION_ARTIFACT"):
+            artifact = Path(destination)
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            head = gitops.git("rev-parse", "HEAD", cwd=Path.cwd()).strip()
+            artifact.write_text(json.dumps({
+                "head": head,
+                "source_head": head,
+                "test": "tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
+                "transport": "real TCP HTTP", "environment": "disposable",
+                "command": "pytest tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
+                "reference": reference, "events": events,
+                "states": {
+                    "affected": "200 claim returns the configured remote unchanged",
+                    "empty": "204 after the queued run is claimed",
+                    "failure_recovery": "403 unknown bearer followed by a successful valid-bearer claim",
+                },
+            }, indent=2) + "\n")
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        sock.close()
+        assert not thread.is_alive()
 
 
 def test_worker_host_doctor_checks_token_git_access_and_harness(monkeypatch):

@@ -109,8 +109,19 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
 
 
 def is_git_remote_url(value: str) -> bool:
-    """Whether *value* is an HTTP/SSH Git URL, including SCP-style remotes."""
-    return bool(re.match(r"^(?:[a-z][a-z0-9+.-]*://|[^@/:\s]+@[^/:\s]+:)", value, re.IGNORECASE))
+    """Whether *value* is an HTTP/SSH Git URL, including SCP-style remotes.
+
+    SCP syntax permits an omitted transport username (``host:path``).  Check a
+    Windows drive spelling first, because its colon would otherwise look like
+    that form on hosts which support Windows-path configuration.
+    """
+    if re.match(r"^[a-z]:[\\\\/]", value, re.IGNORECASE):
+        return False
+    return bool(re.match(
+        r"(?:[a-z][a-z0-9+.-]*://|(?:[a-z0-9._-]+@)?[a-z0-9.-]+:[^\s:@])",
+        value,
+        re.IGNORECASE,
+    ))
 
 
 def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | None:

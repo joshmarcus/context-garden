@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from garden.github import GitHub, GitHubError, GitHubRouter, RepositorySlug, repo_slug_from_remote
+from garden.github import (
+    GitHub,
+    GitHubError,
+    GitHubRouter,
+    RepositorySlug,
+    is_git_remote_url,
+    repo_slug_from_remote,
+)
 
 
 @pytest.mark.parametrize("remote", [
@@ -209,15 +216,24 @@ def test_same_slug_on_two_hosts_keeps_rest_tokens_isolated(monkeypatch):
     ]
 
 
-def test_config_accepts_a_service_account_scp_repository(tmp_path):
+@pytest.mark.parametrize("repo", [
+    "acct-1234@forge-one.test:team/repo.git",
+    "forge-one.test:team/repo.git",
+])
+def test_config_preserves_scp_repository_references(tmp_path, repo):
     from garden.config import Config
 
-    (tmp_path / "garden.yaml").write_text("""
+    (tmp_path / "garden.yaml").write_text(f"""
 products:
   enterprise:
-    repo: acct-1234@forge-one.test:team/repo.git
+    repo: {repo}
 """)
-    assert Config.load(tmp_path).product_repo("enterprise") == "acct-1234@forge-one.test:team/repo.git"
+    assert Config.load(tmp_path).product_repo("enterprise") == repo
+
+
+@pytest.mark.parametrize("path", ["C:/garden/repo", r"C:\garden\repo", r"\\server\share\repo"])
+def test_remote_classifier_preserves_windows_path_spellings(path):
+    assert not is_git_remote_url(path)
 
 
 def test_two_host_routes_keep_nondefault_pr_bases_separate(monkeypatch):
