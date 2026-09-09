@@ -132,6 +132,9 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     capped_page = c.get("/tasks/DM-002").text
     assert 'action="/tasks/DM-002/take"' not in capped_page
     assert "reached its revision limit" in capped_page
+    capped_inbox = c.get("/inbox").text
+    assert "revision limit reached" in capped_inbox
+    assert "Resume task" not in capped_inbox
 
     # A malformed completion stays recoverable; the valid result finalizes the assigned run.
     unsafe_done = c.post("/tasks/DM-001/done", headers={"referer": "http://testserver/tasks/DM-001"},
