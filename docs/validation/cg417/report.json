@@ -1,0 +1,27 @@
+{
+  "after_revision": "2cdbfdb0ca2eea272f06785bf3d4e932518a029f",
+  "before_revision": "f5767e103caa98fc3c7a2ba50e983504bce1abe3",
+  "fixtures": {
+    "100": {
+      "after": {
+        "no_dispatch_tick": {"latency_max_s": 0.037493, "latency_p50_s": 0.035387, "latency_p95_s": 0.037493, "samples": 3, "scan_counts": [1, 1, 1]},
+        "served": {"latency_max_s": 0.080696, "latency_p50_s": 0.007175, "latency_p95_s": 0.080696, "samples": 3, "scan_counts": [1, 0, 0]}
+      },
+      "before": {
+        "no_dispatch_tick": {"latency_max_s": 0.066767, "latency_p50_s": 0.065947, "latency_p95_s": 0.066767, "samples": 3, "scan_counts": [2, 2, 2]},
+        "served": {"latency_max_s": 0.077062, "latency_p50_s": 0.007576, "latency_p95_s": 0.077062, "samples": 3, "scan_counts": [1, 0, 0]}
+      }
+    },
+    "1000": {
+      "after": {
+        "no_dispatch_tick": {"latency_max_s": 0.390076, "latency_p50_s": 0.389105, "latency_p95_s": 0.390076, "samples": 3, "scan_counts": [1, 1, 1]},
+        "served": {"latency_max_s": 0.371194, "latency_p50_s": 0.056635, "latency_p95_s": 0.371194, "samples": 3, "scan_counts": [1, 0, 0]}
+      },
+      "before": {
+        "no_dispatch_tick": {"latency_max_s": 0.780857, "latency_p50_s": 0.720892, "latency_p95_s": 0.780857, "samples": 3, "scan_counts": [2, 2, 2]},
+        "served": {"latency_max_s": 0.478792, "latency_p50_s": 0.058078, "latency_p95_s": 0.478792, "samples": 3, "scan_counts": [1, 0, 0]}
+      }
+    }
+  },
+  "samples": 3
+}
