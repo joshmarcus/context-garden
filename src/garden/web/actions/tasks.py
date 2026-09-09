@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from typing import Any
 
 from fastapi import BackgroundTasks, Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -146,6 +147,19 @@ def take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str
     return f"{t.id} claimed. Open the assigned task packet to begin."
 
 
+@action("manual-mode")
+def manual_mode(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str,
+                actor: str = "human_owner") -> str:
+    reservation = sched.reserve_manual(t, actor="operator" if actor == "operator" else "human_owner", note=note)
+    return f"{t.id} reserved in Manual mode ({reservation['actor']})."
+
+
+@action("return-automation")
+def return_automation(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    sched.return_to_automation(t, reservation_id=applies_to, expected_head=note)
+    return f"{t.id} returned to automation."
+
+
 @action("finish-manual")
 def finish_manual(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
     """Finish through the scheduler's guarded manual-session path."""
@@ -273,6 +287,28 @@ def reset_revisions(s: Store, sched: Scheduler, t: Task, note: str, applies_to: 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
 
+    @app.post("/api/tasks/{task_id}/manual-mode")
+    def manual_mode_api(task_id: str, payload: dict[str, Any] = Body(default={})):
+        """JSON surface for the same authoritative reservation transitions as CLI/web."""
+        try:
+            sched = hub.scheduler()
+            task = sched.store.task(task_id)
+            if str(payload.get("enabled", "true")).lower() in {"false", "0", "no"}:
+                sched.return_to_automation(
+                    task,
+                    reservation_id=payload.get("reservation_id", ""),
+                    expected_head=payload.get("expected_head", ""),
+                )
+                return {"task": task_id, "manual": False}
+            reservation = sched.reserve_manual(
+                task, actor=payload.get("actor", "operator"), note=payload.get("note", "")
+            )
+            return {"task": task_id, "manual": True, "reservation": reservation}
+        except KeyError:
+            raise HTTPException(404) from None
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     def prepare_recovery_launch(task_id: str, run: Run) -> None:
         """Continue a reserved launch after its 202 response has left the server."""
         try:
@@ -388,7 +424,7 @@ def register(app: FastAPI, site: Site) -> None:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)
-                if action in {"retry", "done"}:
+                if action in {"retry", "done", "manual-mode"}:
                     warning = run_action(s, sched, t, note, applies_to, actor)  # type: ignore[call-arg]
                 else:
                     warning = run_action(s, sched, t, note, applies_to)

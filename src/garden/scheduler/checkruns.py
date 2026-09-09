@@ -81,6 +81,8 @@ class CheckRunMixin:
         reap resumes. The task shows it on its page, but it does not consume a worker slot.
         `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
         # Reaping a worker or polling a PR can start checks before dispatch_ready.
         # Let an eligible earlier review use this just-freed shared slot first too.
@@ -409,6 +411,10 @@ class CheckRunMixin:
             "scratch_merge": self._after_scratch_merge_check,
             "ci": self._after_ci_check,
         }.get(stage)
+        if self._manual_reserved(task):
+            # Results and logs are collected, but the continuation remains parked until the
+            # explicit return action removes the reservation.
+            return True
         if handler is None:
             self.log(f"{task.id}: unknown check stage {stage!r}; results dropped")
             st["check_run"] = {}

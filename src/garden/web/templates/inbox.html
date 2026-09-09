@@ -62,6 +62,7 @@
       {% endif %}
     </div>
     <div class="card-actions decision-actions">
+    {% if it.task and manual_reservations.get(it.task) %}<a class="btn primary" href="/tasks/{{ it.task }}">Manual mode · return…</a>{% elif it.task %}<form method="post" action="/tasks/{{ it.task }}/manual-mode"><input type="hidden" name="actor" value="human_owner"><button class="quiet">Manual mode</button></form>{% endif %}
     <div class="do">
       {% if it.get('decision_card') %}
       {% elif it.group == 'tool' %}
@@ -88,6 +89,8 @@
         <a class="btn quiet" href="/tasks/{{ it.task }}">Open task packet ↗</a>
       {% elif it.group == 'manual_waiting' and it.actions %}
         <a class="btn quiet" href="{{ it.actions[0].href }}">{{ it.actions[0].label }} ↗</a>
+      {% elif it.group == 'manual_mode' %}
+        <a class="btn primary" href="/tasks/{{ it.task }}">Return to automation…</a>
       {% elif it.group == 'operator' and it.get('kind') == 'operator_scope' %}
         <form method="post" action="/tasks/{{ it.task }}/operator-evidence" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="What you verified in the live environment" required></textarea><button class="primary">Record evidence and continue</button><span class="faint">{{ it.actions[0].detail }}</span></form>
       {% elif it.group == 'deferred' %}

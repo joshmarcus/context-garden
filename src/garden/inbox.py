@@ -31,6 +31,7 @@ GROUPS = [
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
     ("config_hold", "Confirm a held config change", "garden.yaml changed while a worker run was in flight; the executable parts of the change (notify.command, checks, setup commands, harness bin/command, worker_env.pass) are held until the run is reaped or you confirm it.", "decision"),
+    ("manual_mode", "Reserved in Manual mode", "Garden continues observing these tasks but performs no automatic lifecycle actions until they are explicitly returned.", "notice"),
     ("manual", "Manual work ready", "These task packets are ready for a person to claim. Taking one records the assignment; finish it from the packet when the work is complete.", "decision"),
     ("manual_waiting", "Manual work waiting", "These manual tasks are deliberately not claimable yet. Their card says whether a dependency, freeze, or existing claim is holding them.", "notice"),
     ("approve", "Approve planned or discovered work", "Draft tasks waiting for a go.", "decision"),
@@ -738,6 +739,18 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                           "status": "", "pr": "", "why": f"spent ${sched.spent_for(key):.2f} of ${budget:.2f}; dispatch paused",
                           "actions": [{"label": "Raise in garden.yaml", "kind": "config", "command": f"# budgets: {{{key}: <usd>}}"}],
                           "age": "", "difficulty": probe.difficulty})
+    for task in tasks.values():
+        reservation = getattr(sched, "manual_reservation", lambda _task: None)(task)
+        if not reservation:
+            continue
+        actor = str(reservation.get("actor") or "operator").replace("_", " ")
+        note = str(reservation.get("note") or "")
+        why = f"reserved by {actor}" + (f": {note}" if note else "")
+        items.append({"group": "manual_mode", "group_title": titles["manual_mode"], "task": task.id,
+                      "title": task.title, "phase": task.key, "status": task.status.value, "pr": task.pr,
+                      "why": why, "actions": [{"label": "Return to automation", "kind": "link",
+                                                "href": f"/tasks/{task.id}"}],
+                      "age": _age(str(reservation.get("at") or "")), "difficulty": task.difficulty})
     items.sort(key=lambda i: (order[i["group"]], i["task"]))
     return items
 
