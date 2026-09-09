@@ -308,8 +308,10 @@ def test_pr_attach_resets_cached_pr_state(garden, fake_github, monkeypatch):
     monkeypatch.setattr(state_cli, "_scheduler", lambda _: sched)
     first = fake_github.create_pr("test/demo", "operator/one", "main", "first", "")
     first.url = "https://github.com/test/demo/pull/101"
+    first.head_sha, first.head_repo = "first-head", "test/demo"
     second = fake_github.create_pr("test/demo", "operator/two", "main", "second", "")
     second.url = "https://github.com/test/demo/pull/102"
+    second.head_sha, second.head_repo = "second-head", "test/demo"
     assert run(garden, "pr", "DM-001", first.url).exit_code == 0
     store = Store(garden)
     state_sched = Scheduler(store)
@@ -348,6 +350,7 @@ def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden, fa
     monkeypatch.setattr(state_cli, "_scheduler", lambda _: sched)
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "manual", "")
     pr.url = "https://github.com/test/demo/pull/101"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     assert run(garden, "pr", "DM-001", pr.url).exit_code == 0
     assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
 
