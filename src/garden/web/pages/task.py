@@ -115,7 +115,9 @@ def register(app: FastAPI, site: Site) -> None:
         prior_trials = [(tr, ranking_markdown(tr)) for tr in reversed(trial_log.read()) if tr.get("task") == t.id]
         trial_view = _trial_view(st.get("trial"), runs)
         manual_runner = (t.runner or s.config.product_runner(t.product)) == "manual"
-        phase_hold = phase_refusal(s.phase(t.product, t.phase), t)
+        phase = s.phase(t.product, t.phase)
+        phase_hold = phase_refusal(phase, t)
+        phase_hold_kind = "closed" if phase.closed else "frozen"
         manual_take_reason = ""
         if manual_runner and t.status.value in ("ready", "changes_requested"):
             if any(run.task_id == t.id for run in rs.active()):
@@ -166,12 +168,12 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             manual_runner=manual_runner, manual_take_reason=manual_take_reason,
-            phase_hold=phase_hold,
+            phase_hold=phase_hold, phase_hold_kind=phase_hold_kind,
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
             prior_trials=prior_trials,
             trial_view=trial_view,
-            owner=effective_owner(t, s.phase(t.product, t.phase))[0],
-            owner_source=effective_owner(t, s.phase(t.product, t.phase))[1],
+            owner=effective_owner(t, phase)[0],
+            owner_source=effective_owner(t, phase)[1],
             design_files=_design_files(t, s),
             return_to=_return_to(request, task_id),
         ))
