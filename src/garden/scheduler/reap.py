@@ -304,41 +304,12 @@ class ReapMixin:
             self._retry_or_fail(task, run, rep, f"worker exited {run.exit_code}: {run.error[:200]}")
             return
         status = str(result.get("status", "")).lower()
-        # New briefs make the pre-flight result part of the worker contract.  Do this
-        # before missing-result salvage can synthesize a summary and send the branch
-        # directly to review.  Publish any committed work first, so the revise worker
-        # builds on it instead of dispatch's normal sync shelving it on a backup branch.
-        if not status and bool((run.env_snapshot or {}).get("requires_preflight")):
-            base = run.base or self.base_for(task)
-            branch = run.branch or task.branch or task.default_branch()
-            if not runner.remote and worktree.exists():
-                try:
-                    if gitops.commits_ahead(worktree, base):
-                        gitops.push(worktree, branch, base=base, lease=run.start_head)
-                        task.branch = branch
-                        self.store.save(task)
-                except gitops.GitError as exc:
-                    run.status = "failed"
-                    run.error = f"could not preserve commits before pre-flight revise: {exc}"
-                    run.save()
-                    self._retry_or_fail(task, run, rep, run.error)
-                    return
-            run.status = "failed"
-            run.error = "missing review pre-flight: result block and review pre-flight checklist"
-            run.save()
-            criteria = list((run.env_snapshot or {}).get("criteria") or [])
-            criteria_note = "\n".join(f"- {item}" for item in criteria) or "- (none)"
-            failed = [{"name": "review pre-flight", "status": "fail",
-                       "summary": "missing items: result block and review pre-flight checklist",
-                       "details": ""}]
-            self._start_check_revise(task, failed, rep, cost,
-                                     feedback_note="### Criteria frozen for the interrupted dispatch\n\n"
-                                     + criteria_note)
-            return
         # A headless worker can finish its commits but lose its final result while waiting for
         # an unattended command.  The worktree is the durable record in that case: salvage its
-        # commits before treating the missing protocol marker as a failed attempt.  A reported
-        # status still wins, so `blocked` and the other deliberate outcomes below are unchanged.
+        # commits before treating an optional result/checklist omission as a failed attempt.
+        # A reported status still wins, so `blocked` and the other deliberate outcomes below
+        # are unchanged. Missing results with no usable commits still follow the ordinary
+        # retry/failure path below.
         if not status and run.mode in ("work", "revise") and not runner.remote and worktree.exists():
             try:
                 base = run.base or self.base_for(task)
@@ -444,13 +415,19 @@ class ReapMixin:
 
         missing = missing_preflight(result.get("pre_flight"))
         if missing and bool((run.env_snapshot or {}).get("requires_preflight")):
-            run.status = "failed"
-            run.error = "missing review pre-flight: " + ", ".join(missing)
-            run.save()
-            failed = [{"name": "review pre-flight", "status": "fail",
-                       "summary": "missing items: " + ", ".join(missing), "details": ""}]
-            self._start_check_revise(task, failed, rep, cost)
-            return
+            # The rubric helps an agent choose checks; its serialization is not itself a
+            # product outcome. Preserve the omission for review without turning otherwise
+            # usable source into an evidence-only revision.
+            st = self.state.get(task.id)
+            advisories = st.setdefault("verification_advisories", [])
+            if not any(isinstance(item, dict) and item.get("run") == run.run_id
+                       and item.get("kind") == "pre_flight" for item in advisories):
+                advisories.append({"kind": "pre_flight", "run": run.run_id, "missing": missing})
+            task.log("review pre-flight advisory: omitted optional items: " + ", ".join(missing))
+            self.store.save(task)
+            self.events.emit("verification_advisory", task.id, run=run.run_id,
+                             advisory="pre_flight", missing=missing)
+            self.state.save()
 
         base = run.base or self.base_for(task)
         branch = run.branch or task.branch or task.default_branch()
