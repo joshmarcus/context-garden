@@ -289,6 +289,37 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
     assert sched.state.get(task.id)["pr_number"] == pr.number
 
 
+def test_external_claim_stores_a_safe_provider_identity_without_a_browser_url(sched):
+    """Provider identities are accepted after the CLI has verified their PR number."""
+    task = sched.store.task("DM-001")
+    provider_url = "https://provider.test/api/pull-requests/opaque-identity"
+
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override="operator/actual", completion_mode="external",
+                   external_pr=provider_url, external_pr_number=101)
+
+    assert sched.store.task(task.id).pr == provider_url
+    assert sched.state.get(task.id)["pr_number"] == 101
+
+
+@pytest.mark.parametrize("url", [
+    "https://operator:synthetic-password@provider.test/pull/101",
+    "https://operator@provider.test/pull/101",
+    "https://provider.test/pull/101?access=synthetic-token",
+    "https://provider.test/pull/101#synthetic-fragment",
+])
+def test_external_claim_rejects_unsafe_provider_identity_before_persistence(sched, url):
+    task = sched.store.task("DM-001")
+
+    with pytest.raises(RuntimeError, match="unsupported components"):
+        sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                       branch_override="operator/actual", completion_mode="external",
+                       external_pr=url, external_pr_number=101)
+
+    assert sched.store.task(task.id).pr == ""
+    assert not sched.runs.all_runs()
+
+
 def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sched, fake_github, tmp_path):
     """Work from another clone is materialised before the ordinary PR/review handoff."""
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import time
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 from .. import gitops
 from ..brief import build_brief
 from ..criteria import parse_criteria
-from ..github import pull_request_number
+from ..github import is_safe_pr_url
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -295,14 +296,14 @@ class DispatchMixin:
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
                  worktree_override: Path | None = None, model_override: str | None = None,
                  reserved_run: Run | None = None, completion_mode: str = "managed",
-                 external_pr: str = "") -> Run:
+                 external_pr: str = "", external_pr_number: int | None = None) -> Run:
         # Keep the run created by the inner method visible so every exception after
         # runs.new_run(), including worktree/brief preparation failures, closes it.
         self._dispatching_run = None
         try:
             return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
                                   branch_override, worktree_override, model_override, reserved_run,
-                                  completion_mode, external_pr)
+                                  completion_mode, external_pr, external_pr_number)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
             # A runner may have launched the worker and then raised while recording
@@ -336,7 +337,7 @@ class DispatchMixin:
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None,
                   reserved_run: Run | None = None, completion_mode: str = "managed",
-                  external_pr: str = "") -> Run:
+                  external_pr: str = "", external_pr_number: int | None = None) -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         self._refuse_if_closed_or_frozen(task)
@@ -353,14 +354,24 @@ class DispatchMixin:
         # callers may still use branch_override without changing the task identity.
         if completion_mode in ("external", "pushed"):
             if external_pr:
-                slug = self.slug_for(task)
-                pr_number = pull_request_number(external_pr, slug, getattr(slug, "host", "github.com")) if slug else None
-                if not pr_number:
-                    raise RuntimeError("external PR must be a GitHub URL for this repository")
+                if not is_safe_pr_url(external_pr):
+                    raise RuntimeError("external PR URL contains unsupported components")
+                if external_pr_number is not None and external_pr_number <= 0:
+                    raise RuntimeError("external PR number must be positive")
+                # Older internal callers pass a provider URL without its separately
+                # supplied number. Retain the conventional identifier when it is
+                # available, but do not require a browser-shaped URL to persist the
+                # provider identity.
+                if external_pr_number is None:
+                    match = re.search(r"/pull/(\d+)/?$", external_pr)
+                    external_pr_number = int(match.group(1)) if match else None
             task.branch = branch
             if external_pr:
                 task.pr = external_pr
-                st["pr_number"] = pr_number
+                if external_pr_number is not None:
+                    st["pr_number"] = external_pr_number
+                else:
+                    st.pop("pr_number", None)
             self.store.save(task)
         st.pop("needs_human", None)
         # Reserved early so a revise/rebase/resume run's backup branch (below) and a dirty
