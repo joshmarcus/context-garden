@@ -23,6 +23,15 @@ from .runner.base import install_config_files, scrubbed_env
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 
 
+class WorkerRequestError(RuntimeError):
+    """An HTTP response that retry policy can classify without parsing its text."""
+
+    def __init__(self, status: int, detail: str):
+        super().__init__(f"garden returned HTTP {status}: {detail}")
+        self.status = status
+        self.retryable = status in {408, 425, 429} or status >= 500
+
+
 def doctor_worker(token: str, repo: str, harnesses: list[str],
                   config: dict[str, Any] | None = None, scratch_home: Path | None = None) -> list[str]:
     problems: list[str] = []
@@ -62,7 +71,7 @@ class WorkerClient:
         except urllib.error.HTTPError as exc:
             if exc.code == 204:
                 return 204, {}
-            raise RuntimeError(f"garden returned HTTP {exc.code}: {exc.read().decode(errors='replace')}") from exc
+            raise WorkerRequestError(exc.code, exc.read().decode(errors="replace")) from exc
 
 
 class _LeaseHeartbeat:
@@ -73,18 +82,42 @@ class _LeaseHeartbeat:
         self.client = client
         self.stop_event = threading.Event()
         self.failure: BaseException | None = None
+        # New controllers send the whole interval for which this generation remains
+        # authoritative: the ordinary lease plus its recovery grace.  Keep the older
+        # recovery_seconds fallback so a newly deployed worker remains compatible with
+        # the previous claim shape.
+        self.recovery_window_seconds = max(
+            0.0,
+            float(run.get("recovery_window_seconds") or run.get("recovery_seconds") or 300),
+        )
+        self.recovery_deadline = time.monotonic() + self.recovery_window_seconds
+        self.post_lock = threading.Lock()
         self.thread = threading.Thread(target=self._run, name=f"garden-heartbeat-{run['id']}", daemon=True)
 
     def start(self) -> None:
         self.thread.start()
 
-    def _post(self) -> None:
-        status, _ = self.client.post(
-            f"/api/runs/{self.run['id']}/heartbeat",
-            {"lease_token": self.run["lease_token"]},
-        )
-        if status != 200:
-            raise RuntimeError(f"garden heartbeat returned HTTP {status}")
+    def _post(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        delay = min(1.0, max(0.05, float(self.run.get("heartbeat_seconds") or 30) / 4))
+        while True:
+            try:
+                with self.post_lock:
+                    status, response = self.client.post(
+                        f"/api/runs/{self.run['id']}/heartbeat",
+                        {"lease_token": self.run["lease_token"], **(payload or {})},
+                    )
+                if status != 200:
+                    raise WorkerRequestError(status, "heartbeat rejected")
+                self.recovery_deadline = time.monotonic() + self.recovery_window_seconds
+                return response
+            except BaseException as exc:
+                if isinstance(exc, WorkerRequestError) and not exc.retryable:
+                    raise
+                if time.monotonic() >= self.recovery_deadline:
+                    raise
+                if self.stop_event.wait(delay):
+                    raise RuntimeError("remote run stopped during controller recovery") from None
+                delay = min(delay * 2, 5.0)
 
     def _run(self) -> None:
         interval = max(0.05, float(self.run.get("heartbeat_seconds") or 30))
@@ -96,13 +129,64 @@ class _LeaseHeartbeat:
                 return
 
     def ensure_current(self) -> None:
+        self.ensure_not_failed()
+        self._post()
+
+    def ensure_not_failed(self) -> None:
+        """Fence local execution as soon as background renewal becomes terminal."""
         if self.failure is not None:
             raise RuntimeError(f"remote run lease renewal failed: {self.failure}") from self.failure
-        self._post()
+
+    def upload(self, offset: int, chunk: str) -> int:
+        self.ensure_not_failed()
+        response = self._post({"transcript_offset": offset, "transcript": chunk})
+        return int(response.get("transcript_offset", offset + len(chunk.encode())))
+
+    def finish(self, payload: dict[str, Any]) -> None:
+        delay = 0.1
+        while True:
+            try:
+                with self.post_lock:
+                    status, _ = self.client.post(f"/api/runs/{self.run['id']}/finish", payload)
+                if status != 200:
+                    raise WorkerRequestError(status, "finish rejected")
+                return
+            except BaseException as exc:
+                if isinstance(exc, WorkerRequestError) and not exc.retryable:
+                    raise
+                if time.monotonic() >= self.recovery_deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
 
     def stop(self) -> None:
         self.stop_event.set()
         self.thread.join(timeout=5)
+
+
+def _stop_obsolete_process(proc: subprocess.Popen[Any]) -> None:
+    """Stop a supervised process tree after its remote authority is lost."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _wait_for_process(proc: subprocess.Popen[Any], heartbeat: _LeaseHeartbeat,
+                      *, interval: float = 0.1) -> int:
+    """Wait while fencing an active child against terminal lease loss."""
+    while (returncode := proc.poll()) is None:
+        try:
+            heartbeat.ensure_not_failed()
+        except BaseException:
+            _stop_obsolete_process(proc)
+            raise
+        time.sleep(interval)
+    return returncode
 
 
 def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str]:
@@ -121,6 +205,31 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
     return env
 
 
+def _host_check_data(run: dict[str, Any], repo: Path) -> dict[str, Any]:
+    """Replace controller-local paths in a portable check payload.
+
+    Python checks may carry their worktree and output directory in the individual spec,
+    in addition to the shared context.  Neither controller path exists on an independent
+    host, so give every such check a lease-local artifact directory beside the clone.
+    """
+    check_data = dict(run.get("checks") or {})
+    artifact_root = repo.parent / f"{run['id']}-check-artifacts"
+    specs = []
+    for index, original in enumerate(check_data.get("specs") or []):
+        spec = dict(original)
+        if "worktree" in spec:
+            spec["worktree"] = str(repo)
+        if "out_dir" in spec:
+            spec["out_dir"] = str(artifact_root / f"{index}-{spec.get('name') or 'check'}")
+        specs.append(spec)
+    check_data["specs"] = specs
+    check_data["ctx"] = {
+        **dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo),
+    }
+    check_data["cwd"] = str(repo)
+    return check_data
+
+
 def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "") -> None:
     """Materialise one claim, run it, push it, and post its auditable outcome."""
     heartbeat = _LeaseHeartbeat(run, client)
@@ -135,13 +244,15 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         remote_branch = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo).returncode == 0
         subprocess.run(["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"], cwd=repo, check=True)
         env = _env(list(run.get("env_allowlist") or []), repo, run)
+        runtime_dir = root / "runtime"
+        runtime_dir.mkdir(mode=0o700, exist_ok=True)
+        env["XDG_RUNTIME_DIR"] = str(runtime_dir)
         setup = dict(run.get("setup") or {})
         if setup_command:
             subprocess.run(setup_command, shell=True, cwd=repo, env=env,
                            timeout=int(setup.get("timeout_seconds") or 600), check=True)
         if run.get("mode") == "check":
-            check_data = dict(run.get("checks") or {})
-            ctx = {**dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo)}
+            check_data = _host_check_data(run, repo)
             # A managed consumer passes the product command above so admission covers it.
             # Do not repeat it inside the check job. A standalone worker may instead
             # supply its own setup override; without one the check job prepares the product.
@@ -150,7 +261,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             runs_dir.mkdir(parents=True, exist_ok=True)
             execution_dir = Path(tempfile.mkdtemp(prefix="check-", dir=runs_dir))
             (execution_dir / "checks_input.json").write_text(json.dumps({
-                **check_data, "ctx": ctx, "cwd": str(repo), "setup": check_setup,
+                **check_data, "setup": check_setup,
             }))
             execution_env = dict(env)
             for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
@@ -164,26 +275,27 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 f"> {shlex.quote(str(execution_dir / 'stdout.json'))} "
                 f"2> {shlex.quote(str(execution_dir / 'stderr.log'))}"
             )
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
-                cwd=repo, env=execution_env, check=False,
+                cwd=repo, env=execution_env,
             )
+            check_returncode = _wait_for_process(proc, heartbeat)
             result_path = execution_dir / "checks.json"
             if result_path.exists():
                 results = json.loads(result_path.read_text())
                 error = ""
             else:
-                timeout_result = validation_timeout_result(execution_dir, proc.returncode)
+                timeout_result = validation_timeout_result(execution_dir, check_returncode)
                 if timeout_result is not None:
                     results = [timeout_result]
                     error = timeout_result["details"]
                 else:
-                    error = f"remote check supervisor exited {proc.returncode} without results"
+                    error = f"remote check supervisor exited {check_returncode} without results"
                     results = [{
                         "name": "checks", "status": "error",
                         "summary": "check execution did not complete", "details": error,
                     }]
-            final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, proc.returncode
+            final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             final_path = repo.parent / f"{run['id']}-final.md"
@@ -207,25 +319,30 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 assert proc.stdin is not None
                 proc.stdin.write(str(run.get("brief") or ""))
                 proc.stdin.close()
-                transcript_offset = 0
+                transcript_read_offset = 0
+                transcript_upload_offset = 0
                 while proc.poll() is None:
-                    time.sleep(1)
+                    try:
+                        heartbeat.ensure_not_failed()
+                    except BaseException:
+                        _stop_obsolete_process(proc)
+                        raise
+                    time.sleep(0.1)
                     stdout_file.flush()
                     with open(stdout_file.name) as transcript_file:
-                        transcript_file.seek(transcript_offset)
+                        transcript_file.seek(transcript_read_offset)
                         chunk = transcript_file.read()
-                        transcript_offset = transcript_file.tell()
+                        transcript_read_offset = transcript_file.tell()
                     if chunk:
-                        client.post(f"/api/runs/{run['id']}/heartbeat",
-                                    {"lease_token": run["lease_token"], "transcript": chunk})
+                        transcript_upload_offset = heartbeat.upload(transcript_upload_offset, chunk)
                 stdout_file.flush()
                 stdout_file.seek(0)
                 stderr_file.seek(0)
                 stdout, stderr = stdout_file.read(), stderr_file.read()
-                tail = stdout[transcript_offset:]
+                stdout_file.seek(transcript_read_offset)
+                tail = stdout_file.read()
                 if tail:
-                    client.post(f"/api/runs/{run['id']}/heartbeat",
-                                {"lease_token": run["lease_token"], "transcript": tail})
+                    transcript_upload_offset = heartbeat.upload(transcript_upload_offset, tail)
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
@@ -240,9 +357,9 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
         heartbeat.ensure_current()
-        client.post(f"/api/runs/{run['id']}/finish", {"lease_token": run["lease_token"],
-                    "exit_code": rc, "final_text": final, "result": parsed,
-                    "usage": usage, "cost_usd": cost, "error": error, "pushed_head": head})
+        heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
+                          "final_text": final, "result": parsed, "usage": usage,
+                          "cost_usd": cost, "error": error, "pushed_head": head})
     finally:
         heartbeat.stop()
 

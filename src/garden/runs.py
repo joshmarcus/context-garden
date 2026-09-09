@@ -93,6 +93,7 @@ class Run:
     final_received_at: str = ""  # authenticated remote result receipt
     claim_history: list[dict[str, Any]] = field(default_factory=list)
     lease_expires_at: str = ""
+    recovery_expires_at: str = ""  # same generation may reconnect until this durable deadline
     lease_token: str = ""  # unique claim generation; fences a stale worker after reclaim
     pushed_ref: str = ""  # lease-specific staging ref; only an accepted finish promotes it
     pushed_head: str = ""

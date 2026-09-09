@@ -359,10 +359,14 @@ def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch)
         return subprocess.CompletedProcess(argv, 0, '{"status":"pass","pages":["now"]}\n', "")
 
     monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
-    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures")})
+    monkeypatch.setenv("PYTHONPATH", "/controller/worktrees/CG-428/src")
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(tmp_path / "captures"), "worktree": "/controller/worktrees/CG-428"},
+    )
     assert result["status"] == "pass"
     assert seen["cwd"] == worktree
-    assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(worktree / "src")
+    assert seen["env"]["PYTHONPATH"] == str(worktree / "src")
     assert seen["argv"][1:3] == ["-m", "garden.walkthrough"]
 
 

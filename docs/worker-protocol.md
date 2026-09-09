@@ -215,6 +215,39 @@ have had to make:
 - **The run record**: `RunStore.new_run()` creates `.garden/runs/<id>/<timestamp>-<mode>/`
   with `run.json` holding the choices above.
 
+#### Controller restart recovery
+
+Pull-based workers may keep their host-side clone, setup, model/check subprocess, transcript,
+and completed result alive across an ordinary controller stop/start. Each claim has two
+durable controller deadlines: `lease_expires_at` is the normal heartbeat deadline and
+`recovery_expires_at` is the last instant that the same lease generation may reconnect.
+The default recovery grace is 300 seconds after the 120-second lease (`workers.recovery_seconds`
+and `workers.lease_seconds`). While that grace remains, the run is shown as reconnecting and
+cannot be claimed by another worker. A successful heartbeat renews the ordinary lease and its
+grace; it does not change any EC2/bootstrap runtime deadline.
+
+Workers retry connection refusal, transport timeouts, HTTP 408/425/429, and 5xx responses with
+bounded exponential backoff through the claim's total recovery window (the lease plus its
+recovery grace, 420 seconds with the defaults). Each successful heartbeat starts a fresh total
+window matching the controller's renewed durable deadlines. Authentication failures and other
+4xx rejections are terminal.
+When the durable recovery deadline passes, the old token is rejected and the run becomes
+claimable with a new token and staging ref. Thus a stale generation can neither renew itself
+nor publish after confirmed replacement.
+
+Transcript heartbeats carry a byte offset. The controller appends only at its durable offset,
+accepts an exact replay after an acknowledgement was lost, and rejects gaps or conflicting
+bytes. A finish replay with the same lease, exit code, result, and pushed head is acknowledged
+without collecting again; a conflicting replay is rejected. The scheduler alone promotes the
+accepted staging ref and opens the PR, so reconnect does not repeat model work or publication.
+
+Deploy the controller before workers when introducing this protocol version. New controllers
+accept transcript heartbeats from older workers, but old controllers do not provide durable
+offset acknowledgements or idempotent finish replay. Recovery is intentionally bounded by the
+configured grace: outages longer than it cause reassignment, and the original subprocess must
+stop when its next authority check is rejected. Set the grace below the independently managed
+host runtime remaining at dispatch; the protocol never prolongs a host deadline.
+
 ### 2. Starting the process (the runner, in `start`)
 
 Before potentially slow worktree or setup work, dispatch writes the run identity as
