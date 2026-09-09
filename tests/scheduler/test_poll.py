@@ -5,7 +5,7 @@ import json
 from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status
 from garden.scheduler.report import TickReport
-from garden.validation import POLICY_SOURCE_SHA
+from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 from tests.scheduler.conftest import statuses
 
 
@@ -379,10 +379,25 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
     work = next(run for run in sched.runs.runs_for("DM-001") if run.mode == "work")
     receipt = work.path / "validations" / "123" / "result.json"
     receipt.parent.mkdir(parents=True)
-    receipt.write_text(json.dumps({"source_sha": st["head_sha"], "command": "pytest -q",
-                                   "exit_code": 0, "log_location": str(receipt.parent),
-                                   "source_dirty": "", "source_changed": False,
-                                   "policy": {"source_sha": POLICY_SOURCE_SHA}}))
+    incomplete = {"source_sha": st["head_sha"], "command": "pytest -q",
+                  "exit_code": 0, "log_location": str(receipt.parent),
+                  "source_dirty": "", "source_changed": False,
+                  "policy": {"source_sha": POLICY_SOURCE_SHA}}
+    receipt.write_text(json.dumps(incomplete))
+    rep = sched.tick()
+    assert "DM-001(review)" not in rep.dispatched
+    assert sched.state.get("DM-001")["ci_status"]["state"] == "malformed"
+
+    requested = ["pytest", "-q"]
+    effective = [*requested, *POLICY_ADDOPTS]
+    receipt.write_text(json.dumps({
+        "version": 1, "source_sha": st["head_sha"], "command": "pytest -q",
+        "selection": effective, "exit_code": 0, "log_location": str(receipt.parent),
+        "source_dirty": "", "source_changed": False,
+        "policy": {"version": 1, "source_sha": POLICY_SOURCE_SHA, "kind": "pytest",
+                   "stress_opt_in": False, "excluded_nodes": list(STRESS_NODES),
+                   "requested_selection": requested, "effective_selection": effective},
+    }))
     rep = sched.tick()
     assert "DM-001(review)" in rep.dispatched
     assert sched.state.get("DM-001")["ci_status"]["green"] is True

@@ -1043,19 +1043,19 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
     monkeypatch.delenv("GARDEN_HEAVY_EXECUTION", raising=False)
     monkeypatch.delenv("GARDEN_OWNER_SCOPED", raising=False)
     monkeypatch.delenv("GARDEN_VALIDATION_INHERITS_LEASE", raising=False)
-    monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "true"])
+    monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "pytest", "-q"])
+    monkeypatch.setattr(validation, "_source_state", lambda _cwd: ("head", ""))
     captured = {}
 
-    def execv(executable, argv):
-        captured.update(executable=executable, argv=argv, env=dict(os.environ))
-        raise RuntimeError("exec captured")
+    def run(argv, **kwargs):
+        captured.update(argv=argv, env=dict(os.environ), kwargs=kwargs)
+        return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(os, "execv", execv)
-    with pytest.raises(RuntimeError, match="exec captured"):
-        validation.main()
+    monkeypatch.setattr(subprocess, "run", run)
+    assert validation.main() == 0
 
-    assert captured["executable"] == sys.executable
-    assert captured["argv"][-1] == "true"
+    assert captured["argv"][:3] == [sys.executable, "-m", "garden.run_supervisor"]
+    assert captured["argv"][-1].startswith("pytest -q --deselect=")
     assert captured["env"]["GARDEN_OWNER_SCOPED"] == "1"
     assert captured["env"]["GARDEN_EXECUTION_TIMEOUT_SECONDS"] == "731"
 
