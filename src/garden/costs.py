@@ -58,7 +58,8 @@ def _group_key(ev: dict[str, Any], task: Task | None, group_by: str) -> str:
 def _zero_row() -> dict[str, Any]:
     return {
         "runs": 0, "cost_usd": 0.0, "priced_runs": 0, "unpriced_runs": 0,
-        "task_ids": set(), "taskless_runs": 0, "taskless_cost_usd": 0.0,
+        "task_ids": set(), "tasked_cost_usd": 0.0, "tasked_unpriced_runs": 0,
+        "taskless_runs": 0, "taskless_cost_usd": 0.0, "taskless_unpriced_runs": 0,
         "cache_read_tokens": 0, "cache_write_tokens": 0,
     }
 
@@ -75,10 +76,16 @@ def _add(row: dict[str, Any], ev: dict[str, Any]) -> None:
     task_id = str(ev.get("task") or "")
     if task_id:
         row["task_ids"].add(task_id)
+        if priced:
+            row["tasked_cost_usd"] += float(cost)
+        else:
+            row["tasked_unpriced_runs"] += 1
     else:
         row["taskless_runs"] += 1
         if priced:
             row["taskless_cost_usd"] += float(cost)
+        else:
+            row["taskless_unpriced_runs"] += 1
     usage = ev.get("usage") or {}
     row["cache_read_tokens"] += int(usage.get("cache_read_input_tokens", 0) or 0)
     row["cache_write_tokens"] += int(usage.get("cache_creation_input_tokens", 0) or 0)
@@ -89,14 +96,16 @@ def _finish_row(row: dict[str, Any], grand_cost: float | None = None) -> None:
     task_count = len(row.pop("task_ids"))
     row["task_count"] = task_count
     row["cost_usd"] = round(row["cost_usd"], 4)
+    row["tasked_cost_usd"] = round(row["tasked_cost_usd"], 4)
     row["taskless_cost_usd"] = round(row["taskless_cost_usd"], 4)
     row["cost_complete"] = row["unpriced_runs"] == 0
+    row["tasked_cost_complete"] = row["tasked_unpriced_runs"] == 0
     row["mean_cost_usd"] = round(row["cost_usd"] / row["runs"], 4) if row["runs"] else None
-    # A taskless run cannot be apportioned to a participating task, so its presence makes
-    # this group's per-task value unavailable even when its price is known.
+    # Taskless activity remains in the total, but cannot belong in a per-task numerator.
+    # Only an unpriced tasked run makes a tasked average incomplete.
     row["cost_per_task_usd"] = (
-        round(row["cost_usd"] / task_count, 4)
-        if task_count and row["cost_complete"] and not row["taskless_runs"] else None
+        round(row["tasked_cost_usd"] / task_count, 4)
+        if task_count and row["tasked_cost_complete"] else None
     )
     if grand_cost is not None:
         row["share"] = round(row["cost_usd"] / grand_cost, 4) if grand_cost else None

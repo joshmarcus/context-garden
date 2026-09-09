@@ -93,6 +93,21 @@ def test_per_task_cost_uses_distinct_tasks_and_keeps_unpriced_and_taskless_runs_
     assert complete["cost_per_task_usd"] == 5.0
 
 
+def test_taskless_spend_is_excluded_from_tasked_average_but_kept_in_total():
+    events = [
+        {"at": "2026-09-05T10:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "cost_usd": 2.0},
+        {"at": "2026-09-05T10:01:00+00:00", "kind": "run_finished", "mode": "work", "cost_usd": 3.0},
+    ]
+
+    row = cost_series(events, _tasks(), group_by="activity")["grand_total"]
+
+    assert row["cost_usd"] == 5.0
+    assert row["tasked_cost_usd"] == 2.0
+    assert row["taskless_cost_usd"] == 3.0
+    assert row["task_count"] == 1
+    assert row["cost_per_task_usd"] == 2.0
+
+
 def test_per_task_average_stays_constant_when_equal_spend_is_doubled():
     one_task = [{"at": "2026-09-05T10:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "cost_usd": 5.0}]
     two_tasks = one_task + [{"at": "2026-09-05T10:01:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "work", "cost_usd": 5.0}]
@@ -249,6 +264,22 @@ def test_costs_page_switches_to_average_per_task_and_preserves_total_context(gar
     assert "8.00 over 3 runs and 2 participating tasks" in page
     assert "Overall average: $4.00 per participating task" in page
     assert "Work and revise can have different task cohorts" in page
+
+
+def test_costs_page_separates_taskless_spend_from_task_average(garden):
+    from tests.test_web import client
+
+    _write_events(garden, [
+        {"at": "2026-09-05T09:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "cost_usd": 2.0},
+        {"at": "2026-09-05T09:01:00+00:00", "kind": "run_finished", "mode": "work", "cost_usd": 3.0},
+    ])
+
+    page = client(garden).get("/costs?metric=per_task&by=activity").text
+
+    assert "5.00 over 2 runs and 1 participating task" in page
+    assert "Overall average: $2.00 per participating task" in page
+    assert "taskless spend" in page
+    assert "included in total cost" in page
 
 
 def test_backfill_recomputes_codex_cost_from_stored_transcript(garden):
