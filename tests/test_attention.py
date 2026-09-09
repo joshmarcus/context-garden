@@ -263,6 +263,30 @@ def test_web_troubled_actions_preserve_work_and_reject_stale_clicks(garden):
     assert Store(garden).task("DM-001").status == Status.CHANGES_REQUESTED
 
 
+def test_inbox_defer_requires_reason_and_uses_troubled_defer_action(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "not converging"},
+               substantive_revisions=6)
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    page = client.get("/inbox").text
+    form = re.search(r'<form[^>]+action="/tasks/DM-001/troubled-defer".*?</form>', page, re.S)
+    assert form is not None
+    assert 'name="note"' in form.group() and "required" in form.group()
+
+    response = client.post(
+        "/tasks/DM-001/troubled-defer",
+        data={"note": "wait for the upstream parser release"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert state["troubled_deferred"]["reason"] == "wait for the upstream parser release"
+    assert not state.get("investigation")
+
+
 def test_parent_closed_card(garden):
     store = Store(garden)
     _set_task(store, "DM-002", Status.IN_REVIEW, pr="https://example.com/pull/8")
