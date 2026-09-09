@@ -213,6 +213,14 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
                        json={"lease_token": payload["lease_token"], "transcript": "hello\n"}, headers=auth)
     assert beat.status_code == 200
+    rejected = client.post(f"/api/runs/{run.run_id}/finish", json={
+        "lease_token": payload["lease_token"], "exit_code": 0, "pushed_head": "abc",
+        "validation_receipts": [{"source_sha": "abc", "command": "pytest -q",
+                                  "selection": ["pytest", "-q"], "exit_code": 0,
+                                  "artifacts": {}}],
+    }, headers=auth)
+    assert rejected.status_code == 422
+    assert not (run.path / "exit_code").exists()
     done = client.post(f"/api/runs/{run.run_id}/finish", json={"lease_token": payload["lease_token"],
                        "exit_code": 0, "final_text": "done", "result": {"status": "done"},
                        "usage": {"input_tokens": 2}, "cost_usd": 0.1, "pushed_head": "abc",

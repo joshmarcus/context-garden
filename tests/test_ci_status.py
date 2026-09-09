@@ -54,6 +54,19 @@ def test_worker_check_rejects_malformed_or_wrong_command(tmp_path):
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "ordinary"}).state == "missing"
 
 
+def test_worker_check_rejects_missing_selection_and_supervisor_evidence(tmp_path):
+    result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "1" / "result.json"
+    result.parent.mkdir(parents=True)
+    receipt = {"source_sha": "new", "command": "pytest -q", "exit_code": 0,
+               "log_location": str(result.parent)}
+    result.write_text(json.dumps(receipt))
+    assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+    receipt["selection"] = ["pytest", "-q"]
+    result.write_text(json.dumps(receipt))
+    assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+
 def test_pluggable_provider_timeout_and_mismatched_response_fail_closed(tmp_path):
     pr = PRInfo(1, "", "OPEN", head_sha="head")
     register_status_provider("test-timeout", lambda *_: (_ for _ in ()).throw(TimeoutError()))
