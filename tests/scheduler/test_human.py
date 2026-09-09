@@ -255,8 +255,12 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     assert st["investigation"]["publication"]["status"] == "failed"
     assert Path(st["investigation"]["report_paths"]["markdown"]).is_file()
     related = sched.store.task("DM-002")
-    assert "stale verification fixture" in related.body and "older inline feedback" in related.body
+    assert "stale verification fixture" in related.body
     assert "ghp_" not in related.body
+    related_handoff = sched.state.get(related.id)["investigation_handoff"]
+    assert related_handoff["origin_task_id"] == task.id
+    assert related_handoff["origin_pr"] == ""
+    assert "older inline feedback" in related_handoff["fallback_feedback"]
     assert "/tasks/DM-002" in st["investigation"]["report"]["links"]
     assert st["needs_human"]["kind"] == "investigation_report"
     with pytest.raises(RuntimeError, match="paused for investigation"):
@@ -269,6 +273,54 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     sched.continue_troubled(task)
     assert "stale verification fixture" in st["investigation_handoff"]["diagnosis"]
     assert "base comparison" in st["investigation_handoff"]["diagnosis"]
+
+
+def test_corrective_worker_refreshes_origin_pr_feedback_at_dispatch(sched, monkeypatch):
+    origin = sched.store.task("DM-001")
+    origin.status = Status.RUNNING
+    origin.pr = "https://example.com/pull/101"
+    sched.store.save(origin)
+    st = sched.state.get(origin.id)
+    st["investigation"] = {"status": "active", "owner": "agent", "task_status": "ready",
+                           "request_id": "deep-dive-1", "feedback_markdown": "feedback at investigation time"}
+    run = sched.runs.new_run(origin.id, "local", mode="investigation")
+    run.result = {"status": "done", "investigation_report": {
+        "likely_cause": "stale parser", "confidence": "high", "unknowns": [],
+        "evidence": ["trace 1"], "attempted_checks": ["focused test"], "retain_work": True,
+        "alternatives": ["replace parser"], "recommendation": "change scope/approach",
+        "discovered": [{"title": "Second task", "body": "## Goal\n\nRepair the parser."}],
+    }}
+    sched._finalize_investigation(origin, run, TickReport(), {})
+
+    corrective = sched.store.task("DM-002")
+    corrective.status = Status.READY
+    sched.store.save(corrective)
+    sched.github.complete_feedback_snapshots[101] = {
+        "complete": True, "errors": [], "items": [{
+            "kind": "line_comment", "id": "new-reply", "author": "reviewer",
+            "created_at": "after-report", "body": "new feedback before corrective dispatch",
+            "thread_id": "thread-1", "resolved": False, "outdated": True,
+            "commit_id": "older-head", "trusted_instruction": True,
+        }],
+    }
+    monkeypatch.setattr(sched, "slug_for", lambda task: "acme/widget")
+    monkeypatch.setattr(sched, "_pr_number", lambda task: 101)
+    runner = sched.runner_for(corrective)
+    captured = {}
+
+    def start(worker_run, cwd, prompt):
+        captured["prompt"] = prompt
+        worker_run.status = "running"
+        worker_run.save()
+
+    monkeypatch.setattr(runner, "start", start)
+    sched.dispatch(corrective, mode="work", runner=runner)
+
+    assert "stale parser" in captured["prompt"]
+    assert "new feedback before corrective dispatch" in captured["prompt"]
+    assert "feedback at investigation time" not in captured["prompt"]
+    assert "unresolved, outdated" in captured["prompt"]
+    assert not sched.state.get(corrective.id).get("investigation_handoff")
 
 
 def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout(sched, monkeypatch):

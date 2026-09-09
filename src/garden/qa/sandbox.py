@@ -18,7 +18,6 @@ from typing import Any
 
 import yaml
 
-<<<<<<< HEAD
 from ..github import Feedback, GitHubError, PRInfo
 from ..model import now_iso
 

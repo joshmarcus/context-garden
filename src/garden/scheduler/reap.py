@@ -289,8 +289,6 @@ class ReapMixin:
                 "\n".join(f"- {item}" for item in report.get("evidence") or []),
                 "## Required outcome",
                 str(report.get("corrective_action") or report.get("recommendation") or ""),
-                "## Complete PR feedback supplied to the investigation",
-                str(inv.get("feedback_markdown") or "No linked PR."),
             ])
             diagnosis = redact_secrets(diagnosis)
             for item in discoveries:
@@ -300,6 +298,16 @@ class ReapMixin:
             run.result["_discovery_context"] = diagnosis
             self._file_discovered(task, run, run.result)
             linked = list(dict.fromkeys(run.result.get("_linked_tasks") or []))
+            for task_id in linked:
+                linked_state = self.state.get(task_id)
+                linked_state["investigation_handoff"] = {
+                    "request_id": inv.get("request_id") or f"{task.id}-{run.run_id}",
+                    "origin_task_id": task.id,
+                    "origin_pr": task.pr or "",
+                    "diagnosis": diagnosis,
+                    "fallback_feedback": str(inv.get("feedback_markdown") or ""),
+                    "report": f"/investigations/{task.id}/{run.run_id}/report.html",
+                }
             report["links"] = [*report.get("links", []), *(f"/tasks/{task_id}" for task_id in linked)]
         from ..deepdives import publish_report, save_report
 
