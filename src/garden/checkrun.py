@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +81,19 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     run_dir = Path(argv[0])
-    payload = json.loads((run_dir / "checks_input.json").read_text())
-    results = run_check_job(payload)
+    try:
+        payload = json.loads((run_dir / "checks_input.json").read_text())
+        results = run_check_job(payload)
+    except Exception as e:  # noqa: BLE001
+        # Reap needs a result even when the job infrastructure itself fails. Without
+        # one, it can only say no file arrived and a revise brief loses the traceback
+        # that tells the worker what is actually broken.
+        results = [{
+            "name": "checks",
+            "status": "error",
+            "summary": f"check runner crashed: {type(e).__name__}: {e}",
+            "details": traceback.format_exc(),
+        }]
     (run_dir / "checks.json").write_text(json.dumps(results, indent=2))
     return 0
 
