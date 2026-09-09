@@ -644,6 +644,15 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
+@pytest.mark.parametrize("interaction", [{}, {"unverified": None}, {"unverified": []}])
+def test_review_comment_accepts_omitted_optional_observations(interaction):
+    review = {"verdict": "approve", "summary": "Verified behavior", "interaction": interaction}
+    markdown = review_to_markdown(review)
+    assert "Automated review: approve" in markdown
+    assert "Verified behavior" in markdown
+    assert "Limitations and follow-ups" not in markdown
+
+
 def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
     store = Store(garden)
     review = parse_review('GARDEN_REVIEW: {"verdict":"request_changes","summary":"s","findings":[{"severity":"blocking","file":"a.py","line":2,"summary":"bug","fix":"Guard the empty value in parse()."},{"severity":"high","file":"b.py","line":3,"summary":"edge case","fix":"Handle the empty collection."},{"severity":"nit","file":"c.py","line":4,"summary":"unclear name","fix":"Rename result to parsed_value."}],"improvements":[{"area":"naming","suggestion":"Rename x to parsed_value.","why":"It reads at the caller.","effort":"small"}]}')

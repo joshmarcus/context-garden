@@ -6,6 +6,7 @@ import time
 from garden.github import Feedback
 from garden.inbox import build_inbox
 from garden.model import Status
+from garden.scheduler import State
 from tests.conftest import FakeGitHub
 
 
@@ -32,6 +33,24 @@ def test_wont_do_pauses_as_a_decision(sched, fake_github, monkeypatch):
     item = next(i for i in build_inbox(sched.store, sched) if i["task"] == "DM-001")
     assert item["group"] == "decision" and "duplicates DM-002" in item["why"]
     assert item["final"] and any(a["kind"] == "accept" for a in item["actions"])
+
+
+def test_worker_decision_is_durable_before_waiting_status_is_published(sched, monkeypatch):
+    """A concurrent web read must not see waiting_human before its decision card exists."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "wont_do")
+    sched.tick()  # dispatch
+    original_transition = sched._transition
+    observed = []
+
+    def transition(task, status, note, **kwargs):
+        if task.id == "DM-001" and status == Status.WAITING_HUMAN:
+            observed.append(State(sched.state.path).get(task.id).get("decision"))
+        return original_transition(task, status, note, **kwargs)
+
+    monkeypatch.setattr(sched, "_transition", transition)
+    sched.tick()  # reap the worker decision
+
+    assert observed and observed[0]["kind"] == "wont_do"
 
 
 def test_wont_do_accept_ends_the_task(sched, fake_github, monkeypatch):

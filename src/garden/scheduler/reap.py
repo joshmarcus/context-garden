@@ -394,6 +394,10 @@ class ReapMixin:
             decision["result"].setdefault("summary", reason)
             st["decision"] = decision
             st.pop("question", None)
+            # The watched web server can read task and state files while this tick is still
+            # running.  Persist the decision before publishing WAITING_HUMAN in the task file,
+            # otherwise a page can briefly see the new status without the decision it names.
+            self.state.save()
             self.events.emit("decision", task.id, decision=status, reason=reason, run=run.run_id)
             word = "won't do" if status == "wont_do" else "nothing to change"
             self._transition(task, Status.WAITING_HUMAN, f"worker says {word}: {reason}{cost}", needs_human=True)

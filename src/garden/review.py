@@ -670,7 +670,7 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
             mark = "✅" if c.get("met") is True else "❌"
             out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
     interaction = rev.get("interaction")
-    unverified = interaction.get("unverified") if isinstance(interaction, dict) else []
+    unverified = (interaction.get("unverified") or []) if isinstance(interaction, dict) else []
     limitations = [str(item.get("observation") or "").strip() for item in unverified
                    if isinstance(item, dict) and item.get("scope") == "limitation"
                    and str(item.get("observation") or "").strip()]
