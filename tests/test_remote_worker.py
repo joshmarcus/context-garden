@@ -31,11 +31,13 @@ from garden.web.app import create_app
 from tests.conftest import git, write
 
 
-def remote_client(garden, monkeypatch, *, validation_timeout=900, capacity=1, max_bypasses=3):
+def remote_client(garden, monkeypatch, *, validation_timeout=900, capacity=1, max_bypasses=3,
+                  in_place=False):
     path = garden / "garden.yaml"
     cfg = yaml.safe_load(path.read_text())
     cfg["workers"] = {"lease_seconds": 60, "hosts": [{"name": "build-1", "token_env": "BUILD_TOKEN",
-                                                        "max_parallel": capacity}]}
+                                                        "max_parallel": capacity,
+                                                        "in_place": in_place}]}
     cfg["max_parallel"] = 1
     cfg.setdefault("resources", {})["max_bypasses"] = max_bypasses
     cfg["products"]["demo"]["runner"] = "remote"
@@ -55,8 +57,8 @@ def isolated_execution_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
 
 
-def queued_run(store):
-    run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="work")
+def queued_run(store, task_id="DM-001"):
+    run = RunStore(store.config.garden_dir).new_run(task_id, "remote", mode="work")
     run.branch, run.base, run.harness, run.model, run.difficulty = "garden/dm-001", "main", "claude", "small", "easy"
     RemoteRunner({"worker_env": store.config.get("worker_env")}, store.config.harness("claude")).start(run, store.root, "safe brief")
     return run
@@ -443,6 +445,33 @@ def test_remote_base_probe_materialises_its_advertised_source(garden, monkeypatc
         execute_claim(bad_claim.json(), tmp_path / "unavailable-source-host", PostingClient())
     assert unavailable.source_head == "0" * 40
     assert gitops.git("rev-parse", "origin/garden/dm-001", cwd=repo).strip() == branch_head
+
+def test_in_place_host_claims_one_run_regardless_of_its_resource_weight(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch, capacity=4, in_place=True)
+    first = queued_run(store)
+    first.env_snapshot = {"product": "demo", "resource_weight": 2}
+    first.save()
+    second = queued_run(store, "DM-002")
+    second.env_snapshot = {"product": "demo", "resource_weight": 1}
+    second.save()
+    auth = {"Authorization": "Bearer secret-token"}
+
+    claimed = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                   "capacity": 4}, headers=auth)
+
+    assert claimed.status_code == 200
+    assert claimed.json()["id"] == first.run_id
+    assert claimed.json()["resource_weight"] == 2
+    assert client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                "capacity": 4}, headers=auth).status_code == 204
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    saved.status = "done"
+    saved.finished_at = dt.datetime.now(dt.UTC).isoformat()
+    saved.save()
+    replacement = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                       "capacity": 4}, headers=auth)
+    assert replacement.status_code == 200
+    assert replacement.json()["id"] == second.run_id
 
 
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):

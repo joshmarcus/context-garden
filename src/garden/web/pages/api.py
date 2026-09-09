@@ -199,8 +199,7 @@ def register(app: FastAPI, site: Site) -> None:
         offered = {str(x) for x in (body.get("harnesses") or [])}
         tiers = {str(x) for x in (body.get("tiers") or [])}
         capacity = min(max(1, int(body.get("capacity") or 1)), int(host_cfg.get("max_parallel") or 1))
-        if host_cfg.get("in_place"):
-            capacity = 1
+        in_place = bool(host_cfg.get("in_place"))
         with hub.action_lock:
             from ...runner.base import pass_env_patterns
             from ...runs import RunStore
@@ -209,8 +208,10 @@ def register(app: FastAPI, site: Site) -> None:
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))
                      and not r.process_finished()]
+            if in_place and owned:
+                return Response(status_code=204)
             used = sum(int((r.env_snapshot or {}).get("resource_weight") or 1) for r in owned)
-            if used >= capacity:
+            if not in_place and used >= capacity:
                 return Response(status_code=204)
             now = dt.datetime.now(dt.UTC)
             for run in runs:
@@ -229,7 +230,7 @@ def register(app: FastAPI, site: Site) -> None:
                 if run.difficulty and tiers and run.difficulty not in tiers:
                     continue
                 weight = int((run.env_snapshot or {}).get("resource_weight") or 1)
-                if used + weight > capacity:
+                if not in_place and used + weight > capacity:
                     # First-fit admission lets a cheap product use remaining capacity while
                     # a heavier queued product waits. Bound those bypasses so a steady stream
                     # of cheap claims eventually reserves the next opening for old heavy work.
