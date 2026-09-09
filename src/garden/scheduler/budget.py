@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..configuration import CONFIG_FIELDS, ApplyMode, assert_mutation_allowed, audit_value
 from ..model import Task, now_iso
 from ..notify import notify
 from ..profiles import stops as profile_stops
@@ -178,19 +179,30 @@ class BudgetMixin:
         same key in garden.yaml until cleared with `clear_override`/`garden clear`."""
         return self.control().setdefault("overrides", {})
 
-    def set_override(self, key: str, value: Any, by: str = "cli") -> None:
+    def set_override(self, key: str, value: Any, by: str = "cli", product: str | None = None) -> None:
+        assert_mutation_allowed(self.cfg.data, key, product=product)
+        field = CONFIG_FIELDS[key]
+        if field.apply != ApplyMode.RUNTIME and key != "max_parallel":
+            raise ValueError(f"{key} does not support a runtime override")
+        field.validate(value)
+        if product is not None:
+            raise ValueError("project runtime overrides are not supported; save a project override instead")
         self.overrides()[key] = value
         self.state.save()
-        self.events.emit("config_override", "", key=key, value=value, by=by)
-        self.log(f"{key} set to {value} by {by} (live override; takes effect next tick)")
+        safe = audit_value(key, value)
+        self.events.emit("config_override", "", key=key, value=safe, scope="global", provenance="runtime", by=by)
+        self.log(f"{key} set to {safe} by {by} (live override; takes effect next tick)")
 
-    def clear_override(self, key: str, by: str = "cli") -> None:
+    def clear_override(self, key: str, by: str = "cli", product: str | None = None) -> None:
+        assert_mutation_allowed(self.cfg.data, key, product=product)
+        if product is not None:
+            raise ValueError("project runtime overrides are not supported; reset the saved project override instead")
         ov = self.overrides()
         if key not in ov:
             return
         del ov[key]
         self.state.save()
-        self.events.emit("config_override_cleared", "", key=key, by=by)
+        self.events.emit("config_override_cleared", "", key=key, scope="global", provenance="yaml", by=by)
         self.log(f"{key} override cleared by {by} (back to the garden.yaml value)")
 
     def effective(self, key: str, default: Any = None) -> Any:
@@ -248,6 +260,7 @@ class BudgetMixin:
         """Switch the active stop live: an empty name clears it, back to plain garden.yaml
         values. Emits `profile_changed` (from/to) so the change is visible on the costs chart
         once it reads the event log, besides the generic `config_override` trail."""
+        assert_mutation_allowed(self.cfg.data, "operating_profile")
         name = (name or "").strip()
         if name and name not in self.operating_profile_stops():
             raise ValueError(f"unknown operating profile {name!r}")
@@ -257,5 +270,5 @@ class BudgetMixin:
         else:
             self.overrides().pop("operating_profile", None)
         self.state.save()
-        self.events.emit("profile_changed", "", **{"from": old, "to": name})
+        self.events.emit("profile_changed", "", **{"from": old, "to": name}, scope="global", by=by)
         self.log(f"operating profile: {old or '(none)'} -> {name or '(none)'} by {by}")

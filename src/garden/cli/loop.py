@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
+from ..configuration import CONFIG_FIELDS
 from ..github import pull_request_number
 from ..model import Status, now_iso
 from .common import (
@@ -198,8 +199,12 @@ def return_automation(task_id: str):
     console.print(f"{task_id}: returned to automation")
 
 
-# keys settable live (garden set / the Configuration page) and their value type; see Scheduler.set_override
-LIVE_OVERRIDES: dict[str, type] = {"max_parallel": int, "observe.profile": str}
+# Runtime controls are selected from the shared configuration inventory; their casters remain
+# Python callables because Typer receives strings at this boundary.
+LIVE_OVERRIDES: dict[str, type] = {
+    key: {"integer": int, "string": str}[CONFIG_FIELDS[key].value_type]
+    for key in ("max_parallel", "observe.profile")
+}
 
 
 @app.command("set", rich_help_panel=PANEL_LOOP)
