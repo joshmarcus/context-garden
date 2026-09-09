@@ -33,7 +33,7 @@
 {% if not inbox_count %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
 {% for group, gtitle, gdesc, gkind in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
 <section class="group {{ 'notice' if gkind == 'notice' else '' }}">
-  <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}{% if gkind == 'notice' %} · {{ gitems|length }}, no action needed{% endif %}</h2><p>{{ gdesc }}</p></header>
+  <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}{% if gkind == 'notice' %} · {{ gitems|length }}, no user decision{% endif %}</h2><p>{{ gdesc }}</p></header>
   {% for it in gitems %}
   <div class="item {{ 'q-open' if it.group == 'question' else '' }}">
     <div>{% if it.status %}{{ stage(it.status, 26) }}{% endif %}</div>
@@ -101,6 +101,7 @@
         {% for a in it.actions %}
         <div class="decision-action">
           {% if a.kind == 'resume' %}<form method="post" action="/tasks/{{ it.task }}/resume"><button class="primary">{{ a.label }}</button></form>
+          {% elif a.kind == 'recover' %}<form method="post" action="/tasks/{{ it.task }}/recover"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'review-again' %}<form method="post" action="/tasks/{{ it.task }}/review"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'retry' %}<form method="post" action="/tasks/{{ it.task }}/retry"><button>{{ a.label }}</button></form>
           {% elif a.kind == 'recover-check' %}<form method="post" action="/tasks/{{ it.task }}/recover-check"><button>{{ a.label }}</button></form>

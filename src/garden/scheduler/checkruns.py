@@ -21,7 +21,7 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
-from ..model import Status, Task, now_iso
+from ..model import Status, Task, ensure_open, now_iso
 from ..preflight import _is_ui_path as _is_preflight_ui_path
 from ..preflight import capture_infrastructure_reason, mechanical_results
 from ..review import validation_plan, visual_source_digest
@@ -162,6 +162,7 @@ class CheckRunMixin:
 
     def recover_waiting_check(self, task: Task, rep: TickReport | None = None) -> str:
         """Repair a waiting/check mismatch without cancelling check work or its continuation."""
+        ensure_open(task)
         rep = rep or TickReport()
         st = self.state.get(task.id)
         info = dict(st.get("check_run") or {})
@@ -183,7 +184,13 @@ class CheckRunMixin:
             self.state.save()
             return f"live check {run_id} retained; restored {status.value}"
 
+        if any(run.task_id == task.id for run in self.runs.active()):
+            raise RuntimeError(f"{task.id} has active work; stale recovery was not applied")
         st.pop("check_run", None)
+        stop = st.get("needs_human") or {}
+        if isinstance(stop, dict) and stop.get("kind") == "check_did_not_run":
+            st.pop("needs_human", None)
+            st.pop("recovery_check", None)
         if st.get("question") or st.get("decision"):
             status = Status.WAITING_HUMAN
         elif st.get("pending_feedback"):
@@ -432,7 +439,7 @@ class CheckRunMixin:
         self.state.get(task.id)["recovery_check"] = {
             "stage": stage, "cont": cont, "specs": specs, "retries": retries,
             "run": run.run_id, "cause": cause, "backend": backend or run.runner,
-            "provenance": provenance,
+            "provenance": provenance, "source_head": run.source_head,
         }
         self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage,
                               delegated_recovery=bool(self.cfg.get("recovery.delegated", False)))

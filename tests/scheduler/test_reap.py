@@ -317,7 +317,7 @@ def test_check_failing_at_unmoved_base_parks_without_revise(sched, fake_github):
     # the Inbox surfaces it as a base-broken card
     from garden.inbox import build_inbox
     cards = [it for it in build_inbox(sched.store, sched) if it["task"] == "DM-001"]
-    assert any(c["group"] == "attention" for c in cards)
+    assert any(c["group"] == "operator" and c["category"] == "Normal pending work" for c in cards)
 
 
 def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_github):
