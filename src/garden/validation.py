@@ -84,6 +84,9 @@ def main() -> int:
         "exit_code": completed.returncode,
         "log_location": str(status_dir),
     }
+    # Clean supervisor runs may have nothing to write to stderr.  Keep an explicit empty
+    # log so the durable evidence bundle has the same required shape on success and failure.
+    (status_dir / "stderr.log").touch(exist_ok=True)
     (status_dir / "result.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
     return completed.returncode
 
