@@ -3,9 +3,12 @@
 import os
 import time
 
+import pytest
+
 from garden.github import Feedback
 from garden.inbox import build_inbox
 from garden.model import Status
+from garden.scheduler.state import State
 from tests.conftest import FakeGitHub
 
 
@@ -316,3 +319,33 @@ def test_web_decision_flow(garden, monkeypatch):
     assert r.status_code == 303
     api = {t["id"]: t for t in c.get("/api/tasks").json()}
     assert api["DM-001"]["status"] == "wont_do"
+
+@pytest.mark.parametrize("mode", ["wont_do", "no_change_decision"])
+def test_decision_is_readable_when_waiting_status_is_published(sched, fake_github, monkeypatch, mode):
+    """A separate web reader must see the decision as soon as it sees the stop."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", mode)
+    if mode == "no_change_decision":
+        sched.tick()
+        sched.tick()
+        task = sched.store.task("DM-001")
+        sched.state.get(task.id)["pending_feedback"] = "Reconsider the promised outcome."
+        sched._transition(task, Status.CHANGES_REQUESTED, "request revision")
+        sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+    else:
+        sched.tick()
+
+    observed = []
+    save = sched.store.save
+
+    def read_after_publication(task, *args, **kwargs):
+        result = save(task, *args, **kwargs)
+        if task.id == "DM-001" and task.status == Status.WAITING_HUMAN:
+            observed.append(State(sched.state.path).get(task.id).get("decision"))
+        return result
+
+    monkeypatch.setattr(sched.store, "save", read_after_publication)
+    sched.tick()
+
+    assert observed, "the worker decision must publish a waiting status"
+    kind = "no_change" if mode == "no_change_decision" else mode
+    assert all(decision and decision["kind"] == kind and decision["reason"] for decision in observed)

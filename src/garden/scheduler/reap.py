@@ -400,6 +400,9 @@ class ReapMixin:
             decision["result"].setdefault("summary", reason)
             st["decision"] = decision
             st.pop("question", None)
+            # Readers can observe the task status before this tick finishes.
+            # Persist its decision before publishing the waiting status.
+            self.state.save()
             self.events.emit("decision", task.id, decision=status, reason=reason, run=run.run_id)
             word = "won't do" if status == "wont_do" else "nothing to change"
             self._transition(task, Status.WAITING_HUMAN, f"worker says {word}: {reason}{cost}", needs_human=True)
