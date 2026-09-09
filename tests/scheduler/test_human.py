@@ -272,6 +272,7 @@ def test_external_open_pr_uses_claimed_identity_and_review_without_managed_workt
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.head_sha = "verified-head"
     coincidental_path = sched.worktree_for(task)
     coincidental_path.mkdir(parents=True)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -293,6 +294,7 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
 
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+    pr.head_sha = "verified-head"
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
 
@@ -302,17 +304,19 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
     assert sched.state.get(task.id)["pr_number"] == pr.number
 
 
-def test_external_claim_stores_a_safe_provider_identity_without_a_browser_url(sched):
+def test_external_claim_stores_a_safe_provider_identity_without_a_browser_url(sched, fake_github):
     """Provider identities are accepted after the CLI has verified their PR number."""
     task = sched.store.task("DM-001")
     provider_url = "https://provider.test/api/pull-requests/opaque-identity"
+    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+    pr.head_sha = "verified-head"
 
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override="operator/actual", completion_mode="external",
-                   external_pr=provider_url, external_pr_number=101)
+                   external_pr=provider_url, external_pr_number=pr.number)
 
     assert sched.store.task(task.id).pr == provider_url
-    assert sched.state.get(task.id)["pr_number"] == 101
+    assert sched.state.get(task.id)["pr_number"] == pr.number
 
 
 @pytest.mark.parametrize("url", [
@@ -476,10 +480,54 @@ def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_gi
     assert failed.completion_attempts[-1]["pr_number"] == pr.number
     event = next(e for e in reversed(sched.events.read()) if e["kind"] == "external_completion_refused")
     assert event["pr_url"] == pr.url and event["pr_number"] == pr.number
+
+
+@pytest.mark.parametrize("error_type", [GitHubError, KeyError])
+def test_external_claim_refuses_inaccessible_pr_metadata_without_creating_run(
+    sched, fake_github, monkeypatch, error_type,
+):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+
+    def unavailable(*_):
+        raise error_type("unavailable")
+
+    monkeypatch.setattr(sched.github, "get_pr", unavailable)
+
+    with pytest.raises(RuntimeError, match="could not read external PR: unavailable"):
+        sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                       branch_override=pr.head, completion_mode="external",
+                       external_pr=pr.url)
+
+    saved = sched.store.task(task.id)
+    assert saved.branch == ""
+    assert saved.pr == ""
+    assert saved.status == Status.READY
+    assert not sched.runs.runs_for(task.id)
+
+
+@pytest.mark.parametrize("missing", ["head_sha", "base"])
+def test_external_claim_refuses_incomplete_pr_metadata_without_creating_run(
+    sched, fake_github, missing,
+):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
+    setattr(pr, missing, "")
+
+    with pytest.raises(RuntimeError, match="missing immutable head or base metadata"):
+        sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                       branch_override=pr.head, completion_mode="external",
+                       external_pr=pr.url)
+
+    assert sched.store.task(task.id).pr == ""
+    assert not sched.runs.runs_for(task.id)
+
+
 @pytest.mark.parametrize("error_type", [GitHubError, KeyError])
 def test_external_completion_pr_lookup_failure_is_audited(sched, fake_github, monkeypatch, error_type):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.head_sha = "verified-head"
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
     def unavailable(*_):
@@ -674,6 +722,7 @@ def test_external_completion_git_guard_violation_is_refused_and_failed(sched, fa
     """External completion must not skip the metadata guard captured at dispatch."""
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.head_sha = "verified-head"
     created_before = len(fake_github.created)
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
