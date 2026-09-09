@@ -940,19 +940,18 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
     assert sched.state.get(task.id)["pr_number"] == pr.number
 
 
-def test_external_claim_stores_a_safe_provider_identity_without_a_browser_url(sched, fake_github):
-    """Provider identities are accepted after the CLI has verified their PR number."""
+def test_external_claim_rejects_a_provider_identity_without_a_browser_url(sched):
+    """An opaque provider identity cannot substitute for an immutable PR lookup."""
     task = sched.store.task("DM-001")
     provider_url = "https://provider.test/api/pull-requests/opaque-identity"
-    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
-    pr.head_sha = "verified-head"
 
-    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
-                   branch_override="operator/actual", completion_mode="external",
-                   external_pr=provider_url, external_pr_number=pr.number)
+    with pytest.raises(RuntimeError, match="accessible PR URL"):
+        sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                       branch_override="operator/actual", completion_mode="external",
+                       external_pr=provider_url, external_pr_number=101)
 
-    assert sched.store.task(task.id).pr == provider_url
-    assert sched.state.get(task.id)["pr_number"] == pr.number
+    assert sched.store.task(task.id).pr == ""
+    assert not sched.runs.all_runs()
 
 
 @pytest.mark.parametrize("url", [
