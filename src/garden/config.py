@@ -17,6 +17,7 @@ from .configuration import (
     ApplyMode,
     ConfigProvenance,
     apply_changes,
+    assert_inherited_locks_unchanged,
     assert_mutation_allowed,
     resolve_value,
     revision,
@@ -449,6 +450,7 @@ class Config:
                 layered = _merge(layered, overlay)
         _validate_product_policies(layered)
         validate_configuration(layered)
+        assert_inherited_locks_unchanged(self.data, layered)
 
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix=f".{CONFIG_NAME}.", dir=path.parent)

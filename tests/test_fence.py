@@ -763,6 +763,23 @@ def test_config_reload_with_no_runs_in_flight_applies_within_a_tick(sched, garde
     assert sched.cfg.get("notify.command") == "true"
 
 
+def test_config_reload_rejects_change_to_plain_inherited_lock(sched, garden):
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["products"]["demo"]["configuration"] = {
+        "locks": {"max_parallel": {"reason": "fixed capacity"}},
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+    sched._reload_config_if_safe()
+
+    data["max_parallel"] = 7
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+    future = os.stat(garden / "garden.yaml").st_mtime + 10
+    os.utime(garden / "garden.yaml", (future, future))
+    with pytest.raises(PermissionError, match="fixed capacity"):
+        sched._reload_config_if_safe()
+    assert sched.cfg.get("max_parallel") == 2
+
+
 def test_fresh_scheduler_holds_a_worker_config_write_before_reap(sched, garden, monkeypatch):
     """A standalone ``garden tick`` has to recover the trusted dispatch config from the
     active run's fence manifest; it cannot rely on the prior process's Store cache."""

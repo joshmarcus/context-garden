@@ -102,7 +102,6 @@ def test_batch_is_atomic_rejects_stale_writes_and_preserves_extensions():
 
 def test_reload_rejects_inconsistent_locks_global_only_overrides_and_invalid_values(tmp_path):
     cases = [
-        {"products": {"p": {"configuration": {"locks": {"max_parallel": "reason"}}}}},
         {"products": {"p": {"configuration": {"overrides": {"tick_interval": 5}}}}},
         {"max_parallel": 0},
     ]
@@ -110,6 +109,29 @@ def test_reload_rejects_inconsistent_locks_global_only_overrides_and_invalid_val
         (tmp_path / "garden.yaml").write_text(yaml.safe_dump(data))
         with pytest.raises(ValueError):
             Config.load(tmp_path)
+
+
+def test_plain_lock_freezes_inherited_value_across_global_edits_and_reload(tmp_path):
+    before = {
+        "max_parallel": 4,
+        "products": {"p": {"configuration": {"locks": {"max_parallel": "capacity"}}}},
+    }
+    (tmp_path / "garden.yaml").write_text(yaml.safe_dump(before))
+    config = Config.load(tmp_path)
+    assert config.setting("max_parallel", "p").value == 4
+
+    with pytest.raises(PermissionError, match="capacity"):
+        apply_changes(before, {"max_parallel": 5})
+    with pytest.raises(PermissionError, match="capacity"):
+        config.save_changes({"max_parallel": 5})
+
+    # Loading a policy for the first time is valid: there is no earlier effective value to
+    # preserve. Adoption by a running scheduler performs the before/after reload check.
+    changed = deepcopy(before)
+    changed["max_parallel"] = 5
+    (tmp_path / "garden.yaml").write_text(yaml.safe_dump(changed))
+    reloaded = Config.load(tmp_path)
+    assert reloaded.setting("max_parallel", "p").value == 5
 
 
 def test_audit_redacts_sensitive_values_by_key():

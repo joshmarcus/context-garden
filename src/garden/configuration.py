@@ -140,7 +140,7 @@ def resolve_value(data: dict[str, Any], key: str, product: str | None = None) ->
 
 
 def validate_configuration(data: dict[str, Any]) -> None:
-    """Validate known values and make every non-enforcing lock stable under global edits."""
+    """Validate known values and project policy declarations."""
     for key, field in CONFIG_FIELDS.items():
         if ConfigScope.DERIVED not in field.scopes:
             field.validate(_get(data, key, deepcopy(field.default)))
@@ -168,8 +168,35 @@ def validate_configuration(data: dict[str, Any]) -> None:
                 raise ValueError(f"products.{product}.configuration.locks.{key} requires a reason")
             if "value" in policy:
                 field.validate(policy["value"])
-            elif key not in overrides:
-                raise ValueError(f"locked {key} for product {product} needs an override or enforced value")
+
+
+def assert_inherited_locks_unchanged(before: dict[str, Any], after: dict[str, Any]) -> None:
+    """Reject a prospective document that changes a plain lock's effective value.
+
+    A lock with no enforced ``value`` freezes the value the project currently inherits. An
+    explicit project override naturally keeps that value stable; this comparison is what
+    protects a lock that inherits from global configuration instead.
+    """
+    products = set(before.get("products") or {}) | set(after.get("products") or {})
+    for product in sorted(products):
+        _, locks = product_configuration(before, str(product))
+        _, after_locks = product_configuration(after, str(product))
+        for key, raw_policy in locks.items():
+            policy = {"reason": raw_policy} if isinstance(raw_policy, str) else dict(raw_policy)
+            if "value" in policy:
+                continue
+            after_raw = after_locks.get(key)
+            after_policy = ({"reason": after_raw} if isinstance(after_raw, str)
+                            else dict(after_raw) if isinstance(after_raw, dict) else None)
+            # Removing a policy or replacing it with an enforced value is a trusted policy
+            # operation, not an indirect ordinary edit of an inherited lock.
+            if after_policy is None or "value" in after_policy:
+                continue
+            old = resolve_value(before, key, str(product)).value
+            new = resolve_value(after, key, str(product)).value
+            if old != new:
+                reason = str(policy.get("reason") or "Locked by project policy")
+                raise PermissionError(f"{key} is locked for {product}: {reason}")
 
 
 def assert_mutation_allowed(data: dict[str, Any], key: str, *, product: str | None = None,
@@ -223,6 +250,7 @@ def apply_changes(data: dict[str, Any], changes: dict[str, Any], *, product: str
                 overrides[key] = deepcopy(value)
     if validate:
         validate_configuration(candidate)
+    assert_inherited_locks_unchanged(data, candidate)
     return candidate
 
 

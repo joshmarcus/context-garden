@@ -5,7 +5,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..configuration import CONFIG_FIELDS, ApplyMode, assert_mutation_allowed, audit_value
+from ..configuration import (
+    CONFIG_FIELDS,
+    ApplyMode,
+    assert_mutation_allowed,
+    audit_value,
+    product_configuration,
+)
 from ..model import Task, now_iso
 from ..notify import notify
 from ..profiles import stops as profile_stops
@@ -187,6 +193,7 @@ class BudgetMixin:
         field.validate(value)
         if product is not None:
             raise ValueError("project runtime overrides are not supported; save a project override instead")
+        self._assert_runtime_change_preserves_locks(key, value)
         self.overrides()[key] = value
         self.state.save()
         safe = audit_value(key, value)
@@ -200,10 +207,33 @@ class BudgetMixin:
         ov = self.overrides()
         if key not in ov:
             return
+        self._assert_runtime_change_preserves_locks(key, None, clear=True)
         del ov[key]
         self.state.save()
         self.events.emit("config_override_cleared", "", key=key, scope="global", provenance="yaml", by=by)
         self.log(f"{key} override cleared by {by} (back to the garden.yaml value)")
+
+    def _assert_runtime_change_preserves_locks(self, key: str, value: Any,
+                                               *, clear: bool = False) -> None:
+        """Keep a global live override from moving a project's plain inherited lock."""
+        for product in (self.cfg.data.get("products") or {}):
+            _, locks = product_configuration(self.cfg.data, str(product))
+            raw = locks.get(key)
+            if raw is None:
+                continue
+            policy = {"reason": raw} if isinstance(raw, str) else dict(raw)
+            if "value" in policy or key in product_configuration(self.cfg.data, str(product))[0]:
+                continue
+            old = self.effective(key, product=str(product))
+            if clear:
+                profile_key = _PROFILE_KEYS.get(key)
+                profile = self.operating_profile()
+                new = profile.get(profile_key, self.cfg.get(key)) if profile_key else self.cfg.get(key)
+            else:
+                new = value
+            if old != new:
+                reason = str(policy.get("reason") or "Locked by project policy")
+                raise PermissionError(f"{key} is locked for {product}: {reason}")
 
     def effective(self, key: str, default: Any = None, product: str | None = None) -> Any:
         """The live override for `key` if one is set, else the active operating profile's
@@ -285,6 +315,12 @@ class BudgetMixin:
         if name and name not in self.operating_profile_stops():
             raise ValueError(f"unknown operating profile {name!r}")
         old = self.operating_profile_name()
+        prospective = dict(self.operating_profile_stops().get(name) or {})
+        for key, profile_key in _PROFILE_KEYS.items():
+            if key in self.overrides():
+                continue
+            new = prospective.get(profile_key, self.cfg.get(key))
+            self._assert_runtime_change_preserves_locks(key, new)
         if name:
             self.overrides()["operating_profile"] = name
         else:

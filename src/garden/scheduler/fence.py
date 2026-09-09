@@ -879,6 +879,9 @@ class FenceMixin:
         if not self.store.config_changed_on_disk() and not ctrl.get("config_hold"):
             return
         new_cfg = self.store.load_config_from_disk()
+        from ..configuration import assert_inherited_locks_unchanged
+
+        assert_inherited_locks_unchanged(self.cfg.data, new_cfg.data)
         accepted = bool(ctrl.pop("config_hold_accept", False))
         exec_keys = executable_diff(self.cfg.data, new_cfg.data)
         in_flight = self._fenced_runs_in_flight() if exec_keys and not accepted else []
