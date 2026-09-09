@@ -124,6 +124,9 @@ def test_move_web_keeps_a_pr_task_history_and_shows_frozen_hold(garden):
     assert retained[0].run_id == completed.run_id and retained[0].recovery_artifacts == completed.recovery_artifacts
     page = c.get("/tasks/DM-002").text
     assert "Held by frozen phase" in page and "in review" in page and "will not start, revise, review, rebase, or merge" in page
+    assert "Persona review" not in page
+    refused = c.post("/tasks/DM-002/persona", data={"note": "security"}, follow_redirects=True)
+    assert "frozen" in refused.text
 
 
 def test_move_draft_into_a_frozen_phase_still_succeeds(garden):
