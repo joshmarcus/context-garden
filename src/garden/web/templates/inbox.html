@@ -3,8 +3,9 @@
 {% block body %}
 <div class="page-head">
   <div><h1>What needs you</h1><p>Decision cards need your judgment; operator cards name a bounded repair. Beyond that, the garden grows.</p></div>
-  <div class="tools"><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
+  <div class="tools"><button class="quiet" data-toggle="incident-deep-dive">Deep dive…</button><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
 </div>
+<div id="incident-deep-dive" class="panel" hidden style="margin-bottom:14px"><div class="eyebrow">Garden incident deep dive</div><p>Ask a local investigation agent about an event that is broader than one task.</p><form method="post" action="/investigations"><select name="scope" required>{% for value, label in investigation_scopes %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select><textarea name="question" required placeholder="What happened, and what should the investigation explain?"></textarea><textarea name="references" placeholder="Optional task, run, PR, issue, or event references"></textarea><button class="primary">Queue deep dive</button></form></div>
 <div class="kpis">
   <div class="kpi {{ 'hot' if inbox_count else '' }}"><div class="v">{{ inbox_count }}</div><div class="l">need you</div></div>
   <div class="kpi"><div class="v">{{ workers_running }}/{{ max_parallel }}</div><div class="l">workers running</div></div>

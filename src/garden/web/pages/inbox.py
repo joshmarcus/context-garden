@@ -42,10 +42,13 @@ def register(app: FastAPI, site: Site) -> None:
             sched.state,
             [event for event in all_events if event.get("kind") == "merge_head"],
         )
+        investigation_scopes = [(ph.key, f"{prod.name} / {ph.name}")
+                                for prod in s.products() for ph in prod.phases if not ph.closed]
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, owner_filter=owner,
             owner_task_items=owner_task_items, inbox_count=len(decisions(items)), prs_open=sum(1 for t in open_tasks if t.pr),
             tool_build=sched.upgrade_status(),
             spent_24h=spent_24h, suggestions_pending=suggestions_pending, merge_queue=merge_queue,
             burnup=burnup_svg(all_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}),
-            tiers=tier_bars_svg(tier_rows(s, tasks, all_events)), history=all_events))
+            tiers=tier_bars_svg(tier_rows(s, tasks, all_events)), history=all_events,
+            investigation_scopes=investigation_scopes))

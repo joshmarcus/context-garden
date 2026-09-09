@@ -266,6 +266,7 @@ class FakeGitHub:
         self.readied: list[int] = []
         self.merged: list[dict] = []
         self.feedback: dict[int, Feedback] = {}
+        self.complete_feedback_snapshots: dict[int, dict] = {}
         self.reopened: list[int] = []
         self.deleted_branches: set[str] = set()  # branches GitHub has deleted
         self.base_deleted: set[int] = set()  # PR numbers with a base_ref_deleted timeline event
@@ -326,6 +327,12 @@ class FakeGitHub:
 
     def feedback_since(self, slug, number, since_iso, exclude_logins=None):
         return self.feedback.get(number, Feedback())
+
+    def complete_feedback(self, slug, number):
+        return self.complete_feedback_snapshots.get(number, {
+            "repository": slug, "pr": number, "fetched_at": "2026-01-01T00:00:00+00:00",
+            "complete": True, "errors": [], "items": [],
+        })
 
     def comment(self, slug, number, body):
         self.comments.append(body)

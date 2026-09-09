@@ -2,7 +2,7 @@
 
 import json
 
-from garden.github import GARDEN_MARKER, GitHub, mark_garden_comment
+from garden.github import GARDEN_MARKER, GitHub, PRInfo, mark_garden_comment
 
 
 def _stub(monkeypatch, gh: GitHub, reviews, comments, issue_comments, login="josh"):
@@ -154,6 +154,43 @@ def test_exclude_logins_and_since_still_apply(monkeypatch):
     )
     fb = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z", exclude_logins={"someone-else"})
     assert [i["body"] for i in fb.items] == ["new and mine"]
+
+
+def test_complete_feedback_reads_all_pages_and_keeps_old_unresolved_thread(monkeypatch):
+    gh = GitHub(use_gh=False, token="test", trusted_authors=["alice"])
+    gh._me = "owner"
+    calls = []
+
+    def rest(method, path, **kwargs):
+        calls.append((path, (kwargs.get("params") or {}).get("page")))
+        if path == "/graphql":
+            return {"data": {"node": {"reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": [{
+                "id": "thread-old", "isResolved": False, "isOutdated": True,
+                "comments": {"nodes": [{"databaseId": 9, "id": "node-9"}]},
+            }]}}}}
+        page = kwargs["params"]["page"]
+        if path.endswith("/reviews"):
+            return ([{"id": i, "user": {"login": "alice"}, "submitted_at": f"2025-01-{i:02d}",
+                      "state": "COMMENTED", "body": f"review {i}"} for i in range(1, 101)]
+                    if page == 1 else [{"id": 101, "user": {"login": "alice"},
+                                        "submitted_at": "2025-02-01", "state": "CHANGES_REQUESTED",
+                                        "body": "old summary", "commit_id": "old-head"}])
+        if path.endswith("/comments") and "/pulls/" in path:
+            return [{"id": 9, "user": {"login": "alice"}, "created_at": "2025-01-01",
+                     "body": "older-head inline", "commit_id": "old-head", "path": "a.py", "line": 2}]
+        return [{"id": 20, "user": {"login": "mallory"}, "created_at": "2025-01-02",
+                 "body": "discussion context", "html_url": "https://example.test/comment/20"}]
+
+    monkeypatch.setattr(gh, "_rest", rest)
+    monkeypatch.setattr(gh, "get_pr", lambda slug, number: PRInfo(
+        number=number, url="https://example.test/pull/7", state="OPEN", node_id="pr-node"))
+    snapshot = gh.complete_feedback("o/r", 7)
+    assert snapshot["complete"] and len(snapshot["items"]) == 103
+    inline = next(item for item in snapshot["items"] if item["id"] == "9")
+    assert inline["thread_id"] == "thread-old" and inline["resolved"] is False and inline["outdated"] is True
+    discussion = next(item for item in snapshot["items"] if item["id"] == "20")
+    assert discussion["body"] == "discussion context" and discussion["trusted_instruction"] is False
+    assert ("/repos/o/r/pulls/7/reviews", 2) in calls
 
 
 def test_mark_garden_comment_prepends_visible_marker():

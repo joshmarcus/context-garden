@@ -280,9 +280,21 @@ class ReapMixin:
                     "cost_usd": run.cost_usd, "usage": run.usage})
         discoveries = report.get("discovered") or []
         if isinstance(discoveries, list):
+            diagnosis = "\n\n".join([
+                "## Deep dive diagnosis",
+                str(report.get("likely_cause") or "Not established."),
+                "## Evidence",
+                "\n".join(f"- {item}" for item in report.get("evidence") or []),
+                "## Required outcome",
+                str(report.get("corrective_action") or report.get("recommendation") or ""),
+            ])
+            for item in discoveries:
+                if isinstance(item, dict) and str(item.get("kind") or "task") == "task":
+                    item["body"] = (str(item.get("body") or "").rstrip() + "\n\n" + diagnosis).strip()
             run.result["discovered"] = discoveries
-            created = self._file_discovered(task, run, run.result)
-            report["links"] = [*report.get("links", []), *(f"/tasks/{item.id}" for item in created)]
+            self._file_discovered(task, run, run.result)
+            linked = list(dict.fromkeys(run.result.get("_linked_tasks") or []))
+            report["links"] = [*report.get("links", []), *(f"/tasks/{task_id}" for task_id in linked)]
         from ..deepdives import publish_report, save_report
 
         md_path, html_path = save_report(run.path, run.run_id, str(inv.get("reason") or ""), report)

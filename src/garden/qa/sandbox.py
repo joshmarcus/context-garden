@@ -18,7 +18,9 @@ from typing import Any
 
 import yaml
 
+<<<<<<< HEAD
 from ..github import Feedback, GitHubError, PRInfo
+from ..model import now_iso
 
 WORKER = Path(__file__).with_name("worker.py")
 
@@ -173,6 +175,10 @@ class MemoryGitHub:
 
     def feedback_since(self, slug: str, number: int, since_iso: str, exclude_logins: set[str] | None = None) -> Feedback:
         return Feedback()
+
+    def complete_feedback(self, slug: str, number: int) -> dict[str, Any]:
+        return {"repository": slug, "pr": number, "fetched_at": now_iso(),
+                "complete": True, "errors": [], "items": []}
 
     def update_pr(self, slug: str, number: int, title: str = "", body: str = "", base: str = "") -> None:
         pr = self._by_number(number)
