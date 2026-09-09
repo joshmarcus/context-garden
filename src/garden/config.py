@@ -241,6 +241,7 @@ DEFAULTS: dict[str, Any] = {
                                   # default, so no review app is trusted until its login is named here
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
+        "automerge_require_current_base": True,  # rebase onto the latest base before merging
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
         "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge under the plain policy
         "automerge_hard_tier": True,             # also merge hard-tier PRs, after two approving review

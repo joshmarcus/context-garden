@@ -120,6 +120,46 @@ def test_gate_review_not_approve(sched, fake_github):
     assert not ok and "approve" in reason
 
 
+def test_gate_requires_approval_for_the_current_pr_head(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["github"]["automerge_require_current_base"] = False
+    pr.head_sha = st["last_review_head"]
+    assert sched._automerge_gate(t, pr)[0]
+
+    pr.head_sha = "head-pushed-after-review"
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "current PR head" in reason
+
+
+def test_default_rebase_policy_keeps_patch_identical_prior_head_approval(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    assert sched.cfg.data["github"]["automerge_require_current_base"] is True
+    pr.head_sha = "mechanically-rebased-head"
+
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
+
+
+def test_merge_call_atomically_rejects_a_head_changed_after_the_gate(
+        sched, fake_github, monkeypatch):
+    t, st, pr = _in_review(sched, fake_github)
+    pr.head_sha = st["last_review_head"]
+    original_merge = fake_github.merge_pr
+
+    def race(slug, number, method="squash", delete_branch=True, expected_head=""):
+        pr.head_sha = "head-pushed-during-merge"
+        return original_merge(slug, number, method=method, delete_branch=delete_branch,
+                              expected_head=expected_head)
+
+    monkeypatch.setattr(fake_github, "merge_pr", race)
+    from garden.scheduler.report import TickReport
+    rep = TickReport()
+    sched._do_merge(t, pr, rep)
+
+    assert fake_github.merged == []
+    assert any("head changed before merge" in error for error in rep.errors)
+
+
 def test_gate_min_review_rounds(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     st["review_rounds"] = 1
@@ -244,6 +284,16 @@ def test_gate_red_ci(sched, fake_github):
     pr.checks = "FAILURE"
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "checks" in reason
+
+
+def test_clean_head_policy_requires_an_explicit_exact_head_success(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["github"]["automerge_require_current_base"] = False
+    pr.head_sha = st["last_review_head"]
+    pr.checks = ""
+
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "exact-head" in reason
 
 
 def test_gate_conflicting(sched, fake_github):
