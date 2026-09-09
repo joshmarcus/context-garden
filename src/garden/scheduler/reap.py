@@ -784,7 +784,10 @@ class ReapMixin:
         # than a command from task text: check commands run branch code and stay garden config.
         from ..criteria import required_evidence
         required = {r["name"] for r in required_evidence(task.body, task.extra.get("requires")) if r["kind"] == "check"}
-        if required:
+        # Required check evidence names pre-PR gates.  CI analysers are a separate contract
+        # that diagnoses an already-failed CI rollup and must not acquire a command merely
+        # because a task requires that command before its PR opens.
+        if stage == "pre_pr" and required:
             configured = list(product_checks["pre_pr"] or [])
             known = {str(spec.get("name")) for spec in specs}
             for spec in configured:

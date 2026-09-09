@@ -352,6 +352,22 @@ def test_product_check_overrides_keep_each_product_validation_contract(garden, f
     assert handbook["timeout"] == 45
 
 
+def test_ci_analyzers_exclude_required_pre_pr_checks(garden, fake_github):
+    """Required check evidence extends the pre-PR gate, never the CI analyser contract."""
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["checks"] = {
+        "pre_pr": [{"name": "unit", "command": "make test"}],
+        "ci": [{"name": "ci-log", "command": "analyse-ci"}],
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    sc = Scheduler(Store(garden), github=fake_github, log=print)
+    task = sc.store.task("DM-001")
+    task.extra["requires"] = ["check: unit"]
+
+    assert [spec["name"] for spec in sc._check_settings(task)["specs"]] == ["unit"]
+    assert [spec["name"] for spec in sc._check_settings(task, "ci")["specs"]] == ["ci-log"]
+
+
 def test_check_run_persists_resolved_product_settings(garden, fake_github):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg["checks"] = {"pre_pr": [{"name": "global", "command": "true"}], "ci": [], "timeout_seconds": 900}
