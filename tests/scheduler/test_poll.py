@@ -169,6 +169,51 @@ def test_pr_closed_fails(sched, fake_github):
     assert statuses(sched)["DM-001"] == "failed"
 
 
+def test_manual_reservation_observes_merged_pr_and_parks_transition(sched, fake_github):
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.state = "MERGED"
+
+    rep = sched.tick(dispatch=False)
+
+    state = sched.state.get(task.id)
+    assert statuses(sched)[task.id] == "in_review"
+    assert state["pr_state"] == "MERGED"
+    assert state["head_sha"] == pr.head_sha
+    assert not rep.transitions
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=pr.head_sha
+    )
+    rep = sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "done"
+    assert f"{task.id} -> done" in rep.transitions
+
+
+def test_manual_reservation_observes_closed_pr_and_parks_transition(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.state = "CLOSED"
+
+    sched.tick(dispatch=False)
+
+    assert statuses(sched)[task.id] == "in_review"
+    assert sched.state.get(task.id)["pr_state"] == "CLOSED"
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=pr.head_sha
+    )
+    sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "failed"
+
+
 def test_failed_task_with_merged_pr_becomes_done(sched, fake_github):
     """CG-046/CG-039: a revise round (or a retry) can die with the task's PR still open.
     A human merging that PR on GitHub must still resolve the task to done, worktree cleaned

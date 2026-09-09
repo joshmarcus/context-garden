@@ -124,7 +124,10 @@ class ReapMixin:
             # the task transition / push / PR step completed. Resume from
             # there instead of declaring "no active run" and redispatching a
             # second run on top of the first one's finished work.
-            if run.status == "timeout":
+            dead_run_reason = str((run.env_snapshot or {}).get("parked_dead_run_reason") or "")
+            if dead_run_reason:
+                self._retry_or_fail(task, run, rep, dead_run_reason)
+            elif run.status == "timeout":
                 self._preserve_timeout_worktree(task, run)
                 self._retry_or_fail(task, run, rep, "worker timed out")
             else:
@@ -1280,12 +1283,16 @@ class ReapMixin:
                 run.status = "failed"
                 run.finished_at = now_iso()
                 run.error = reason
+                if task is not None and self._manual_reserved(task):
+                    run.env_snapshot = dict(run.env_snapshot or {})
+                    run.env_snapshot["parked_dead_run_reason"] = reason
                 run.save()
                 self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
                                  harness=run.harness, model=run.model, status="failed",
                                  cost_usd=None, usage={}, error=reason, orphaned=True)
                 rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} failed ({reason})")
-                if (task is not None and task.status == Status.RUNNING
+                if (task is not None and not self._manual_reserved(task)
+                        and task.status == Status.RUNNING
                         and run.mode in ("work", "revise", "resume", "trial", "rebase")
                         and self.latest_worker_run(task.id).run_id == run.run_id):
                     self._retry_or_fail(task, run, rep, reason)
