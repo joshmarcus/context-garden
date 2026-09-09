@@ -268,17 +268,20 @@ body.page-now .rail-running { display:none; }
     if (!r.ok) throw new Error(r.status);
     return await r.text();
   }
+  function replaceHead(frag) {
+    var summary = frag.getElementById("now-summary"), slots = frag.getElementById("now-slots");
+    var lost = document.querySelector("[data-lost]");
+    if (summary) document.getElementById("now-summary").replaceWith(summary);
+    if (slots) {
+      if (lost && !lost.hidden) slots.querySelector("[data-lost]").hidden = false;
+      document.getElementById("now-slots").replaceWith(slots);
+    }
+  }
   // ---- the regions: each re-fetches its partial and swaps the one element that holds it
   var regions = {
     head: async function () {
       var frag = parse(await fetchText("/partials/now/head?window=" + win));
-      var summary = frag.getElementById("now-summary"), slots = frag.getElementById("now-slots");
-      var lost = document.querySelector("[data-lost]");
-      if (summary) document.getElementById("now-summary").replaceWith(summary);
-      if (slots) {
-        if (lost && !lost.hidden) slots.querySelector("[data-lost]").hidden = false;
-        document.getElementById("now-slots").replaceWith(slots);
-      }
+      replaceHead(frag);
     },
     now: async function () {
       var frag = parse(await fetchText("/partials/now/now?window=" + win));
@@ -330,7 +333,21 @@ body.page-now .rail-running { display:none; }
   var periodTimer = null;
   function periodSoon() {  // at most once a minute
     if (periodTimer) return;
-    periodTimer = setTimeout(function () { periodTimer = null; regions.period().catch(function () {}); }, 60000);
+    periodTimer = setTimeout(function () {
+      periodTimer = null;
+      // The summary repeats the selected period's literal figures. Refresh it with the
+      // detailed ledger so an automerge or cost event cannot leave the two readings apart.
+      // Fetch both before replacing either, so a transient partial failure also leaves the
+      // two existing readings consistent until the next event or reconnect retries them.
+      Promise.all([
+        fetchText("/partials/now/head?window=" + win),
+        fetchText("/partials/now/period?window=" + win)
+      ]).then(function (html) {
+        var head = parse(html[0]), period = parse(html[1]);
+        replaceHead(head);
+        document.getElementById("period-body").replaceWith(period.getElementById("period-body"));
+      }).catch(function () {});
+    }, 60000);
   }
   function refreshAll() { Object.keys(regions).forEach(function (k) { regions[k]().catch(function () {}); }); }
   // ---- strips: keyed by run id; a strip arrives at no height and grows, leaves by collapsing

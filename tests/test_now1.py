@@ -669,6 +669,11 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     for event in ("profile_changed", "config_reloaded", "config_override", "config_override_cleared"):
         assert f"{event}: 1" in head_events
     assert 'if (HEAD[k] || k === "transition") regions.head()' in page
+    # Period changes are coalesced, but the selected-period reading in the summary and the
+    # detailed ledger must be refreshed together (notably after an automerge).
+    assert 'fetchText("/partials/now/head?window=" + win)' in page
+    assert 'fetchText("/partials/now/period?window=" + win)' in page
+    assert "var head = parse(html[0]), period = parse(html[1]);" in page
 
 
 def test_tail_lines_leaves_a_partial_line_for_the_next_read(tmp_path):
