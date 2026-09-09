@@ -101,10 +101,14 @@ class AuxMixin:
                 # back where it can try again once it resumes, instead of a broken verdict.
                 self._pause_for_env_error(run, collected)
                 self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
-                                 usage=run.usage, status="env_error")
+                                 usage=run.usage, status="env_error", harness=run.harness,
+                                 model=run.model, pool_member=run.pool_member)
                 self._requeue_aux_env_error(entry, run, rep)
                 continue
-            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd, usage=run.usage, status=run.status)
+            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
+                             cost_usd=run.cost_usd, usage=run.usage, status=run.status,
+                             harness=run.harness, model=run.model,
+                             pool_member=run.pool_member)
             try:
                 if entry["kind"] == "compare":
                     self._finish_trial(entry, run, final, rep)

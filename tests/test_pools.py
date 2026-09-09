@@ -19,7 +19,7 @@ def test_weighted_tier_pool_spreads_ten_choices_and_skips_a_paused_harness(sched
     task.difficulty = "medium"
     # This test deliberately creates ten live run records to inspect routing.  Local
     # resource admission is covered separately and would otherwise cap that sample.
-    monkeypatch.setattr(sched, "_admit_local_launch", lambda _kind: None)
+    monkeypatch.setattr(sched, "_admit_local_launch", lambda _kind, _weight: None)
 
     runs = [sched.dispatch(task) for _ in range(10)]
     labels = [run.pool_member for run in runs]
@@ -69,6 +69,20 @@ def test_dispatch_records_the_selected_pool_member(sched):
     _configure_pool(sched)
     run = sched.dispatch(task)
     assert (run.harness, run.model, run.pool_member) == ("claude", "sonnet", "claude:sonnet")
+
+
+def test_active_profile_pool_routes_dispatch_and_live_override_wins(sched):
+    task = sched.store.task("DM-001")
+    task.difficulty = "medium"
+    profile_pool = [{"harness": "codex", "model": "profile-model"}]
+    override_pool = [{"harness": "claude", "model": "override-model"}]
+    sched.cfg.data["profiles"] = {"pooled": {"models": {"medium": profile_pool}}}
+    sched.set_operating_profile("pooled", by="test")
+
+    assert sched.select_pool_member(task, "medium")["label"] == "codex:profile-model"
+
+    sched.set_override("models", {"medium": override_pool}, by="test")
+    assert sched.select_pool_member(task, "medium")["label"] == "claude:override-model"
 
 
 def test_dispatch_keeps_an_empty_pool_member_model(sched):
@@ -135,6 +149,26 @@ def test_persona_review_keeps_an_empty_review_pool_member_model(sched):
     run = sched.dispatch_persona_pr(task, "security")
 
     assert (run.harness, run.model, run.pool_member) == ("codex", "", "codex:")
+
+
+def test_completed_persona_event_records_the_selected_pool_member(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.branch = task.default_branch()
+    sched.cfg.data["review"]["pool"] = [{"harness": "codex", "model": "gpt-std"}]
+    run = sched.dispatch_persona_pr(task, "security")
+    runner_type = type(sched.runner_for(task, run.runner, run.harness))
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda _run, _runner: True)
+    monkeypatch.setattr(Run, "read_exit_code", lambda _run: 0)
+    monkeypatch.setattr(runner_type, "collect", lambda _runner, _run: {
+        "usage": {}, "cost_usd": 0.01, "model": "gpt-std", "final_text": "",
+    })
+
+    sched.reap_aux(TickReport())
+
+    event = sched.events.read(task_id=task.id, kinds=["run_finished"])[-1]
+    assert (event["harness"], event["model"], event["pool_member"]) == (
+        "codex", "gpt-std", "codex:gpt-std",
+    )
 
 
 def test_pr_records_the_work_pool_member_in_state_event_and_body(sched, fake_github):
