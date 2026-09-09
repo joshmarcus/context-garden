@@ -52,6 +52,30 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_page_requests_reuse_discovery_until_an_external_task_edit(garden, monkeypatch):
+    """Large gardens parse their task tree once, while external edits remain immediately visible."""
+    scans = 0
+    original_scan = Store._scan
+
+    def counted_scan(self):
+        nonlocal scans
+        scans += 1
+        return original_scan(self)
+
+    monkeypatch.setattr(Store, "_scan", counted_scan)
+    c = client(garden)
+    assert c.get("/board").status_code == 200
+    assert c.get("/config").status_code == 200
+    assert scans == 1
+
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("title: First task", "title: Externally edited"))
+    page = c.get("/tasks/DM-001")
+    assert page.status_code == 200
+    assert "Externally edited" in page.text
+    assert scans == 2
+
+
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
     """The served Inbox owns the manual take journey, including stale-card recovery."""
     from garden.model import Status
