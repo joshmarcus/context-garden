@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import tempfile
 from copy import deepcopy
@@ -413,6 +414,17 @@ class Config:
         base file is changed; environment and local overlays retain their existing precedence.
         Validation is performed against the resulting layered document before replacement.
         """
+        lock_path = self.root / ".garden" / "config-edit.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            current = type(self).load(self.root, self.env)
+            return current._save_changes_locked(
+                changes, product=product, expected_revision=expected_revision, reset=reset,
+            )
+
+    def _save_changes_locked(self, changes: dict[str, Any], *, product: str | None,
+                             expected_revision: str | None, reset: bool) -> Config:
         if expected_revision is not None and expected_revision != revision(self.data):
             raise RuntimeError("configuration changed since it was read; reload and try again")
         path = self.root / CONFIG_NAME
