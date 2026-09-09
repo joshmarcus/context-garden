@@ -15,7 +15,6 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops
-<<<<<<< HEAD
 from garden.remote_worker import (
     WorkerRequestError,
     _host_check_data,
@@ -24,9 +23,6 @@ from garden.remote_worker import (
     doctor_worker,
     execute_claim,
 )
-=======
-from garden.remote_worker import doctor_worker, execute_claim
->>>>>>> d159fada (fix: clarify owner inheritance and inbox filters)
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
@@ -317,8 +313,6 @@ def test_worker_with_no_harnesses_can_claim_check_run(garden, monkeypatch):
     assert response.json()["mode"] == "check"
     assert response.json()["harness"] == ""
 
-
-<<<<<<< HEAD
 def test_remote_check_replaces_controller_only_spec_paths(tmp_path):
     repo = tmp_path / "repos" / "DM-001"
     run = {
@@ -370,9 +364,6 @@ def test_claim_replaces_controller_ui_paths_with_portable_paths(garden, monkeypa
     assert ui["out_dir"] == f".garden-ui-check/{run.run_id}"
     assert tests == {"name": "tests", "command": "pytest -q"}
 
-
-=======
->>>>>>> d159fada (fix: clarify owner inheritance and inbox filters)
 def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch, validation_timeout=731)
     run = queued_run(store)
