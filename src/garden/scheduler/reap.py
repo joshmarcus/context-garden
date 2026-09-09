@@ -116,13 +116,18 @@ class ReapMixin:
             if not (run.completion_mode == "pushed" and submitted and run.process_finished()):
                 return False
         if self._is_unreaped(task, run):
+            if self._manual_reserved(task):
+                return False
             # The run record already reached a terminal status (written by a
             # prior finalize() call) but the task is still RUNNING: an earlier
             # tick was killed after writing the run's final status but before
             # the task transition / push / PR step completed. Resume from
             # there instead of declaring "no active run" and redispatching a
             # second run on top of the first one's finished work.
-            if run.status == "timeout":
+            dead_run_reason = str((run.env_snapshot or {}).get("parked_dead_run_reason") or "")
+            if dead_run_reason:
+                self._retry_or_fail(task, run, rep, dead_run_reason)
+            elif run.status == "timeout":
                 self._preserve_timeout_worktree(task, run)
                 self._retry_or_fail(task, run, rep, "worker timed out")
             else:
@@ -154,7 +159,8 @@ class ReapMixin:
             rep.transitions.append(f"{task.id} running -> ready (no run)")
             return True
         runner = self.runner_for(task, run.runner, run.harness)
-        if not self._finished_or_timed_out(run, runner):
+        finished = run.process_finished() if self._manual_reserved(task) else self._finished_or_timed_out(run, runner)
+        if not finished:
             return False
         if run.status == "timeout":
             if run.mode == "investigation":
@@ -356,11 +362,20 @@ class ReapMixin:
         # can no longer re-emit it (CG-198). A resumed finalize skips the emit because the first
         # pass already made it, so the run's cost is never counted twice (CG-153).
         run.save()
-        self._apply_criteria_amendments(task, run, result)
         if not resumed:
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model,
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
                              cost_usd=run.cost_usd, usage=run.usage, exit_code=run.exit_code)
+
+        # Manual mode is a safe-boundary reservation, not a process cancellation. Collect the
+        # completed worker so it no longer consumes an active slot, but leave the task RUNNING
+        # and its finished_at marker intact. Once the reservation is removed, reap() recognizes
+        # this as an unreaped completion and resumes the ordinary finalize path.
+        if self._manual_reserved(task):
+            run.status = "done" if result and run.exit_code in (0, None) else "failed"
+            run.save()
+            return
+        self._apply_criteria_amendments(task, run, result)
 
         # Checked before the ordinary fence, and by reading files directly rather than through
         # `gitops.git`: a change to the clone's git internals would otherwise make the fence's
@@ -1268,12 +1283,16 @@ class ReapMixin:
                 run.status = "failed"
                 run.finished_at = now_iso()
                 run.error = reason
+                if task is not None and self._manual_reserved(task):
+                    run.env_snapshot = dict(run.env_snapshot or {})
+                    run.env_snapshot["parked_dead_run_reason"] = reason
                 run.save()
                 self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
                                  harness=run.harness, model=run.model, status="failed",
                                  cost_usd=None, usage={}, error=reason, orphaned=True)
                 rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} failed ({reason})")
-                if (task is not None and task.status == Status.RUNNING
+                if (task is not None and not self._manual_reserved(task)
+                        and task.status == Status.RUNNING
                         and run.mode in ("work", "revise", "resume", "trial", "rebase")
                         and self.latest_worker_run(task.id).run_id == run.run_id):
                     self._retry_or_fail(task, run, rep, reason)

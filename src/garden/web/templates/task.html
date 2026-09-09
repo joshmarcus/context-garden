@@ -11,6 +11,12 @@
 </div>
 
 {% if decision_card %}{% set card_task = task %}{% include "_decision_card.html" %}{% endif %}
+{% if phase_hold %}
+<div class="panel" style="border-color:var(--warn);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--warn)">Held by {{ phase_hold_kind }} phase</div>
+  <p style="margin:6px 0 0">This task remains <b>{{ task.status.value.replace('_', ' ') }}</b>; it will not start, revise, review, rebase, or merge while {{ phase_hold }}.</p>
+</div>
+{% endif %}
 {% if task.status.value == 'awaiting_triage' %}
 <div class="panel" style="border-color:var(--s-awaiting_triage)">
   <div class="eyebrow" style="color:var(--s-awaiting_triage)">Draft PR: your first look</div>
@@ -50,6 +56,15 @@
 </div>
 {% endif %}
 
+{% if manual_reservation %}
+<div class="panel" style="border-color:var(--warn);margin-bottom:14px" role="status">
+  <div class="eyebrow" style="color:var(--warn)">Manual mode</div>
+  <p style="margin:6px 0 10px">Reserved by <b>{{ manual_reservation.actor.replace('_', ' ') }}</b>{% if manual_reservation.note %}: {{ manual_reservation.note }}{% endif %}. Garden observes active work, PRs, and checks but starts no automatic lifecycle action.</p>
+  {% if latest_run and latest_run.status in ('requested','preparing','running') %}<p class="muted">Active work {{ latest_run.run_id }} continues to its safe boundary; this reservation does not stop or cancel it.</p>{% endif %}
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/return-automation" onsubmit="return confirm('Return this task to normal automation using its current observed state?');"><input type="hidden" name="applies_to" value="{{ manual_reservation.id }}"><input type="hidden" name="note" value="{{ manual_return_guard|tojson|forceescape }}"><button class="primary">Return to automation</button></form>
+</div>
+{% endif %}
+
 {% if state.operator_scope and state.operator_scope.steps %}
 <div class="panel" style="border-color:var(--s-running);margin-bottom:14px">
   <div class="eyebrow" style="color:var(--s-running)">Operator-owned configuration</div>
@@ -60,6 +75,7 @@
 {% endif %}
 
 <div class="actions" style="margin-bottom:14px">
+  {% if not manual_reservation and not task.status.terminal %}<button class="quiet" data-toggle="manual-mode-form">Manual mode…</button>{% endif %}
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
     <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
@@ -67,27 +83,28 @@
     </select>
   </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
-  {% if task.status.value in ('ready','changes_requested') and (not manual_runner or not manual_take_reason) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/{{ 'take' if manual_runner else 'dispatch' }}"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{% if manual_runner %}{{ 'Resume task' if task.status.value == 'changes_requested' else 'Take task' }}{% else %}{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}{% endif %}</button></form>{% endif %}
+  {% if not phase_hold and task.status.value in ('ready','changes_requested') and (not manual_runner or not manual_take_reason) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/{{ 'take' if manual_runner else 'dispatch' }}"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{% if manual_runner %}{{ 'Resume task' if task.status.value == 'changes_requested' else 'Take task' }}{% else %}{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}{% endif %}</button></form>{% endif %}
   {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ 'Reopen' if task.status.value == 'cancelled' else 'Continue the loop' }}</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
-  {% if task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
-  {% if task.pr or task.branch %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
+  {% if not phase_hold and task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
+  {% if not phase_hold and (task.pr or task.branch) %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
   <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch" data-autosave><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.requestSubmit()">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select><span class="autosave-mark" aria-live="polite"></span></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first" data-autosave><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.requestSubmit()">{% set scale_values = PRIORITY_SCALE|map(attribute=1)|list %}{% for word, n in PRIORITY_SCALE %}<option value="{{ n }}"{% if task.priority == n %} selected{% endif %}>{{ word }} · {{ n }}</option>{% endfor %}{% if task.priority not in scale_values %}<option value="{{ task.priority }}" selected>{{ task.priority }}</option>{% endif %}</select><span class="autosave-mark" aria-live="polite"></span></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/owner" style="display:inline-flex;gap:6px;align-items:center" title="Planning metadata only; it does not grant access or approve work"><label class="muted" for="owner">owner</label><input id="owner" name="note" value="{{ task.owner }}" placeholder="blank unassigns; inherit uses phase default" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"><button class="quiet">Save</button></form>
   {% if task.status.value != 'draft' and move_phases|length > 1 %}<form class="inline" method="post" action="/tasks/{{ task.id }}/move" style="display:inline-flex;gap:6px;align-items:center" title="Move to another phase (keeps the id, history and state)"><label class="muted" for="phase">phase</label><select id="phase" name="note" onchange="this.form.submit()">{% for ph in move_phases %}<option value="{{ task.product }}/{{ ph }}"{% if task.phase == ph %} selected{% endif %}>{{ ph }}</option>{% endfor %}</select></form>{% endif %}
 
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
-  {% if has_pending and task.status.value != 'running' and not edit_running %}<form class="inline" method="post" action="/tasks/{{ task.id }}/integrate"><button class="quiet">Integrate now</button></form>{% endif %}
+  {% if not phase_hold and has_pending and task.status.value != 'running' and not edit_running %}<form class="inline" method="post" action="/tasks/{{ task.id }}/integrate"><button class="quiet">Integrate now</button></form>{% endif %}
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% if not task.status.terminal and not state.investigation %}<button class="quiet" data-toggle="deep-dive-form">Deep dive…</button>{% endif %}
   {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
-  {% if (task.status.value in ('ready','draft','failed') and not task.pr) or trial_again %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
+  {% if not phase_hold and ((task.status.value in ('ready','draft','failed') and not task.pr) or trial_again) %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 {% if not task.status.terminal and not state.investigation %}<div id="deep-dive-form" class="panel" hidden><div class="eyebrow">Deep dive</div><p>Ask a local investigation agent to examine the complete Garden diagnostics. Work already in flight drains safely.</p><form method="post" action="/tasks/{{ task.id }}/investigate"><textarea name="note" required placeholder="What happened, and what should the investigation explain?"></textarea><input type="hidden" name="applies_to" value="agent"><div class="actions" style="margin-top:8px"><button class="primary">Queue deep dive</button></div></form></div>{% endif %}
 {% if state.investigation %}{% set publication = state.investigation.get('publication', {}) %}<div class="panel" style="margin-bottom:14px"><div class="eyebrow">Deep dive · {{ state.investigation.status }}</div><p>{{ state.investigation.reason }}</p>{% if state.investigation.get('run_id') %}<a class="btn" href="/runs/{{ task.id }}/{{ state.investigation.run_id }}">Investigation run</a>{% endif %}{% if state.investigation.get('report_paths') %}<a class="btn" href="/investigations/{{ task.id }}/{{ state.investigation.run_id }}/report.html">Read HTML report</a><a class="btn quiet" href="/investigations/{{ task.id }}/{{ state.investigation.run_id }}/report.md">Markdown source</a>{% endif %}{% if publication.get('status') == 'failed' %}<p class="warn">Publication failed: {{ publication.error }}</p><form class="inline" method="post" action="/tasks/{{ task.id }}/investigation-publish-retry"><button>Retry report publication</button></form>{% elif publication.get('commit') %}<p class="muted">Published {{ publication.markdown }} and {{ publication.html }} at {{ publication.commit[:12] }}.</p>{% endif %}</div>{% endif %}
+{% if not manual_reservation and not task.status.terminal %}<div id="manual-mode-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/manual-mode"><div class="eyebrow">Reserve from automation</div><p class="muted">Existing work keeps running. Garden applies the reservation at the next safe lifecycle boundary.</p><label for="manual-note">Short note (optional)</label><input id="manual-note" name="note" maxlength="240" style="width:min(100%,420px)"><input type="hidden" name="actor" value="human_owner"><div class="actions" style="margin-top:8px"><button class="primary">Enable Manual mode</button></div></form></div>{% endif %}
 {% if manual_take_reason %}<p class="muted" style="margin:-6px 0 14px">{{ manual_take_reason }}</p>{% endif %}
 {% if manual_runner and task.status.value == 'running' and latest_run and latest_run.runner == 'manual' %}
 <div class="panel" style="margin-bottom:14px">
@@ -101,7 +118,8 @@
   </form>
 </div>
 {% endif %}
-<div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>
+{% if not phase_hold %}<div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>{% endif %}
+{% if not phase_hold %}
 <div id="trial-form" class="panel" hidden>
   <div class="eyebrow">{{ 'Run this trial again' if trial_again else 'Start a model trial' }}</div>
   {% if trial_again %}<p class="muted" style="margin:4px 0 8px">This closes the previous trial's contender PR(s) and branches, and starts fresh contenders from <span class="mono">{{ task.default_branch() }}</span>.</p>{% endif %}
@@ -112,6 +130,7 @@
     <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">{{ 'Start trial again' if trial_again else 'Start trial' }}</button></div>
   </form>
 </div>
+{% endif %}
 <div id="suggest-form" class="panel" hidden>
   <div class="eyebrow">Suggest a change to this task</div>
   <p class="muted" style="margin:4px 0 8px">A person's wording is rarely the final wording. Write what the task should say; an agent folds it into the task file for you.</p>

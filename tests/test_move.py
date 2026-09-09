@@ -4,12 +4,14 @@ and the later-phase dependency warning."""
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from garden.cli import app
+from garden.model import Status
 from garden.runs import RunStore
-from garden.scheduler import State
+from garden.scheduler import Scheduler, State
 from garden.store import Store
 from garden.web.app import create_app
 
@@ -76,16 +78,77 @@ def test_move_cli_refuses_the_same_phase(garden):
     assert r.exit_code == 1 and "already in demo/p1" in r.output
 
 
-def test_move_frozen_phase_takes_drafts_only(garden):
+def test_move_ready_task_into_a_frozen_phase_preserves_status_and_refuses_dispatch(garden):
     assert run(garden, "new-phase", "demo", "p2").exit_code == 0
     assert run(garden, "freeze", "demo/p2").exit_code == 0
 
-    # DM-001 is ready, so a frozen phase refuses it
     r = run(garden, "move", "DM-001", "demo/p2")
-    assert r.exit_code == 1 and "frozen" in r.output
-    assert Store(garden).task("DM-001").phase == "p1"
+    assert r.exit_code == 0, r.output
+    t = Store(garden).task("DM-001")
+    assert t.phase == "p2" and t.status.value == "ready"
+    assert Store(garden).phase("demo", "p2").frozen
+    with pytest.raises(RuntimeError, match="frozen"):
+        Scheduler(Store(garden)).dispatch(t)
 
-    # a draft may move into a frozen phase
+
+def test_move_pr_task_keeps_history_and_frozen_review_hold(garden):
+    assert run(garden, "new-phase", "demo", "p2").exit_code == 0
+    assert run(garden, "freeze", "demo/p2").exit_code == 0
+    store = Store(garden)
+    t = store.task("DM-002")
+    t.status = Status.IN_REVIEW
+    t.branch, t.pr = "garden/DM-002", "https://example.test/demo/pull/42"
+    t.log("review approved before the move")
+    store.save(t)
+    state = State(garden / ".garden" / "state.json")
+    st = state.get(t.id)
+    st.update({
+        "pr_number": 42,
+        "revisions": 2,
+        "last_review": {"verdict": "approve"},
+        "review_rounds": 2,
+        "needs_human": {"kind": "review_cap", "reason": "review cap reached"},
+    })
+    state.save()
+    runs = RunStore(garden / ".garden")
+    completed = runs.new_run(t.id, "local", mode="review")
+    completed.status = "done"
+    completed.recovery_artifacts = [{"name": "review-notes", "path": "artifacts/review.md"}]
+    completed.save()
+
+    c = client(garden)
+    r = c.post("/tasks/DM-002/move", data={"note": "demo/p2"}, follow_redirects=False)
+    assert r.status_code == 303
+    moved = Store(garden).task("DM-002")
+    assert (moved.id, moved.status.value, moved.branch, moved.pr, moved.depends_on) == (
+        "DM-002", "in_review", "garden/DM-002", "https://example.test/demo/pull/42", ["DM-001"])
+    assert "review approved before the move" in moved.body
+    retained_state = State(garden / ".garden" / "state.json").get("DM-002")
+    assert retained_state["pr_number"] == 42
+    assert retained_state["revisions"] == 2 and retained_state["last_review"] == {"verdict": "approve"}
+    retained = RunStore(garden / ".garden").runs_for("DM-002")
+    assert retained[0].run_id == completed.run_id and retained[0].recovery_artifacts == completed.recovery_artifacts
+    page = c.get("/tasks/DM-002").text
+    assert "Held by frozen phase" in page and "in review" in page and "will not start, revise, review, rebase, or merge" in page
+    assert "Persona review" not in page
+
+    # CLI and web use review_again(), whose frozen gate must run before the cap bypass
+    # changes either of these preserved review-lifecycle fields.
+    refused = run(garden, "review", "DM-002")
+    assert refused.exit_code == 1 and "frozen" in refused.output
+    refused = c.post("/tasks/DM-002/review", follow_redirects=True)
+    assert "frozen" in refused.text
+    retained_state = State(garden / ".garden" / "state.json").get("DM-002")
+    assert retained_state["review_rounds"] == 2
+    assert retained_state["needs_human"] == {"kind": "review_cap", "reason": "review cap reached"}
+
+    refused = c.post("/tasks/DM-002/persona", data={"note": "security"}, follow_redirects=True)
+    assert "frozen" in refused.text
+
+
+def test_move_draft_into_a_frozen_phase_still_succeeds(garden):
+    assert run(garden, "new-phase", "demo", "p2").exit_code == 0
+    assert run(garden, "freeze", "demo/p2").exit_code == 0
     assert run(garden, "new-task", "demo/p1", "Late idea").exit_code == 0  # DM-003, draft
     r = run(garden, "move", "DM-003", "demo/p2")
     assert r.exit_code == 0, r.output

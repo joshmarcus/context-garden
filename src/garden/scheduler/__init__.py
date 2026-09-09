@@ -517,6 +517,15 @@ class Scheduler(
             return cached
         return None
 
+    def manual_reservation(self, task: Task | str) -> dict[str, Any] | None:
+        """Return a lifecycle reservation, kept separate from manual runner selection."""
+        task_id = task if isinstance(task, str) else task.id
+        value = self.state.get(task_id).get("manual_reservation")
+        return dict(value) if isinstance(value, dict) and value.get("id") else None
+
+    def _manual_reserved(self, task: Task | str) -> bool:
+        return self.manual_reservation(task) is not None
+
     # ---- tick --------------------------------------------------------------
     @contextmanager
     def _step(self, rep: TickReport, name: str) -> Iterator[None]:
@@ -615,16 +624,22 @@ class Scheduler(
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
         """Run one controller-owned pass, serialised across processes for this garden."""
-        with self.tick_lock():
+        with self._controller_lock():
             return self._tick_locked(dispatch)
 
     @contextmanager
-    def tick_lock(self) -> Iterator[None]:
-        """Serialize a state-changing operator action with scheduler passes."""
+    def _controller_lock(self) -> Iterator[None]:
+        """Serialize a state transition with scheduler ticks across threads and processes."""
         lock_path = self.cfg.garden_dir / "tick.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with _tick_thread_lock(lock_path), open(lock_path, "a") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
+            yield
+
+    @contextmanager
+    def tick_lock(self) -> Iterator[None]:
+        """Serialize a state-changing operator action with scheduler passes."""
+        with self._controller_lock():
             yield
 
     def _tick_locked(self, dispatch: bool | None = None) -> TickReport:
@@ -691,6 +706,8 @@ class Scheduler(
             for t in list(tasks.values()):
                 # A task parked because its base branch was broken re-probes the base and continues
                 # on its own once it goes green — a mechanical rebase and re-check, no worker.
+                if self._manual_reserved(t):
+                    continue
                 try:
                     self._reprobe_base_broken(t, rep)
                 except Exception as e:  # noqa: BLE001

@@ -16,7 +16,9 @@ from ..runs import Run
 
 
 class RunnerError(Exception):
-    pass
+    def __init__(self, message: str, *, returncode: int | None = None):
+        super().__init__(message)
+        self.returncode = returncode
 
 
 def run_temp_dir(work_dir: Path | str, run: Run) -> Path:
@@ -254,9 +256,10 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     return env
 
 
-def setup_stamp(command: str) -> str:
-    """A fingerprint of the setup command; the marker holds this so a changed command re-runs."""
-    return hashlib.sha256(command.encode("utf-8", "replace")).hexdigest()
+def setup_stamp(command: str, cache_key: str = "") -> str:
+    """Fingerprint the setup command and an optional checkout-lifecycle cache key."""
+    material = command if not cache_key else f"{command}\0{cache_key}"
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()
 
 
 def setup_marker(worktree: Path) -> Path:
@@ -266,7 +269,7 @@ def setup_marker(worktree: Path) -> Path:
 
 
 def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | None = None,
-              env: dict[str, str] | None = None) -> None:
+              env: dict[str, str] | None = None, cache_key: str = "") -> None:
     """Prepare a fresh worktree's environment: run `setup['command']` once (again only when the
     command changes, tracked by a marker file) in `env` (default: `scrubbed_env`)
     with `setup['env']` added. A non-zero exit raises RunnerError with the log tail — a run
@@ -276,7 +279,6 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     if not command:
         return
     marker = setup_marker(worktree)
-    stamp = setup_stamp(command)
     env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
         env.setdefault(str(k), str(v))
@@ -285,6 +287,7 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a") as setup_lock:
         fcntl.flock(setup_lock, fcntl.LOCK_EX)
+        stamp = setup_stamp(command, cache_key)
         # A prior server may have died while its setup shell continued.  The shell inherits
         # this lock and writes the success stamp itself, so a replacement waits and then
         # observes completion instead of launching the command twice.
@@ -307,7 +310,10 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
             pass
     if proc.returncode != 0:
         tail = "\n".join(out.splitlines()[-40:])
-        raise RunnerError(f"setup command failed (exit {proc.returncode}): {command}\n{tail}")
+        raise RunnerError(
+            f"setup command failed (exit {proc.returncode}): {command}\n{tail}",
+            returncode=proc.returncode,
+        )
 
 
 class Runner(ABC):

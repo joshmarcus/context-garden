@@ -6,11 +6,13 @@ import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from garden import gitops
 from garden.model import Status
 from garden.preflight import PREFLIGHT_ITEMS
 from garden.review import review_brief
+from garden.runner.base import run_setup, setup_marker
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
 from garden.scheduler.snapshot import write_snapshot
@@ -291,6 +293,95 @@ def test_check_failing_at_moved_base_is_rebased_not_revised(sched, fake_github):
     # the rebased branch picked up the now-green base file
     wt = sched.worktree_for(sched.store.task("DM-001"))
     assert (wt / "sentinel.txt").read_text().strip() == "ok"
+
+
+def test_unavailable_command_is_not_a_base_failure():
+    """An unavailable tool has no source verdict and must use check recovery."""
+    from garden.scheduler.checkruns import CheckRunMixin
+
+    unavailable = [{"name": "lint", "status": "fail", "summary": "exit 127",
+                    "details": "/bin/sh: .venv/bin/ruff: not found"}]
+    genuine_failure = [{"name": "lint", "status": "fail", "summary": "exit 1",
+                        "details": "undefined name: sched"}]
+
+    assert CheckRunMixin._check_did_not_run(SimpleNamespace(status="done"), unavailable)
+    assert not CheckRunMixin._check_did_not_run(SimpleNamespace(status="done"), genuine_failure)
+
+
+def test_missing_setup_command_in_real_base_probe_uses_bounded_check_recovery(sched, fake_github):
+    """A base probe that cannot execute setup has no base-source verdict to park."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["products"]["demo"]["setup"] = {"command": "garden-command-that-does-not-exist"}
+    sched.cfg.data["checks"] = {
+        "pre_pr": [{"name": "guard", "command": "false"}],
+        "ci": [],
+    }
+    task = sched.store.task("DM-001")
+    branch, base = task.default_branch(), "main"
+    worktree = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), branch, base)
+    failed = [{"name": "guard", "status": "fail", "summary": "exit 1", "details": ""}]
+
+    sched._handle_failed_checks(
+        task, None, worktree, branch, base, failed, TickReport(),
+        {"cost": 0.0, "diff_h": "", "body_h": ""},
+    )
+    for _ in range(5):
+        sched.tick(dispatch=False)
+        if sched.state.get(task.id).get("needs_human"):
+            break
+
+    stop = sched.state.get(task.id)["needs_human"]
+    assert stop["kind"] == "check_did_not_run"
+    assert stop["kind"] != "base_broken"
+    probes = [run for run in sched.runs.runs_for(task.id)
+              if run.mode == "check" and run.source_head]
+    assert len(probes) == 2  # initial attempt plus the one bounded retry
+    for probe in probes:
+        assert probe.result["checks"] == [{
+            "name": "setup", "status": "fail", "summary": "setup command failed",
+            "details": probe.result["checks"][0]["details"],
+            "exit_code": 127, "unavailable": True,
+        }]
+
+
+def test_recreated_base_probe_reruns_setup_through_check_payload(sched, fake_github, tmp_path):
+    """A real base-probe dispatch carries its materialisation key into run_check_job."""
+    sched.cfg.data["stack"] = False
+    task = sched.store.task("DM-001")
+    worktree = sched.worktree_for(task)
+    probe = worktree.parent / f"{worktree.name}.base-probe"
+    tally = tmp_path / "setup-count.txt"
+    setup = {
+        "command": f"mkdir -p .venv/bin; printf '#!/bin/sh\\nexit 0\\n' > .venv/bin/tool; "
+                   f"chmod +x .venv/bin/tool; basename \"$PWD\" >> {tally}"
+    }
+    sched.cfg.data["products"]["demo"]["setup"] = setup
+    sched.cfg.data["checks"] = {
+        "pre_pr": [{"name": "guard", "command": ".venv/bin/tool && test ! -f worker-output.txt"}],
+        "ci": [],
+    }
+
+    # Emulate a completed older probe at the same sibling path. Removing its worktree leaves
+    # the external setup marker behind, exactly as production base probes do.
+    repo = sched.repo_for(task)
+    base_sha = gitops.rev_parse(repo, "HEAD")
+    gitops.add_detached_worktree(repo, probe, base_sha)
+    run_setup(probe, setup)
+    gitops.remove_worktree(repo, probe)
+    assert setup_marker(probe).exists()
+
+    dispatched, _ = drive(sched, lambda s: any(
+        run.mode == "revise" for run in s.runs.runs_for(task.id)
+    ), n=8)
+
+    probe_runs = [run for run in sched.runs.runs_for(task.id)
+                  if run.mode == "check" and run.source_head]
+    assert probe_runs and probe_runs[-1].result["checks"] == [
+        {"name": "guard", "status": "pass", "summary": "ok", "details": ""}
+    ]
+    assert tally.read_text().splitlines().count(probe.name) == 2
+    assert any(item.startswith("DM-001(revise)") for item in dispatched)
+    assert sched.state.get(task.id).get("needs_human", {}).get("kind") != "base_broken"
 
 
 def test_check_failing_at_unmoved_base_parks_without_revise(sched, fake_github):

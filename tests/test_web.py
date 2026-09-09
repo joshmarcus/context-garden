@@ -1,3 +1,6 @@
+import datetime as dt
+import html
+import json
 import math
 import os
 import re
@@ -13,7 +16,7 @@ from garden.github import GitHubError, PRInfo
 from garden.gitops import head_sha
 from garden.model import Status
 from garden.runs import Run, RunStore
-from garden.scheduler import Scheduler
+from garden.scheduler import Scheduler, State
 from garden.scheduler.snapshot import _safe
 from garden.store import Store
 from garden.web.app import create_app
@@ -47,6 +50,35 @@ def test_pages_render(garden):
     for url in ["/", "/board", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks", "/events", "/trials", "/costs"]:
         r = c.get(url)
         assert r.status_code == 200, url
+
+
+def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
+    c = client(garden)
+    response = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"actor": "operator", "note": "working directly"},
+    )
+    assert response.status_code == 200
+    reservation = response.json()["reservation"]
+    expected = response.json()["expected"]
+
+    page = c.get("/tasks/DM-001")
+    assert "Manual mode" in page.text
+    assert "working directly" in page.text
+    assert "Return to automation" in page.text
+    assert "Manual mode · return" in c.get("/inbox").text
+
+    stale = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"enabled": "false", "reservation_id": "stale", "expected": expected},
+    )
+    assert stale.status_code == 409
+    returned = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"enabled": "false", "reservation_id": reservation["id"], "expected": expected},
+    )
+    assert returned.status_code == 200
+    assert "Return to automation" not in c.get("/tasks/DM-001").text
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
@@ -69,6 +101,79 @@ def test_task_page_back_control_keeps_a_safe_in_app_origin(garden):
     ):
         page = c.get("/tasks/DM-001", headers={"referer": referrer} if referrer else {}).text
         assert 'class="task-back"' not in page
+def test_task_page_returns_to_automation_after_observed_manual_head_change(garden):
+    c = client(garden)
+    reserved = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"actor": "operator", "note": "watching an external update"},
+    ).json()["reservation"]
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001")["manual_observed_pr"] = {"head_sha": "observed-new-head"}
+    state.save()
+
+    page = c.get("/tasks/DM-001")
+    match = re.search(r'name="note" value="([^"]+)"', page.text)
+    assert match is not None
+    expected = json.loads(html.unescape(match.group(1)))
+    assert expected["head_sha"] == "observed-new-head"
+
+    returned = c.post(
+        "/tasks/DM-001/return-automation",
+        data={"applies_to": reserved["id"], "note": json.dumps(expected)},
+        headers={"referer": "http://testserver/tasks/DM-001"},
+        follow_redirects=True,
+    )
+    assert returned.status_code == 200
+    assert "DM-001 returned to automation" in returned.text
+    assert "Return to automation" not in returned.text
+
+
+def test_page_requests_reuse_discovery_until_an_external_task_edit(garden, monkeypatch):
+    """Large gardens parse their task tree once, while external edits remain immediately visible."""
+    scans = 0
+    original_scan = Store._scan
+
+    def counted_scan(self):
+        nonlocal scans
+        scans += 1
+        return original_scan(self)
+
+    monkeypatch.setattr(Store, "_scan", counted_scan)
+    c = client(garden)
+    assert c.get("/board").status_code == 200
+    assert c.get("/config").status_code == 200
+    assert scans == 1
+
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("title: First task", "title: Externally edited"))
+    page = c.get("/tasks/DM-001")
+    assert page.status_code == 200
+    assert "Externally edited" in page.text
+    assert scans == 2
+
+
+def test_discovery_retries_when_task_changes_during_scan(garden, monkeypatch):
+    """Never pair pre-edit parsed tasks with a post-edit discovery fingerprint."""
+    store = Store(garden)
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    original_scan = Store._scan
+    scans = 0
+
+    def scan_with_external_edit(self):
+        nonlocal scans
+        scans += 1
+        products = original_scan(self)
+        if scans == 1:
+            task_path.write_text(task_path.read_text().replace("title: First task", "title: Edited during scan"))
+        return products
+
+    monkeypatch.setattr(Store, "_scan", scan_with_external_edit)
+
+    products, tasks, _duplicates = store.discovery_snapshot()
+
+    assert scans == 2
+    assert tasks["DM-001"].title == "Edited during scan"
+    assert next(t for p in products for ph in p.phases for t in ph.tasks if t.id == "DM-001").title == "Edited during scan"
 
 
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
@@ -643,6 +748,37 @@ def test_board_columns_and_list_views(garden):
     assert 'class="board-list"' in c.get("/partials/board?view=list").text
     # The switch and filters carry the chosen view so navigation keeps it.
     assert "view=list" in lst.text
+
+
+def test_board_labels_remote_queue_and_claim_age_without_claiming_liveness(garden):
+    from garden.model import Status
+    from garden.runs import RunStore
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.RUNNING
+    store.save(task)
+    run = RunStore(store.config.garden_dir).new_run(task.id, "remote", "work")
+    run.queued_at = run.started_at
+    run.save()
+
+    columns = client(garden).get("/partials/board?view=columns").text
+    listed = client(garden).get("/partials/board?view=list").text
+    assert "queued; waiting for a remote worker to claim it" in columns
+    assert "queued; waiting for a remote worker to claim it" in listed
+    assert "queued</span>" in columns and "queued</span>" in listed
+    assert "no process" not in columns
+
+    run.claimed_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat()
+    run.execution_started_at = run.claimed_at
+    run.lease_expires_at = '2099-01-01T00:00:00+00:00<img src=x onerror="alert(1)">'
+    run.save()
+    claimed = client(garden).get("/partials/board?view=list").text
+    assert "remote claim recorded" in claimed
+    assert "worker liveness is not known" in claimed
+    assert "since claim" in claimed
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in claimed
+    assert "<img src=x" not in claimed
 
 
 def test_board_prs_lists_open_linked_and_unlinked_prs(garden):

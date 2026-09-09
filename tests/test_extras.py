@@ -211,6 +211,29 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     assert "failed checks: build" in brief and "test_x.py::test_y" in brief
 
 
+def test_frozen_pr_defers_ci_analysis_until_the_phase_unfreezes(sched, fake_github):
+    """A CI failure remains recorded while frozen, without starting its detached analyser."""
+    from tests.conftest import write
+
+    sched.cfg.data["checks"] = {"pre_pr": [], "ci": [{"name": "plugin", "python": "tests.ci_plugin:analyse"}]}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs[task.branch]
+    pr.updated_at, pr.checks, pr.failed_checks = "ci-failure", "FAILURE", ["build"]
+    write(sched.store.root / "demo" / "p1" / "goals.md", "---\nfrozen: '2026-09-01'\n---\n\n# p1\n\nShip it.\n")
+    sched.store.invalidate()
+
+    sched.tick()
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
+    assert sched.state.get(task.id)["deferred_ci_check"]["head"] == pr.head_sha
+
+    write(sched.store.root / "demo" / "p1" / "goals.md", "# p1\n\nShip it.\n")
+    sched.store.invalidate()
+    rep = sched.tick()
+    assert f"{task.id}(check:ci)" in rep.dispatched
+
+
 # ---- trials -------------------------------------------------------------------
 def test_parse_contender():
     assert parse_contender("claude:opus", "claude") == ("claude:opus", "claude", "opus")
@@ -422,6 +445,50 @@ def test_trial_again_closes_prior_prs_deletes_branches_and_resets_state(sched, f
     first_record = TrialLog(sched.cfg.garden_dir / "trials.jsonl").read()[0]
     winner_entry = next(c for c in first_record["contenders"] if c["label"] == "claude:opus")
     assert winner_entry["closed"] is True
+
+
+def test_frozen_trial_again_refuses_before_reset_and_hides_the_web_action(sched, fake_github, monkeypatch):
+    """A frozen completed trial keeps its PR, state, runs, and worktree until unfreeze."""
+    from fastapi.testclient import TestClient
+
+    from garden.web.app import create_app
+
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    task = sched.store.task("DM-001")
+    sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    sched.tick()
+    sched.tick()
+
+    task = sched.store.task("DM-001")
+    state_before = json.loads((sched.cfg.garden_dir / "state.json").read_text())
+    task_before = task.path.read_text()
+    runs_before = [(run.run_id, run.status, run.branch, run.worktree)
+                   for run in sched.runs.runs_for(task.id)]
+    branch = task.branch
+    worktree = sched.worktree_for(task)
+    assert task.pr and worktree.exists()
+    closed_before = list(fake_github.closed)
+    deleted_before = set(fake_github.deleted_branches)
+
+    sched.store.set_phase_frozen(sched.store.phase(task.product, task.phase), "release hold")
+    sched.store.invalidate()
+
+    with pytest.raises(RuntimeError, match="frozen"):
+        sched.start_trial(sched.store.task(task.id), ["claude:sonnet", "codex:gpt"], again=True)
+
+    held = sched.store.task(task.id)
+    assert held.path.read_text() == task_before
+    assert json.loads((sched.cfg.garden_dir / "state.json").read_text()) == state_before
+    assert [(run.run_id, run.status, run.branch, run.worktree)
+            for run in sched.runs.runs_for(task.id)] == runs_before
+    assert held.branch == branch and worktree.exists()
+    assert fake_github.prs[branch].state == "OPEN"
+    assert fake_github.closed == closed_before
+    assert fake_github.deleted_branches == deleted_before
+
+    page = TestClient(create_app(sched.store, watch=False)).get(f"/tasks/{task.id}").text
+    assert "Held by frozen phase" in page
+    assert "Model trial again…" not in page and 'id="trial-form"' not in page
 
 
 def test_trial_without_again_refuses_naming_the_flag(sched, fake_github, monkeypatch):

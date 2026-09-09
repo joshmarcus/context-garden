@@ -154,6 +154,9 @@ class ReviewMixin:
         on a later tick, so a full review_parallel does not lose the round — it just waits its
         turn, the same way a full max_parallel makes a work task wait in the ready queue."""
         st = self.state.get(task.id)
+        if self._manual_reserved(task):
+            self._queue_pending_reviews(st, wanted)
+            return
         required_personas = {item["name"] for item in required_evidence(task.body, task.extra.get("requires"))
                              if item["kind"] == "persona"}
         evidence = st.setdefault("required_evidence", {})
@@ -283,8 +286,15 @@ class ReviewMixin:
             return "paused", "dispatch paused: reviews start again with dispatch"
         run = self._worker_holding_reviews(task)
         if run is not None:
+            lifecycle = run.presentation_lifecycle
+            if lifecycle == "finished; awaiting collection":
+                return "worker", f"its {run.mode} run finished and awaits collection"
             if run.no_process:
-                return "worker", f"its {run.mode} record has no process; the tick that reaps it starts the review"
+                return "worker", f"its {run.mode} local launch was not recorded; the tick that reaps it starts the review"
+            if not run.is_local_execution and not (run.claimed_at or run.host):
+                return "worker", f"its {run.mode} run is queued for a remote worker to claim"
+            if not run.is_local_execution:
+                return "worker", f"waits for its {run.mode} remote run; a claim is recorded but liveness is not known"
             return "worker", f"waits for its {run.mode} run to finish"
         if self.state.get(task.id).get("check_run"):
             return "check", "waits for its validation check to finish"
@@ -545,11 +555,14 @@ class ReviewMixin:
                         reask_missing_fixes: bool = False,
                         clarify_unverified: list[str] | None = None,
                         clarifies_review_run: str = "") -> Run:
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
         ensure_open(task)
         investigation = self.state.get(task.id).get("investigation") or {}
         if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
+        self._refuse_if_closed_or_frozen(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
         runner = self.runner_for(task, runner_name, harness_name)
@@ -843,6 +856,7 @@ class ReviewMixin:
         ensure_open(task)
         if not task.pr:
             raise RuntimeError(f"{task.id} has no PR to review")
+        self._refuse_if_closed_or_frozen(task)
         st = self.state.get(task.id)
         self._grant_one_more_review_round(st)
         st.pop("needs_human", None)
@@ -938,6 +952,8 @@ class ReviewMixin:
             # run_finished (both already happened before the crash); otherwise drop the pointer.
             # This is what lets a restart recover a review the old process reaped but never
             # persisted, instead of needing a fresh review (CG-198).
+            if self._manual_reserved(task):
+                return False
             if st.get("last_review_run") == run_id:
                 st["review_run"] = ""
                 return False
@@ -955,7 +971,8 @@ class ReviewMixin:
                 task_id=task.id, kinds=["run_finished"]))
             return self._apply_review(task, run, run.result, rep, emitted=emitted)
         runner = self.runner_for(task, run.runner, run.harness)
-        if not self._finished_or_timed_out(run, runner):
+        finished = run.process_finished() if self._manual_reserved(task) else self._finished_or_timed_out(run, runner)
+        if not finished:
             return False
         review: dict[str, Any] = {}
         collected: dict[str, Any]
@@ -1011,7 +1028,7 @@ class ReviewMixin:
             )
         if review:
             expansions = review.get("scope_expansions") if isinstance(review, dict) else None
-            if isinstance(expansions, list):
+            if isinstance(expansions, list) and not self._manual_reserved(task):
                 for expansion in expansions:
                     if not isinstance(expansion, dict):
                         continue
@@ -1046,6 +1063,11 @@ class ReviewMixin:
             affected_flow = str((run.env_snapshot or {}).get("affected_flow") or "")
             ambiguous = ambiguous_unverified(
                 review, expected_criteria=frozen_criteria, affected_flow=affected_flow)
+            if self._manual_reserved(task):
+                run.result = review
+                run.status = "done" if review else "failed"
+                run.save()
+                return True
             if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
                 # Preserve the original report, but spend one reviewer continuation to
                 # classify legacy prose. Persist the continuation on this result first so a
@@ -1101,6 +1123,8 @@ class ReviewMixin:
             run.result = review
             run.status = "done" if review else "failed"
             run.save()
+        if self._manual_reserved(task):
+            return True
         return self._apply_review(task, run, review, rep, emitted=False)
 
     def _review_evidence_is_current(self, task: Task, run: Run) -> bool:

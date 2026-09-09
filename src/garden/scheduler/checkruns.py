@@ -15,6 +15,7 @@ runs are visible in the run list but do not consume the worker-mode `max_paralle
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,8 @@ class CheckRunMixin:
         reap resumes. The task shows it on its page, but it does not consume a worker slot.
         `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
         # Reaping a worker or polling a PR can start checks before dispatch_ready.
         # Let an eligible earlier review use this just-freed shared slot first too.
@@ -170,6 +173,7 @@ class CheckRunMixin:
         payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
                    "cwd": str(worktree), "setup": self.cfg.product_setup(task.product),
                    "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
+                   "setup_cache_key": str(cont.get("setup_cache_key") or ""),
                    **(extra or {})}
         # A CI analyser may have no worktree; launch the process somewhere that exists.
         launch_cwd = worktree if worktree.exists() else run.path
@@ -369,7 +373,8 @@ class CheckRunMixin:
         stage = str(info.get("stage") or "pre_pr")
         if run.status == "running":
             runner = self.runner_for(task, run.runner, run.harness)
-            if not self._finished_or_timed_out(run, runner):
+            finished = run.process_finished() if self._manual_reserved(task) else self._finished_or_timed_out(run, runner)
+            if not finished:
                 return False
             results = self._collect_check_results(run)
             run.exit_code = run.read_exit_code()
@@ -393,6 +398,10 @@ class CheckRunMixin:
         else:
             st["check_run"] = {}
             return False
+        if self._manual_reserved(task):
+            # The terminal result is durable and no longer consumes capacity. Its exact
+            # continuation, including any retry decision, stays parked in check_run.
+            return True
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         plan = (run.env_snapshot or {}).get("validation_plan") or {}
         capture_policy = str(plan.get("capture_infrastructure_policy") or "require")
@@ -468,10 +477,19 @@ class CheckRunMixin:
             return True
         for index, result in enumerate(results):
             summary = str(result.get("summary") or "")
+            if (str(result.get("name") or "") == "setup"
+                    and str(result.get("status") or "") not in ("pass", "passed", "done")):
+                # Setup runs before every check spec.  Its failure is infrastructure/config
+                # evidence, never a verdict about the candidate or the probed base.
+                return True
             if ("check did not finish (killed" in summary
                     or "check run produced no results" in summary
                     or "check execution timed out" in summary
-                    or "check execution did not complete" in summary):
+                    or "check execution did not complete" in summary
+                    or summary in {"exit 126", "exit 127"}):
+                # Shell exits 126/127 mean the configured command could not execute, so there
+                # is no source verdict to attribute to either the branch or its base. Route it
+                # through the bounded infrastructure retry/recovery path.
                 return True
             # The branch controls ordinary check output, so recovery requires both the
             # generated wrapper position and its wrapper-authored protocol metadata.
@@ -681,7 +699,11 @@ class CheckRunMixin:
         self._dispatch_check_run(
             task, worktree=probe, branch=branch, base=base, specs=specs, stage="base_probe", rep=rep,
             cont={**self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
-                  "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed},
+                  "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed,
+                  # The sibling setup marker outlives this throwaway path. Bind it to this
+                  # materialisation so a later probe at the same path cannot reuse it. Check
+                  # retries retain the continuation and therefore reuse this exact generation.
+                  "setup_cache_key": uuid.uuid4().hex},
             source_head=base_sha)
 
     def _after_base_probe_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:

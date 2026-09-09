@@ -9,6 +9,7 @@ from garden.events import EventLog, digest, metrics, parse_since
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler.report import TickReport
+from tests.conftest import write
 
 
 def statuses(sched):
@@ -317,6 +318,46 @@ def test_stacked_dispatch_and_restack_on_merge(sched, fake_github, tmp_path):
     assert s["DM-001"] == "done" and s["DM-002"] == "in_review"
 
 
+def test_frozen_stacked_child_is_not_retargeted_or_rebased_when_parent_merges(sched, fake_github, tmp_path):
+    """A frozen phase defers a moved child's stack reconciliation until it is unfrozen."""
+    sched.tick()
+    sched.tick()  # DM-001 in_review; DM-002 stacks on it
+    sched.tick()  # DM-002's PR opens targeting DM-001's branch
+    write(sched.store.root / "demo" / "p2" / "goals.md", """
+        ---
+        frozen: '2026-09-09'
+        ---
+        # p2
+    """)
+    sched.store.invalidate()
+    sched.move(sched.store.task("DM-002"), "demo", "p2")
+    before_updates = list(fake_github.updated)
+    before_rebases = [run.run_id for run in sched.runs.runs_for("DM-002") if run.mode == "rebase"]
+
+    repo = tmp_path / "repo"
+    gitc("fetch", "origin", cwd=repo)
+    gitc("merge", "-q", "--ff-only", "origin/garden/dm-001-first-task", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    fake_github.prs["garden/dm-001-first-task"].state = "MERGED"
+    rep = sched.tick()
+
+    child = sched.store.task("DM-002")
+    assert "DM-002 restacked onto main" not in rep.transitions
+    assert fake_github.updated == before_updates
+    assert fake_github.prs["garden/dm-002-second-task"].base == "garden/dm-001-first-task"
+    assert sched.state.get(child.id)["stack_parent"] == "DM-001"
+    assert sched.state.get(child.id)["restack_pending"] is True
+    assert [run.run_id for run in sched.runs.runs_for(child.id) if run.mode == "rebase"] == before_rebases
+
+    write(sched.store.root / "demo" / "p2" / "goals.md", "# p2\n")
+    sched.store.invalidate()
+    rep = sched.tick()
+    assert "DM-002 restacked onto main" in rep.transitions
+    assert fake_github.prs["garden/dm-002-second-task"].base == "main"
+    assert "stack_parent" not in sched.state.get(child.id)
+    assert "restack_pending" not in sched.state.get(child.id)
+
+
 def test_stacked_child_automerges_only_after_restack(sched, fake_github, tmp_path):
     """A stacked child with every other gate green waits for the restack, then automerges."""
     sched.cfg.data["github"]["automerge"] = True
@@ -593,6 +634,37 @@ def test_merge_keeps_parent_branch_for_external_child_to_retarget(sched, fake_gi
     recovery = sched.state.get(child.id)["needs_human"]
     assert recovery["kind"] == "external_stack_retarget"
     assert "external stack owner must retarget" in recovery["reason"]
+
+
+def test_automerge_keeps_parent_branch_for_frozen_child(sched, fake_github):
+    """A frozen stacked child is not retargeted when the garden merges its parent."""
+    sched.cfg.data["github"]["automerge"] = True
+    parent = sched.store.task("DM-001")
+    child = sched.store.task("DM-002")
+    write(sched.store.root / "demo" / "p2" / "goals.md", "# Second phase\n")
+    sched.store.invalidate()
+    sched.move(child, "demo", "p2")
+    child = sched.store.task("DM-002")
+    child.status = Status.IN_REVIEW
+    sched.store.save(child)
+    sched.store.set_phase_frozen(sched.store.phase(child.product, child.phase), "held")
+
+    parent_pr = fake_github.create_pr("test/demo", parent.default_branch(), "main", "parent", "")
+    child_pr = fake_github.create_pr("test/demo", child.default_branch(), parent.default_branch(), "child", "")
+    parent.pr, child.pr = parent_pr.url, child_pr.url
+    parent.status = Status.IN_REVIEW
+    sched.store.save(parent)
+    sched.store.save(child)
+    sched.state.get(parent.id)["pr_number"] = parent_pr.number
+    sched.state.get(child.id).update({"pr_number": child_pr.number, "stack_parent": parent.id})
+
+    sched._do_merge(parent, parent_pr, TickReport())
+
+    assert fake_github.merged == [{"number": parent_pr.number, "method": "squash", "delete_branch": False}]
+    assert child_pr.base == parent.default_branch()
+    assert not fake_github.updated
+    child_state = sched.state.get(child.id)
+    assert child_state["stack_parent"] == parent.id
 
 
 def test_child_run_finishing_after_parent_merged_opens_pr_on_final_base(sched, fake_github, tmp_path):

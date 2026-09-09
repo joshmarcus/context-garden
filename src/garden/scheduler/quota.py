@@ -26,7 +26,9 @@ def _minutes_since(iso: str) -> float:
 class QuotaMixin:
     # ---- pause/resume --------------------------------------------------------
     def paused_harnesses(self) -> dict[str, Any]:
-        return self.control().setdefault("paused_harnesses", {})
+        # Reading an absent map must not dirty it: a stale tick could otherwise
+        # overwrite a pause recorded by another scheduler before this one saves.
+        return self.control().get("paused_harnesses", {})
 
     def is_harness_paused(self, name: str) -> bool:
         return bool(name) and name in self.paused_harnesses()
@@ -35,7 +37,7 @@ class QuotaMixin:
         if not name:
             return
         already = name in self.paused_harnesses()
-        self.paused_harnesses()[name] = {"reason": reason, "at": now_iso(), "run_id": run_id}
+        self.control().setdefault("paused_harnesses", {})[name] = {"reason": reason, "at": now_iso(), "run_id": run_id}
         self.state.save()
         if already:
             return  # already paused; don't re-notify on every quota hit while it's down

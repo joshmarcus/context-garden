@@ -319,6 +319,9 @@ class RebaseMixin:
         only when `skip_if_current`), `conflict` (an agent was dispatched), `error` (the push
         failed). `merge_head` marks the pre-merge rebase: its continuation holds the head in
         flight until its rollup goes green."""
+        if self._manual_reserved(task):
+            return "held"
+        self._refuse_if_closed_or_frozen(task)
         outcome = self._rebase_and_record(task, base, skip_if_current=skip_if_current, reason=reason)
         if outcome.status == "conflict":
             self.events.emit("rebase", task.id, base=base, files=outcome.files, resolved=False, how="agent")
@@ -438,6 +441,8 @@ class RebaseMixin:
         for t in self.store.tasks().values():
             if t.status != Status.IN_REVIEW:
                 continue
+            if self._manual_reserved(t):
+                continue
             st = self.state.get(t.id)
             if not st.get("automerge_candidate"):
                 continue
@@ -478,6 +483,8 @@ class RebaseMixin:
         """Pick this candidate as the head. The compatibility policy rebases onto the final base;
         an explicit product opt-out merges a clean approved exact head without rewriting it. The
         queue remains serial and refreshes GitHub before either merge path."""
+        if self._manual_reserved(task):
+            return
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if not slug or not number or not self.github.available:
@@ -522,6 +529,8 @@ class RebaseMixin:
         passes; keep it as head while its rollup is still running; drop
         it — logging why — only on a hard reason (a conflict, a failed check, a changed diff now
         in review, a closed PR or a human change request), so the next candidate becomes head."""
+        if self._manual_reserved(task):
+            return
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if not slug or not number or not self.github.available:
@@ -573,10 +582,11 @@ class RebaseMixin:
         review_run = str(st.get("last_review_run") or "")
         # Retarget every open stacked-child PR to the final base first: deleting this branch while
         # a child still targets it makes GitHub close the child's PR (CG-173). Keep the branch when
-        # a retarget fails, so no child is orphaned; a later pass deletes it once they are clear.
+        # a retarget is deferred or fails, so no child is orphaned; a later pass deletes it once
+        # they are clear.
         delete_branch = self._retarget_children_before_delete(task)
         if not delete_branch:
-            self.log(f"{task.id}: keeping the branch on merge; a stacked child PR could not be retargeted")
+            self.log(f"{task.id}: keeping the branch on merge; a stacked child PR was not retargeted")
         try:
             self.github.merge_pr(slug, number, method=method, delete_branch=delete_branch,
                                  expected_head=pr.head_sha)

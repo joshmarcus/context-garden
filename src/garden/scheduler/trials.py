@@ -49,6 +49,12 @@ class TrialsMixin:
     # ---- model trials ------------------------------------------------------
     def start_trial(self, task: Task, contenders: list[str], again: bool = False, keep_prs: bool = False) -> list[Run]:
         self.require_maintenance_running()
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
+        # A trial restart closes contender PRs and clears cached lifecycle state before it
+        # dispatches fresh contenders.  Check the shared phase gate first so a frozen task
+        # remains an intact hold rather than being reset and then refused by dispatch().
+        self._refuse_if_closed_or_frozen(task)
         if len(contenders) < 2:
             raise RuntimeError("a trial needs at least two contenders")
         default_h = task.harness or self.cfg.product_harness(task.product)
@@ -165,12 +171,27 @@ class TrialsMixin:
         trial = st["trial"]
         if trial["status"] == "comparing":
             return False
+        reserved = self._manual_reserved(task)
         changed = False
         for c in trial["contenders"]:
             if c["status"] == "paused":
+                if reserved:
+                    continue
                 if self.is_harness_paused(c["harness"]):
                     continue  # still down; try again next tick
                 self._redispatch_contender(task, c)
+                changed = True
+                continue
+            if c["status"] == "collected":
+                if reserved:
+                    continue
+                run = next((r for r in self.runs.runs_for(task.id) if r.run_id == c["run_id"]), None)
+                if run is None:
+                    c["status"] = "failed"
+                    c["note"] = "collected run record missing"
+                else:
+                    runner = self.runner_for(task, run.runner, run.harness)
+                    self._finalize_contender(task, c, run, runner, already_collected=True)
                 changed = True
                 continue
             if c["status"] != "running":
@@ -182,11 +203,14 @@ class TrialsMixin:
                 changed = True
                 continue
             runner = self.runner_for(task, run.runner, run.harness)
-            if not self._finished_or_timed_out(run, runner):
+            finished = run.process_finished() if reserved else self._finished_or_timed_out(run, runner)
+            if not finished:
                 continue
             changed = True
-            self._finalize_contender(task, c, run, runner)
-        if any(c["status"] == "running" for c in trial["contenders"]):
+            self._finalize_contender(task, c, run, runner, collect_only=reserved)
+        if reserved:
+            return changed
+        if any(c["status"] in {"running", "collected"} for c in trial["contenders"]):
             return changed
         with_pr = [c for c in trial["contenders"] if c["status"] == "pr"]
         paused = [c for c in trial["contenders"] if c["status"] == "paused"]
@@ -233,34 +257,53 @@ class TrialsMixin:
             rep.transitions.append(f"{task.id} -> failed (trial inconclusive)")
         return True
 
-    def _finalize_contender(self, task: Task, c: dict[str, Any], run: Run, runner: Runner) -> None:
-        run.exit_code = run.read_exit_code()
-        run.finished_at = now_iso()
-        collected = runner.collect(run) if run.status != "timeout" else {"result": {}, "error": "timed out"}
+    def _finalize_contender(
+        self, task: Task, c: dict[str, Any], run: Run, runner: Runner, *,
+        collect_only: bool = False, already_collected: bool = False,
+    ) -> None:
+        if already_collected:
+            collected = dict((run.env_snapshot or {}).get("trial_collected") or {})
+        else:
+            run.exit_code = run.read_exit_code()
+            run.finished_at = now_iso()
+            collected = runner.collect(run) if run.status != "timeout" else {"result": {}, "error": "timed out"}
+            if collect_only:
+                run.env_snapshot = {**(run.env_snapshot or {}), "trial_collected": collected}
+            run.result = collected.get("result") or {}
+            run.usage = collected.get("usage") or {}
+            run.cost_usd = collected.get("cost_usd")
+            run.model = str(collected.get("model") or run.model)
+            run.error = collected.get("error") or ""
+            final_text = str(collected.get("final_text") or "")
+            if final_text and not (run.path / "final.md").exists():
+                (run.path / "final.md").write_text(final_text)
+            run.status = "done"
+            run.save()
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
+                             status=("env_error" if collected.get("env_error") else
+                                     str(run.result.get("status") or ("error" if run.error else "no_result"))),
+                             cost_usd=run.cost_usd, usage=run.usage)
+        if collect_only:
+            # A completed contender no longer consumes capacity, but branch publication,
+            # PR creation, retries and trial conclusion all remain parked until the guarded
+            # return removes the task's Manual reservation.
+            c["status"] = "collected"
+            return
         if collected.get("env_error"):
             # The harness's own account, not the contender: pause it and park the contender
             # to retry once it resumes, instead of counting this as the contender's failure.
             self._pause_for_env_error(run, collected)
             run.status = "env_error"
             run.save()
-            self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
-                             status="env_error", cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
             kind = str(collected.get("env_kind") or "quota")
             detail = str(collected.get("error") or "").strip() or f"{kind} limit hit"
             c["status"] = "paused"
             c["kind"] = kind
             c["note"] = f"{kind} limit hit on {run.harness or 'the harness'}: {detail}; will retry once it resumes"
             return
-        run.result = collected.get("result") or {}
-        run.usage = collected.get("usage") or {}
-        run.cost_usd = collected.get("cost_usd")
-        run.model = str(collected.get("model") or run.model)
-        run.error = collected.get("error") or ""
         c["cost"] = run.cost_usd
         c["input_tokens"] = int((run.usage or {}).get("input_tokens", 0) or 0)
         c["output_tokens"] = int((run.usage or {}).get("output_tokens", 0) or 0)
-        self.events.emit("run_finished", task.id, run=run.run_id, mode="trial", harness=run.harness, model=run.model,
-                         status=str(run.result.get("status") or ("error" if run.error else "no_result")), cost_usd=run.cost_usd, usage=run.usage)
         result = run.result
         wt = Path(c["worktree"])
         if str(result.get("status", "")).lower() != "done":

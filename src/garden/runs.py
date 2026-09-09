@@ -172,13 +172,32 @@ class Run:
     # ---- process state -----------------------------------------------------
     @property
     def no_process(self) -> bool:
-        """A requested/preparing record is not confirmed live until it has a pid.
+        """Whether a local launch record has neither a process nor completion output.
 
-        A worker-mode record counts it against a worker slot until a tick reaps it, so
-        the Now page shows it as what it is and a review behind it says what it waits for.
+        Pull-based remote work and manual sessions do not own a controller pid.  Treating
+        those records as failed local launches gives the UI a false diagnosis.
         """
-        return (self.status in ("requested", "preparing", "running") and self.pid is None
+        return (self.runner != "manual" and self.is_local_execution
+                and self.status in ("requested", "preparing", "running") and self.pid is None
                 and not (self.path / "stdout.json").exists())
+
+    @property
+    def presentation_lifecycle(self) -> str:
+        """Truthful display detail for an active run, without inferring remote liveness."""
+        if self.status not in ("requested", "preparing", "running"):
+            return ""
+        if (self.path / "exit_code").exists() or (self.path / "remote_result.json").exists() or self.final_received_at:
+            return "finished; awaiting collection"
+        if self.runner == "manual":
+            return "manual reservation; waiting for operator completion"
+        if not self.is_local_execution:
+            if not (self.claimed_at or self.host):
+                return "queued; waiting for a remote worker to claim it"
+            lease = f"; lease deadline {self.lease_expires_at}" if self.lease_expires_at else ""
+            return f"remote claim recorded{lease}; worker liveness is not known"
+        if self.no_process:
+            return "local launch not recorded; a slot is reserved until a tick reaps it"
+        return ""
 
     def process_finished(self) -> bool:
         if self.pid == os.getpid():

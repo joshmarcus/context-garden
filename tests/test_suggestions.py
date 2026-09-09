@@ -105,6 +105,28 @@ def test_edit_run_integrates_and_leaves_scheduler_fields(sched):
     assert evs and evs[-1]["count"] == 1
 
 
+def test_manual_reservation_parks_finished_edit_until_return(sched):
+    task = sched.store.task("DM-001")
+    record_suggestion(sched.store, task, "acceptance should cover the empty case", author="josh")
+    sched.tick()
+    reservation = sched.reserve_manual(sched.store.task(task.id))
+
+    sched.tick(dispatch=False)
+
+    run = sched.runs.latest(task.id)
+    assert run.status == "done"
+    assert sched.state.get(task.id).get("edit_run") == run.run_id
+    assert has_pending(sched.store.task(task.id).body)
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    sched.tick(dispatch=False)
+    assert not sched.state.get(task.id).get("edit_run")
+    assert not has_pending(sched.store.task(task.id).body)
+
+
 def test_edit_holds_the_work_run_until_integrated(sched):
     t = sched.store.task("DM-001")
     record_suggestion(sched.store, t, "cover the empty case", author="josh")
