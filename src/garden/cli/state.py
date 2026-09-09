@@ -3,6 +3,8 @@ cancel, retry, discuss, decide, commit, pr."""
 
 from __future__ import annotations
 
+import json
+
 import typer
 
 from ..model import STATUS_ORDER, Status, priority_label
@@ -222,12 +224,16 @@ def investigate(
 
 
 @app.command("investigation-report", rich_help_panel=PANEL_DECIDE)
-def investigation_report(task_id: str, report: str = typer.Argument(...)):
+def investigation_report(
+    task_id: str,
+    report: str = typer.Argument(..., help="JSON object containing the structured investigation report"),
+):
     """Publish a completed diagnosis without changing the task outcome."""
     store = _store()
     try:
-        _scheduler(store).complete_investigation(_task(store, task_id), report)
-    except RuntimeError as e:
+        parsed = json.loads(report)
+        _scheduler(store).complete_investigation(_task(store, task_id), parsed)
+    except (RuntimeError, json.JSONDecodeError) as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
     console.print(f"{task_id}: investigation report ready for decision")
