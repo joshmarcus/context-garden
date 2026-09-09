@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
@@ -10,6 +11,44 @@ from fastapi.responses import HTMLResponse, Response
 from ...runs import RunStore
 from ..common import Site
 from .design import recorded_captures
+
+
+def _is_streamed_transcript(events: list[dict[str, object]], output: str = "") -> bool:
+    """Whether stdout is a turn-by-turn Claude or Codex conversation.
+
+    The configured harness answers this before a newly-started worker has emitted its first
+    event.  Event shapes retain transcripts from older records that predate the harness field.
+    """
+    if output in {"claude-stream-json", "codex-jsonl"}:
+        return True
+    for event in events:
+        event_type = event.get("type")
+        if event_type in {"assistant", "user", "item.completed", "item.started",
+                          "thread.started", "turn.started", "turn.completed", "turn.failed"}:
+            return True
+    return False
+
+
+def _transcript_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse Codex lifecycle updates into the latest event for each item.
+
+    Codex emits a command item when it starts and again when it completes.  The completed
+    event carries its aggregated output, so replacing the earlier event keeps the command's
+    place in the conversation while rendering one command and its result.
+    """
+    rendered: list[dict[str, Any]] = []
+    item_positions: dict[str, int] = {}
+    for event in events:
+        item = event.get("item")
+        item_id = item.get("id") if isinstance(item, dict) else None
+        if event.get("type") in {"item.started", "item.completed"} and isinstance(item_id, str):
+            position = item_positions.get(item_id)
+            if position is not None:
+                rendered[position] = event
+                continue
+            item_positions[item_id] = len(rendered)
+        rendered.append(event)
+    return rendered
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -40,17 +79,19 @@ def register(app: FastAPI, site: Site) -> None:
                 check_result = {"run_id": cr.run_id, "status": cr.status,
                                 "checks": (cr.result or {}).get("checks", [])}
         events = run.stdout_events(n=None)
-        # A streamed transcript is claude's stream-json (assistant/user turns + a final result);
-        # plain claude-json is one result object with no turns. Trust the harness config when it
-        # is known (so a just-started run tails before its first event), and fall back to sniffing
-        # the events for older runs whose harness is unrecorded.
-        is_stream = any(e.get("type") in ("assistant", "user") for e in events)
-        if not is_stream and run.harness:
+        # Trust the configured harness before a new worker has written stdout, then retain
+        # older transcript records by recognizing their Claude/Codex event envelopes.
+        output = ""
+        if run.harness:
             try:
                 h = s.config.harness(run.harness)
-                is_stream = h.output == "claude-json" and str(h.cfg.get("output_format") or "json") == "stream-json"
+                output = h.output
+                if output == "claude-json" and str(h.cfg.get("output_format") or "json") == "stream-json":
+                    output = "claude-stream-json"
             except Exception:  # noqa: BLE001
                 pass
+        is_stream = _is_streamed_transcript(events, output)
+        events = _transcript_events(events)
         final_path = run.path / "final.md"
         final_text = final_path.read_text() if final_path.exists() else ""
         if not final_text:
@@ -83,7 +124,7 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         rs = RunStore(s.config.garden_dir)
         run = next((r for r in rs.runs_for(task_id) if r.run_id == run_id), None)
-        events = run.stdout_events(n=None) if run else []
+        events = _transcript_events(run.stdout_events(n=None)) if run else []
         return templates.TemplateResponse(request, "_stdout.html", ctx(request, events=events))
 
     @app.get("/runs", response_class=HTMLResponse)
