@@ -20,7 +20,7 @@ def _target(target: str):
 
 @stabilization_app.command("start")
 def start_recording(target: str, build_sha: str = typer.Option("", "--build-sha")):
-    """Start (or restart) a candidate unattended window on the pinned build."""
+    """Start (or restart) a candidate no-owner-action window on the pinned build."""
     from ..stabilization import start
 
     _, phase = _target(target)
@@ -44,13 +44,20 @@ def take_sample(target: str):
 
 
 @stabilization_app.command("intervene")
-def record_intervention(target: str, reason: str, kind: str = typer.Option("operator_repair", "--kind")):
-    """Count an operator repair and reset the candidate four-hour window."""
+def record_intervention(target: str, reason: str, kind: str = typer.Option("operator_repair", "--kind"),
+                        actor: str = typer.Option("unknown", "--actor",
+                                                  help="human_owner, delegated_operator, automated_scheduler, or unknown")):
+    """Record an action; only a required human-owner repair resets the candidate window."""
     from ..stabilization import intervene
 
     _, phase = _target(target)
-    intervene(phase, reason, kind=kind)
-    console.print(f"recorded {kind}; {phase.key}'s unattended window restarted")
+    try:
+        intervene(phase, reason, kind=kind, actor=actor)
+    except ValueError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    reset = kind not in {"status_question", "conversation"} and actor == "human_owner"
+    console.print(f"recorded {kind} by {actor}; {phase.key}'s no-owner-action window " + ("restarted" if reset else "continues"))
 
 
 @stabilization_app.command("outcome")

@@ -20,11 +20,21 @@ from ..model import (
     priority_label,
 )
 from ..runs import Run
+from ..stabilization import ACTORS
 from .report import TickReport
 from .state import _TaskState
 
 
 class HumanMixin:
+    @staticmethod
+    def _validate_action_actor(actor: str) -> str:
+        """Return a recorded action actor, rejecting ambiguous live provenance."""
+        if actor not in ACTORS:
+            raise RuntimeError(
+                "actor must be one of " + ", ".join(sorted(ACTORS))
+            )
+        return actor
+
     # ---- approving a draft --------------------------------------------------
     def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> str:
         """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a
@@ -248,7 +258,7 @@ class HumanMixin:
         self.events.emit("pr_attached", task.id, pr=url, old_pr_number=old_number or 0, new_pr_number=new_number or 0)
         self.state.save()
 
-    def mark_done(self, task: Task, note: str = "", force: bool = False) -> None:
+    def mark_done(self, task: Task, note: str = "", force: bool = False, *, actor: str = "human_owner") -> None:
         """Mark a task done only after its PR's commits reach the final base, unless forced.
 
         The forced path is the explicit human escape hatch for abandoning an in-review PR.
@@ -259,7 +269,14 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
             )
+        self.events.emit("mark_done", task.id, actor=self._validate_action_actor(actor), reason=note or "marked done")
         self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
+
+    def set_status(self, task: Task, status: Status, note: str, *, actor: str = "human_owner") -> None:
+        """Apply an explicit operator status override with durable provenance."""
+        actor = self._validate_action_actor(actor)
+        self.events.emit("set_status", task.id, actor=actor, reason=note)
+        self._transition(task, status, note)
 
     def _pr_commits_on_base(self, task: Task) -> bool:
         """Whether the recorded PR head is an ancestor of the task's final base branch."""
@@ -405,8 +422,9 @@ class HumanMixin:
             return True
         return False
 
-    def retry(self, task: Task) -> None:
+    def retry(self, task: Task, *, actor: str = "human_owner") -> None:
         ensure_open(task)
+        self.events.emit("retry", task.id, actor=self._validate_action_actor(actor), reason="continued loop")
         st = self.state.get(task.id)
         st.pop("needs_human", None)
         if task.status == Status.CHANGES_REQUESTED or (task.pr and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)):

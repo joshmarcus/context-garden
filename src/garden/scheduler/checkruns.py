@@ -115,7 +115,6 @@ class CheckRunMixin:
             plan["visual_source"] = visual_source_digest(worktree, plan)
             # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
             # request a milestone walkthrough, but cannot turn an unrelated PR into one.
-            generated_ui_check_indices: list[int] = []
             if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
                 out_dir = f"../{run.run_id}-ui"
                 pages = json.dumps(plan["pages"], separators=(",", ":"))
@@ -138,9 +137,14 @@ class CheckRunMixin:
                                   "changed": changed, "pages": plan["pages"],
                                   "capture_infrastructure_policy": plan["capture_infrastructure_policy"],
                                   "_garden_generated_ui_check": True}]
-                # Trust only the position appended by this constructor. A configured check
-                # cannot gain capture provenance by copying the internal marker.
-                generated_ui_check_indices = [len(specs) - 1]
+            generated_ui_check_indices = [
+                index for index, spec in enumerate(specs)
+                if spec.get("_garden_generated_ui_check") is True
+                and (
+                    spec.get("python") == "garden.walkthrough:ui_check"
+                    or "-m garden.walkthrough --ui-check" in str(spec.get("command") or "")
+                )
+            ]
             run.env_snapshot["validation_plan"] = plan
             # Results are emitted one-for-one in spec order by the trusted check runner.
             # Persist the exact generated spec positions: a run-level boolean would let a

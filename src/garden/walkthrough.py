@@ -866,7 +866,8 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
                          log=logs.append, pages=pages)
     decision = next((page for page in result.pages if page.spec.slug == "task-decision"), None)
     decision_html = (out_dir / "task-decision.html").read_text() if decision else ""
-    if decision is None or "class=\"panel decision-card\"" not in decision_html:
+    require_decision = pages is None or "*" in pages or "task-decision" in pages
+    if require_decision and (decision is None or "class=\"panel decision-card\"" not in decision_html):
         return {"status": "fail", "summary": "decision-card walkthrough page is missing",
                 "failure_kind": "product", "details": "task-decision.html must contain .decision-card",
                 "captures": [], "interaction_evidence": [], "pages": [p.spec.slug for p in result.pages]}

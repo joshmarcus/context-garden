@@ -58,12 +58,14 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     assert st.get("last_review", {}).get("verdict") == "approve"
     run_id = st.get("last_review_run")
     assert run_id
+    assert st.get("last_review_head")
 
     # a new process on the same garden: state.json is the only thing that survives it
     fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
     st2 = fresh.state.get("DM-001")
     assert st2.get("last_review", {}).get("verdict") == "approve"
     assert st2.get("last_review_run") == run_id
+    assert st2.get("last_review_head") == st.get("last_review_head")
 
 
 def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):

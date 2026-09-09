@@ -102,7 +102,8 @@ def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium
 @app.command("set-status", rich_help_panel=PANEL_DECIDE)
 def set_status(task_id: str, new_status: str, note: str = typer.Option("", help="Log note"),
                reason: str = typer.Option("", "--reason", help="Reason (for wont_do): recorded and posted when the PR is closed"),
-               force: bool = typer.Option(False, "--force", help="Required to move a task out of done or cancelled")):
+               force: bool = typer.Option(False, "--force", help="Required to move a task out of done or cancelled"),
+               actor: str = typer.Option("human_owner", "--actor", help="human_owner, delegated_operator, automated_scheduler, or unknown")):
     """Escape hatch: force a task's status. `wont_do` closes any open PR with the reason and records it.
     Moving a task out of done or cancelled needs --force: those are the loop's terminal states."""
     store = _store()
@@ -120,10 +121,14 @@ def set_status(task_id: str, new_status: str, note: str = typer.Option("", help=
         console.print(f"{t.id} -> wont_do")
         return
     sched = _scheduler(store)
-    if s == Status.DONE:
-        sched.mark_done(t, note or "status forced to done", force=force)
-    else:
-        sched._transition(t, s, note or f"status forced to {s.value}")
+    try:
+        if s == Status.DONE:
+            sched.mark_done(t, note or "status forced to done", force=force, actor=actor)
+        else:
+            sched.set_status(t, s, note or f"status forced to {s.value}", actor=actor)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     console.print(f"{t.id} -> {s.value}")
 
 
@@ -170,11 +175,12 @@ def cancel(task_id: str, note: str = typer.Option("cancelled by hand")):
 
 
 @app.command(rich_help_panel=PANEL_DECIDE)
-def retry(task_id: str):
+def retry(task_id: str, actor: str = typer.Option("human_owner", "--actor",
+                                                   help="human_owner, delegated_operator, automated_scheduler, or unknown")):
     """Continue the loop: with an open PR, queue a revise run on the branch; otherwise reset attempts and start over."""
     store = _store()
     try:
-        _scheduler(store).retry(_task(store, task_id))
+        _scheduler(store).retry(_task(store, task_id), actor=actor)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
