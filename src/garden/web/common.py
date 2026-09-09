@@ -273,6 +273,7 @@ class Site:
         # selection (or fail to render).
         if active and active not in stops:
             profile_options.append({"value": active, "label": f"Unavailable: {active}"})
+        active_option = next(option for option in profile_options if option["value"] == active)
         return {
             "request": request,
             "page": page,
@@ -306,6 +307,7 @@ class Site:
             # arbitrary named profile.
             "operating_profile_options": profile_options,
             "operating_profile": active,
+            "operating_profile_label": active_option["label"],
             "operating_profile_source": (
                 "live override" if "operating_profile" in profile_overrides
                 else ("garden.yaml" if active else "plain garden.yaml values")

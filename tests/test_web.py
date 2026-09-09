@@ -2474,6 +2474,8 @@ def test_operating_profile_slider_renders_a_removed_selected_stop(garden):
     assert home.status_code == 200
     assert 'value="turbo"' in home.text
     assert "Unavailable: turbo" in home.text
+    assert '<output for="operating-profile-slider">Unavailable: turbo</output>' in home.text
+    assert 'aria-valuetext="Unavailable: turbo operating profile"' in home.text
     assert "names an unavailable profile; using plain garden.yaml values." in home.text
 
 
