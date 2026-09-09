@@ -156,7 +156,13 @@ def manual_mode(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str,
 
 @action("return-automation")
 def return_automation(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
-    sched.return_to_automation(t, reservation_id=applies_to, expected_head=note)
+    try:
+        expected = json.loads(note)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError("invalid Manual mode return guard; reload the task and try again") from exc
+    if not isinstance(expected, dict):
+        raise RuntimeError("invalid Manual mode return guard; reload the task and try again")
+    sched.return_to_automation(t, reservation_id=applies_to, expected=expected)
     return f"{t.id} returned to automation."
 
 
@@ -360,13 +366,15 @@ def register(app: FastAPI, site: Site) -> None:
                 sched.return_to_automation(
                     task,
                     reservation_id=payload.get("reservation_id", ""),
-                    expected_head=payload.get("expected_head", ""),
+                    expected=payload.get("expected", {}),
                 )
                 return {"task": task_id, "manual": False}
             reservation = sched.reserve_manual(
                 task, actor=payload.get("actor", "operator"), note=payload.get("note", "")
             )
-            return {"task": task_id, "manual": True, "reservation": reservation}
+            current = sched.store.task(task_id)
+            return {"task": task_id, "manual": True, "reservation": reservation,
+                    "expected": sched.manual_return_guard(current)}
         except KeyError:
             raise HTTPException(404) from None
         except RuntimeError as exc:

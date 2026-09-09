@@ -28,7 +28,8 @@ def test_manual_reservation_is_retry_safe_and_suppresses_dispatch(sched):
     assert "Manual mode reserved by operator" in sched.store.task(task.id).body
 
     sched.return_to_automation(
-        sched.store.task(task.id), reservation_id=first["id"], expected_head=""
+        sched.store.task(task.id), reservation_id=first["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     assert sched.manual_reservation(task) is None
     assert "DM-001(work)" in sched.tick().dispatched
@@ -43,9 +44,37 @@ def test_manual_reservation_does_not_interrupt_active_work_and_return_is_guarded
 
     assert sched.runs.runs_for(task.id)[-1].run_id == run.run_id
     with pytest.raises(RuntimeError, match="still active"):
-        sched.return_to_automation(task, reservation_id=reservation["id"])
+        sched.return_to_automation(
+            task, reservation_id=reservation["id"], expected=sched.manual_return_guard(task)
+        )
     with pytest.raises(RuntimeError, match="stale"):
-        sched.return_to_automation(task, reservation_id="not-current")
+        sched.return_to_automation(
+            task, reservation_id="not-current", expected=sched.manual_return_guard(task)
+        )
+
+
+@pytest.mark.parametrize("changed", ["status", "pr", "pr_number", "pr_state", "head_sha"])
+def test_return_to_automation_refuses_each_stale_task_and_pr_field(sched, changed):
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    expected = sched.manual_return_guard(task)
+
+    if changed == "status":
+        task.status = Status.IN_REVIEW
+        sched.store.save(task)
+    elif changed == "pr":
+        task.pr = "https://example.com/pull/2"
+        sched.store.save(task)
+    else:
+        replacements = {"pr_number": 2, "pr_state": "OPEN", "head_sha": "new-head"}
+        sched.state.get(task.id)[changed] = replacements[changed]
+        sched.state.save()
+
+    with pytest.raises(RuntimeError, match="task or PR state changed"):
+        sched.return_to_automation(
+            sched.store.task(task.id), reservation_id=reservation["id"], expected=expected
+        )
+    assert sched.manual_reservation(task) is not None
 
 
 def test_manual_reservation_parks_finished_worker_until_return(sched):
@@ -62,7 +91,8 @@ def test_manual_reservation_parks_finished_worker_until_return(sched):
     assert not any(active.task_id == task.id for active in sched.runs.active())
 
     sched.return_to_automation(
-        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=""
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     sched.tick(dispatch=False)
     assert statuses(sched)[task.id] == "in_review"
@@ -87,7 +117,7 @@ def test_manual_reservation_parks_finished_review_verdict_until_return(sched, mo
 
     sched.return_to_automation(
         sched.store.task(task.id), reservation_id=reservation["id"],
-        expected_head=str(sched.state.get(task.id).get("head_sha") or ""),
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     sched.tick(dispatch=False)
     assert statuses(sched)[task.id] == "changes_requested"
@@ -110,7 +140,7 @@ def test_manual_reservation_parks_finished_persona_until_return(sched):
 
     sched.return_to_automation(
         sched.store.task(task.id), reservation_id=reservation["id"],
-        expected_head=str(sched.state.get(task.id).get("head_sha") or ""),
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     sched.tick(dispatch=False)
     assert sched.state.get(task.id)["persona_reviews"][-1]["run"] == run.run_id
@@ -140,7 +170,8 @@ def test_manual_reservation_parks_finished_trial_contenders_until_return(sched, 
 
     monkeypatch.setattr(sched, "_finished_or_timed_out", finished_or_timed_out)
     sched.return_to_automation(
-        sched.store.task(task.id), reservation_id=reservation["id"], expected_head="",
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     rep = sched.tick(dispatch=False)
     assert "DM-001(compare)" in rep.dispatched
@@ -170,7 +201,8 @@ def test_manual_reservation_leaves_active_trial_contender_running(sched, monkeyp
     assert sched.runs.active()[0].run_id == active.run_id
     with pytest.raises(RuntimeError, match="still active"):
         sched.return_to_automation(
-            sched.store.task(task.id), reservation_id=reservation["id"], expected_head="",
+            sched.store.task(task.id), reservation_id=reservation["id"],
+            expected=sched.manual_return_guard(sched.store.task(task.id)),
         )
 
 
