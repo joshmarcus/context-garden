@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 import uvicorn
+from playwright.sync_api import sync_playwright
 
 from garden.model import Status
 from garden.qa.sandbox import MemoryGitHub, make_garden
@@ -20,6 +21,49 @@ from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.walkthrough import PageSpec, _screenshot
 from garden.web.app import create_app
+
+
+def verify_paired_refresh(base: str) -> dict[str, object]:
+    """Exercise a shared live event with one failed response, then a successful retry."""
+    init = """
+      window.__nowEvents = {};
+      window.EventSource = class {
+        constructor() { window.__nowSource = this; }
+        addEventListener(kind, callback) { window.__nowEvents[kind] = callback; }
+      };
+      window.__nativeSetTimeout = window.setTimeout;
+      window.setTimeout = (callback, delay, ...args) =>
+        window.__nativeSetTimeout(callback, delay === 60000 ? 10 : delay, ...args);
+    """
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        page = browser.new_page()
+        page.add_init_script(init)
+        page.goto(base + "/now")
+        original_summary = page.locator("#now-summary").inner_text()
+        original_period = page.locator("#period-body").inner_text()
+
+        page.route("**/partials/now/head?**", lambda route: route.fulfill(
+            body='<section id="now-summary">new summary</section><span id="now-slots"></span>'))
+        page.route("**/partials/now/period?**", lambda route: route.fulfill(status=503, body="unavailable"))
+        page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "profile_changed"})})""")
+        page.wait_for_timeout(100)
+        assert page.locator("#now-summary").inner_text() == original_summary
+        assert page.locator("#period-body").inner_text() == original_period
+
+        page.unroute("**/partials/now/head?**")
+        page.unroute("**/partials/now/period?**")
+        page.route("**/partials/now/head?**", lambda route: route.fulfill(
+            body='<section id="now-summary">recovered summary</section><span id="now-slots"></span>'))
+        page.route("**/partials/now/period?**", lambda route: route.fulfill(
+            body='<div id="period-body">recovered period</div>'))
+        page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "config_reloaded"})})""")
+        page.wait_for_timeout(100)
+        assert page.locator("#now-summary").inner_text() == "recovered summary"
+        assert page.locator("#period-body").inner_text() == "recovered period"
+        browser.close()
+    return {"state": "shared-event-refresh", "method": "browser event replay", "url": base + "/now",
+            "status": 200, "observed": "A partial failure replaced neither region; a later shared event replaced both."}
 
 
 def replay(out: Path) -> None:
@@ -49,6 +93,7 @@ def replay(out: Path) -> None:
             while not server.started and time.monotonic() < deadline:
                 time.sleep(0.02)
             assert server.started
+            events.append(verify_paired_refresh(base))
             with httpx.Client(base_url=base, timeout=10) as client:
                 def get(path: str, state: str, expected: int, observed: str) -> httpx.Response:
                     response = client.get(path)

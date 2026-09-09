@@ -626,7 +626,8 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     head_events = re.search(r"var HEAD = \{([^}]+)\}", page).group(1)
     for event in ("profile_changed", "config_reloaded", "config_override", "config_override_cleared"):
         assert f"{event}: 1" in head_events
-    assert 'if (HEAD[k] || k === "transition") regions.head()' in page
+    assert 'if (refreshesHead && !refreshesPeriod) regions.head()' in page
+    assert "if (refreshesPeriod) periodSoon()" in page
     # Period changes are coalesced, but the selected-period reading in the summary and the
     # detailed ledger must be refreshed together (notably after an automerge).
     assert 'fetchText("/partials/now/head?window=" + win)' in page
