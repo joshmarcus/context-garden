@@ -268,11 +268,29 @@ class ReapMixin:
         if report.get("recommendation") not in INVESTIGATION_RECOMMENDATIONS:
             self._fail_investigation(task, run, rep, "agent returned an unsupported recommendation")
             return
+        report.setdefault("source_identities", [run.run_id, task.branch or task.default_branch()])
+        report.setdefault("observed_behavior", report["likely_cause"])
+        report.setdefault("intended_behavior", "The task should progress through Garden's configured workflow.")
+        report.setdefault("impact", "Not separately established by the investigation.")
+        report.setdefault("corrective_action", report["recommendation"])
         st = self.state.get(task.id)
         inv = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
         inv.update({"status": "report_ready", "report": report, "completed_at": now_iso(),
                     "run_id": run.run_id, "transcript": str(run.path / "final.md"),
                     "cost_usd": run.cost_usd, "usage": run.usage})
+        discoveries = report.get("discovered") or []
+        if isinstance(discoveries, list):
+            run.result["discovered"] = discoveries
+            created = self._file_discovered(task, run, run.result)
+            report["links"] = [*report.get("links", []), *(f"/tasks/{item.id}" for item in created)]
+        from ..deepdives import publish_report, save_report
+
+        md_path, html_path = save_report(run.path, run.run_id, str(inv.get("reason") or ""), report)
+        inv["report_paths"] = {"markdown": str(md_path), "html": str(html_path)}
+        try:
+            inv["publication"] = publish_report(self.store.root, run.run_id, md_path, html_path)
+        except Exception as exc:  # publication retries must not rerun or discard the diagnosis
+            inv["publication"] = {"status": "failed", "error": str(exc), "failed_at": now_iso()}
         st["investigation"] = inv
         run.status = "done"
         run.save()
