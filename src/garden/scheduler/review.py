@@ -1156,6 +1156,9 @@ class ReviewMixin:
         st["last_review"] = review
         st["last_review_run"] = run.run_id
         st["last_review_head"] = str((run.env_snapshot or {}).get("review_head") or "")
+        # A fresh review supersedes any approval head derived from an older review through
+        # patch-identical mechanical rebases. Its immutable run/head become the new root.
+        st.pop("derived_review_approval", None)
         st["last_review_base_head"] = str((run.env_snapshot or {}).get("review_base_head") or "")
         reviewed_diff = str((run.env_snapshot or {}).get("review_diff_hash") or "")
         if reviewed_diff:

@@ -262,7 +262,7 @@ class PollMixin:
         require_current_base = bool(
             self._github_cfg("automerge_require_current_base", task.product, True)
         )
-        reviewed_head = str(st.get("last_review_head") or "")
+        reviewed_head = self._effective_approved_head(task, st)
         if not require_current_base and not pr.head_sha:
             return False, "GitHub did not report the current PR head"
         if not require_current_base and reviewed_head != pr.head_sha:
