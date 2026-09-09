@@ -15,6 +15,20 @@ from garden.github import (
 
 
 @pytest.mark.parametrize("remote", [
+    "https://github.com/team/repo.git",
+    "git@github.com:team/repo.git",
+    "ssh://git@github.com:22/team/repo.git",
+    "ssh://git@ssh.github.com:443/team/repo.git",
+])
+def test_public_github_transports_resolve_to_one_repository(remote: str):
+    assert repo_slug_from_remote(remote) == "team/repo"
+
+
+def test_public_ssh_alias_is_not_an_enterprise_route():
+    assert repo_slug_from_remote("ssh://git@ssh.github.com:443/team/repo.git", "ghe.example") is None
+
+
+@pytest.mark.parametrize("remote", [
     "https://forge-one.test/team/repo.git",
     "ssh://git@forge-one.test/team/repo.git",
     "git@forge-one.test:team/repo.git",

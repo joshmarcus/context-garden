@@ -1,0 +1,346 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+______________ test_remote_lifecycle_over_served_http[standalone] ______________
+
+garden = PosixPath('/var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser0/garden')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x764e99c5e4b0>
+tmp_path = PosixPath('/var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser0')
+fake_github = <tests.conftest.FakeGitHub object at 0x764e99c5e570>
+managed = False
+
+    @pytest.mark.parametrize("managed", [False, True], ids=["standalone", "managed"])
+    def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_github, managed):
+        """Real TCP HTTP and a separate CLI process; GitHub is the only external fake.
+
+        This proves process/transport separation, not VM or EC2 provisioning.
+        """
+        import json
+        import os
+        import shlex
+        import socket
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        import httpx
+        import uvicorn
+
+        _, store = remote_client(garden, monkeypatch)
+        config = yaml.safe_load((garden / "garden.yaml").read_text())
+        config["products"]["demo"]["setup"] = {
+            "command": "echo configured-product-setup", "timeout_seconds": 37,
+            "env": {"PRIVATE_SETUP_VALUE": "must-not-travel"},
+        }
+        (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+        if managed:
+            # Real setup in each worker subprocess must observe the machine lock already held.
+            setup_code = """import fcntl
+    from pathlib import Path
+    with (Path.cwd().parents[1] / 'host.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise RuntimeError('setup executed outside the managed host lock')
+    p = Path('.git/setup-count')
+    p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
+    """
+            config["products"]["demo"]["setup"]["command"] = "python3 -c " + shlex.quote(setup_code)
+            config["checks"]["pre_pr"][0]["command"] += " && test -f .git/setup-count"
+            (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+        store = Store(garden)
+        from garden.model import Status
+        for other in store.tasks().values():
+            if other.id != "DM-001":
+                other.status = Status.CANCELLED
+                store.save(other)
+        scheduler = Scheduler(store, github=fake_github)
+        application = create_app(store, watch=False, host="127.0.0.1")
+        http_events = []
+
+        @application.middleware("http")
+        async def trace_http(request, call_next):
+            response = await call_next(request)
+            http_events.append({"method": request.method, "path": request.url.path,
+                                "status": response.status_code})
+            return response
+
+        server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        events = []
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert server.started
+            with httpx.Client(base_url=url, timeout=15) as client:
+                assert client.post("/api/runs/claim", json={"host": "build-1"}).status_code == 401
+                assert client.post("/api/runs/claim", json={"host": "build-1"},
+                                   headers={"Origin": "https://evil.test"}).status_code == 403
+                assert scheduler.tick().dispatched
+                auth = {"Authorization": "Bearer secret-token"}
+                claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth).json()
+                assert claim["setup"] == {"command": config["products"]["demo"]["setup"]["command"], "timeout_seconds": 37}
+                assert "PRIVATE_SETUP_VALUE" not in json.dumps(claim)
+                assert "must-not-travel" not in json.dumps(claim)
+                run = scheduler.runs.latest("DM-001")
+                run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+                run.save()
+                assert client.post(f"/api/runs/{run.run_id}/heartbeat",
+                                   json={"lease_token": claim["lease_token"]}, headers=auth).status_code == 409
+                # Reclaim through the actual CLI, without a controller object in that process.
+                env = {k: v for k, v in os.environ.items() if k in
+                       {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
+                env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+                           GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
+                setup_counts = {}
+                worker_config = {
+                    "endpoint": url, "worker_token": "secret-token", "host": "build-1",
+                    "work_dir": str(tmp_path / "http-host"), "harnesses": ["claude"],
+                    "profile_version": "fixture-v1", "bootstrap_version": "fixture-v1",
+                    "source_head": "a" * 40, "provider_id": "disposable-http-host",
+                    "memory_reserve_mib": 0, "disk_reserve_mib": 0,
+                }
+                config_file = tmp_path / "managed-worker.json"
+                config_file.write_text(json.dumps(worker_config))
+                def worker(mode, task_id="DM-001"):
+                    command = ([sys.executable, "-m", "garden.managed_worker", "--config", str(config_file), "--once"]
+                               if managed else [sys.executable, "-m", "garden", "worker", "--garden", url,
+                               "--host", "build-1", "--work-dir", str(tmp_path / "http-host"),
+                               "--harness", "claude", "--once"])
+                    result = subprocess.run(command, env=env, cwd=tmp_path,
+                                            capture_output=True, text=True, timeout=30)
+                    assert result.returncode == 0, result.stderr
+                    latest = scheduler.runs.latest(task_id)
+                    assert latest.mode == mode and latest.process_finished()
+                    if managed:
+                        setup_counts[task_id] = setup_counts.get(task_id, 0) + 1
+                        marker = tmp_path / "http-host" / "repos" / task_id / ".git/setup-count"
+                        assert int(marker.read_text()) == setup_counts[task_id], "setup must run exactly once per claim"
+                        facts = json.loads((latest.path / "host_facts.json").read_text())
+                        assert facts["provider_id"] == "disposable-http-host"
+                        assert facts["profile_version"] == "fixture-v1"
+                        assert facts["disk_free_bytes"] > 0
+                    events.append({"mode": mode, "run": latest.run_id, "host": latest.host,
+                                   "setup_count": setup_counts.get(task_id), "managed": managed})
+                worker("work")
+                scheduler.tick()
+>               worker("check")
+
+tests/test_remote_worker.py:660:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/test_remote_worker.py:643: in worker
+    result = subprocess.run(command, env=env, cwd=tmp_path,
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:2116: in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <Popen: returncode: -9 args: ['/var/lib/garden-worker/work/repos/CG-432/.ven...>
+endtime = 9693.116590733, orig_timeout = 30
+stdout_seq = [b'branch \'garden/dm-001-first-task\' set up to track \'origin/garden/dm-001-first-task\'.\nYour branch is ahead of \'origin/main\' by 1 commit.\n  (use "git push" to publish your local commits)\n']
+stderr_seq = [b'From /var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser0/remote\n * [...nch]      garden/dm-001-first-task -> origin/garden/dm-001-first-task\n', b"Reset branch 'garden/dm-001-first-task'\n"]
+skip_check_and_raise = False
+
+    def _check_timeout(self, endtime, orig_timeout, stdout_seq, stderr_seq,
+                       skip_check_and_raise=False):
+        """Convenience for checking if a timeout has expired."""
+        if endtime is None:
+            return
+        if skip_check_and_raise or _time() > endtime:
+>           raise TimeoutExpired(
+                    self.args, orig_timeout,
+                    output=b''.join(stdout_seq) if stdout_seq else None,
+                    stderr=b''.join(stderr_seq) if stderr_seq else None)
+E           subprocess.TimeoutExpired: Command '['/var/lib/garden-worker/work/repos/CG-432/.venv/bin/python', '-m', 'garden', 'worker', '--garden', 'http://127.0.0.1:58571', '--host', 'build-1', '--work-dir', '/var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser0/http-host', '--harness', 'claude', '--once']' timed out after 30 seconds
+
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1253: TimeoutExpired
+_______________ test_remote_lifecycle_over_served_http[managed] ________________
+
+garden = PosixPath('/var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser1/garden')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x764e99c5e270>
+tmp_path = PosixPath('/var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser1')
+fake_github = <tests.conftest.FakeGitHub object at 0x764e98fa4410>
+managed = True
+
+    @pytest.mark.parametrize("managed", [False, True], ids=["standalone", "managed"])
+    def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_github, managed):
+        """Real TCP HTTP and a separate CLI process; GitHub is the only external fake.
+
+        This proves process/transport separation, not VM or EC2 provisioning.
+        """
+        import json
+        import os
+        import shlex
+        import socket
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        import httpx
+        import uvicorn
+
+        _, store = remote_client(garden, monkeypatch)
+        config = yaml.safe_load((garden / "garden.yaml").read_text())
+        config["products"]["demo"]["setup"] = {
+            "command": "echo configured-product-setup", "timeout_seconds": 37,
+            "env": {"PRIVATE_SETUP_VALUE": "must-not-travel"},
+        }
+        (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+        if managed:
+            # Real setup in each worker subprocess must observe the machine lock already held.
+            setup_code = """import fcntl
+    from pathlib import Path
+    with (Path.cwd().parents[1] / 'host.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise RuntimeError('setup executed outside the managed host lock')
+    p = Path('.git/setup-count')
+    p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
+    """
+            config["products"]["demo"]["setup"]["command"] = "python3 -c " + shlex.quote(setup_code)
+            config["checks"]["pre_pr"][0]["command"] += " && test -f .git/setup-count"
+            (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+        store = Store(garden)
+        from garden.model import Status
+        for other in store.tasks().values():
+            if other.id != "DM-001":
+                other.status = Status.CANCELLED
+                store.save(other)
+        scheduler = Scheduler(store, github=fake_github)
+        application = create_app(store, watch=False, host="127.0.0.1")
+        http_events = []
+
+        @application.middleware("http")
+        async def trace_http(request, call_next):
+            response = await call_next(request)
+            http_events.append({"method": request.method, "path": request.url.path,
+                                "status": response.status_code})
+            return response
+
+        server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        events = []
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert server.started
+            with httpx.Client(base_url=url, timeout=15) as client:
+                assert client.post("/api/runs/claim", json={"host": "build-1"}).status_code == 401
+                assert client.post("/api/runs/claim", json={"host": "build-1"},
+                                   headers={"Origin": "https://evil.test"}).status_code == 403
+                assert scheduler.tick().dispatched
+                auth = {"Authorization": "Bearer secret-token"}
+                claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth).json()
+                assert claim["setup"] == {"command": config["products"]["demo"]["setup"]["command"], "timeout_seconds": 37}
+                assert "PRIVATE_SETUP_VALUE" not in json.dumps(claim)
+                assert "must-not-travel" not in json.dumps(claim)
+                run = scheduler.runs.latest("DM-001")
+                run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+                run.save()
+                assert client.post(f"/api/runs/{run.run_id}/heartbeat",
+                                   json={"lease_token": claim["lease_token"]}, headers=auth).status_code == 409
+                # Reclaim through the actual CLI, without a controller object in that process.
+                env = {k: v for k, v in os.environ.items() if k in
+                       {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
+                env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+                           GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
+                setup_counts = {}
+                worker_config = {
+                    "endpoint": url, "worker_token": "secret-token", "host": "build-1",
+                    "work_dir": str(tmp_path / "http-host"), "harnesses": ["claude"],
+                    "profile_version": "fixture-v1", "bootstrap_version": "fixture-v1",
+                    "source_head": "a" * 40, "provider_id": "disposable-http-host",
+                    "memory_reserve_mib": 0, "disk_reserve_mib": 0,
+                }
+                config_file = tmp_path / "managed-worker.json"
+                config_file.write_text(json.dumps(worker_config))
+                def worker(mode, task_id="DM-001"):
+                    command = ([sys.executable, "-m", "garden.managed_worker", "--config", str(config_file), "--once"]
+                               if managed else [sys.executable, "-m", "garden", "worker", "--garden", url,
+                               "--host", "build-1", "--work-dir", str(tmp_path / "http-host"),
+                               "--harness", "claude", "--once"])
+                    result = subprocess.run(command, env=env, cwd=tmp_path,
+                                            capture_output=True, text=True, timeout=30)
+                    assert result.returncode == 0, result.stderr
+                    latest = scheduler.runs.latest(task_id)
+                    assert latest.mode == mode and latest.process_finished()
+                    if managed:
+                        setup_counts[task_id] = setup_counts.get(task_id, 0) + 1
+                        marker = tmp_path / "http-host" / "repos" / task_id / ".git/setup-count"
+                        assert int(marker.read_text()) == setup_counts[task_id], "setup must run exactly once per claim"
+                        facts = json.loads((latest.path / "host_facts.json").read_text())
+                        assert facts["provider_id"] == "disposable-http-host"
+                        assert facts["profile_version"] == "fixture-v1"
+                        assert facts["disk_free_bytes"] > 0
+                    events.append({"mode": mode, "run": latest.run_id, "host": latest.host,
+                                   "setup_count": setup_counts.get(task_id), "managed": managed})
+                worker("work")
+                scheduler.tick()
+>               worker("check")
+
+tests/test_remote_worker.py:660:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/test_remote_worker.py:643: in worker
+    result = subprocess.run(command, env=env, cwd=tmp_path,
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:2116: in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <Popen: returncode: -9 args: ['/var/lib/garden-worker/work/repos/CG-432/.ven...>
+endtime = 9725.308873153, orig_timeout = 30
+stdout_seq = [b'branch \'garden/dm-001-first-task\' set up to track \'origin/garden/dm-001-first-task\'.\nYour branch is ahead of \'origin/main\' by 1 commit.\n  (use "git push" to publish your local commits)\n']
+stderr_seq = [b'From /var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser1/remote\n * [...nch]      garden/dm-001-first-task -> origin/garden/dm-001-first-task\n', b"Reset branch 'garden/dm-001-first-task'\n"]
+skip_check_and_raise = False
+
+    def _check_timeout(self, endtime, orig_timeout, stdout_seq, stderr_seq,
+                       skip_check_and_raise=False):
+        """Convenience for checking if a timeout has expired."""
+        if endtime is None:
+            return
+        if skip_check_and_raise or _time() > endtime:
+>           raise TimeoutExpired(
+                    self.args, orig_timeout,
+                    output=b''.join(stdout_seq) if stdout_seq else None,
+                    stderr=b''.join(stderr_seq) if stderr_seq else None)
+E           subprocess.TimeoutExpired: Command '['/var/lib/garden-worker/work/repos/CG-432/.venv/bin/python', '-m', 'garden.managed_worker', '--config', '/var/lib/garden-worker/work/tmp/pytest-of-garden-worker/pytest-45/test_remote_lifecycle_over_ser1/managed-worker.json', '--once']' timed out after 30 seconds
+
+/opt/garden-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/subprocess.py:1253: TimeoutExpired
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /var/lib/garden-worker/work/repos/CG-432/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv/lib/python3.12/site-packages/starlette/testclient.py:53
+  /var/lib/garden-worker/work/repos/CG-432/.venv/lib/python3.12/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_remote_worker.py::test_remote_lifecycle_over_served_http[standalone]
+FAILED tests/test_remote_worker.py::test_remote_lifecycle_over_served_http[managed]
+2 failed, 2 warnings in 65.31s (0:01:05)
