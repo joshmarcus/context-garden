@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -231,7 +232,11 @@ def investigate(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str)
 
 @action("investigation-report")
 def investigation_report(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    sched.complete_investigation(t, note)
+    try:
+        report = json.loads(note)
+    except (TypeError, json.JSONDecodeError):
+        raise RuntimeError("investigation report fields could not be read") from None
+    sched.complete_investigation(t, report)
 
 
 @action("investigation-take")
@@ -357,7 +362,10 @@ def register(app: FastAPI, site: Site) -> None:
         return {"gaps": []}
 
     @app.post("/tasks/{task_id}/{action}")
-    def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form("")):
+    def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form(""),
+                    likely_cause: str = Form(""), confidence: str = Form(""), unknowns: str = Form(""),
+                    evidence: str = Form(""), attempted_checks: str = Form(""), retain_work: str = Form(""),
+                    alternatives: str = Form(""), recommendation: str = Form(""), links: str = Form("")):
         s = hub.fresh()
         try:
             t = s.task(task_id)
@@ -366,6 +374,15 @@ def register(app: FastAPI, site: Site) -> None:
         run_action = ACTIONS.get(action)
         if run_action is None:
             raise HTTPException(400, f"unknown action {action}")
+        if action == "investigation-report":
+            def lines(value: str) -> list[str]:
+                return [line.strip() for line in value.splitlines() if line.strip()]
+
+            note = json.dumps({"likely_cause": likely_cause.strip(), "confidence": confidence.strip(),
+                               "unknowns": lines(unknowns), "evidence": lines(evidence),
+                               "attempted_checks": lines(attempted_checks),
+                               "retain_work": retain_work == "true", "alternatives": lines(alternatives),
+                               "recommendation": recommendation.strip(), "links": lines(links)})
         back = request.headers.get("referer", "")
         # Board actions (backlog reorder/move) return to the board so the flash and the new order
         # show there; task-page and Inbox actions stay where they were pressed.

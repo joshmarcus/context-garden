@@ -78,9 +78,30 @@ def test_investigation_is_idempotent_preserves_work_and_report_waits_for_decisio
     assert st["pending_feedback"] == "- repeated finding"
     with pytest.raises(RuntimeError, match="paused for investigation"):
         sched.dispatch(task, mode="revise")
-    sched.complete_investigation(task, "Likely cause: stale fixture. Confidence: medium. Retain the branch; repair verification.")
+    report = {"likely_cause": "stale fixture", "confidence": "medium", "unknowns": [],
+              "evidence": ["base comparison"], "attempted_checks": ["focused test"],
+              "retain_work": True, "alternatives": ["repair verification"],
+              "recommendation": "repair environment/verification", "links": []}
+    sched.complete_investigation(task, report)
     assert st["investigation"]["status"] == "report_ready"
     assert task.status == Status.CHANGES_REQUESTED
+
+
+def test_operator_investigation_report_rejects_partial_prose_and_unsupported_recommendation(sched):
+    task = sched.store.task("DM-001")
+    sched.pause_for_investigation(task, "diagnose", owner="operator")
+    with pytest.raises(RuntimeError, match="missing"):
+        sched.complete_investigation(task, {"likely_cause": "maybe stale"})
+    assert sched.state.get(task.id)["investigation"]["status"] == "requested"
+    report = {"likely_cause": "stale fixture", "confidence": "high", "unknowns": [],
+              "evidence": ["base passes"], "attempted_checks": ["focused comparison"],
+              "retain_work": True, "alternatives": ["replace fixture"],
+              "recommendation": "merge anyway", "links": ["/runs/one"]}
+    with pytest.raises(RuntimeError, match="unsupported recommendation"):
+        sched.complete_investigation(task, report)
+    report["recommendation"] = "repair environment/verification"
+    sched.complete_investigation(task, report)
+    assert sched.state.get(task.id)["investigation"]["report"] == report
 
 
 def test_troubled_continue_preserves_lifetime_counter_and_rejects_double_action(sched):

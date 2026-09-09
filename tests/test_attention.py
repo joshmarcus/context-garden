@@ -148,6 +148,45 @@ def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
     assert persisted["investigation"]["reason"] == "check the replacement verifier"
 
 
+def test_served_operator_report_failure_recovery_and_explicit_followup(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    task = store.task("DM-001")
+    task.branch = "garden/preserved"
+    store.save(task)
+    _set_state(garden, "DM-001", needs_human={"kind": "investigation", "reason": "diagnose"},
+               investigation={"status": "active", "owner": "operator", "request_id": "served"},
+               substantive_revisions=6, pending_feedback="retain this finding")
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    failed = client.post("/tasks/DM-001/investigation-report",
+                         data={"likely_cause": "stale fixture"}, follow_redirects=False)
+    assert failed.status_code == 303 and "confidence+is+required" in failed.headers["location"]
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert state["investigation"]["status"] == "active"
+
+    corrected = client.post("/tasks/DM-001/investigation-report", data={
+        "likely_cause": "stale fixture", "confidence": "high", "unknowns": "remote image",
+        "evidence": "base passes\n/runs/served", "attempted_checks": "focused comparison",
+        "retain_work": "true", "alternatives": "repair fixture", "recommendation": "repair environment/verification",
+        "links": "https://example.com/evidence/7",
+    }, follow_redirects=False)
+    assert corrected.status_code == 303
+    page = client.get("/").text
+    assert "Investigation report ready" in page and "stale fixture" in page
+    task = Store(garden).task("DM-001")
+    assert task.status == Status.CHANGES_REQUESTED and task.branch == "garden/preserved"
+    assert not RunStore(garden / ".garden").active()
+
+    followed = client.post("/tasks/DM-001/troubled-change-approach",
+                           data={"note": "repair the fixture, then rerun the focused check"},
+                           follow_redirects=False)
+    assert followed.status_code == 303
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert "repair the fixture" in state["pending_feedback"]
+    assert not state.get("needs_human") and not RunStore(garden / ".garden").active()
+
+
 def test_web_troubled_actions_preserve_work_and_reject_stale_clicks(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
