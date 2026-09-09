@@ -56,9 +56,31 @@ def test_official_github_ssh_port_remote_is_recognized():
 
 
 @pytest.mark.parametrize("remote", [
+    "ssh://acct-1234@forge-one.test:443/team/repo.git",
+    "ssh://acct-1234@forge-one.test:2222/team/repo.git",
+])
+def test_enterprise_ssh_ports_keep_the_configured_host_identity(remote: str):
+    assert repo_slug_from_remote(remote, "forge-one.test") == "team/repo"
+    assert repo_slug_from_remote(remote, "forge-two.test") is None
+
+
+@pytest.mark.parametrize("remote", [
+    "ssh://acct-1234@forge-one.test:0/team/repo.git",
+    "ssh://acct-1234@forge-one.test:65536/team/repo.git",
+    f"ssh://acct-1234@forge-one.test:{'9' * 5_000}/team/repo.git",
+    "ssh://acct-1234@forge-one.test:bad/team/repo.git",
+    "ssh://acct-1234:secret@forge-one.test:443/team/repo.git",
+])
+def test_invalid_enterprise_ssh_remotes_are_not_routed(remote: str):
+    assert repo_slug_from_remote(remote, "forge-one.test") is None
+
+
+@pytest.mark.parametrize("remote", [
     "https://forge-one.test/tEam/rEpo.git",
     "ssh://git@forge-one.test/tEam/rEpo.git",
     "ssh://acct-1234@forge-one.test/tEam/rEpo.git",
+    "ssh://acct-1234@forge-one.test:443/tEam/rEpo.git",
+    "ssh://acct-1234@forge-one.test:2222/tEam/rEpo.git",
     "acct-1234@forge-one.test:tEam/rEpo.git",
 ])
 def test_scheduler_accepts_case_variants_of_configured_repository(garden, monkeypatch, remote):
