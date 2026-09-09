@@ -627,9 +627,12 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     for event in ("profile_changed", "config_reloaded", "config_override", "config_override_cleared"):
         assert f"{event}: 1" in head_events
     assert 'if (refreshesHead && !refreshesPeriod) regions.head()' in page
-    assert "if (refreshesPeriod) periodSoon()" in page
-    # Period changes are coalesced, but the selected-period reading in the summary and the
-    # detailed ledger must be refreshed together (notably after an automerge).
+    assert "if (refreshesPeriod) refreshHeadAndPeriod()" in page
+    # Shared changes refresh immediately and atomically. Only events arriving while that
+    # request is in flight are coalesced; production does not defer them behind a timer.
+    assert "function refreshHeadAndPeriod()" in page
+    assert "if (pairedRefresh) { pairedRefreshAgain = true; return pairedRefresh; }" in page
+    assert "}, 60000);" not in page
     assert 'fetchText("/partials/now/head?window=" + win)' in page
     assert 'fetchText("/partials/now/period?window=" + win)' in page
     assert "var head = parse(html[0]), period = parse(html[1]);" in page

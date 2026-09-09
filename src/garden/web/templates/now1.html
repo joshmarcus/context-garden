@@ -330,24 +330,24 @@ body.page-now .rail-running { display:none; }
       });
     });
   }
-  var periodTimer = null;
-  function periodSoon() {  // at most once a minute
-    if (periodTimer) return;
-    periodTimer = setTimeout(function () {
-      periodTimer = null;
-      // The summary repeats the selected period's literal figures. Refresh it with the
-      // detailed ledger so an automerge or cost event cannot leave the two readings apart.
-      // Fetch both before replacing either, so a transient partial failure also leaves the
-      // two existing readings consistent until the next event or reconnect retries them.
-      Promise.all([
-        fetchText("/partials/now/head?window=" + win),
-        fetchText("/partials/now/period?window=" + win)
-      ]).then(function (html) {
-        var head = parse(html[0]), period = parse(html[1]);
-        replaceHead(head);
-        document.getElementById("period-body").replaceWith(period.getElementById("period-body"));
-      }).catch(function () {});
-    }, 60000);
+  var pairedRefresh = null, pairedRefreshAgain = false;
+  function refreshHeadAndPeriod() {
+    // Refresh shared readings immediately, but collapse events arriving during a fetch into
+    // one follow-up. Fetch both before replacing either so the summary and ledger never show
+    // different snapshots, including when one response fails.
+    if (pairedRefresh) { pairedRefreshAgain = true; return pairedRefresh; }
+    pairedRefresh = Promise.all([
+      fetchText("/partials/now/head?window=" + win),
+      fetchText("/partials/now/period?window=" + win)
+    ]).then(function (html) {
+      var head = parse(html[0]), period = parse(html[1]);
+      replaceHead(head);
+      document.getElementById("period-body").replaceWith(period.getElementById("period-body"));
+    }).catch(function () {}).then(function () {
+      pairedRefresh = null;
+      if (pairedRefreshAgain) { pairedRefreshAgain = false; refreshHeadAndPeriod(); }
+    });
+    return pairedRefresh;
   }
   function refreshAll() { Object.keys(regions).forEach(function (k) { regions[k]().catch(function () {}); }); }
   // ---- strips: keyed by run id; a strip arrives at no height and grows, leaves by collapsing
@@ -428,7 +428,7 @@ body.page-now .rail-running { display:none; }
     if (refreshesHead && !refreshesPeriod) regions.head().catch(function () {});
     if (NEXT[k]) regions.next().catch(function () {});
     if (WHERE[k]) regions.where().catch(function () {});
-    if (refreshesPeriod) periodSoon();
+    if (refreshesPeriod) refreshHeadAndPeriod();
   }
   // ---- the stream
   var source = new EventSource("/now/stream");

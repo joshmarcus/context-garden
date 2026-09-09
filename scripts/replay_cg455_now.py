@@ -31,9 +31,6 @@ def verify_paired_refresh(base: str) -> dict[str, object]:
         constructor() { window.__nowSource = this; }
         addEventListener(kind, callback) { window.__nowEvents[kind] = callback; }
       };
-      window.__nativeSetTimeout = window.setTimeout;
-      window.setTimeout = (callback, delay, ...args) =>
-        window.__nativeSetTimeout(callback, delay === 60000 ? 10 : delay, ...args);
     """
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
@@ -46,8 +43,9 @@ def verify_paired_refresh(base: str) -> dict[str, object]:
         page.route("**/partials/now/head?**", lambda route: route.fulfill(
             body='<section id="now-summary">new summary</section><span id="now-slots"></span>'))
         page.route("**/partials/now/period?**", lambda route: route.fulfill(status=503, body="unavailable"))
-        page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "profile_changed"})})""")
-        page.wait_for_timeout(100)
+        with page.expect_response("**/partials/now/head?**", timeout=1000), \
+                page.expect_response("**/partials/now/period?**", timeout=1000):
+            page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "profile_changed"})})""")
         assert page.locator("#now-summary").inner_text() == original_summary
         assert page.locator("#period-body").inner_text() == original_period
 
@@ -57,13 +55,15 @@ def verify_paired_refresh(base: str) -> dict[str, object]:
             body='<section id="now-summary">recovered summary</section><span id="now-slots"></span>'))
         page.route("**/partials/now/period?**", lambda route: route.fulfill(
             body='<div id="period-body">recovered period</div>'))
-        page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "config_reloaded"})})""")
-        page.wait_for_timeout(100)
-        assert page.locator("#now-summary").inner_text() == "recovered summary"
-        assert page.locator("#period-body").inner_text() == "recovered period"
+        with page.expect_response("**/partials/now/head?**", timeout=1000), \
+                page.expect_response("**/partials/now/period?**", timeout=1000):
+            page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "config_reloaded"})})""")
+        page.locator("#now-summary").get_by_text("recovered summary", exact=True).wait_for(timeout=1000)
+        page.locator("#period-body").get_by_text("recovered period", exact=True).wait_for(timeout=1000)
         browser.close()
     return {"state": "shared-event-refresh", "method": "browser event replay", "url": base + "/now",
-            "status": 200, "observed": "A partial failure replaced neither region; a later shared event replaced both."}
+            "status": 200, "observed": "Production scheduling issued both requests within one second; "
+            "a partial failure replaced neither region and a later shared event replaced both."}
 
 
 def replay(out: Path) -> None:
