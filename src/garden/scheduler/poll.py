@@ -216,6 +216,12 @@ class PollMixin:
             return
         if not task.status.pr_open:
             return  # merged/closed handled above; the rest (triage, CI, feedback) only applies to the active review flow
+        # A frozen child can be left stacked when its parent merges.  Defer the restack
+        # without touching its PR or branch, then resume this same reconciliation after
+        # the phase is unfrozen. A closed PR is handled above by its base-deletion recovery.
+        if self._parent_merged(task):
+            self._restack(task, rep)
+            return
         was_draft = bool(st.get("pr_draft"))
         st["pr_draft"] = bool(pr.is_draft)
         # A manually assigned task remains an observation only. The person who claimed it
@@ -773,7 +779,18 @@ class PollMixin:
             return
         st = self.state.get(child.id)
         parent_id = st.get("stack_parent", "")
+        try:
+            self._refuse_if_closed_or_frozen(child)
+        except RuntimeError as refusal:
+            # Retain the stack relationship unchanged while the phase is held.  The poll
+            # path retries after an unfreeze, rather than losing the reconciliation work.
+            if not st.get("restack_pending"):
+                st["restack_pending"] = True
+                child.log(f"parent {parent_id} merged; restack deferred: {refusal}")
+                self.store.save(child)
+            return
         new_base = self.final_base_for(child)
+        st.pop("restack_pending", None)
         st["pr_base"] = new_base
         st.pop("stack_parent", None)
         slug = self.slug_for(child)
