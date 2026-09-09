@@ -151,8 +151,16 @@ def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | 
     public GitHub URL before looking it up prevents a same-numbered PR in the
     configured repository from being mistaken for an operator-supplied external PR.
     """
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != host.lower().rstrip(".") or parsed.port not in (None, 443):
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    # A PR link is an identifier, not a request URL.  Credentials and URL decorations
+    # have no identity meaning here and must not be copied into task or run records.
+    if (parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment
+            or parsed.hostname != host.lower().rstrip(".") or port not in (None, 443)):
         return None
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) != 4 or parts[2] != "pull" or "/".join(parts[:2]).lower() != slug.lower():
@@ -162,6 +170,32 @@ def pull_request_number(url: str, slug: str, host: str = "github.com") -> int | 
     except ValueError:
         return None
     return number if number > 0 else None
+
+
+def is_safe_pr_url(url: str) -> bool:
+    """Whether a provider-returned PR URL is safe to retain as an identifier.
+
+    The CLI additionally requires a canonical URL for the configured repository
+    before it asks a provider for PR details.  Scheduler callers may instead be
+    handing back the provider's own identity URL, whose path and host need not
+    be the browser URL shape.  It still must not contain URL components that
+    could carry credentials or alter its identity.
+    """
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and port in (None, 443)
+    )
 
 
 # Appended to every comment the garden posts, so its own comments can be told apart from a

@@ -10,8 +10,30 @@ from garden.github import (
     GitHubRouter,
     RepositorySlug,
     is_git_remote_url,
+    pull_request_number,
     repo_slug_from_remote,
 )
+
+
+@pytest.mark.parametrize("url", [
+    "https://operator:synthetic-password@forge-one.test/Team/Repo/pull/7",
+    "https://operator@forge-one.test/Team/Repo/pull/7",
+    "https://forge-one.test/Team/Repo/pull/7?access=synthetic-token",
+    "https://forge-one.test/Team/Repo/pull/7#synthetic-fragment",
+    "https://forge-one.test:8443/Team/Repo/pull/7",
+])
+def test_pull_request_number_rejects_credential_bearing_and_ambiguous_urls(url: str):
+    assert pull_request_number(url, "Team/Repo", "forge-one.test") is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://forge-one.test/Team/Repo/pull/7",
+    "https://FORGE-ONE.TEST/tEAM/rEPO/pull/7",
+    "https://github.com/Team/Repo/pull/7",
+])
+def test_pull_request_number_accepts_configured_host_and_repository_case_variants(url: str):
+    host = "github.com" if "github.com" in url else "forge-one.test"
+    assert pull_request_number(url, "Team/Repo", host) == 7
 
 
 @pytest.mark.parametrize("remote", [

@@ -381,7 +381,8 @@ def take(
         run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree,
                              branch_override=branch, worktree_override=external_worktree,
                              completion_mode="pushed" if pushed_result else ("external" if external else "managed"),
-                             external_pr=pr_url)
+                             external_pr=info.url if pr_url else "",
+                             external_pr_number=info.number if pr_url else None)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
