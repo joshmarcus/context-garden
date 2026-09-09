@@ -992,18 +992,22 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
     monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "true"])
     captured = {}
 
-    def execv(executable, argv):
-        captured.update(executable=executable, argv=argv, env=dict(os.environ))
-        raise RuntimeError("exec captured")
+    def run(argv, **kwargs):
+        if argv[:3] == [sys.executable, "-m", "garden.run_supervisor"]:
+            captured.update(argv=argv, env=dict(os.environ))
+            return type("Completed", (), {"returncode": 0})()
+        assert argv == ["git", "rev-parse", "HEAD"]
+        return type("Completed", (), {"stdout": "abc123\n"})()
 
-    monkeypatch.setattr(os, "execv", execv)
-    with pytest.raises(RuntimeError, match="exec captured"):
-        validation.main()
+    monkeypatch.setattr(subprocess, "run", run)
+    assert validation.main() == 0
 
-    assert captured["executable"] == sys.executable
     assert captured["argv"][-1] == "true"
     assert captured["env"]["GARDEN_OWNER_SCOPED"] == "1"
     assert captured["env"]["GARDEN_EXECUTION_TIMEOUT_SECONDS"] == "731"
+    receipt = json.loads(next((outer / "validations").glob("*/result.json")).read_text())
+    assert receipt["source_sha"] == "abc123"
+    assert receipt["selection"] == ["true"] and receipt["exit_code"] == 0
 
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "9999")
     assert validation.bounded_validation_timeout_seconds() == 900
