@@ -647,10 +647,9 @@ class ReviewMixin:
                             "author_interaction_reused": reusable_author_interaction,
                             "reask_missing_fixes": reask_missing_fixes,
                             "clarify_unverified": bool(clarify_unverified),
-                            "criteria": criteria_snapshot, "validation_plan": plan}
+                            "criteria": criteria_snapshot, "validation_plan": plan})
         if clarifies_review_run:
             run.env_snapshot["clarifies_review_run"] = clarifies_review_run
-                                 "criteria": criteria_snapshot, "validation_plan": plan})
         run.env_snapshot.update({"product": task.product,
                                  "execution_timeout_minutes": self.cfg.product_timeout_minutes(task.product),
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
