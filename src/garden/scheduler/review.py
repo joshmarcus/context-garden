@@ -841,7 +841,7 @@ class ReviewMixin:
 
     def _queue_review_recovery(self, task: Task, run: Run | None, reason: str, rep: TickReport,
                                *, started: bool, count_round: bool,
-                               refund_round: bool = False) -> bool:
+                               refund_round: bool = False, backoff: bool = True) -> bool:
         """Retain one head-bound review continuation, or stop after bounded retries."""
         st = self.state.get(task.id)
         old = st.get("review_recovery") or {}
@@ -862,7 +862,8 @@ class ReviewMixin:
             self.state.save()
             return True
         delay = float(self.cfg.get("review.recovery_backoff_seconds", 30) or 0) * attempts
-        retry_at = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=delay)).isoformat()
+        retry_at = ((dt.datetime.now(dt.UTC) + dt.timedelta(seconds=delay)).isoformat()
+                    if backoff else "")
         st["review_recovery"] = {"head": head, "attempts": attempts, "limit": limit,
                                  "retry_at": retry_at, "reason": reason, "owner": "scheduler",
                                  "started": started, "last_run": run.run_id if run else ""}
@@ -941,7 +942,8 @@ class ReviewMixin:
             # on the run since an after-rebase round is exempt and must not be charged),
             # and route the continuation through the same bounded recovery policy as
             # other missing verdicts. The harness pause remains the admission gate, so
-            # the queued retry cannot start until the environment can progress.
+            # the queued retry cannot start until the environment can progress; its
+            # successful probe supplies the delay, so no second recovery timer is needed.
             pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
             counted = bool((run.env_snapshot or {}).get("count_round", True))
             self._pause_for_env_error(run, collected)
@@ -953,9 +955,10 @@ class ReviewMixin:
                    f"{run.harness or 'the harness'}); will retry once it resumes")
             if pending_triage:
                 notify(self.cfg.data, task.id, "awaiting_triage", note, task.pr or "")
+            rep.transitions.append(f"{task.id} review paused (env_error)")
             return self._queue_review_recovery(
                 task, run, note, rep, started=True, count_round=counted,
-                refund_round=True,
+                refund_round=True, backoff=False,
             )
         final = collected.get("final_text") or ""
         if final and not (run.path / "final.md").exists():
