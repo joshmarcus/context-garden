@@ -1,72 +1,78 @@
 {
-  "observed_at": "2026-09-08T22:24:49Z",
-  "source_commit": "d804ecb4f",
+  "observed_at": "2026-09-09T00:54:44Z",
+  "source_commit": "1caf05bd8c94d61650ac10be77991f5cb4061b6a",
   "environment": {
     "python": "3.12.14",
     "platform": "linux",
-    "fixture": "disposable stdlib HTTP server rooted at the CG-430 worktree"
+    "fixture": "disposable stdlib HTTP server with affected and empty resources"
   },
   "command": [
     "/opt/garden-worker/bin/python",
     "-m",
     "garden.validation",
     "--",
-    "/var/lib/garden-worker/work/repos/CG-430/.venv/bin/python",
-    "-m",
-    "http.server",
-    "50911",
-    "--bind",
-    "127.0.0.1"
+    ".venv/bin/python",
+    "-c",
+    "inline disposable HTTP observer (affected, empty, failure, recovery requests)"
   ],
   "states": [
     {
       "name": "running",
-      "supervisor_pid": 55907,
-      "process_tree": [55907, 55908, 55909],
-      "bounded_elapsed_ms_before_stop": 633.87
+      "supervisor_pid": 346601,
+      "process_observation": "the observer reported its direct parent as the validation supervisor",
+      "bounded_elapsed_ms": 647.04
     },
     {
-      "name": "terminated",
-      "returncode": 241,
-      "explanation": "The observer sent SIGTERM to the disposable process group; shell reports the supervised command's -SIGTERM status as 241."
+      "name": "completed",
+      "returncode": 0,
+      "explanation": "The observer shut down its disposable server and the supervised validation entrypoint completed normally."
     }
   ],
   "cpu_sample": {
     "interval_ms": 250,
-    "clock_ticks_before": {"55907": 9, "55908": 0, "55909": 26},
-    "clock_ticks_after": {"55907": 10, "55908": 0, "55909": 26}
+    "clock_ticks_before": {"346601": 0},
+    "clock_ticks_after": {"346601": 0}
   },
   "events": [
     {
-      "state": "available",
+      "state": "affected",
       "method": "GET",
-      "url": "http://127.0.0.1:50911/pyproject.toml",
+      "url": "http://127.0.0.1:33007/affected.txt",
       "status": 200,
-      "elapsed_ms": 7.28,
-      "response_bytes": 1210,
+      "elapsed_ms": 10.6,
+      "response_bytes": 32,
       "consequence": "The served fixture was reachable through the actual supervised validation entrypoint."
     },
     {
-      "state": "expected failure",
+      "state": "empty",
       "method": "GET",
-      "url": "http://127.0.0.1:50911/cg430-missing",
+      "url": "http://127.0.0.1:33007/empty.txt",
+      "status": 200,
+      "elapsed_ms": 0.9,
+      "response_bytes": 0,
+      "consequence": "The supervised server returned an empty resource without blocking or exiting."
+    },
+    {
+      "state": "failure",
+      "method": "GET",
+      "url": "http://127.0.0.1:33007/missing",
       "status": 404,
-      "elapsed_ms": 2.67,
+      "elapsed_ms": 0.66,
       "response_bytes": 335,
       "consequence": "The server returned its bounded missing-resource response and remained alive."
     },
     {
-      "state": "recovered",
+      "state": "recovery",
       "method": "GET",
-      "url": "http://127.0.0.1:50911/pyproject.toml",
+      "url": "http://127.0.0.1:33007/affected.txt",
       "status": 200,
-      "elapsed_ms": 1.67,
-      "response_bytes": 1210,
+      "elapsed_ms": 0.64,
+      "response_bytes": 32,
       "consequence": "A representative request succeeded immediately after the failure response."
     }
   ],
   "limitations": [
     "This isolated replay establishes supervised process, HTTP, and bounded CPU behavior; it does not establish the cause of the September 8 WSL/controller outage.",
-    "The earlier temporary HTML response artifacts were unavailable, so this durable record preserves the inspected request metadata and response sizes instead."
+    "The fixture used a thread in the supervised observer process, so the process observation establishes the supervisor/leader relationship rather than a separate HTTP child PID."
   ]
 }
