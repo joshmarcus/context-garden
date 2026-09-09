@@ -9,8 +9,8 @@ import pytest
 from garden.github import Feedback
 from garden.inbox import build_inbox
 from garden.model import Status
-from garden.scheduler.state import State
 from garden.scheduler.report import TickReport
+from garden.scheduler.state import State
 from tests.conftest import FakeGitHub
 
 
