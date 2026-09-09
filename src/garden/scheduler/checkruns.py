@@ -119,7 +119,10 @@ class CheckRunMixin:
             generated_ui_check_indices = [
                 index for index, spec in enumerate(specs)
                 if spec.get("_garden_generated_ui_check") is True
-                and spec.get("python") == "garden.walkthrough:ui_check"
+                and (
+                    spec.get("python") == "garden.walkthrough:ui_check"
+                    or "-m garden.walkthrough --ui-check" in str(spec.get("command") or "")
+                )
             ]
             run.env_snapshot["validation_plan"] = plan
             # Results are emitted one-for-one in spec order by the trusted check runner.
