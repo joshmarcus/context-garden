@@ -24,6 +24,11 @@ class _FakeSched:
     def spent_for(self, key: str):
         return 0.0
 
+    def ready_tasks(self, tasks):
+        from garden.graph import ready
+
+        return ready(tasks)
+
 
 def _sched(garden: Path) -> _FakeSched:
     return _FakeSched(garden / ".garden")

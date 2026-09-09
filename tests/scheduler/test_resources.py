@@ -253,7 +253,7 @@ def test_configured_execution_cgroup_is_the_admission_boundary(sched, monkeypatc
 
     execution = tmp_path / "execution"
     execution.mkdir()
-    monkeypatch.setattr(sched, "effective", lambda key, default=None: {
+    monkeypatch.setattr(sched, "effective", lambda key, default=None, product=None: {
         "resources.min_memory_available_mb": 1500,
         "resources.execution_cgroup": str(execution),
     }.get(key, default))
@@ -332,7 +332,7 @@ def test_writable_but_unbounded_execution_cgroup_is_not_enforced(sched, monkeypa
     for name, value in (("cgroup.procs", ""), ("cpu.max", "max 100000"),
                         ("memory.high", "max"), ("memory.max", "max")):
         (group / name).write_text(value)
-    monkeypatch.setattr(sched, "effective", lambda key, default=None:
+    monkeypatch.setattr(sched, "effective", lambda key, default=None, product=None:
                         str(group) if key == "resources.execution_cgroup" else default)
 
     status = sched.resource_status()
@@ -453,7 +453,7 @@ def _cache_limited(sched, monkeypatch, tmp_path, *, inactive_file=700 * 1024 * 1
         "resources.reclaim_cooldown_seconds": 300,
         "resources.reclaim_timeout_seconds": 1,
     }
-    monkeypatch.setattr(sched, "effective", lambda key, default=None: values.get(key, default))
+    monkeypatch.setattr(sched, "effective", lambda key, default=None, product=None: values.get(key, default))
     monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
     monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 7000)
     return group, values
@@ -664,7 +664,7 @@ def test_real_disk_cache_reclaim_recovers_normal_tick_admission(sched, monkeypat
     values = {"resources.execution_cgroup": str(group), "resources.min_memory_available_mb": minimum,
               "resources.reclaim_max_mb": 32, "resources.reclaim_cooldown_seconds": 0,
               "resources.reclaim_timeout_seconds": 5}
-    monkeypatch.setattr(sched, "effective", lambda key, default=None: values.get(key, original_effective(key, default)))
+    monkeypatch.setattr(sched, "effective", lambda key, default=None, product=None: values.get(key, original_effective(key, default, product)))
     monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8192)
     monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 8192)
 
