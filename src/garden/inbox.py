@@ -339,8 +339,11 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                         "command": f"garden review {t.id}",
                         "detail": "clears this reviewer-owned stop and requests another review; no author revision is queued"})
     if troubled:
+        tiers = ("easy", "medium", "hard")
         actions.append({"label": "Continue one revision", "kind": "troubled-continue", "command": f"garden troubled-continue {t.id}",
-                        "detail": "grants one bounded revision under normal capacity; lifetime counts, feedback, branch and PR remain"})
+                        "difficulty_options": list(tiers[tiers.index(t.difficulty):]),
+                        "current_difficulty": t.difficulty,
+                        "detail": "choose the current or a higher difficulty for one bounded revision; lifetime counts, feedback, branch and PR remain"})
         actions.append({"label": "Pause for investigation", "kind": "investigate", "command": f'garden investigate {t.id} "..."',
                         "detail": "records a bounded read-only diagnosis request; active work drains safely and no implementation restarts"})
         actions.append({"label": "Change approach", "kind": "change-approach", "command": f'garden troubled-change-approach {t.id} "..."',
