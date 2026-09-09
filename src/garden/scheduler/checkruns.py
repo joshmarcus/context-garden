@@ -531,16 +531,8 @@ class CheckRunMixin:
             st["last_diff_hash"] = diff_h
         if body_h is not None:
             st["last_pr_body_hash"] = body_h
-        self._record_command_validation_head(task)
         result = worker_run.result if worker_run else self._last_worker_result(task)
         self._open_or_update_pr(task, worker_run, branch, base, result, rep, cont["cost"])
-
-    def _record_command_validation_head(self, task: Task) -> None:
-        """Bind a successful configured validation command to the checked-out source."""
-        if self.cfg.product_validation(task.product)["provider"] == "command":
-            self.state.get(task.id)["validation_head"] = gitops.rev_parse(
-                self.worktree_for(task), "HEAD"
-            )
 
     def _handle_failed_checks(self, task: Task, worker_run: Run | None, worktree: Path, branch: str, base: str,
                               failed: list[dict[str, Any]], rep: TickReport, cont: dict[str, Any]) -> None:
@@ -666,7 +658,6 @@ class CheckRunMixin:
             self._handle_failed_checks(task, worker_run, worktree, branch, base, failed, rep, cont)
             return
         st.pop("needs_human", None)
-        self._record_command_validation_head(task)
         self._queue_leave(task)
         self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=True)
         task.log(f"base branch `{base}` recovered (moved to {tip[:12]}); rebased onto it and the pre-PR "
@@ -768,7 +759,6 @@ class CheckRunMixin:
         if failed:
             self._start_check_revise(task, failed, rep, "")
             return
-        self._record_command_validation_head(task)
         self._rebase_review_or_keep(task, worker_run or run, base, rep)
         if cont.get("merge_head"):
             st = self.state.get(task.id)
