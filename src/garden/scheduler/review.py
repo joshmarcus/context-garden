@@ -486,8 +486,7 @@ class ReviewMixin:
                 and str((run.env_snapshot or {}).get("review_head") or "") == head
                 for run in review_runs
             )) if head else bool(st.get("last_review"))
-            product = self.cfg.product(task.product)
-            minimum = int(product.get("automerge_min_review_rounds", 2 if product.get("provides_tool") else 1) or 0)
+            minimum = self._automerge_min_review_rounds(task)
             missing_additional = current_verdict and int(st.get("review_rounds", 0)) < minimum
             if current_verdict and not missing_additional:
                 continue

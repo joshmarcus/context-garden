@@ -254,6 +254,21 @@ def test_gate_min_review_rounds(sched, fake_github):
     assert not ok and "review round" in reason
 
 
+def test_hard_task_uses_the_configured_review_minimum(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    t.difficulty = "hard"
+    sched.cfg.data["github"]["automerge_hard_tier"] = True
+    st["scratch_merge"] = {"ok": True, "diff": st.get("last_diff_hash", "")}
+
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
+
+    sched.cfg.data["github"]["automerge_min_review_rounds"] = 3
+    st["review_rounds"] = 2
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "need 3" in reason
+
+
 def test_self_product_uses_independent_second_opinion(sched, fake_github):
     """A self-product PR gets one automated approval and an independent current-head opinion."""
     sched.cfg.data["products"]["demo"]["self"] = True
