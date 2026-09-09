@@ -1226,7 +1226,8 @@ def test_take_accepts_an_enterprise_pr_on_the_configured_host(garden, fake_githu
     monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
     monkeypatch.setattr(fake_github, "get_pr", lambda slug, number: PRInfo(
         number=number, url="https://forge-one.test/test/demo/pull/71", state="OPEN",
-        head="operator/work", base="main", head_sha="a" * 40,
+<<<<<<< HEAD
+        head="operator/work", head_sha="verified-head", base="main", head_repo="test/demo",
     ))
 
     result = run(garden, "take", "DM-001", "--pr", "https://forge-one.test/test/demo/pull/71", "-q")
