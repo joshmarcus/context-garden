@@ -1405,6 +1405,46 @@ def test_live_checkout_owner_is_refused_without_quarantine_or_author_launch(tmp_
     assert not (root / "preserved-materializations").exists()
 
 
+@pytest.mark.parametrize("failure", ["directory", "open", "flock"])
+def test_repo_lock_materialization_failure_finishes_without_author(
+    tmp_path, monkeypatch, failure,
+):
+    root = tmp_path / "host"
+    lock_dir = root / "repo-locks"
+    lock_path = lock_dir / "T-1.lock"
+    if failure == "directory":
+        lock_dir.parent.mkdir(parents=True)
+        lock_dir.write_text("not a directory")
+    elif failure == "open":
+        lock_path.mkdir(parents=True)
+    else:
+        lock_dir.mkdir(parents=True)
+
+        def fail_flock(*_args):
+            raise OSError("lock filesystem unavailable")
+
+        monkeypatch.setattr("garden.remote_worker.fcntl.flock", fail_flock)
+    posts = []
+
+    class Client:
+        def post(self, path, body):
+            posts.append((path, body))
+            return 200, {}
+
+    run = {"id": "run-1", "task_id": "T-1", "lease_token": "current",
+           "heartbeat_seconds": 3600}
+    monkeypatch.setattr(Harness, "command", lambda *args, **kwargs: pytest.fail("author launched"))
+
+    execute_claim(run, root, Client())
+
+    finishes = [body for path, body in posts if path.endswith("/finish")]
+    assert len(finishes) == 1
+    assert finishes[0]["env_kind"] == "materialization"
+    assert "checkout ownership" in finishes[0]["error"]
+    assert "repository lock" in finishes[0]["error"]
+    assert not (root / "preserved-materializations").exists()
+
+
 def test_orphaned_author_keeps_checkout_lock_and_new_claim_refuses_mutation(tmp_path, monkeypatch):
     """The supervisor passes repo ownership to the real author, not only its own process."""
     isolated_execution_runtime(tmp_path, monkeypatch)

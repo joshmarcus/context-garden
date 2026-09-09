@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from .brief import parse_result
 from .harness import Harness
@@ -288,6 +288,29 @@ def _finish_materialization_failure(run: dict[str, Any], heartbeat: _LeaseHeartb
     })
 
 
+def _acquire_repo_lock(run: dict[str, Any], root: Path) -> TextIO:
+    """Acquire exclusive checkout ownership or report a claim-scoped failure."""
+    lock_path = root / "repo-locks" / f"{run['task_id']}.lock"
+    repo_lock = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        repo_lock = lock_path.open("a")
+        fcntl.flock(repo_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return repo_lock
+    except BlockingIOError as exc:
+        if repo_lock is not None:
+            repo_lock.close()
+        raise ClaimMaterializationError(
+            "checkout ownership", "checkout is still owned by a live claim supervisor"
+        ) from exc
+    except OSError as exc:
+        if repo_lock is not None:
+            repo_lock.close()
+        raise ClaimMaterializationError(
+            "checkout ownership", f"cannot acquire repository lock {lock_path}: {exc}"
+        ) from exc
+
+
 def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartbeat,
                         *, setup_command: str, lock_fd: int) -> tuple[Path, dict[str, str]]:
     """Prepare one warm checkout, quarantining unsafe state for the next generation."""
@@ -372,15 +395,9 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
     heartbeat.start()
     repo_lock = None
     try:
-        lock_path = root / "repo-locks" / f"{run['task_id']}.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        repo_lock = lock_path.open("a")
         try:
-            fcntl.flock(repo_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            failure = ClaimMaterializationError(
-                "checkout ownership", "checkout is still owned by a live claim supervisor"
-            )
+            repo_lock = _acquire_repo_lock(run, root)
+        except ClaimMaterializationError as failure:
             _finish_materialization_failure(run, heartbeat, failure)
             return
         try:
