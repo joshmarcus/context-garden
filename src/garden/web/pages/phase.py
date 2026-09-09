@@ -13,6 +13,7 @@ from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, metrics, phase_summary
 from ...graph import effective_status
 from ...inbox import split_log
+from ...model import effective_owner
 from ...plants import plant_info
 from ...runs import RunStore
 from ...scheduler import State
@@ -97,9 +98,11 @@ def register(app: FastAPI, site: Site) -> None:
 
         phase_events = [e for e in all_events if e.get("task") in phase_tasks]
         hide_done = hide == "done"
-        all_rows = [(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id) or no_usage, fixed_tokens + estimate_brief_tokens(s, t)[1]) for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
-        hidden_count = sum(1 for row in all_rows if row[1] in ("done", "cancelled"))
-        rows = [row for row in all_rows if not hide_done or row[1] not in ("done", "cancelled")]
+        all_rows = [(t, effective_owner(t, ph)[0], effective_status(t, tasks, stack), state.get(t.id),
+                     usage.get(t.id) or no_usage, fixed_tokens + estimate_brief_tokens(s, t)[1])
+                    for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
+        hidden_count = sum(1 for row in all_rows if row[2] in ("done", "cancelled"))
+        rows = [row for row in all_rows if not hide_done or row[2] not in ("done", "cancelled")]
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
             sheet=sheet,
