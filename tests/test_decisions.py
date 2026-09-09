@@ -350,3 +350,29 @@ def test_decision_is_readable_when_waiting_status_is_published(sched, fake_githu
     assert observed, "the worker decision must publish a waiting status"
     kind = "no_change" if mode == "no_change_decision" else mode
     assert all(decision and decision["kind"] == kind and decision["reason"] for decision in observed)
+
+
+def test_question_resume_identity_is_readable_when_waiting_status_is_published(sched, monkeypatch):
+    """An immediate answer must resume the worker that asked the question."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    observed = []
+    save = sched.store.save
+
+    def read_after_publication(task, *args, **kwargs):
+        result = save(task, *args, **kwargs)
+        if task.id == "DM-001" and task.status == Status.WAITING_HUMAN:
+            observed.append(dict(State(sched.state.path).get(task.id)))
+        return result
+
+    monkeypatch.setattr(sched.store, "save", read_after_publication)
+    sched.tick()
+
+    assert observed, "the worker question must publish a waiting status"
+    for state in observed:
+        assert state.get("question") == "Postgres or SQLite?"
+        assert state.get("session_id") == "sess-42"
+        assert state.get("session_host") == run.host
+        assert state.get("session_harness") == run.harness
+        assert state.get("question_run") == run.run_id
