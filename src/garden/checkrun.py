@@ -43,7 +43,8 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
         try:
             setup_env = scrubbed_env(config, setup, worktree=cwd)
             setup_env.update(temp_env)
-            run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log", env=setup_env)
+            run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log",
+                      env=setup_env, cache_key=str(payload.get("setup_cache_key") or ""))
         except RunnerError as e:
             return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
     elif cwd is not None and not cwd.exists():
