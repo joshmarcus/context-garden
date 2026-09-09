@@ -74,19 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     run_dir = Path(argv[0])
     payload = json.loads((run_dir / "checks_input.json").read_text())
-    try:
-        results = run_check_job(payload)
-    except Exception as e:  # noqa: BLE001
-        # The scheduler needs a structured result even when the detached job itself fails;
-        # without this, a traceback leaves no checks.json and hides the actual cause behind
-        # the generic "check run produced no results" message.
-        results = [{"name": "checks", "status": "error", "summary": "check runner crashed",
-                    "details": f"{type(e).__name__}: {e}"}]
-        exit_code = 1
-    else:
-        exit_code = 0
+    results = run_check_job(payload)
     (run_dir / "checks.json").write_text(json.dumps(results, indent=2))
-    return exit_code
+    return 0
 
 
 if __name__ == "__main__":
