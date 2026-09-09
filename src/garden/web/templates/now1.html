@@ -7,14 +7,20 @@
 .now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
 .now-five a { text-decoration-color:var(--line-strong); }
 .now-five .pause { color:var(--stamp); }
-.region { margin-top:30px; scroll-margin-top:16px; }
-.region-head { display:flex; align-items:baseline; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
-.region-head .lead { font:italic 14px/1.4 var(--display); color:var(--muted); }
+.region { margin-top:42px; padding-top:17px; border-top:1px solid var(--line-strong); scroll-margin-top:16px; }
+.region-head { display:flex; align-items:baseline; gap:14px; margin-bottom:16px; flex-wrap:wrap; }
+/* A section is a line in the herbarium catalogue: its title has enough ink to be found from
+   across the page, while the italic note gives the title's particular meaning. */
+.region-head .section-title { margin:0; font:600 clamp(23px, 2vw, 31px)/1 var(--display); letter-spacing:-.025em; color:var(--ink); }
+.region-head .lead { padding-left:14px; border-left:1px solid var(--line-strong); font:italic 14px/1.4 var(--display); color:var(--muted); }
 .region-head .right { margin-left:auto; font:12px/1.4 var(--mono); color:var(--muted); display:flex; gap:4px 14px; align-items:center; flex-wrap:wrap; }
 .region-head .right .tick { white-space:nowrap; }
 .region-head .right .lost { color:var(--muted); font-style:italic; }
 .region-head .stamp { transform:rotate(-3deg); }
 .now-grid { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(300px, 1fr); gap:28px; align-items:start; }
+.now-grid .region { margin-top:46px; }
+.now-grid .region-head { margin-bottom:18px; }
+.now-grid .region-head .section-title { font-size:clamp(27px, 2.35vw, 37px); }
 /* a run is a mount card on its side */
 .strip { display:grid; grid-template-columns:36px minmax(0, 1fr) auto; gap:5px 14px; padding:14px 18px 13px 14px; margin-bottom:12px; border-left:3px solid var(--line); transition:border-left-color 1.2s, opacity .5s, transform .36s cubic-bezier(.2,.7,.2,1); }
 .strip.new { border-left-color:var(--accent); }
@@ -175,6 +181,12 @@ body.page-now .rail-running { display:none; }
   body.page-now .nav a.on { border-bottom-color:var(--ink); background:transparent; }
   body.page-now main { padding:18px 14px 48px; }
   .now-five { font-size:17px; }
+  .region { margin-top:34px; padding-top:14px; }
+  .region-head { gap:7px 12px; margin-bottom:14px; }
+  .region-head .section-title { font-size:27px; }
+  .now-grid .region { margin-top:34px; }
+  .now-grid .region-head .section-title { font-size:31px; }
+  .region-head .lead { padding-left:12px; }
   .region-head .right { margin-left:0; width:100%; }
   /* minmax(0, ...) so a wide table scrolls inside its box instead of widening the page */
   .now-grid, .period-grid { grid-template-columns:minmax(0, 1fr); }
@@ -209,7 +221,7 @@ body.page-now .rail-running { display:none; }
 <div class="now-live" aria-live="polite" id="now-live"></div>
 
 <section class="region" id="now">
-  <div class="region-head"><span class="eyebrow">Now</span><span class="lead">every run in flight, newest first</span>{{ slots(snap) }}</div>
+  <div class="region-head"><h2 class="section-title">Now</h2><span class="lead">every run in flight, newest first</span>{{ slots(snap) }}</div>
   {% include "_now1_now.html" %}
 </section>
 

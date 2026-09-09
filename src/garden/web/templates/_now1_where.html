@@ -3,7 +3,7 @@
 {% from "_now1_macros.html" import sheet with context %}
 {%- set p = snap.where.primary -%}
 <div id="where-body"{% if p %} data-fraction="{{ p.fraction }}"{% endif %}>
-  <div class="region-head"><span class="eyebrow">Where we are</span><span class="lead">{% if p %}{{ p.name }}, {{ p.stage_word }}{% else %}no open phase{% endif %}</span></div>
+  <div class="region-head"><h2 class="section-title">Where we are</h2><span class="lead">{% if p %}{{ p.name }}, {{ p.stage_word }}{% else %}no open phase{% endif %}</span></div>
   {% if p %}
   {{ sheet(p) }}
   {% if p.retro %}<p class="muted" style="margin:8px 0 0;font:12px/1.4 var(--mono)">retro verdict {{ p.retro.get('verdict', '') }} · {{ p.retro.get('status', '') }}{% if p.retro.get('accepted_by') %} · accepted by {{ p.retro.get('accepted_by') }}{% endif %}{% if p.retro.get('accepted_at') %} at {{ p.retro.get('accepted_at')[:16] }}Z{% endif %}</p>{% endif %}
