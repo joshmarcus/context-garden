@@ -644,8 +644,9 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
             assert client.post(f"/api/runs/{run.run_id}/heartbeat",
                                json={"lease_token": claim["lease_token"]}, headers=auth).status_code == 409
             # Reclaim through the actual CLI, without a controller object in that process.
-            env = {k: v for k, v in os.environ.items() if k in
-                   {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
+                env = {k: v for k, v in os.environ.items() if k in
+                       {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "XDG_RUNTIME_DIR"}
+                       or k.startswith("FAKE_")}
             env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
                        GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
             setup_counts = {}
