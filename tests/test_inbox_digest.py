@@ -421,6 +421,37 @@ def test_inbox_pr_count_links_to_the_configured_garden_pr_search(garden: Path):
     assert "dm-002-second-task" not in page
 
 
+def test_inbox_pr_count_respects_effective_owner_filter(garden: Path):
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.web.app import create_app
+
+    (garden / "demo" / "p1" / "goals.md").write_text(
+        "---\nowner: platform-team\n---\n\n# p1\n",
+    )
+    store = Store(garden)
+    inherited = store.task("DM-001")
+    inherited.status = Status.IN_REVIEW
+    inherited.branch = "garden/dm-001-platform"
+    inherited.pr = "https://github.com/test/demo/pull/71"
+    store.save(inherited)
+    other = store.task("DM-002")
+    other.owner = "feature-team"
+    other.status = Status.IN_REVIEW
+    other.branch = "garden/dm-002-feature"
+    other.pr = "https://github.com/test/demo/pull/72"
+    store.save(other)
+
+    page = TestClient(create_app(Store(garden), watch=False)).get(
+        "/inbox?owner=platform-team",
+    ).text
+
+    assert 'aria-label="Open 1 tracked garden pull request on GitHub"' in page
+    assert "dm-001-platform" in page
+    assert "dm-002-feature" not in page
+
+
 def test_inbox_pr_destinations_separate_enterprise_hosts(garden: Path):
     from dataclasses import replace
 

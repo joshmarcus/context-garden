@@ -12,7 +12,7 @@ from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, digest, parse_since
 from ...github import pull_request_number
 from ...inbox import build_inbox, decisions, merge_queue_view
-from ...model import Task
+from ...model import Task, effective_owner
 from ...store import Store
 from ..common import Site, tier_rows
 
@@ -68,6 +68,16 @@ def open_pr_destinations(tasks: list[Task], store: Store) -> list[dict[str, str 
     return destinations
 
 
+def owner_scoped_tasks(tasks: list[Task], store: Store, owner: str | None) -> list[Task]:
+    """Return tasks matching the Inbox owner filter, including inherited ownership."""
+    if owner is None:
+        return tasks
+    return [
+        task for task in tasks
+        if effective_owner(task, store.phase(task.product, task.phase))[0] == owner
+    ]
+
+
 def _pr_destination(prefix: str, base: str, heads: list[str], host: str, slug: str) -> dict[str, str | int]:
     return {"url": _search_url(prefix, base, heads), "label": f"{host}/{slug}", "count": len(heads)}
 
@@ -106,6 +116,7 @@ def register(app: FastAPI, site: Site) -> None:
         evs = EventLog(s.config.garden_dir / "events.jsonl")
         all_events = evs.read()
         open_tasks = [t for t in tasks.values() if not t.status.terminal and t.status.value != "cancelled"]
+        open_tasks = owner_scoped_tasks(open_tasks, s, owner)
         pr_destinations = open_pr_destinations(open_tasks, s)
         prs_open = sum(int(destination["count"]) for destination in pr_destinations)
         in_scope = [t for t in tasks.values() if t.status.value != "cancelled"]
