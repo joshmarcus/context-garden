@@ -828,20 +828,25 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
     monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "owned-run")
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "731")
     monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "true"])
-    captured = {}
+    captured = []
 
-    def execv(executable, argv):
-        captured.update(executable=executable, argv=argv, env=dict(os.environ))
-        raise RuntimeError("exec captured")
+    def run(argv, **kwargs):
+        captured.append((argv, kwargs, dict(os.environ)))
+        if argv[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="a" * 40 + "\n")
+        return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(os, "execv", execv)
-    with pytest.raises(RuntimeError, match="exec captured"):
-        validation.main()
+    monkeypatch.setattr(subprocess, "run", run)
+    assert validation.main() == 0
 
-    assert captured["executable"] == sys.executable
-    assert captured["argv"][-1] == "true"
-    assert captured["env"]["GARDEN_OWNER_SCOPED"] == "1"
-    assert captured["env"]["GARDEN_EXECUTION_TIMEOUT_SECONDS"] == "731"
+    supervisor_argv, _, execution_env = captured[0]
+    assert supervisor_argv[:3] == [sys.executable, "-m", "garden.run_supervisor"]
+    assert supervisor_argv[-1] == "true"
+    assert execution_env["GARDEN_OWNER_SCOPED"] == "1"
+    assert execution_env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] == "731"
+    receipt = json.loads(next(outer.glob("validations/*/result.json")).read_text())
+    assert receipt["source_sha"] == "a" * 40
+    assert receipt["selection"] == ["true"] and receipt["exit_code"] == 0
 
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "9999")
     assert validation.bounded_validation_timeout_seconds() == 900
