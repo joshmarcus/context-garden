@@ -212,12 +212,14 @@ CPU/memory containment requires a configured delegated execution cgroup; queue l
 alone do not enforce it. [Resource controls](docs/architecture.md#dispatch-filling-the-slots)
 explain the boundaries. Size capacity for your machine and model accounts.
 
-The supported runners are **local**, **ssh** to prepared hosts, and **manual** for an
-interactive worker. [Transport details](docs/worker-protocol.md#variants-of-the-transport)
-and [an SSH/non-Python configuration example](examples/garden.work.yaml) cover those
-options. HTTP claim/heartbeat workers, automatic AWS provisioning, model pools and an
-OpenRouter adapter are not implemented in this version. Their development plans are not
-configuration options; SSH remains available for a host you provision yourself.
+The supported runners are **local**, **ssh** to prepared hosts, **remote** pull-based
+workers that claim HTTPS leases, and **manual** for an interactive worker. [Transport
+details](docs/worker-protocol.md#variants-of-the-transport) and [an SSH/non-Python
+configuration example](examples/garden.work.yaml) cover those options. Automatic AWS
+provisioning, model pools and an OpenRouter adapter are not implemented in this version.
+Their development plans are not configuration options; SSH remains available for a host
+you provision yourself, and the remote runner remains available for an independently
+prepared host running `garden worker`.
 
 ## Operate and recover
 
