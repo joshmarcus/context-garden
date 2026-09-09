@@ -16,7 +16,6 @@ from typing import Any
 from .profiles import PROFILE_KEYS
 from .profiles import stops as profile_stops
 
-
 class ConfigScope(StrEnum):
     GLOBAL = "global"
     PROJECT = "project"
