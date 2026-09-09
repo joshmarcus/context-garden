@@ -393,6 +393,110 @@ def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
     assert fresh.status_code == 200
 
 
+def test_remote_queue_age_is_not_execution_age_and_timestamps_survive_reclaim(
+    garden, monkeypatch, fake_github,
+):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    queued = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=4)).isoformat()
+    run.started_at = queued
+    run.queued_at = queued
+    run.save()
+    auth = {"Authorization": "Bearer secret-token"}
+    offer = {"host": "build-1", "harnesses": ["claude"]}
+
+    first = client.post("/api/runs/claim", json=offer, headers=auth).json()
+    claimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert claimed.started_at == queued and claimed.queued_at == queued
+    assert claimed.execution_started_at == claimed.claimed_at
+    assert claimed.execution_minutes() < 1
+    first_claimed_at = claimed.claimed_at
+    first_execution_at = claimed.execution_started_at
+
+    claimed.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    claimed.save()
+    second = client.post("/api/runs/claim", json=offer, headers=auth).json()
+    reclaimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert reclaimed.claimed_at == first_claimed_at
+    assert reclaimed.execution_started_at == first_execution_at
+    assert len(reclaimed.claim_history) == 2
+    assert second["lease_token"] != first["lease_token"]
+    assert client.post(f"/api/runs/{run.run_id}/heartbeat",
+                       json={"lease_token": first["lease_token"]}, headers=auth).status_code == 409
+
+    scheduler = Scheduler(store, github=fake_github)
+    assert not scheduler._finished_or_timed_out(reclaimed, scheduler.runner_for(
+        store.task("DM-001"), "remote", reclaimed.harness
+    ))
+
+    legacy = RunStore(store.config.garden_dir).new_run("DM-002", "remote", run_id="legacy-queued")
+    legacy.started_at = queued
+    legacy.queued_at = ""
+    legacy.save()
+    assert legacy.execution_minutes() == 0
+
+
+def test_remote_timeout_revokes_generation_and_rejects_late_evidence(
+    garden, monkeypatch, fake_github,
+):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    run.execution_started_at = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=2)).isoformat()
+    run.save()
+    scheduler = Scheduler(store, github=fake_github)
+
+    assert scheduler._finished_or_timed_out(
+        run, scheduler.runner_for(store.task("DM-001"), "remote", run.harness)
+    )
+    timed_out = RunStore(store.config.garden_dir).latest("DM-001")
+    assert timed_out.status == "timeout"
+    assert not timed_out.lease_token and not timed_out.lease_expires_at
+    late_beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                            json={"lease_token": claim["lease_token"], "transcript": "late"}, headers=auth)
+    late_finish = client.post(f"/api/runs/{run.run_id}/finish",
+                              json={"lease_token": claim["lease_token"], "exit_code": 0,
+                                    "result": {"status": "done"}, "usage": {"input_tokens": 99}},
+                              headers=auth)
+    assert late_beat.status_code == late_finish.status_code == 409
+    assert not (run.path / "remote_result.json").exists()
+    assert RunStore(store.config.garden_dir).usage_for("DM-001")["input_tokens"] == 0
+    from garden.model import Status
+    task = store.task("DM-001")
+    task.status = Status.RUNNING
+    store.save(task)
+    report = scheduler.tick()
+    assert any("DM-001" in transition for transition in report.transitions), report
+    old = next(item for item in RunStore(store.config.garden_dir).runs_for("DM-001")
+               if item.run_id == run.run_id)
+    assert old.started_at == run.started_at and old.execution_started_at == run.execution_started_at
+    active = [item for item in scheduler.active_runs() if item.task_id == "DM-001"]
+    assert len(active) <= 1
+    assert all(item.run_id != old.run_id for item in active)
+
+
+def test_each_run_keeps_its_own_trusted_fence_manifest(garden, fake_github):
+    store = Store(garden)
+    scheduler = Scheduler(store, github=fake_github)
+    task = store.task("DM-001")
+    first = RunStore(store.config.garden_dir).new_run(task.id, "remote", run_id="generation-one")
+    scheduler._fence_snapshot(task, first)
+    first = RunStore(store.config.garden_dir).runs_for(task.id)[0]
+    second = RunStore(store.config.garden_dir).new_run(task.id, "remote", run_id="generation-two")
+    (garden / "garden.yaml").write_text((garden / "garden.yaml").read_text() + "\n# second generation\n")
+    scheduler._fence_snapshot(task, second)
+    second = RunStore(store.config.garden_dir).latest(task.id)
+
+    assert first.fence_manifest_sha256
+    assert second.fence_manifest_sha256
+    assert first.fence_manifest_sha256 != second.fence_manifest_sha256
+    assert scheduler._fence_guard_check(task, first) == []
+    assert scheduler._fence_guard_check(task, second) == []
+
+
 def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     queued_run(store)
