@@ -537,6 +537,7 @@ def test_remote_idle_legacy_claim_fallback_survives_reclaim(garden, monkeypatch,
     run.claimed_at = first_claim
     run.execution_started_at = ""
     run.lease_expires_at = (now - dt.timedelta(seconds=1)).isoformat()
+    run.recovery_expires_at = run.lease_expires_at
     run.save()
 
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
