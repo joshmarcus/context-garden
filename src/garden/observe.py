@@ -159,16 +159,13 @@ def _phase_keys(store: Any, phases: str | list[str]) -> set[str] | None:
 def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
     """service, slots, spend, and counts per status (blocked included, as `garden status`
     computes it) for the configured phases."""
-    from .graph import effective_status
-
     tasks = store.tasks()
-    stack = bool(store.config.get("stack", True))
     keys = _phase_keys(store, settings.phases)
     counts: dict[str, int] = {}
     for t in tasks.values():
         if keys is not None and t.key not in keys:
             continue
-        s = effective_status(t, tasks, stack)
+        s = sched.task_effective_status(t, tasks)
         counts[s] = counts.get(s, 0) + 1
     count_bits = " ".join(f"{s} {counts[s]}" for s in [*STATUS_ORDER, "blocked"] if counts.get(s))
     totals = RunStore(store.config.garden_dir).totals()

@@ -348,8 +348,6 @@ def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: 
 @app.command(rich_help_panel=PANEL_LOOP)
 def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"), force: bool = typer.Option(False, help="Ignore deps/status")):
     """Start a worker for one task now."""
-    from ..graph import blockers
-
     store = _store()
     t = _task(store, task_id)
     sched = _scheduler(store)
@@ -372,7 +370,7 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
                 raise typer.Exit(1) from None
             if warning:
                 err.print(f"[yellow]{warning}[/yellow]")
-        b = blockers(t, store.tasks())
+        b = sched.task_blockers(t, store.tasks())
         if b and mode == "work":
             err.print(f"[red]{t.id} is blocked by {', '.join(b)}; use --force[/red]")
             raise typer.Exit(1) from None

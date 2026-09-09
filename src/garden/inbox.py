@@ -9,7 +9,6 @@ from typing import Any
 
 from .brief import brief_gaps
 from .criteria import required_evidence, required_evidence_rows
-from .graph import effective_status, ready
 from .model import Status, Task, effective_owner, phase_refusal
 from .runs import RunStore
 from .store import Store
@@ -638,8 +637,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
     tasks = store.tasks()
     state = sched.state
     runs = getattr(sched, "runs", None) or RunStore(store.config.garden_dir)
-    stack = bool(store.config.get("stack", True))
-    ready_ids = {task.id for task in ready(tasks, stack=stack)}
+    ready_ids = {task.id for task in sched.ready_tasks(tasks)}
     phases = {phase.key: phase for product in store.products() for phase in product.phases}
     items: list[dict[str, Any]] = []
     order = {g[0]: i for i, g in enumerate(GROUPS)}
@@ -813,7 +811,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                                            "blockers", "resume_to", "evidence", "evidence_links", "discuss")},
                     decision_card=decision_card_view(t, st, runs), card_task=t)
         elif t.status == Status.DRAFT:
-            eff = effective_status(t, tasks, stack)
+            eff = sched.task_effective_status(t, tasks)
             why = "discovered by " + t.discovered_from if t.discovered_from else "planned, not yet approved"
             if eff == "blocked":
                 why += " · blocked until deps merge"

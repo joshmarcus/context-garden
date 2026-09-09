@@ -17,7 +17,7 @@ from ...criteria import (
     worker_verified,
 )
 from ...events import EventLog
-from ...graph import blockers, dependency_after, dependents, deps_in_later_phase, effective_status
+from ...graph import dependency_after, dependents, deps_in_later_phase
 from ...inbox import approve_phase_options, decision_card_view, split_log
 from ...model import effective_owner, phase_refusal
 from ...review import review_to_markdown
@@ -77,7 +77,7 @@ def register(app: FastAPI, site: Site) -> None:
         except KeyError:
             raise HTTPException(404) from None
         tasks = s.tasks()
-        stack = bool(s.config.get("stack", True))
+        sched = hub.reader(s)
         rs = RunStore(s.config.garden_dir)
         runs = rs.runs_for(t.id)
         latest_run = rs.latest(t.id)
@@ -122,7 +122,7 @@ def register(app: FastAPI, site: Site) -> None:
         if manual_runner and t.status.value in ("ready", "changes_requested"):
             if any(run.task_id == t.id for run in rs.active()):
                 manual_take_reason = "This task is already claimed by an active manual session."
-            elif t.status.value == "ready" and blockers(t, tasks, stack):
+            elif t.status.value == "ready" and sched.task_blockers(t, tasks):
                 manual_take_reason = "This task is waiting for its dependencies to finish."
             elif phase_hold:
                 manual_take_reason = f"This task cannot be claimed while {phase_hold}."
@@ -155,7 +155,7 @@ def register(app: FastAPI, site: Site) -> None:
             }
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
-            task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
+            task=t, eff=sched.task_effective_status(t, tasks), blockers=sched.task_blockers(t, tasks), usage=usage,
             dependency_after=lambda dep: dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             manual_reservation=(st.get("manual_reservation") if isinstance(st.get("manual_reservation"), dict) else None),

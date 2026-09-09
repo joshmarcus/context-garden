@@ -171,9 +171,7 @@ def register(app: FastAPI, site: Site) -> None:
         return JSONResponse([
             {
                 **task.to_frontmatter(),
-                "effective_status": effective_status(
-                    task, tasks, scheduler.stack_enabled_for(task),
-                ),
+                "effective_status": scheduler.task_effective_status(task, tasks),
                 "effective_owner": effective_owner(
                     task, scheduler.store.phase(task.product, task.phase),
                 )[0],

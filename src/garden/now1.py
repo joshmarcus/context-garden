@@ -26,7 +26,6 @@ from . import operator_spend as ops
 from .costs import bucket_key, cost_series
 from .criteria import criteria_counts
 from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metrics
-from .graph import effective_status
 from .inbox import automated_review_is_queued, merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
 from .outcomes import base_acceptance
@@ -623,8 +622,8 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
     closed.sort(key=lambda s: s["closed"], reverse=True)
     primary = sheets[0] if sheets else None
 
-    stack = bool(cfg.get("stack", True))
-    drafts = sum(1 for t in tasks.values() if t.status == Status.DRAFT and effective_status(t, tasks, stack) == "draft")
+    drafts = sum(1 for t in tasks.values()
+                 if t.status == Status.DRAFT and sched.task_effective_status(t, tasks) == "draft")
     since, bucket, window_used = resolve_window(window, now, (primary or {}).get("first_dispatch") or "")
     tick = tick or {}
     paused = control.get("dispatch") == "paused"

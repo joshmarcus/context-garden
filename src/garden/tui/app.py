@@ -21,7 +21,6 @@ from textual.widgets import (
     TabPane,
 )
 
-from ..graph import blockers, effective_status
 from ..inbox import GROUP_KIND, attention_view, decisions
 from ..model import Status
 from ..runs import RunStore
@@ -183,14 +182,14 @@ class GardenTUI(App):
         table.clear()
         rs = RunStore(self.store.config.garden_dir)
         active = {r.task_id: r for r in rs.active()}
-        stack = bool(self.store.config.get("stack", True))
+        sched = self._sched()
         for t in sorted(tasks.values(), key=lambda t: (t.status.terminal, t.product, t.phase, t.priority, t.id)):
-            eff = effective_status(t, tasks, stack)
+            eff = sched.task_effective_status(t, tasks)
             if self.only_open and eff in ("done", "cancelled"):
                 continue
             extra = ""
             if eff == "blocked":
-                extra = "waits " + ",".join(blockers(t, tasks, stack))
+                extra = "waits " + ",".join(sched.task_blockers(t, tasks))
             elif eff == "waiting_human":
                 _st = State(self.store.config.garden_dir / "state.json").get(t.id)
                 dec = _st.get("decision")
@@ -212,7 +211,7 @@ class GardenTUI(App):
         tot = rs.totals()
         counts: dict[str, int] = {}
         for t in tasks.values():
-            e = effective_status(t, tasks, stack)
+            e = sched.task_effective_status(t, tasks)
             counts[e] = counts.get(e, 0) + 1
         summary = "  ".join(f"{k}:{v}" for k, v in sorted(counts.items()))
         self._set_status(f"{self._inbox_decisions} need you   {summary}   runs {tot['runs']} ${tot['cost_usd']:.2f}   {self._msg}")

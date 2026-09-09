@@ -11,7 +11,6 @@ from fastapi.responses import HTMLResponse
 
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, metrics, phase_summary
-from ...graph import effective_status
 from ...inbox import split_log
 from ...model import effective_owner
 from ...plants import plant_info
@@ -38,8 +37,7 @@ def register(app: FastAPI, site: Site) -> None:
         specs = [(s.rel(p), p.read_text()) for p in ph.specs]
         docs = [(s.rel(p), p.read_text()) for p in ph.docs if p.suffix == ".md"]
         state = State(s.config.garden_dir / "state.json")
-        stack = bool(s.config.get("stack", True))
-        sched = hub.reader()  # a GET reads through the scheduler; it must not log (CG-182)
+        sched = hub.reader(s)  # a GET reads through the scheduler; it must not log (CG-182)
         phase_tasks = {t.id: t for t in ph.tasks}
         all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
         m = metrics(all_events, phase_tasks)
@@ -86,7 +84,7 @@ def register(app: FastAPI, site: Site) -> None:
                 summary=summary, metrics=m, spent=spent, review_heads=review_heads, artifacts=artifacts,
                 trials_n=trials_n, merged_rows=merged_rows, unmerged_rows=unmerged_rows,
                 has_retro=bool(_retro_doc(ph)),
-                rows=[(t, effective_status(t, tasks, stack), state.get(t.id), usage.get(t.id) or no_usage)
+                rows=[(t, sched.task_effective_status(t, tasks), state.get(t.id), usage.get(t.id) or no_usage)
                       for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))],
                 retro_verdict=verdict_view,
             ))
@@ -98,7 +96,7 @@ def register(app: FastAPI, site: Site) -> None:
 
         phase_events = [e for e in all_events if e.get("task") in phase_tasks]
         hide_done = hide == "done"
-        all_rows = [(t, effective_owner(t, ph)[0], effective_status(t, tasks, stack), state.get(t.id),
+        all_rows = [(t, effective_owner(t, ph)[0], sched.task_effective_status(t, tasks), state.get(t.id),
                      usage.get(t.id) or no_usage, fixed_tokens + estimate_brief_tokens(s, t)[1])
                     for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
         hidden_count = sum(1 for row in all_rows if row[2] in ("done", "cancelled"))

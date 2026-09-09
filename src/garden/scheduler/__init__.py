@@ -178,6 +178,31 @@ class Scheduler(
     def stack_enabled_for(self, task: Task) -> bool:
         return bool(self.effective("stack", True, task.product)) and not self.external_stack_owner(task)
 
+    def task_blockers(self, task: Task, tasks: dict[str, Task] | None = None) -> list[str]:
+        """Resolve dependency blockers with the task's effective project stack policy."""
+        from ..graph import blockers
+
+        task_map = self.store.tasks() if tasks is None else tasks
+        return blockers(task, task_map, stack=self.stack_enabled_for(task))
+
+    def task_effective_status(self, task: Task, tasks: dict[str, Task] | None = None) -> str:
+        """Return the status users see, using the same stack policy as dispatch and take."""
+        from ..graph import effective_status
+
+        task_map = self.store.tasks() if tasks is None else tasks
+        return effective_status(task, task_map, stack=self.stack_enabled_for(task))
+
+    def ready_tasks(self, tasks: dict[str, Task] | None = None) -> list[Task]:
+        """Tasks dispatch considers dependency-ready under each project's stack policy."""
+        from ..model import Status, dispatch_sort_key
+
+        task_map = self.store.tasks() if tasks is None else tasks
+        return sorted(
+            (task for task in task_map.values()
+             if task.status == Status.READY and not self.task_blockers(task, task_map)),
+            key=dispatch_sort_key,
+        )
+
     def runner_for(self, task: Task, name: str = "", harness_name: str = "") -> Runner:
         name = name or task.runner or self.cfg.product_runner(task.product)
         if name == "claude-local":

@@ -862,14 +862,10 @@ class ReviewMixin:
                             "criteria": criteria_snapshot, "validation_plan": plan})
         if clarifies_review_run:
             run.env_snapshot["clarifies_review_run"] = clarifies_review_run
-<<<<<<< HEAD
         run.env_snapshot.update({"product": task.product,
                                  "execution_timeout_minutes": self.cfg.product_timeout_minutes(task.product),
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
         review_difficulty = str(self.effective("review.difficulty", None, task.product) or task.difficulty or "medium")
-=======
-        review_difficulty = str(self.effective("review.difficulty", None, task.product) or task.difficulty or "medium")
->>>>>>> 080028d92 (Connect project policy to scheduler and saved edits)
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
