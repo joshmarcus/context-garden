@@ -406,7 +406,9 @@ def test_interrupted_check_keeps_source_and_review_blockers_separate(garden):
     assert card["owner"] == "operator" and card["user_decision"] is False
     assert [blocker["category"] for blocker in card["blockers"]] == [
         "Interrupted check", "Source or CI failure", "Review findings"]
-    assert next(action for action in card["actions"] if action["kind"] == "recover")["label"] == "Retry the interrupted check"
+    investigate = next(action for action in card["actions"] if action["kind"] == "investigate")
+    assert investigate["label"] == "Investigate missing check provenance"
+    assert not {"recover", "recover-check"} & {action["kind"] for action in card["actions"]}
     assert not {"resume", "retry"} & {action["kind"] for action in card["actions"]}
     html = TestClient(create_app(Store(garden), watch=False)).get("/").text
     assert "Your decision</dt><dd>Not required" in html
@@ -486,6 +488,48 @@ def test_stale_successful_check_stop_refuses_mutable_head_without_check_provenan
     assert state["needs_human"]["reason"] == "older timeout"
     assert state["checks"] == "SUCCESS"
     assert Store(garden).task("DM-001").status == Status.IN_REVIEW
+
+
+def test_stale_successful_check_without_provenance_renders_investigation_not_recovery(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "check_did_not_run", "reason": "older timeout"},
+               checks="SUCCESS", head_sha="abcdef123456")
+
+    sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
+    card = next(item for item in build_inbox(sched.store, sched)
+                if item["task"] == "DM-001")
+    assert card["group"] == "operator"
+    assert card["category"] == "Interrupted check · provenance unavailable"
+    assert card["owner"] == "operator" and card["user_decision"] is False
+    assert card["recommendation"] == "Investigate and repair the stopped check record"
+    assert card["evidence"][0].startswith("check provenance unavailable:")
+    assert [action["kind"] for action in card["actions"] if action["kind"] != "link"] == [
+        "investigate", "cancel"]
+
+    client = TestClient(create_app(Store(garden), watch=False))
+    page = client.get("/").text
+    assert "Investigate missing check provenance" in page
+    assert "no immutable source head was recorded" in page
+    assert "Your decision</dt><dd>Not required" in page
+    assert 'action="/tasks/DM-001/recover-check"' not in page
+    assert 'action="/tasks/DM-001/recover"' not in page
+    assert 'action="/tasks/DM-001/investigate"' in page
+
+    response = client.post(
+        "/tasks/DM-001/investigate",
+        data={"note": "Recover immutable check provenance", "applies_to": "operator"},
+    )
+    assert response.status_code == 200
+    state = State(Store(garden).config.garden_dir / "state.json").get("DM-001")
+    assert state["investigation"]["status"] == "requested"
+    assert state["investigation"]["owner"] == "operator"
+    assert state["investigation"]["origins"] == {
+        "stop_kind": "check_did_not_run",
+        "stop_reason": "older timeout",
+        "stop_run": "",
+    }
 
 
 def test_explicit_hold_and_real_question_name_the_correct_owner(garden):

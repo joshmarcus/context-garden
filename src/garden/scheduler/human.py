@@ -339,6 +339,14 @@ class HumanMixin:
             return
         if isinstance(existing, dict):
             st.setdefault("investigation_history", []).append(dict(existing))
+        if origins is None:
+            stop = st.get("needs_human") or {}
+            if isinstance(stop, dict):
+                origins = {
+                    "stop_kind": str(stop.get("kind") or ""),
+                    "stop_reason": str(stop.get("reason") or ""),
+                    "stop_run": str(stop.get("run") or ""),
+                }
         active = any(r.status in ("running", "requested", "preparing") for r in self.runs.runs_for(task.id))
         status = "draining" if active else "requested"
         st["investigation"] = {"status": status, "reason": reason.strip() or "troubled task",

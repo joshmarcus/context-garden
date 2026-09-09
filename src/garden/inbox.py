@@ -318,6 +318,21 @@ def _attention_blockers(info: dict[str, str], st: Any) -> list[dict[str, str]]:
     return blockers
 
 
+def _stopped_check_source_head(t: Task, st: Any, runs: RunStore | None) -> str:
+    """Return immutable provenance usable by terminal successful-check recovery."""
+    recovery = st.get("recovery_check") or {}
+    recorded = str(recovery.get("source_head") or "")
+    if recorded or not runs:
+        return recorded
+    stop = st.get("needs_human") or {}
+    run_id = str(stop.get("run") or recovery.get("run") or "")
+    if not run_id:
+        return ""
+    run = next((candidate for candidate in runs.runs_for(t.id)
+                if candidate.run_id == run_id), None)
+    return str(run.source_head or "") if run else ""
+
+
 def discuss_prompt(t: Task, info: dict[str, str], evidence: list[str], actions: list[dict[str, str]]) -> str:
     """A ready-made prompt about a stopped task, for pasting into a chat session or
     `garden take`: the task, the reason, the PR, the run ids and the options."""
@@ -367,10 +382,28 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     stale_check_stop = (info["kind"] == "check_did_not_run"
                         and str(st.get("checks") or "").upper() in {"SUCCESS", "PASSED"}
                         and not st.get("check_run"))
+    recovery_check = st.get("recovery_check") or {}
+    missing_check_provenance = bool(
+        t.pr and info["kind"] == "check_did_not_run" and (
+            (stale_check_stop and not _stopped_check_source_head(t, st, runs))
+            or (str(recovery_check.get("stage") or "") == "ci"
+                and not str(recovery_check.get("source_head") or ""))
+        )
+    )
     delegated = bool(info.get("delegated_recovery")) or info["kind"] == "check_did_not_run"
     reviewer_owned = info["kind"] == "review_clarification"
     check_recovery = info["kind"] == "check_did_not_run"
-    if check_recovery and not stale_check_stop:
+    if missing_check_provenance:
+        category = "Interrupted check · provenance unavailable"
+        owner = "operator"
+        recommendation = "Investigate and repair the stopped check record"
+        evidence.insert(0, "check provenance unavailable: no immutable source head was recorded for this PR-backed check")
+        actions.append({
+            "label": "Investigate missing check provenance", "kind": "investigate",
+            "command": f'garden investigate {t.id} "recover immutable check provenance"',
+            "detail": "records a bounded read-only operator investigation; the original stop, result, PR, feedback, and counters remain preserved",
+        })
+    elif check_recovery and not stale_check_stop:
         actionable = bool(str(st.get("pending_feedback") or "").strip()) or (
             str(st.get("checks") or "").upper() == "FAILURE"
         ) or bool(st.get("failed_checks"))
@@ -385,12 +418,12 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if info["kind"] == "revision_cap" and not delegated:
         owner = "you"
         recommendation = "Authorize one more bounded revision"
-    if stale_check_stop:
+    if stale_check_stop and not missing_check_provenance:
         category, owner, recommendation = "Stale bookkeeping", "operator", "Clear the resolved stop"
         actions.append({"label": "Recover check and resume pipeline", "kind": "recover-check",
                         "command": f"garden recover-check {t.id}",
                         "detail": "keeps the successful current check and clears only the obsolete stop"})
-    elif delegated:
+    elif delegated and not missing_check_provenance:
         label = "Retry the interrupted check" if info["kind"] == "check_did_not_run" else "Send failures to the worker"
         actions.append({"label": label, "kind": "recover", "command": f"garden recover {t.id}",
                         "detail": "runs one guarded continuation with the current PR, head, feedback, and counters preserved; repeat clicks cannot duplicate it"})
@@ -436,8 +469,9 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             retry_label = "Authorize one more revision"
         actions.append({"label": retry_label, "kind": "retry", "command": f"garden retry {t.id}",
                         "detail": retry_detail})
-    actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
-                    "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
+    if not missing_check_provenance:
+        actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
+                        "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
     cancel_command = f'garden troubled-cancel {t.id} "..."' if troubled else f"garden cancel {t.id}"
     actions.append({"label": "Cancel", "kind": "troubled-cancel" if troubled else "cancel", "command": cancel_command,
                     "detail": ("requires a reason and closes only after the writer drains; branch, PR, runs and artifacts stay preserved"
@@ -452,7 +486,10 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             evidence.insert(0, f"likely cause ({report.get('confidence', 'unknown')} confidence): {report.get('likely_cause', 'not stated')}")
         else:
             evidence.insert(0, "investigation report: " + str(report))
-    effect = ("The task remains paused; its branch, PR, findings, and counters are preserved."
+    effect = (("The task remains paused because its check result cannot be tied to the current PR head; "
+               "its stopped run, result, PR, findings, and counters are preserved."
+               if missing_check_provenance else
+               "The task remains paused; its branch, PR, findings, and counters are preserved.")
               if actions else "The task remains parked while the scheduler watches its prerequisite.")
     happened = {
         "check_did_not_run": "A required check was interrupted twice before it produced a result.",
