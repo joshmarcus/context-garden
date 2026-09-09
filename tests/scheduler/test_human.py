@@ -445,6 +445,38 @@ def test_revision_policy_escalates_each_substantive_threshold_once(sched):
     assert task.difficulty == "hard"
 
 
+def test_difficulty_control_enforces_floor_and_records_deliberate_override(sched):
+    task = sched.store.task("DM-001")
+    task.difficulty = "medium"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["difficulty_floor"] = "medium"
+    sched.state.save()
+
+    with pytest.raises(RuntimeError, match="below the durable medium escalation floor"):
+        sched.set_difficulty(task, "easy", actor="test")
+    assert task.difficulty == "medium"
+    assert not st.get("difficulty_overrides")
+
+    sched.set_difficulty(task, "medium", actor="test")
+    sched.set_difficulty(task, "hard", actor="test")
+    assert task.difficulty == "hard"
+    assert st["difficulty_floor"] == "medium"
+
+    sched.set_difficulty(task, "easy", reason="isolated documentation fix", actor="test")
+    assert task.difficulty == "easy"
+    assert st["difficulty_floor"] == "medium"
+    assert st["difficulty_overrides"][-1] == {
+        "at": st["difficulty_overrides"][-1]["at"],
+        "from": "hard",
+        "to": "easy",
+        "floor": "medium",
+        "reason": "isolated documentation fix",
+        "actor": "test",
+    }
+    assert "deliberate override below medium floor: isolated documentation fix" in task.body
+
+
 def test_revision_policy_protects_explicit_model_and_stops(sched):
     sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 6}
     task = sched.store.task("DM-001")
