@@ -944,6 +944,9 @@ class ReviewMixin:
             return True
         st["last_review"] = review
         st["last_review_run"] = run.run_id
+        # Inbox ownership is tied to the exact revision an automated reviewer inspected.
+        # Keep this separately from GitHub's latest head so a subsequent push cannot inherit
+        # an old approval.
         st["last_review_head"] = str((run.env_snapshot or {}).get("review_head") or "")
         st["last_review_base_head"] = str((run.env_snapshot or {}).get("review_base_head") or "")
         reviewed_diff = str((run.env_snapshot or {}).get("review_diff_hash") or "")
@@ -994,7 +997,10 @@ class ReviewMixin:
                 if repeated and bool(self.cfg.get("stall.enabled", True)):
                     self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                     return True
-                fb = feedback_from_review(review)
+                fb = feedback_from_review(
+                    review, run_id=run.run_id,
+                    source_head=str(run.env_snapshot.get("review_head") or ""),
+                )
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
@@ -1011,7 +1017,10 @@ class ReviewMixin:
                 # Approved, but the description still needs work and the reviewer gave no
                 # rewrite to apply directly: dispatch a description-only revise round rather
                 # than leaving the flagged description sitting on an in_review task forever.
-                fb = feedback_from_review(review)
+                fb = feedback_from_review(
+                    review, run_id=run.run_id,
+                    source_head=str(run.env_snapshot.get("review_head") or ""),
+                )
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()

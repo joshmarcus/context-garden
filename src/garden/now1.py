@@ -26,7 +26,7 @@ from .costs import bucket_key, cost_series
 from .criteria import criteria_counts
 from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metrics
 from .graph import effective_status
-from .inbox import merge_queue_view, needs_human_info
+from .inbox import automated_review_is_queued, merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
 from .outcomes import base_acceptance
 from .plants import plant_info
@@ -274,6 +274,9 @@ def cards_needing_a_hand(tasks: dict[str, Any], state: Any, control: dict[str, A
     out = []
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
+        if automated_review_is_queued(t, st):
+            # A fresh queued review owns the next step, even when a stale stop remains in state.
+            continue
         info = needs_human_info(st.get("needs_human")) if not t.status.terminal else None
         if t.status == Status.IN_REVIEW and (info or st.get("review_decision") == "changes_requested"):
             reason = (info or {}).get("reason") or "a person requested changes on the PR"

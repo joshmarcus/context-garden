@@ -19,12 +19,36 @@ from ..model import (
     phase_refusal,
     priority_label,
 )
+from ..review import feedback_with_operator_note, review_item_ids
 from ..runs import Run
+from ..stabilization import ACTORS
 from .report import TickReport
 from .state import _TaskState
 
 
 class HumanMixin:
+    @staticmethod
+    def _validate_action_actor(actor: str) -> str:
+        """Return a recorded action actor, rejecting ambiguous live provenance."""
+        if actor not in ACTORS:
+            raise RuntimeError(
+                "actor must be one of " + ", ".join(sorted(ACTORS))
+            )
+        return actor
+
+    def _last_review_source_head(self, task: Task, st: _TaskState) -> str:
+        """Return immutable review provenance, backfilling pre-upgrade state from its run."""
+        recorded = str(st.get("last_review_head") or "")
+        if recorded:
+            return recorded
+        run_id = str(st.get("last_review_run") or "")
+        run = next((candidate for candidate in reversed(self.runs.runs_for(task.id))
+                    if candidate.run_id == run_id and candidate.mode == "review"), None)
+        reviewed = str(((run.env_snapshot if run else {}) or {}).get("review_head") or "")
+        if reviewed:
+            st["last_review_head"] = reviewed
+        return reviewed
+
     # ---- approving a draft --------------------------------------------------
     def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> str:
         """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a
@@ -188,7 +212,9 @@ class HumanMixin:
         self.state.save()
 
     # ---- triage: the human's first look at a draft PR ----------------------
-    def triage(self, task: Task, ready: bool = False, changes: str = "", note: str = "") -> None:
+    def triage(self, task: Task, ready: bool = False, changes: str = "", note: str = "",
+               supersede_review: bool = False,
+               resolve_review_items: list[str] | None = None) -> None:
         """Record the human's initial review of a draft PR: mark it ready for review, or send
         it back with feedback (a revise run follows)."""
         ensure_open(task)
@@ -198,7 +224,23 @@ class HumanMixin:
         slug = self.slug_for(task)
         number = self._pr_number(task)
         if changes:
-            st["pending_feedback"] = f"- **triage** (human): {changes.strip()}"
+            previous = st.get("last_review")
+            resolved = list(dict.fromkeys(resolve_review_items or []))
+            if supersede_review and resolved:
+                raise RuntimeError("--supersede-review cannot be combined with --resolve-review-item")
+            if resolved and not isinstance(previous, dict):
+                raise RuntimeError("--resolve-review-item needs an applicable automated review")
+            if isinstance(previous, dict):
+                unknown = sorted(set(resolved) - review_item_ids(previous))
+                if unknown:
+                    raise RuntimeError("unknown review item(s): " + ", ".join(unknown))
+                st["pending_feedback"] = feedback_with_operator_note(
+                    previous, changes, kind="triage", run_id=str(st.get("last_review_run") or ""),
+                    source_head=self._last_review_source_head(task, st),
+                    superseded=supersede_review, resolved_items=resolved,
+                )
+            else:
+                st["pending_feedback"] = f"## Operator triage note\n\n{changes.strip()}"
             st.pop("pending_feedback_easy", None)
             st.pop("pending_feedback_rebase", None)
             st.pop("needs_human", None)
@@ -248,7 +290,7 @@ class HumanMixin:
         self.events.emit("pr_attached", task.id, pr=url, old_pr_number=old_number or 0, new_pr_number=new_number or 0)
         self.state.save()
 
-    def mark_done(self, task: Task, note: str = "", force: bool = False) -> None:
+    def mark_done(self, task: Task, note: str = "", force: bool = False, *, actor: str = "human_owner") -> None:
         """Mark a task done only after its PR's commits reach the final base, unless forced.
 
         The forced path is the explicit human escape hatch for abandoning an in-review PR.
@@ -259,7 +301,14 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
             )
+        self.events.emit("mark_done", task.id, actor=self._validate_action_actor(actor), reason=note or "marked done")
         self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
+
+    def set_status(self, task: Task, status: Status, note: str, *, actor: str = "human_owner") -> None:
+        """Apply an explicit operator status override with durable provenance."""
+        actor = self._validate_action_actor(actor)
+        self.events.emit("set_status", task.id, actor=actor, reason=note)
+        self._transition(task, status, note)
 
     def _pr_commits_on_base(self, task: Task) -> bool:
         """Whether the recorded PR head is an ancestor of the task's final base branch."""
@@ -405,8 +454,9 @@ class HumanMixin:
             return True
         return False
 
-    def retry(self, task: Task) -> None:
+    def retry(self, task: Task, *, actor: str = "human_owner") -> None:
         ensure_open(task)
+        self.events.emit("retry", task.id, actor=self._validate_action_actor(actor), reason="continued loop")
         st = self.state.get(task.id)
         st.pop("needs_human", None)
         if task.status == Status.CHANGES_REQUESTED or (task.pr and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)):
@@ -417,7 +467,16 @@ class HumanMixin:
             if self._grant_one_more_round(st):
                 note = "re-enabled by hand with one more round past the revision cap; revise run will follow"
             if not st.get("pending_feedback"):
-                st["pending_feedback"] = "- **human**: please re-check the open review comments and CI on this PR and address what is still outstanding."
+                previous = st.get("last_review")
+                recovery_note = "Please re-check the open review comments and CI on this PR and address what is still outstanding."
+                if isinstance(previous, dict):
+                    st["pending_feedback"] = feedback_with_operator_note(
+                        previous, recovery_note, kind="recovery",
+                        run_id=str(st.get("last_review_run") or ""),
+                        source_head=self._last_review_source_head(task, st),
+                    )
+                else:
+                    st["pending_feedback"] = f"## Operator recovery note\n\n{recovery_note}"
             self._transition(task, Status.CHANGES_REQUESTED, note)
             self.state.save()
             return

@@ -111,7 +111,7 @@ class DispatchMixin:
                 continue  # manual tasks are taken by a human, not auto-dispatched
             if self.slots_free() <= 0:
                 break
-            if runner.name == "local" and self.local_slots_free() <= 0:
+            if not runner.remote and self.local_slots_free() <= 0:
                 continue  # remote candidates may still run while the operator host drains
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
@@ -367,13 +367,14 @@ class DispatchMixin:
         run_id = self.runs.next_run_id(task.id, mode) if mode in ("revise", "rebase", "resume") else ""
         if reserved_run is not None:
             run = reserved_run
-        elif runner.name == "local":
-            run = self._new_local_run(task.id, mode, mode, run_id=run_id)
+        elif not runner.remote:
+            run = self._new_local_run(task.id, mode, mode, run_id=run_id, runner_name=runner.name)
             run.status = "requested"
             run.save()
         else:
             run = self.runs.new_run(task.id, runner.name, mode=mode, run_id=run_id,
                                     initial_status="requested")
+            run.execution_remote = True
         if run.task_id != task.id or run.mode != mode or run.status not in ("requested", "preparing"):
             raise RuntimeError("recovery launch reservation is no longer dispatchable")
         self._dispatching_run = run

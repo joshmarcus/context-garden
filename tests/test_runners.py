@@ -67,6 +67,17 @@ def _stop_and_reap_local_run(run: Run) -> None:
         pass
 
 
+def _standalone_supervisor_env(**updates: str) -> dict[str, str]:
+    """Build fixture env without inheriting the containing run's execution lease."""
+    inherited_execution = {
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
+        "GARDEN_OWNER_SCOPED",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
+    env.update(updates)
+    return env
+
+
 @contextmanager
 def _launched_local_run(
     runner: LocalRunner,
@@ -123,6 +134,118 @@ def _wait_for_local_stdin_owner(run, brief: Path, *, timeout: float = 1.0) -> No
         f"brief stdin was not owned by a live local-run child "
         f"(interpreter={sys.executable}, pid={run.pid}, group={_local_process_snapshot(run.pid)})"
     )
+
+
+def _private_adapter(tmp_path: Path, *, version: str = "1", capabilities: str = "{'detached': True, 'remote': False}") -> str:
+    """Package a synthetic adapter outside garden, as an operator would."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    package_name = f"private_adapter_{abs(hash(tmp_path))}"
+    package = tmp_path / package_name
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "runner.py").write_text(
+        "from garden.runner.base import Runner\n"
+        "class SyntheticRunner(Runner):\n"
+        f"    adapter_version = {version}\n"
+        f"    capabilities = {capabilities}\n"
+        "    def start(self, run, worktree, brief_text): pass\n"
+        "    def collect(self, run): return {}\n"
+    )
+    return f"{package_name}.runner.SyntheticRunner"
+
+
+def test_private_runner_adapter_resolves_from_operator_configuration(tmp_path, monkeypatch):
+    """A separately packaged adapter needs no change to the public garden package."""
+    from garden.harness import Harness
+    from garden.runner import get_runner
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    path = _private_adapter(tmp_path)
+    runner = get_runner("synthetic", {"_runner_adapters": {"synthetic": {"path": path}}}, Harness("claude", {}))
+
+    assert runner.name == "synthetic"
+    assert runner.capabilities == {"detached": True, "remote": False}
+
+
+def test_scheduler_routes_private_adapters_through_ordinary_runner_setup(sched, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sched.cfg.data["runner_adapters"] = {"synthetic": {"path": _private_adapter(tmp_path)}}
+    task = sched.store.task("DM-001")
+    task.runner = "synthetic"
+
+    runner = sched.runner_for(task)
+
+    assert runner.name == "synthetic"
+    assert runner.config["setup"] == sched.cfg.product_setup(task.product)
+    assert runner.config["resources"] == sched.cfg.get("resources")
+
+
+def test_private_local_adapter_obeys_selection_and_atomic_local_admission(sched, tmp_path, monkeypatch):
+    """A configured alias cannot bypass the controller host's local capacity."""
+    from garden.scheduler.report import TickReport
+    from garden.scheduler.resources import ResourcePressureError
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sched.cfg.data["runner_adapters"] = {"synthetic": {"path": _private_adapter(tmp_path)}}
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    task = sched.store.task("DM-001")
+    task.runner = "synthetic"
+    sched.store.save(task)
+    occupied = sched.runs.new_run("DM-002", "local", mode="check")
+    occupied.save()
+
+    rep = TickReport()
+    sched.dispatch_ready(rep)
+
+    assert rep.dispatched == []
+    assert sched.runs.runs_for(task.id) == []
+    with pytest.raises(ResourcePressureError, match="waits for a local execution slot"):
+        sched.dispatch(task)
+
+    occupied.status = "done"
+    occupied.save()
+    run = sched.dispatch(task)
+    assert run.runner == "synthetic"
+    assert run.is_local_execution
+    assert sched.local_slots_free() == 0
+
+
+def test_private_runner_adapter_rejects_bad_contract_and_builtin_replacement(tmp_path, monkeypatch):
+    from garden.runner import RunnerError, get_runner
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    path = _private_adapter(tmp_path, version="2")
+    with pytest.raises(RunnerError, match="interface version 2; expected 1"):
+        get_runner("synthetic", {"_runner_adapters": {"synthetic": {"path": path}}})
+    bad_capabilities = _private_adapter(tmp_path / "bad-capabilities", capabilities="{}")
+    monkeypatch.syspath_prepend(str(tmp_path / "bad-capabilities"))
+    with pytest.raises(RunnerError, match="must declare capabilities"):
+        get_runner("capability-test", {"_runner_adapters": {"capability-test": {"path": bad_capabilities}}})
+    with pytest.raises(RunnerError, match="cannot replace built-in"):
+        get_runner("local", {"_runner_adapters": {"local": {"path": path}}})
+
+
+def test_private_runner_adapter_reports_missing_import_without_config_load_importing(tmp_path):
+    from garden.config import Config
+    from garden.runner import RunnerError, get_runner
+
+    # An import can have arbitrary effects, so simply inspecting a garden must not resolve it.
+    (tmp_path / "garden.yaml").write_text(
+        "runner_adapters:\n  synthetic:\n    path: missing_adapter.Runner\n"
+    )
+    config = Config.load(tmp_path)
+    assert config.runner_adapter("synthetic") == {"path": "missing_adapter.Runner"}
+    with pytest.raises(RunnerError, match="could not import 'missing_adapter'"):
+        get_runner("synthetic", {"_runner_adapters": config.get("runner_adapters")})
+
+
+def test_runner_adapter_registrations_are_fenced_as_executable_configuration():
+    from garden.config import executable_diff
+
+    original = {"runner_adapters": {"synthetic": {"path": "private.adapter.Runner"}}}
+    changed = {"runner_adapters": {"synthetic": {"path": "replacement.adapter.Runner"}}}
+
+    assert executable_diff(original, changed) == ["runner_adapters"]
 
 
 def _wait_for_child(run) -> None:
@@ -449,8 +572,9 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
     release = tmp_path / "release"
     with _launched_local_run(
         runner, run, tmp_path, brief,
-        {**os.environ, "ORPHAN_SCRIPT": str(orphan), "ORPHAN_PIDS": str(pids),
-         "LEADER_RELEASE": str(release)},
+        _standalone_supervisor_env(
+            ORPHAN_SCRIPT=str(orphan), ORPHAN_PIDS=str(pids), LEADER_RELEASE=str(release)
+        ),
         cleanup=release.touch,
     ):
         deadline = time.monotonic() + 3
@@ -466,6 +590,22 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
         release.touch()
         _wait_for_local_run(run)
         assert run.read_exit_code() == 0
+
+
+def test_local_supervisor_preserves_nonzero_status_until_descendants_exit(tmp_path):
+    """The leader's real status is retained while completion waits for live work."""
+    run_dir = tmp_path / "nonzero"
+    run_dir.mkdir()
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), "sleep 0.25 & exit 7"],
+        check=False,
+        env=_standalone_supervisor_env(),
+    )
+
+    assert result.returncode == 7
+    assert (run_dir / "exit_code").read_text() == "7"
+    assert time.monotonic() - started >= 0.2
 
 
 def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):

@@ -75,6 +75,15 @@ def test_description_feedback_is_advisory_without_overriding_native_verdict():
     assert review["findings"][-1]["severity"] == "nit"
     assert "parser still drops empty records" in feedback_from_review(review).lower()
 
+    attestation_only = {
+        "verdict": "request_changes",
+        "attestation": "The parser drops empty rows during the focused exercise.",
+    }
+    assert "parser drops empty rows" in feedback_from_review(attestation_only).lower()
+    assert "parser drops empty rows" not in feedback_from_review(
+        attestation_only, actionable=False,
+    ).lower()
+
 
 def test_optional_evidence_shapes_do_not_block_but_contradictions_and_unmet_outcomes_do(tmp_path):
     warnings = []

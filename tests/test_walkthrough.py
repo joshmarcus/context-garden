@@ -233,6 +233,28 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
                 assert (tmp_path / "ui" / f"{slug}-{width}-{scheme}.png").exists()
 
 
+def test_scoped_ui_check_does_not_expand_to_decision_card(tmp_path, monkeypatch):
+    """An Inbox-only check validates only the requested surface."""
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: None)
+
+    def screenshots(_url, specs, out, _log):
+        for spec in specs:
+            for width in VIEWPORTS:
+                for scheme in COLOR_SCHEMES:
+                    (out / f"{spec.slug}-{width}-{scheme}.png").write_bytes(b"png")
+        evidence = [{"page": spec.slug, "action": "navigate", "viewport": width,
+                     "color_scheme": scheme, "clientWidth": width, "scrollWidth": width}
+                    for spec in specs for width in VIEWPORTS for scheme in COLOR_SCHEMES]
+        return {spec.slug for spec in specs}, None, evidence
+
+    monkeypatch.setattr("garden.walkthrough._screenshot", screenshots)
+    result = _seeded_ui_capture(tmp_path / "ui", ["inbox"])
+
+    assert result["status"] == "pass"
+    assert result["pages"] == ["inbox"]
+    assert not (tmp_path / "ui" / "task-decision-1280-light.png").exists()
+
+
 def test_ui_check_rejects_html_only_output_as_infrastructure_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: {
         "ready": False, "kind": "missing_libraries", "diagnostic": "libnss3.so is missing"})
