@@ -308,7 +308,7 @@ output. Details of the transport are in `docs/worker-protocol.md`; the decisions
 | `status: needs_input` | stores the question, session id, host and harness | `waiting_human` (holds no slot) |
 | `status: wont_do` or `no_change` | stores the reason and the worker's final message as a decision for the person | `waiting_human`; Accept ends a `wont_do` in the terminal `wont_do` status (closing any PR) or resumes a `no_change` to the PR/review; Reject sends it back to a revise run with the person's note |
 | `status: done` but no commits ahead of the base | marks the run failed | `ready` or `failed`, as above |
-| `status: done` with commits | files discovered work as tasks, preserves any uncommitted leftovers as a named recovery stash, pushes committed work, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
+| `status: done` with commits | files discovered work as tasks, preserves local-run uncommitted leftovers as a named recovery stash (the SSH host commits its dirty paths), pushes committed work, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
 | still running after `timeout_minutes` + 5 | kills the process group | `ready` or `failed` |
 | no output or worktree change for `idle_kill_minutes` | shown as "idle N min" past `idle_minutes`, then kills the process group like a timeout | `ready` or `failed` |
 

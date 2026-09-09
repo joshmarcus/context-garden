@@ -177,7 +177,7 @@ sequenceDiagram
   W->>D: exit_code
   Note over S: a later tick
   S->>D: exit_code present, so parse stdout.json and keep final.md
-  S->>T: preserve uncommitted leftovers as a named recovery stash, count committed work ahead of the base
+  S->>T: local reap preserves uncommitted leftovers as a named recovery stash; SSH reap receives its host-side leftover commit; count committed work ahead of the base
   S->>G: push the branch, open a draft PR from pr_title and pr_body
   S->>W: start a review run the same way, with a review brief
   S->>D: run.json updated: status, usage, cost
@@ -397,10 +397,11 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
-- The scheduler pushes only committed work. Uncommitted files at dispatch or reap are
-  preserved as a named recovery stash in the task worktree, with the task and run recorded
-  in the run record and task state. Restore one with its recorded `git stash apply <sha>`;
-  a later reap or revise starts clean and cannot add that artifact to the PR.
+- For local runs, the scheduler pushes only committed work. Uncommitted files at dispatch or
+  reap are preserved as a named recovery stash in the task worktree, with the task and run
+  recorded in the run record and task state. Restore one with its recorded `git stash apply
+  <sha>`; a later reap or revise starts clean and cannot add that artifact to the PR. The SSH
+  host commits dirty paths before pushing instead; see its transport variant below.
 - `pr_body` is the permanent description of the change for a reader without the task file:
   what it does, why, how it was verified, follow-ups. It never narrates the process — rounds,
   rebases, reviews, checks, prior attempts — and on a revise round it is omitted unless the
@@ -470,10 +471,12 @@ On the next tick after `exit_code` appears, the scheduler:
 2. Decides from the exit code and the result line (the table is in
    `docs/architecture.md`): retry or fail, `waiting_human`, or carry on.
 3. Files discovered work as task files in the same phase.
-4. Preserves anything the worker left uncommitted as a named recovery stash, records its
-   SHA and restore command in the run and task state, counts committed work ahead of the
-   base, and fails the run if there are none. A later dispatch also stashes dirty leftovers
-   before syncing a reused worktree; nothing is silently folded into the PR.
+4. For a local run, preserves anything the worker left uncommitted as a named recovery
+   stash, records its SHA and restore command in the run and task state, and keeps it out of
+   the PR. A later local dispatch also stashes dirty leftovers before syncing a reused
+   worktree. The SSH host instead stages and commits dirty paths as a synthetic leftover
+   commit before pushing; SSH has no scheduler recovery-stash record. In either case, the
+   scheduler counts committed work ahead of the base and fails the run if there are none.
 5. Pushes the branch. From here on the branch exists outside the machine.
 6. Runs `checks.pre_pr` in the worktree (tests, lint: no model). A failure becomes
    feedback and the task goes to `changes_requested` before any PR exists.
@@ -542,8 +545,9 @@ blocking finding keeps the task's tier.
 in a heredoc and pipes it to `ssh <host> sh -s`. On the host, the script refreshes that
 host's clone of the product repo, creates or reuses a worktree under
 `<repo>/.garden-worktrees/<id>` on the task branch, runs the harness with the brief on
-stdin, preserves uncommitted leftovers for recovery, and pushes the branch itself (the host
-has push access; the scheduler's machine may not). The harness and the setup command run under the same
+stdin, stages and commits any dirty paths as a synthetic leftover commit, and pushes the
+branch itself (the host has push access; the scheduler's machine may not). Unlike local
+reap, the SSH transport does not record a recovery stash. The harness and the setup command run under the same
 allowlist as the local worker (`runner.base.PASS_ENV` plus `worker_env.pass` and
 `setup.env`), applied in shell: every other variable of the remote login environment is
 unset before they run, so a host's ambient tokens do not reach the worker either, and (as
@@ -610,7 +614,7 @@ reach `ready`, whatever `plan.auto_approve` says.
 |---|---|
 | calls a model, or reads a transcript | opens a PR or comments on one; a local worker normally leaves publication to the scheduler |
 | holds a connection to a worker | edits files under `tasks/` |
-| edits code in a worktree (uncommitted leftovers are stashed, not committed) | reads the whole garden; it gets the brief and the reading list |
+| edits code in a worktree (local uncommitted leftovers are stashed, not committed; SSH commits its dirty paths on the host) | reads the whole garden; it gets the brief and the reading list |
 | retries without a cap | waits for the scheduler; it finishes and exits |
 | lets an answer or a brief widen the fence | writes or commits outside its own worktree (the runner denies it; a slip is reverted, §2a) |
 
