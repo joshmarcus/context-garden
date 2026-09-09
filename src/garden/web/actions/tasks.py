@@ -300,6 +300,23 @@ def troubled_cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
 
+    @app.post("/investigations")
+    def create_incident_investigation(scope: str = Form(""), question: str = Form(""),
+                                      references: str = Form("")) -> RedirectResponse:
+        product, separator, phase = scope.partition("/")
+        if not separator or not product or not phase:
+            raise HTTPException(422, "a product/phase investigation scope is required")
+        try:
+            with hub.action_lock:
+                task = hub.scheduler().request_incident_investigation(
+                    product, phase, question, references
+                )
+        except KeyError:
+            raise HTTPException(404, "investigation scope was not found") from None
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return RedirectResponse(f"/tasks/{task.id}", status_code=303)
+
     def prepare_recovery_launch(task_id: str, run: Run) -> None:
         """Continue a reserved launch after its 202 response has left the server."""
         try:

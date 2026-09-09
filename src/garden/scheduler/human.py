@@ -146,7 +146,8 @@ class HumanMixin:
 
     def pause_for_investigation(self, task: Task, reason: str, requester: str = "operator",
                                 owner: str = "operator", scope: str = "read-only diagnosis",
-                                budget: str = "one bounded investigation") -> None:
+                                budget: str = "one bounded investigation",
+                                origins: dict[str, str] | None = None) -> None:
         """Request an idempotent safe-boundary investigation without touching live work."""
         ensure_open(task)
         st = self.state.get(task.id)
@@ -160,10 +161,33 @@ class HumanMixin:
         st["investigation"] = {"status": status, "reason": reason.strip() or "troubled task",
             "requester": requester, "owner": owner, "scope": scope, "budget": budget,
             "requested_at": now_iso(), "task": task.id, "task_status": task.status.value,
-            "request_id": f"{task.id}-{now_iso()}"}
+            "request_id": f"{task.id}-{now_iso()}", "origins": dict(origins or {})}
         self._set_needs_human(task, "investigation", f"investigation {status}: {reason.strip() or 'troubled task'}")
         self.events.emit("investigation_requested", task.id, status=status, owner=owner, scope=scope, budget=budget)
         self.state.save()
+
+    def request_incident_investigation(self, product: str, phase: str, question: str,
+                                       references: str = "") -> Task:
+        """Create a durable incident anchor when no existing task describes the question."""
+        question = question.strip()
+        if not question:
+            raise RuntimeError("an investigation question is required")
+        self.store.phase(product, phase)  # validate the selected workspace context
+        for existing in self.store.tasks().values():
+            if (existing.product == product and existing.phase == phase and existing.kind == "investigation"
+                    and not existing.status.terminal):
+                inv = self.state.get(existing.id).get("investigation")
+                if isinstance(inv, dict) and inv.get("reason") == question:
+                    return existing
+        title = "Deep dive: " + question.splitlines()[0][:72]
+        body = ("## Goal\n\nInvestigate this Garden incident and connect supported findings to corrective work.\n\n"
+                "## Investigation question\n\n" + question)
+        if references.strip():
+            body += "\n\n## Origin references\n\n" + references.strip()
+        task = self.store.create_task(product, phase, title, body, status="draft", kind="investigation")
+        self.pause_for_investigation(task, question, owner="agent",
+                                     origins={"references": references.strip(), "context": "garden incident"})
+        return task
 
     def retry_investigation(self, task: Task, owner: str = "agent") -> None:
         """Retry a failed diagnosis without losing its transcript, cost, or original bounds."""
@@ -308,6 +332,18 @@ class HumanMixin:
                     "counter": int(st.get("substantive_revisions", st.get("revisions", 0)))}
         st.setdefault("troubled_decisions", []).append(decision)
         st["revision_allowance"] = int(st.get("revision_allowance", 0)) + allowance
+        investigation = st.get("investigation")
+        if isinstance(investigation, dict) and isinstance(investigation.get("report"), dict):
+            report = investigation["report"]
+            st["investigation_handoff"] = {
+                "request_id": investigation.get("request_id") or f"{task.id}-{now_iso()}",
+                "diagnosis": "\n\n".join([
+                    f"Root cause: {report.get('likely_cause') or 'not established'}",
+                    "Evidence:\n" + "\n".join(f"- {item}" for item in report.get("evidence") or []),
+                    f"Required outcome: {report.get('corrective_action') or report.get('recommendation')}",
+                    f"Report: /investigations/{task.id}/{investigation.get('run_id')}/report.html",
+                ]),
+            }
         st.pop("needs_human", None)
         st.pop("troubled", None)
         st.pop("investigation", None)

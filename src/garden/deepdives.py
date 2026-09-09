@@ -3,17 +3,50 @@
 from __future__ import annotations
 
 import html
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+import markdown as md
+
+from .web.trust import sanitize_html
+
+_SECRET_PATTERNS = (
+    re.compile(r"(?im)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password)\b\s*[:=]\s*)\S+"),
+    re.compile(r"\b(?:gh[opusr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b"),
+    re.compile(r"(?i)(\bAuthorization\s*:\s*(?:Bearer|Basic)\s+)\S+"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
+    re.compile(r"(?i)(https?://[^\s:/]+:)[^\s/@]+(@)"),
+    re.compile(r"(?s)-----BEGIN [^-]+ PRIVATE KEY-----.*?-----END [^-]+ PRIVATE KEY-----"),
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Remove common credential forms before either durable report is written."""
+    value = text
+    for pattern in _SECRET_PATTERNS:
+        if pattern.groups == 2:
+            value = pattern.sub(r"\1[REDACTED]\2", value)
+        elif pattern.groups == 1:
+            value = pattern.sub(r"\1[REDACTED]", value)
+        else:
+            value = pattern.sub("[REDACTED]", value)
+    return value
 
 
 def report_markdown(identity: str, question: str, report: dict[str, Any]) -> str:
     """Render the structured result once; HTML is derived from this same source."""
     def section(title: str, value: Any) -> str:
         if isinstance(value, list):
-            body = "\n".join(f"- {item}" for item in value) or "- None recorded."
+            rows = []
+            for item in value:
+                text = str(item)
+                if title == "Related work" and (text.startswith(("https://", "http://", "/"))):
+                    text = f"[{text}]({text})"
+                rows.append(f"- {text}")
+            body = "\n".join(rows) or "- None recorded."
         else:
             body = str(value or "Not established.")
         return f"## {title}\n\n{body}"
@@ -35,17 +68,17 @@ def report_markdown(identity: str, question: str, report: dict[str, Any]) -> str
 
 
 def report_html(markdown: str, identity: str) -> str:
-    """Return a self-contained escaped document (plain Markdown remains readable)."""
-    safe = html.escape(markdown)
+    """Return a self-contained, sanitized document with useful Markdown links."""
+    safe = sanitize_html(md.markdown(markdown, extensions=["fenced_code", "tables", "sane_lists"]))
     return f"""<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Deep dive {html.escape(identity)}</title>
-<style>:root{{color-scheme:light dark}}body{{font:16px/1.55 system-ui,sans-serif;max-width:900px;margin:3rem auto;padding:0 1.2rem}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}}a{{color:#2878c8}}</style></head>
-<body><pre>{safe}</pre></body></html>"""
+<style>:root{{color-scheme:light dark}}body{{font:16px/1.55 system-ui,sans-serif;max-width:900px;margin:3rem auto;padding:0 1.2rem}}pre,code{{white-space:pre-wrap;overflow-wrap:anywhere}}a{{color:#2878c8}}h1,h2{{line-height:1.2}}li{{margin:.3rem 0}}</style></head>
+<body><main>{safe}</main></body></html>"""
 
 
 def save_report(run_path: Path, identity: str, question: str,
                 report: dict[str, Any]) -> tuple[Path, Path]:
-    markdown = report_markdown(identity, question, report)
+    markdown = redact_secrets(report_markdown(identity, question, report))
     md_path, html_path = run_path / "report.md", run_path / "report.html"
     md_path.write_text(markdown)
     html_path.write_text(report_html(markdown, identity))

@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -227,7 +228,7 @@ def test_investigation_drains_then_uses_shared_admission_and_preserves_failed_ru
         sched.retry_investigation(task)
 
 
-def test_investigation_report_is_separate_from_revision_cost_and_waits_for_followup(sched):
+def test_investigation_report_is_separate_from_revision_cost_and_waits_for_followup(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.status = Status.RUNNING
     sched.store.save(task)
@@ -249,9 +250,19 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     assert task.status == Status.CHANGES_REQUESTED
     assert st["revisions"] == st["substantive_revisions"] == 4
     assert st["investigation"]["cost_usd"] == 0.75
+    assert st["investigation"]["publication"]["status"] == "failed"
+    assert Path(st["investigation"]["report_paths"]["markdown"]).is_file()
     assert st["needs_human"]["kind"] == "investigation_report"
     with pytest.raises(RuntimeError, match="paused for investigation"):
         sched.dispatch(task, mode="revise")
+    monkeypatch.setattr("garden.deepdives.publish_report", lambda *args: {
+        "status": "published", "commit": "abc123", "markdown": "reports/a.md", "html": "reports/a.html",
+    })
+    sched.retry_investigation_publication(task)
+    assert st["investigation"]["publication"]["commit"] == "abc123"
+    sched.continue_troubled(task)
+    assert "stale verification fixture" in st["investigation_handoff"]["diagnosis"]
+    assert "base comparison" in st["investigation_handoff"]["diagnosis"]
 
 
 def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout(sched, monkeypatch):
@@ -262,6 +273,21 @@ def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout
     st = sched.state.get(task.id)
     st.update({"pending_feedback": "same finding", "substantive_revisions": 4,
                "review_rounds": 3, "checks": "failure"})
+    sched.github.complete_feedback_snapshots[101] = {
+        "repository": "acme/widget", "pr": 101, "fetched_at": "now", "complete": True, "errors": [],
+        "items": [
+            {"kind": "review", "id": "old", "author": "reviewer", "created_at": "before-cursor",
+             "body": "summary body", "state": "CHANGES_REQUESTED", "commit_id": "old-head",
+             "trusted_instruction": True},
+            {"kind": "line_comment", "id": "reply", "author": "reviewer", "created_at": "later",
+             "body": "full inline reply", "thread_id": "thread-1", "resolved": False, "outdated": True,
+             "commit_id": "old-head", "trusted_instruction": True},
+            {"kind": "discussion_comment", "id": "discussion", "author": "visitor", "created_at": "later",
+             "body": "discussion context", "trusted_instruction": False},
+        ],
+    }
+    monkeypatch.setattr(sched, "slug_for", lambda task: "acme/widget")
+    monkeypatch.setattr(sched, "_pr_number", lambda task: 101)
     sched.pause_for_investigation(task, "why does the same finding recur?", owner="agent",
                                   scope="read-only diagnosis; no fix", budget="$2 or 20 minutes")
     runner = sched.runner_for(task)
@@ -280,6 +306,10 @@ def test_investigation_agent_gets_read_only_dossier_and_isolated_fenced_checkout
     assert captured["cwd"] == sched.worktree_for(task)
     assert "diagnosing only. Do not edit files" in captured["prompt"]
     assert "same finding" in captured["prompt"] and "reviews=3" in captured["prompt"]
+    assert "summary body" in captured["prompt"] and "full inline reply" in captured["prompt"]
+    assert "unresolved, outdated" in captured["prompt"] and "diagnostic context only" in captured["prompt"]
+    snapshot = Path(st["investigation"]["feedback_snapshot_path"])
+    assert snapshot.is_file() and '"id": "old"' in snapshot.read_text()
     assert "$2 or 20 minutes" in captured["prompt"]
     assert run.env_snapshot["requires_preflight"] is False
 

@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
@@ -240,6 +241,7 @@ class GitHubLike(Protocol):
                   draft: bool = ..., reviewers: list[str] | None = ...) -> PRInfo: ...
     def feedback_since(self, slug: str, number: int, since_iso: str,
                        exclude_logins: set[str] | None = ...) -> Feedback: ...
+    def complete_feedback(self, slug: str, number: int) -> dict[str, Any]: ...
     def update_pr(self, slug: str, number: int, title: str = ..., body: str = ..., base: str = ...) -> None: ...
     def mark_ready(self, slug: str, number: int) -> None: ...
     def close_pr(self, slug: str, number: int) -> None: ...
@@ -590,6 +592,134 @@ class GitHub:
         items.sort(key=lambda i: i.get("created", ""))
         ignored.sort(key=lambda i: i.get("created", ""))
         return Feedback(items=items, ignored=ignored)
+
+    def _all_rest(self, path: str) -> list[dict[str, Any]]:
+        """Read every REST page. This is deliberately separate from incremental polling."""
+        rows: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            batch = self._rest("GET", path, params={"per_page": 100, "page": page}) or []
+            rows.extend(batch)
+            if len(batch) < 100:
+                return rows
+            page += 1
+
+    def complete_feedback(self, slug: str, number: int) -> dict[str, Any]:
+        """Return a complete, metadata-rich PR feedback snapshot for diagnosis.
+
+        Unlike ``feedback_since``, this is not an instruction filter or a cursor-based poll.
+        It retains older-head and untrusted text so an investigator can explain what happened;
+        each item records whether its author is trusted to direct subsequent worker work.
+        """
+        errors: list[str] = []
+
+        def fetch(path: str) -> list[dict[str, Any]]:
+            try:
+                if self.gh:
+                    pages = json.loads(self._gh("api", path, "--paginate", "--slurp") or "[]")
+                    return [row for page in pages for row in page]
+                return self._all_rest("/" + path)
+            except (GitHubError, json.JSONDecodeError) as exc:
+                errors.append(f"{path}: {exc}")
+                return []
+
+        reviews = fetch(f"repos/{slug}/pulls/{number}/reviews")
+        line_comments = fetch(f"repos/{slug}/pulls/{number}/comments")
+        discussions = fetch(f"repos/{slug}/issues/{number}/comments")
+        items: list[dict[str, Any]] = []
+        for kind, rows in (("review", reviews), ("line_comment", line_comments),
+                           ("discussion_comment", discussions)):
+            for row in rows:
+                body = str(row.get("body") or "").strip()
+                state = str(row.get("state") or "")
+                if not body and not (kind == "review" and state == "CHANGES_REQUESTED"):
+                    continue
+                author = str((row.get("user") or {}).get("login") or "")
+                item = {
+                    "kind": kind, "id": str(row.get("id") or row.get("node_id") or ""),
+                    "author": author, "created_at": row.get("submitted_at") or row.get("created_at") or "",
+                    "updated_at": row.get("updated_at") or "", "permalink": row.get("html_url") or "",
+                    "body": body or "(changes requested)", "state": state,
+                    "commit_id": row.get("commit_id") or row.get("original_commit_id") or "",
+                    "path": row.get("path") or "", "line": row.get("line") or row.get("original_line"),
+                    "reply_to": str(row.get("in_reply_to_id") or ""), "trusted_instruction": self.is_trusted(author),
+                }
+                items.append(item)
+
+        # REST exposes reply identity and old commit context, but only GraphQL exposes the
+        # current resolved/outdated state of review threads. Enrich matching comments.
+        try:
+            pr = self.get_pr(slug, number)
+            if not pr.node_id:
+                raise GitHubError("PR node id unavailable; thread status could not be fetched")
+            cursor: str | None = None
+            while True:
+                query = """query($id:ID!,$after:String){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id isResolved isOutdated comments(first:100){pageInfo{hasNextPage endCursor}nodes{id databaseId}}}}}}}"""
+                variables = {"id": pr.node_id, "after": cursor}
+                if self.gh:
+                    args = ["api", "graphql", "-f", f"query={query}", "-f", f"id={pr.node_id}"]
+                    if cursor:
+                        args += ["-f", f"after={cursor}"]
+                    raw = self._gh(*args)
+                    data = json.loads(raw or "{}")
+                else:
+                    data = self._rest("POST", "/graphql", json={"query": query, "variables": variables}) or {}
+                if data.get("errors"):
+                    raise GitHubError(str(data["errors"])[:300])
+                threads = (((data.get("data") or {}).get("node") or {}).get("reviewThreads") or {})
+                for thread in threads.get("nodes") or []:
+                    comment_page = thread.get("comments") or {}
+
+                    def apply_thread(comments: list[dict[str, Any]], *,
+                                     thread_id: str = str(thread.get("id") or ""),
+                                     resolved: bool = bool(thread.get("isResolved")),
+                                     outdated: bool = bool(thread.get("isOutdated"))) -> None:
+                        """Attach one thread's status to its REST comments and replies."""
+                        for comment in comments:
+                            keys = {str(comment.get("databaseId") or ""), str(comment.get("id") or "")}
+                            for item in items:
+                                if item["kind"] == "line_comment" and item["id"] in keys:
+                                    item.update({"thread_id": thread_id, "resolved": resolved,
+                                                 "outdated": outdated})
+
+                    apply_thread(comment_page.get("nodes") or [])
+                    comment_cursor = (comment_page.get("pageInfo") or {}).get("endCursor")
+                    while (comment_page.get("pageInfo") or {}).get("hasNextPage"):
+                        comment_query = """query($id:ID!,$after:String!){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{id databaseId}}}}}"""
+                        comment_variables = {"id": thread.get("id"), "after": comment_cursor}
+                        if self.gh:
+                            raw = self._gh("api", "graphql", "-f", f"query={comment_query}",
+                                           "-f", f"id={thread.get('id')}", "-f", f"after={comment_cursor}")
+                            comment_data = json.loads(raw or "{}")
+                        else:
+                            comment_data = self._rest("POST", "/graphql",
+                                                      json={"query": comment_query,
+                                                            "variables": comment_variables}) or {}
+                        if comment_data.get("errors"):
+                            raise GitHubError(str(comment_data["errors"])[:300])
+                        comment_page = (((comment_data.get("data") or {}).get("node") or {}).get("comments") or {})
+                        apply_thread(comment_page.get("nodes") or [])
+                        next_cursor = (comment_page.get("pageInfo") or {}).get("endCursor")
+                        if (comment_page.get("pageInfo") or {}).get("hasNextPage") and not next_cursor:
+                            raise GitHubError("review comment pagination returned no cursor")
+                        comment_cursor = next_cursor
+                page = threads.get("pageInfo") or {}
+                if not page.get("hasNextPage"):
+                    break
+                cursor = str(page.get("endCursor") or "")
+                if not cursor:
+                    raise GitHubError("review thread pagination returned no cursor")
+        except (GitHubError, json.JSONDecodeError) as exc:
+            errors.append(f"review threads: {exc}")
+
+        unique: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in items:
+            key = (item["kind"], item["id"] or f"{item['author']}:{item['created_at']}:{item['body']}")
+            unique[key] = item
+        ordered = sorted(unique.values(), key=lambda row: (str(row["created_at"]), row["kind"], row["id"]))
+        fetched_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        return {"repository": slug, "pr": number, "fetched_at": fetched_at, "complete": not errors,
+                "errors": errors, "items": ordered}
 
     def update_pr(self, slug: str, number: int, title: str = "", body: str = "", base: str = "") -> None:
         if not title and not body and not base:
