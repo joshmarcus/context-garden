@@ -1422,6 +1422,55 @@ def test_scheduler_keeps_optional_ui_scope_mapping_out_of_review_prose(sched, mo
     ]
 
 
+def test_scheduler_keeps_unread_optional_ui_captures_out_of_review_prose(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["capture_pages"] = ["task"]
+    run.env_snapshot["validation_check_current"] = True
+    run.save()
+    review = {"verdict": "approve", "summary": "Verified behavior", "pages_seen": [],
+              "criteria": [], "description_ok": True, "findings": [], "improvements": []}
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+
+    sched.reap_review(task, TickReport())
+
+    persisted = sched.runs.latest(task.id).result
+    comment = review_to_markdown(persisted)
+    assert persisted["verdict"] == "approve"
+    assert "Optional UI captures not read" not in comment
+    assert sched.runs.latest(task.id).env_snapshot["evidence_metadata_warnings"] == [
+        "Optional UI captures not read for: task",
+    ]
+
+
+def test_scheduler_keeps_unavailable_current_head_check_out_of_review_prose(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["validation_check_current"] = False
+    run.save()
+    review = {"verdict": "approve", "summary": "Verified behavior", "pages_seen": [],
+              "criteria": [], "description_ok": True, "findings": [], "improvements": []}
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+
+    sched.reap_review(task, TickReport())
+
+    persisted = sched.runs.latest(task.id).result
+    comment = review_to_markdown(persisted)
+    assert persisted["verdict"] == "approve"
+    assert "Current-head pre-review check result was not available" not in comment
+    assert sched.runs.latest(task.id).env_snapshot["evidence_metadata_warnings"] == [
+        "Current-head pre-review check result was not available; reviewer attestation used",
+    ]
+
+
 def test_required_target_blocks_even_when_reviewer_calls_it_a_limitation():
     review = {"criteria": [{"criterion": "Recovery is demonstrated"}],
               "interaction": _performed_interaction()}

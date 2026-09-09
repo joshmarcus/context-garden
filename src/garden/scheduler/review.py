@@ -776,17 +776,16 @@ class ReviewMixin:
                     if item and reason:
                         task.log(f"review validation scope expansion: {item} — {reason}")
                         self.store.save(task)
+            metadata_warnings: list[str] = []
             expected = set((run.env_snapshot or {}).get("capture_pages") or [])
             seen = set(review.get("pages_seen") or [])
             missing = sorted(expected - seen)
             if review and missing:
-                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
-                                                          "summary": "Optional UI captures not read for: " + ", ".join(missing)})
+                metadata_warnings.append("Optional UI captures not read for: " + ", ".join(missing))
             if review and not bool((run.env_snapshot or {}).get("validation_check_current")):
-                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
-                                                          "summary": "Current-head pre-review check result was not available; reviewer attestation used",
-                                                          "fix": ""})
-            metadata_warnings: list[str] = []
+                metadata_warnings.append(
+                    "Current-head pre-review check result was not available; reviewer attestation used"
+                )
             unknown = list(((run.env_snapshot or {}).get("validation_plan") or {}).get("unknown_ui") or [])
             mappings = review.get("ui_scope") if isinstance(review.get("ui_scope"), list) else []
             mapped = {str(row.get("path") or "") for row in mappings if isinstance(row, dict)
