@@ -1356,7 +1356,7 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb and bool(self.effective("auto_revise", True, task.product)):
+                if fb:
                     st.setdefault("review_feedback_history", []).append(fb)
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = review_is_description_only(review) and not already_queued
@@ -1365,7 +1365,7 @@ class ReviewMixin:
                     if repeated and bool(self.cfg.get("stall.enabled", True)):
                         self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                         return True
-                    manual_handoff = not bool(self.cfg.get("auto_revise", True))
+                    manual_handoff = not bool(self.effective("auto_revise", True, task.product))
                     if manual_handoff and not st.get("needs_human"):
                         self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
                     if already_queued and (not manual_handoff or st.get("needs_human")):
@@ -1386,11 +1386,11 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb and bool(self.effective("auto_revise", True, task.product)):
+                if fb:
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = not already_queued
                     st.pop("pending_feedback_rebase", None)
-                    manual_handoff = not bool(self.cfg.get("auto_revise", True))
+                    manual_handoff = not bool(self.effective("auto_revise", True, task.product))
                     if manual_handoff and not st.get("needs_human"):
                         self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
                     if already_queued and (not manual_handoff or st.get("needs_human")):
