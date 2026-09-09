@@ -235,7 +235,8 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     st = sched.state.get(task.id)
     st.update({"revisions": 4, "substantive_revisions": 4,
                "investigation": {"status": "active", "owner": "agent",
-                                 "task_status": Status.CHANGES_REQUESTED.value}})
+                                 "task_status": Status.CHANGES_REQUESTED.value,
+                                 "feedback_markdown": "older inline feedback token=ghp_abcdefghijklmnopqrstuvwxyz1234"}})
     run = sched.runs.new_run(task.id, "local", mode="investigation")
     run.cost_usd = 0.75
     run.usage = {"input_tokens": 20}
@@ -244,6 +245,7 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
         "evidence": ["base comparison"], "attempted_checks": ["focused test"],
         "retain_work": True, "alternatives": ["repair fixture"],
         "recommendation": "repair environment/verification",
+        "discovered": [{"title": "Second task", "body": "## Goal\n\nRepair the fixture."}],
     }}
     sched._finalize_investigation(task, run, TickReport(), {})
 
@@ -252,6 +254,10 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     assert st["investigation"]["cost_usd"] == 0.75
     assert st["investigation"]["publication"]["status"] == "failed"
     assert Path(st["investigation"]["report_paths"]["markdown"]).is_file()
+    related = sched.store.task("DM-002")
+    assert "stale verification fixture" in related.body and "older inline feedback" in related.body
+    assert "ghp_" not in related.body
+    assert "/tasks/DM-002" in st["investigation"]["report"]["links"]
     assert st["needs_human"]["kind"] == "investigation_report"
     with pytest.raises(RuntimeError, match="paused for investigation"):
         sched.dispatch(task, mode="revise")
