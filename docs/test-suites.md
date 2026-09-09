@@ -92,7 +92,7 @@ cache, and gives tests an empty temporary-state root for a cold measurement.
 ```bash
 runtime_root=$(mktemp -d)
 timeout --signal=TERM --kill-after=10s 900 "$GARDEN_VALIDATION_RUNNER" -m garden.validation -- \
-  .venv/bin/python -m pytest -q --durations=40 --cache-clear \
+  .venv/bin/python -m pytest -q --durations=40 --timeout=120 --timeout-method=thread --cache-clear \
   --basetemp="$runtime_root/cold"
 ```
 
