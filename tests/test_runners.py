@@ -718,7 +718,16 @@ def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path
         " active, peak = map(int, state.read_text().split())\n"
         " state.write_text(f'{active - 1} {peak}')\n"
     )
-    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {counter} heavy 0.25'
+    target = tmp_path / "test_heavy.py"
+    target.write_text(
+        "import subprocess, sys\n\n"
+        "def test_heavy():\n"
+        f" subprocess.run([sys.executable, {str(counter)!r}, 'heavy', '0.25'], check=True)\n"
+    )
+    validation = (
+        '"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- '
+        f"{shlex.quote(sys.executable)} -m pytest {shlex.quote(str(target))} -q"
+    )
     command = ["sh", "-c", f"{shlex.quote(sys.executable)} {counter} model 0.15 & {validation}; wait"]
     runner = LocalRunner({"timeout_minutes": 1}, Harness("agent", {"command": command}))
     runs = []
@@ -1175,7 +1184,16 @@ def test_two_validations_from_one_worker_are_serialized(tmp_path):
         " active, peak = map(int, state.read_text().split())\n"
         " state.write_text(f'{active - 1} {peak}')\n"
     )
-    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {workload}'
+    target = tmp_path / "test_workload.py"
+    target.write_text(
+        "import subprocess, sys\n\n"
+        "def test_workload():\n"
+        f" subprocess.run([sys.executable, {str(workload)!r}], check=True)\n"
+    )
+    validation = (
+        '"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- '
+        f"{shlex.quote(sys.executable)} -m pytest {shlex.quote(str(target))} -q"
+    )
     harness = Harness("nested", {"command": ["sh", "-c", f"{validation} & {validation} & wait"]})
     runner = LocalRunner({"timeout_minutes": 1}, harness)
     run_dir = tmp_path / "outer"

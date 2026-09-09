@@ -62,9 +62,10 @@ OPERATING_RULES = """\
 - Follow the principles digest. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
 - During iteration run focused tests only. Before finishing, run the project's checks sequentially
   (tests, lint, typecheck); full CI remains the merge gate. Fix what you broke.
-- In a supervised local run, launch each potentially heavy validation as
-  `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` so competing validations inside this run queue
-  within its execution budget. Run ordinary lightweight inspection commands directly.
+- In a supervised local run, launch each potentially heavy pytest validation as
+  `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <direct pytest command>` so competing
+  validations inside this run queue within its execution budget. The policy wrapper rejects opaque
+  scripts and build-tool launchers; run non-pytest tools and ordinary lightweight inspection commands directly.
  - The run ends when you stop: run long commands in the foreground, never background a command to await a notification, and write your result only after the checks have returned.
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
 - If you conclude the task should not be done at all, do not force a change you don't believe in: report `status: wont_do` with a `reason`. If this is a revision round and there is genuinely nothing to change (the code is already right, e.g. the failing check is the environment, not the diff), report `status: no_change` with a `reason`. Either way a person reads your reasoning and decides; it is not a failure.
