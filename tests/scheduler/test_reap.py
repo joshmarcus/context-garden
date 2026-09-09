@@ -187,29 +187,20 @@ def test_missing_result_preserves_dirty_new_file_without_discarding_committed_wo
     assert not (worktree / "interrupted.txt").exists()
 
 
-def test_missing_result_with_a_preflight_contract_enters_a_revise_round(sched):
-    """A current brief cannot reach review without the checklist it required."""
+def test_missing_result_with_a_preflight_contract_salvages_committed_work(sched):
+    """An optional result/checklist omission cannot force an unchanged-source revision."""
     sched.cfg.data["stack"] = False
     sched.tick()
     run = sched.runs.latest("DM-001")
     assert run.env_snapshot["requires_preflight"] is True
-    frozen = list(run.env_snapshot["criteria"])
-    committed_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=run.worktree,
-                                    capture_output=True, text=True, check=True).stdout.strip()
     (run.path / "stdout.json").unlink()
 
     report = sched.tick()
 
-    assert "DM-001 -> changes_requested (checks)" in report.transitions
-    revise = sched.runs.latest("DM-001")
-    assert revise.mode == "revise"
-    brief = (revise.path / "brief.md").read_text()
-    assert "missing items: result block and review pre-flight checklist" in brief
-    assert "Criteria frozen for the interrupted dispatch" in brief
-    for criterion in frozen:
-        assert criterion in brief
-    assert subprocess.run(["git", "merge-base", "--is-ancestor", committed_head, "HEAD"], cwd=revise.worktree,
-                          check=False).returncode == 0
+    assert "DM-001 -> changes_requested (checks)" not in report.transitions
+    assert "DM-001 -> in_review" in report.transitions[0]
+    assert sched.runs.latest("DM-001").run_id == run.run_id
+    assert not any(item.mode == "revise" for item in sched.runs.runs_for("DM-001"))
 
 
 def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched):

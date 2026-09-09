@@ -1,40 +1,12 @@
 from __future__ import annotations
 
+from garden.model import Status
 from garden.preflight import (
-    PREFLIGHT_ITEMS,
     capture_infrastructure_reason,
     mechanical_results,
-    missing_preflight,
-    preflight_section,
 )
 from garden.review import review_brief
 from garden.store import Store
-
-
-def test_brief_requires_a_complete_preflight(garden):
-    from garden.brief import build_brief
-
-    text = build_brief(Store(garden), Store(garden).task("DM-001")).text
-    assert "## Review pre-flight" in text
-    assert "pre_flight" in text
-    assert missing_preflight([]) == list(PREFLIGHT_ITEMS)
-    rows = [{"item": item, "status": "pass"} for item in PREFLIGHT_ITEMS]
-    assert missing_preflight(rows) == []
-
-
-def test_mechanical_preflight_checks_each_failure_shape(garden, monkeypatch):
-    worktree = garden / "work"
-    worktree.mkdir()
-    (worktree / "bad.py").write_text("def broken(:\n")
-    from garden import gitops
-
-    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
-    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: (
-        "+<<<<<<< ours\n+=======\n+>>>>>>> theirs\n" if "--name-only" not in args else "bad.py\nsrc/garden/web/page.html\n"
-    ))
-    results = mechanical_results(worktree, "main", "", require_description=True, ui_changed=True, captures=[])
-    failed = {row["name"] for row in results if row["status"] == "fail"}
-    assert failed == {"conflict markers", "syntax", "UI captures", "PR description"}
 
 
 def test_mechanical_preflight_checks_pass_a_clean_diff(garden, monkeypatch):
@@ -118,20 +90,6 @@ def test_mechanical_preflight_syntax_check_does_not_write_bytecode(garden, monke
     assert {path.relative_to(worktree) for path in worktree.rglob("*")} == before
 
 
-def test_mechanical_preflight_finds_ui_changes_from_inspected_paths(garden, monkeypatch):
-    worktree = garden / "ui-change"
-    worktree.mkdir()
-    from garden import gitops
-
-    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
-    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: "+body {}\n" if "--name-only" not in args else "static/site.css\n")
-
-    results = mechanical_results(worktree, "main", "Description", require_description=True,
-                                ui_changed=False, captures=[])
-
-    assert next(row for row in results if row["name"] == "UI captures")["status"] == "fail"
-
-
 def test_mechanical_preflight_uses_the_validation_plan_not_the_web_path(garden, monkeypatch):
     worktree = garden / "nonvisual-web-change"
     worktree.mkdir()
@@ -156,27 +114,6 @@ def test_capture_infrastructure_policy_defaults_required_and_validates(sched):
         sched.cfg.capture_infrastructure_policy()
 
 
-def test_mechanical_preflight_records_missing_png_as_advisory_only_with_trusted_reason(garden, monkeypatch):
-    worktree = garden / "capture-advisory"
-    worktree.mkdir()
-    from garden import gitops
-
-    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
-    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs:
-                        "+visible change\n" if "--name-only" not in args else "src/garden/web/pages/task.py\n")
-    results = mechanical_results(
-        worktree, "main", "Description", require_description=True, ui_changed=False,
-        captures=[], required_ui=True, capture_infrastructure_advisory="Chromium launch failed",
-    )
-    capture = next(row for row in results if row["name"] == "UI captures")
-    assert capture == {
-        "name": "UI captures", "status": "advisory",
-        "summary": "planned visual behavior has no PNG captures because capture infrastructure was unavailable",
-        "details": "Chromium launch failed",
-    }
-    assert "Never mark a missing screenshot as a pass" in preflight_section("advisory")
-
-
 def test_worker_controlled_infrastructure_label_is_not_an_advisory():
     claimed = {"name": "ui", "status": "fail", "failure_kind": "infrastructure",
                "summary": "worker says browser failed"}
@@ -194,22 +131,6 @@ def test_worker_controlled_infrastructure_label_is_not_an_advisory():
     assert capture_infrastructure_reason(
         claimed, policy="advisory", trusted_generated_check=True
     ) == "trusted wrapper diagnostic"
-
-
-def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
-    store = Store(garden)
-    task = store.task("DM-001")
-    frozen = ["The original criterion is met."]
-    task.body += "\n## Acceptance criteria\n\n- [ ] The later criterion is met.\n"
-    text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="",
-                        max_diff_chars=1000, criteria_snapshot=frozen,
-                        verified=[{"criterion": frozen[0], "evidence": "test_original"}])
-    assert "Criteria frozen for this dispatch" in text
-    assert "## Review pre-flight" in text
-    assert "Lint is clean" in text
-    assert frozen[0] in text
-    assert "## Criteria changed after dispatch" in text
-    assert "The later criterion is met." in text
 
 
 def test_criteria_edit_after_dispatch_is_a_note_in_the_revise_brief(sched, monkeypatch):
@@ -230,27 +151,6 @@ def test_criteria_edit_after_dispatch_is_a_note_in_the_revise_brief(sched, monke
     sched.tick()  # reap work, open PR, and dispatch review
     sched.tick()  # reap review and dispatch revise
     brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
-    assert "### Criteria changed after dispatch" in brief
-    assert "Added: The later criterion is met." in brief
-    assert "Removed: The original criterion is met." in brief
-
-
-def test_criteria_edit_reaches_revise_after_a_mechanical_pre_pr_failure(sched, monkeypatch):
-    """A result-gate failure still carries edits made after the worker's dispatch."""
-    monkeypatch.setenv("FAKE_CLAUDE_MODE", "omit-preflight")
-    task = sched.store.task("DM-001")
-    task.body += "\n## Acceptance criteria\n\n- [ ] The original criterion is met.\n"
-    sched.store.save(task)
-
-    sched.tick()  # dispatch work with the original criterion
-    task = sched.store.task("DM-001")
-    task.body = task.body.replace("The original criterion is met.", "The later criterion is met.")
-    sched.store.save(task)
-    sched.store.invalidate()
-
-    sched.tick()  # reap the incomplete result and dispatch the automatic revise
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
-    assert "pre-PR check" in brief
     assert "### Criteria changed after dispatch" in brief
     assert "Added: The later criterion is met." in brief
     assert "Removed: The original criterion is met." in brief
@@ -283,18 +183,6 @@ def test_requeued_review_keeps_the_author_preflight(sched):
     assert "A test or stated reason for every acceptance criterion" in text
 
 
-def test_missing_preflight_is_sent_back_before_a_pr(sched, monkeypatch):
-    monkeypatch.setenv("FAKE_CLAUDE_MODE", "omit-preflight")
-    sched.tick()
-    report = sched.tick()
-    task = sched.store.task("DM-001")
-    assert task.status.value == "running"  # the automatic revise starts in the same tick
-    assert not task.pr
-    first = sched.runs.runs_for(task.id)[0]
-    assert "missing review pre-flight" in first.error
-    assert "DM-001 -> changes_requested (checks)" in report.transitions
-
-
 def test_scheduler_turns_changed_path_inspection_failure_into_revise_feedback(sched, monkeypatch):
     """A Git error while scheduling a pre-PR check must not abort the scheduler tick."""
     from garden import gitops
@@ -312,3 +200,73 @@ def test_scheduler_turns_changed_path_inspection_failure_into_revise_feedback(sc
     revise = sched.runs.latest(task.id)
     assert revise.mode == "revise"
     assert "could not inspect candidate diff: cannot inspect paths" in (revise.path / "brief.md").read_text()
+
+def test_mechanical_preflight_checks_each_failure_shape(garden, monkeypatch):
+    worktree = garden / "work"
+    worktree.mkdir()
+    (worktree / "bad.py").write_text("def broken(:\n")
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: (
+        "+<<<<<<< ours\n+=======\n+>>>>>>> theirs\n" if "--name-only" not in args else "bad.py\nsrc/garden/web/page.html\n"
+    ))
+    results = mechanical_results(worktree, "main", "", require_description=True, ui_changed=True, captures=[])
+    failed = {row["name"] for row in results if row["status"] == "fail"}
+    advisory = {row["name"] for row in results if row["status"] == "advisory"}
+    assert failed == {"conflict markers", "syntax"}
+    assert advisory == {"UI captures", "PR description"}
+
+
+def test_mechanical_preflight_finds_ui_changes_from_inspected_paths(garden, monkeypatch):
+    worktree = garden / "ui-change"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: "+body {}\n" if "--name-only" not in args else "static/site.css\n")
+
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[])
+
+    assert next(row for row in results if row["name"] == "UI captures")["status"] == "advisory"
+
+
+def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    frozen = ["The original criterion is met."]
+    task.body += "\n## Acceptance criteria\n\n- [ ] The later criterion is met.\n"
+    text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="",
+                        max_diff_chars=1000, criteria_snapshot=frozen,
+                        verified=[{"criterion": frozen[0], "evidence": "test_original"}])
+    assert "Criteria frozen for this dispatch" in text
+    assert "## Optional review pre-flight" in text
+    assert "Lint is clean" in text
+    assert frozen[0] in text
+    assert "## Criteria changed after dispatch" in text
+    assert "The later criterion is met." in text
+
+
+def test_criteria_edit_reaches_review_when_optional_preflight_is_omitted(sched, monkeypatch):
+    """A checklist omission stays advisory while the reviewer still sees criterion edits."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "omit-preflight")
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    other = sched.store.task("DM-002")
+    other.status = Status.CANCELLED
+    sched.store.save(other)
+    task = sched.store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The original criterion is met.\n"
+    sched.store.save(task)
+
+    sched.tick()  # dispatch work with the original criterion
+    task = sched.store.task("DM-001")
+    task.body = task.body.replace("The original criterion is met.", "The later criterion is met.")
+    sched.store.save(task)
+    sched.store.invalidate()
+
+    report = sched.tick()  # reap the result and dispatch review
+    assert "DM-001(review)" in report.dispatched
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "## Criteria changed after dispatch" in brief
+    assert "The later criterion is met." in brief

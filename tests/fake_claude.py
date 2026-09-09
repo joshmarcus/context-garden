@@ -259,6 +259,12 @@ def edit(call: Call) -> None:
 
 # The verdict each review mode returns; any other `review-*` mode approves.
 REVIEWS: dict[str, dict] = {
+    "review-attestation": {"verdict": "approve", "summary": "The parser change is correct.",
+                           "attestation": "I inspected the diff and ran the focused parser tests; they passed."},
+    "review-summary-block": {"verdict": "request_changes",
+                             "summary": "The parser still drops empty records.",
+                             "description_ok": False,
+                             "description_feedback": "Prefer a shorter heading."},
     "review-bad": {"verdict": "request_changes", "summary": "criteria not met", "description_ok": False,
                    "description_feedback": "explain why, drop 'as requested'",
                    "findings": [{"severity": "blocking", "file": "a.py", "line": 3, "summary": "missing test",

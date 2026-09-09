@@ -599,8 +599,12 @@ class ReviewMixin:
                                check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"),
                                capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
         plan["visual_source"] = visual_source_digest(wt, plan)
-        needs_interaction = bool(plan["interaction"])
-        needs_scalability = bool(plan["scalability"])
+        # Stored plans and broad path classifiers from older releases may say a generic
+        # replay is required. Review admission now leaves the verification method to the
+        # agent; the plan is context, never a prerequisite.
+        plan["evidence_policy"] = "reviewer_judgment"
+        needs_interaction = False
+        needs_scalability = False
         interaction_reason = next((row["reason"] for row in plan["reasons"]
                                    if row["item"] == "served interaction"), "non-UI change")
         capture_paths: list[str] = []
@@ -651,8 +655,9 @@ class ReviewMixin:
                         "artifacts": [str(path) for path in result.get("captures", [])
                                       if not str(path).endswith(".png")],
                     })
-        needs_interaction = bool(plan["interaction"])
-        needs_scalability = bool(plan["scalability"])
+        plan["evidence_policy"] = "reviewer_judgment"
+        needs_interaction = False
+        needs_scalability = False
         interaction_reason = next((row["reason"] for row in plan["reasons"]
                                    if row["item"] == "served interaction"), "non-UI change")
         replay = self.state.get(task.id).get("interaction_replay") or {}
@@ -986,14 +991,12 @@ class ReviewMixin:
             seen = set(review.get("pages_seen") or [])
             missing = sorted(expected - seen)
             if review and missing:
-                review["verdict"] = "request_changes"
-                review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
-                                                          "summary": "UI captures not read for: " + ", ".join(missing)})
+                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
+                                                          "summary": "Optional UI captures not read for: " + ", ".join(missing)})
             if review and not bool((run.env_snapshot or {}).get("validation_check_current")):
-                review["verdict"] = "request_changes"
-                review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
-                                                          "summary": "Current-head validation check has not completed",
-                                                          "fix": "Requeue review after the pre-check records this reviewed head; do not reuse older artifacts."})
+                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
+                                                          "summary": "Current-head pre-review check result was not available; reviewer attestation used",
+                                                          "fix": ""})
             unknown = list(((run.env_snapshot or {}).get("validation_plan") or {}).get("unknown_ui") or [])
             mappings = review.get("ui_scope") if isinstance(review.get("ui_scope"), list) else []
             mapped = {str(row.get("path") or "") for row in mappings if isinstance(row, dict)
@@ -1002,10 +1005,9 @@ class ReviewMixin:
                         and str(row.get("reason") or "").strip()}
             unresolved = sorted(path for path in unknown if path not in mapped and path not in expanded)
             if review and unresolved:
-                review["verdict"] = "request_changes"
-                review.setdefault("findings", []).append({"severity": "blocking", "file": "", "line": None,
-                                                          "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
-                                                          "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
+                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
+                                                          "summary": "Optional UI scope mapping omitted for: " + ", ".join(unresolved),
+                                                          "fix": ""})
             metadata_warnings: list[str] = []
             frozen_criteria = (list((run.env_snapshot or {})["criteria"])
                                if "criteria" in (run.env_snapshot or {}) else None)
@@ -1064,8 +1066,8 @@ class ReviewMixin:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({
                     "severity": "blocking", "file": "", "line": None,
-                    "summary": "Running-app evidence incomplete: " + "; ".join(gaps),
-                    "fix": "Replay the affected flow on the reviewed head in a disposable served app and report the required interaction fields.",
+                    "summary": "Verification contradicts the reviewed source or leaves an outcome unmet: " + "; ".join(gaps),
+                    "fix": "Resolve the concrete contradiction or unmet outcome and verify it proportionately.",
                 })
             run.result = review
             run.status = "done" if review else "failed"
@@ -1176,18 +1178,9 @@ class ReviewMixin:
                     self.github.comment(slug, number, comment_body)
             except GitHubError as e:
                 self.log(f"{task.id}: could not post review: {e}")
-        missing_fixes = self._blocking_findings_without_fix(review)
-        # A replay restores a verdict whose worker run had already been reaped before the
-        # scheduler crashed. Older reviews legitimately lack `fix`, and recovery must put
-        # their original changes_requested state back rather than replacing it with a new
-        # review round. Freshly reaped reviews still get the one actionable re-ask.
-        if missing_fixes and not emitted and not st.get("review_fix_reasked"):
-            st["review_fix_reasked"] = True
-            self.dispatch_review(task, count_round=False, reask_missing_fixes=True)
-            rep.transitions.append(f"{task.id} review re-asked for blocking fixes")
-            return True
-        if not missing_fixes:
-            st.pop("review_fix_reasked", None)
+        # A missing ``fix`` field is presentation metadata. The concrete blocking summary
+        # still reaches the author; do not spend a reviewer-only round to repackage it.
+        st.pop("review_fix_reasked", None)
         # repeated blocking findings across rounds = the loop isn't converging
         keys = sorted({f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})

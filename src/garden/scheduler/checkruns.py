@@ -112,14 +112,10 @@ class CheckRunMixin:
                                    visual_scope=task.extra.get("visual_scope"),
                                    capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
             plan["visual_source"] = visual_source_digest(worktree, plan)
-            # A PR-scoped capture comes only from the changed-behaviour plan.  Criteria can
-            # request a milestone walkthrough, but cannot turn an unrelated PR into one.
-            if plan["pages"] and not any(s.get("name") == "ui" for s in specs):
-                specs = [*specs, {"name": "ui", "python": "garden.walkthrough:ui_check",
-                                  "out_dir": str(run.path / "ui"), "worktree": str(worktree),
-                                  "changed": changed, "pages": plan["pages"],
-                                  "capture_infrastructure_policy": plan["capture_infrastructure_policy"],
-                                  "_garden_generated_ui_check": True}]
+            # The plan gives the reviewer useful visual context. It does not inject a capture
+            # job: the agent chooses whether screenshots, direct interaction, focused tests,
+            # or an attestation best verifies this PR. Explicit configured checks still run.
+            plan["evidence_policy"] = "reviewer_judgment"
             generated_ui_check_indices = [
                 index for index, spec in enumerate(specs)
                 if spec.get("_garden_generated_ui_check") is True
@@ -252,20 +248,25 @@ class CheckRunMixin:
                             "summary": f"could not inspect candidate diff: {inspection_error}", "details": ""})
             run.result = {"checks": results}
             run.save()
-        if self._check_did_not_run(run, results):
+        if self._check_did_not_run(run, results) and stage != "interaction_replay":
             self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
                                       int(info.get("retries", 0)), rep,
                                       backend=str(info.get("backend") or run.runner),
                                       provenance=str(info.get("provenance") or ""))
             return True
         if stage == "interaction_replay" and check_failures(results):
-            # A broken replay selector, fixture, or artifact path is a verification
-            # continuation, not evidence that unchanged implementation source needs revision.
-            self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
-                                      int(info.get("retries", 0)), rep,
-                                      backend=str(info.get("backend") or run.runner),
-                                      provenance=str(info.get("provenance") or ""))
-            return True
+            # Older releases may have queued a generic replay before admitting review. Its
+            # failure is preserved as evidence, then the reviewer chooses a useful check; no
+            # retry or unchanged author revision is created for this optional evidence form.
+            failures = [str(item.get("summary") or item.get("name") or "interaction replay failed")
+                        for item in check_failures(results)]
+            advisories = self.state.get(task.id).setdefault("verification_advisories", [])
+            if not any(isinstance(item, dict) and item.get("run") == run.run_id for item in advisories):
+                advisories.append({"kind": "interaction_replay", "run": run.run_id,
+                                   "failures": failures})
+            task.log("optional interaction replay did not pass; reviewer chooses proportionate evidence: "
+                     + "; ".join(failures))
+            self.store.save(task)
         handler = {
             "interaction_replay": self._after_interaction_replay_check,
             "pre_pr": self._after_pre_pr_check,
