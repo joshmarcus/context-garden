@@ -340,11 +340,19 @@ class CheckRunMixin:
         """Whether the check runner failed before it produced a usable check verdict."""
         if run.status == "timeout" or not results:
             return True
-        return any("check did not finish (killed" in str(result.get("summary") or "")
-                   or "check run produced no results" in str(result.get("summary") or "")
-                   or "check execution timed out" in str(result.get("summary") or "")
-                   or "check execution did not complete" in str(result.get("summary") or "")
-                   for result in results)
+        for index, result in enumerate(results):
+            summary = str(result.get("summary") or "")
+            if ("check did not finish (killed" in summary
+                    or "check run produced no results" in summary
+                    or "check execution timed out" in summary
+                    or "check execution did not complete" in summary):
+                return True
+            # The branch controls ordinary check output, so only the scheduler-generated
+            # UI wrapper may classify this exact protocol handshake as interrupted.
+            if (summary == "UI renderer protocol mismatch"
+                    and CheckRunMixin._trusted_generated_ui_result(run, index)):
+                return True
+        return False
 
     @staticmethod
     def _trusted_generated_ui_result(run: Run, index: int) -> bool:

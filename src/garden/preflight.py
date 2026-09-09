@@ -34,6 +34,7 @@ _TRUSTED_CAPTURE_FAILURES = {
     "browser_unavailable",
     "capture_path_unavailable",
     "capture_result_unavailable",
+    "capture_protocol_mismatch",
 }
 
 # A regular unified diff prefixes newly-added source lines with ``+``.  Match both

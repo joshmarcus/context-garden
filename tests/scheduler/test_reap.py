@@ -571,6 +571,18 @@ def test_empty_collected_check_parks_once_without_fabricating_success(sched):
     assert len(sched.events.read(task_id=task.id, kinds=["needs_human"])) == event_count == 1
 
 
+def test_only_a_generated_ui_check_treats_a_renderer_protocol_mismatch_as_recovery(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    result = {"name": "ui", "status": "error", "summary": "UI renderer protocol mismatch"}
+
+    run.env_snapshot["generated_ui_check_indices"] = [0]
+    assert sched._check_did_not_run(run, [result])
+
+    run.env_snapshot["generated_ui_check_indices"] = []
+    assert not sched._check_did_not_run(run, [result])
+
+
 def test_auxiliary_reapers_do_not_dispatch_work_directly():
     """CG-330: only the work/revise reap path may put a task back on the work queue."""
     import inspect

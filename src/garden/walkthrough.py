@@ -962,17 +962,27 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     # Retaining that path can make Python fail while resolving modules even though the
     # checkout's source is first.
     env["PYTHONPATH"] = str(source)
-    proc = subprocess.run(
-        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir),
-         json.dumps(spec.get("pages") or [])],
-        cwd=worktree, env=env, capture_output=True, text=True, timeout=600, check=False,
-    )
+    page_selection = json.dumps(spec.get("pages") or [])
+    proc = _run_ui_renderer(worktree, env, out_dir, page_selection)
+    protocol_note = ""
+    # v0.2.0rc1 added page selection as a fourth argv entry.  Older pinned worktrees
+    # deliberately reject it with argparse's quiet exit 2.  Retry only that exact
+    # protocol signature: a traceback, stderr, stdout, or any other exit code can be a
+    # genuine renderer failure and must remain visible to the check/review path.
+    if _quiet_usage_exit(proc):
+        protocol_note = (
+            "renderer rejected the page-selecting entry point "
+            f"({_renderer_attempt(proc, page_selection)}); retried the legacy entry point"
+        )
+        proc = _run_ui_renderer(worktree, env, out_dir)
     try:
         result = json.loads(proc.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
+        diagnostic = _renderer_diagnostic(proc, None if protocol_note else page_selection, protocol_note)
         failed: dict[str, object] = {
             "status": "error", "summary": "UI renderer did not return a result",
-            "details": (proc.stderr or proc.stdout)[-2000:],
+            "details": diagnostic,
+            "captures": _capture_paths(out_dir),
         }
         # A traceback/non-zero child is an application or renderer failure and remains blocking.
         # A clean child whose structured return was lost is capture-return infrastructure.
@@ -980,15 +990,25 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
             failed["capture_infrastructure"] = _trusted_capture_infrastructure(
                 "capture_result_unavailable", "UI renderer exited cleanly without a structured result"
             )
+        elif _quiet_usage_exit(proc):
+            failed["summary"] = "UI renderer protocol mismatch"
+            failed["capture_infrastructure"] = _trusted_capture_infrastructure(
+                "capture_protocol_mismatch", diagnostic
+            )
         return failed
     if not isinstance(result, dict):
         return {"status": "error", "summary": "UI renderer returned a non-object result",
                 "details": str(result)[:2000]}
     # Never trust a classification emitted by the worktree process itself.
     result.pop("capture_infrastructure", None)
+    if protocol_note:
+        result["renderer_protocol"] = "legacy"
+        result["details"] = "\n".join(filter(None, [protocol_note, str(result.get("details") or "")]))
     if proc.returncode:
         result["status"] = "error"
-        result["details"] = (str(result.get("details") or "") + "\n" + proc.stderr).strip()[-2000:]
+        result["details"] = _renderer_diagnostic(
+            proc, None if protocol_note else page_selection, str(result.get("details") or "")
+        )
     elif (result.get("status") in ("fail", "error") and not browser_probe.get("ready")
           and result.get("failure_kind") != "product"):
         result["capture_infrastructure"] = _trusted_capture_infrastructure(
@@ -996,6 +1016,49 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
             browser_kind=str(browser_probe.get("kind") or "launch_failure"),
         )
     return result
+
+
+def _run_ui_renderer(worktree: Path, env: dict[str, str], out_dir: Path,
+                     page_selection: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run one supported renderer entry point from the proposed worktree."""
+    argv = [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir)]
+    if page_selection is not None:
+        argv.append(page_selection)
+    return subprocess.run(argv, cwd=worktree, env=env, capture_output=True, text=True,
+                          timeout=600, check=False)
+
+
+def _quiet_usage_exit(proc: subprocess.CompletedProcess[str]) -> bool:
+    """Whether the child used the legacy renderer's silent argv-rejection convention."""
+    return proc.returncode == 2 and not (proc.stdout or "").strip() and not (proc.stderr or "").strip()
+
+
+def _renderer_attempt(proc: subprocess.CompletedProcess[str], page_selection: str | None) -> str:
+    """Describe an invocation without leaking an operator path or arbitrary page payload."""
+    invocation = "python -m garden.walkthrough --ui-check <capture-dir>"
+    if page_selection is not None:
+        invocation += " <page-selection>"
+    output = "empty stdout/stderr" if not (proc.stdout or proc.stderr) else "output retained below"
+    return f"exit {proc.returncode}; {invocation}; {output}"
+
+
+def _renderer_diagnostic(proc: subprocess.CompletedProcess[str], page_selection: str | None,
+                         prefix: str = "") -> str:
+    """Retain bounded child output beside its sanitized invocation for operator recovery."""
+    output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+    lines = [prefix, _renderer_attempt(proc, page_selection)]
+    if output:
+        lines.append(output[-2000:])
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _capture_paths(out_dir: Path) -> list[str]:
+    """Keep already-written capture evidence visible when the renderer exits early."""
+    try:
+        return [str(path) for path in sorted(out_dir.iterdir())
+                if path.is_file() and path.suffix in {".png", ".html", ".txt", ".md"}]
+    except OSError:
+        return []
 
 
 def _trusted_capture_infrastructure(kind: str, diagnostic: str, *,
