@@ -576,15 +576,6 @@ class HumanMixin:
 
     # ---- human answers -----------------------------------------------------
     def answer(self, task: Task, text: str) -> Run:
-        with self.tick_lock():
-            # A web action deliberately does not share Hub's in-process tick lock. Reload
-            # after taking the cross-process controller lock so an in-flight pass cannot
-            # save its stale waiting_human task over the resumed dispatch (CG-493).
-            self.store.invalidate_tasks()
-            self.state = State(self.state.path)
-            return self._answer_locked(self.store.task(task.id), text)
-
-    def _answer_locked(self, task: Task, text: str) -> Run:
         ensure_open(task)
         if task.status != Status.WAITING_HUMAN:
             raise RuntimeError(f"{task.id} is {task.status.value}, not waiting_human")

@@ -1,8 +1,6 @@
 """The five coordination features: event log, pause/resume, discovered work, stall + budgets, stacking."""
 
 import subprocess
-import threading
-import time
 
 import pytest
 
@@ -84,31 +82,6 @@ def test_answer_without_resume_support_redispatches_with_qa(sched, monkeypatch):
     run = sched.answer(sched.store.task("DM-001"), "Use SQLite.")
     assert run.session_id == "" and "## Answers from the human" in (run.path / "brief.md").read_text()
     assert "Use SQLite." in (run.path / "brief.md").read_text()
-
-
-def test_answer_waits_for_a_concurrent_tick_before_reloading_task(sched, monkeypatch):
-    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
-    sched.tick()
-    sched.tick()
-    stale = sched.store.task("DM-001")
-    started = threading.Event()
-    finished = threading.Event()
-
-    def answer() -> None:
-        started.set()
-        sched.answer(stale, "Use SQLite.")
-        finished.set()
-
-    with sched.tick_lock():
-        thread = threading.Thread(target=answer)
-        thread.start()
-        assert started.wait(1)
-        time.sleep(0.05)
-        assert not finished.is_set()
-    thread.join(2)
-
-    assert finished.is_set()
-    assert statuses(sched)["DM-001"] == "running"
 
 
 # ---- 3. discovered work ------------------------------------------------------
