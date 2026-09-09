@@ -205,20 +205,40 @@ class BudgetMixin:
         self.events.emit("config_override_cleared", "", key=key, scope="global", provenance="yaml", by=by)
         self.log(f"{key} override cleared by {by} (back to the garden.yaml value)")
 
-    def effective(self, key: str, default: Any = None) -> Any:
+    def effective(self, key: str, default: Any = None, product: str | None = None) -> Any:
         """The live override for `key` if one is set, else the active operating profile's
         value for it (see operating_profile) if the profile sets that facet, else the
         garden.yaml value. A live override is always the most specific: it wins over the
         stop even while one is active."""
         ov = self.overrides()
         if key in ov:
-            return ov[key]
-        field = _PROFILE_KEYS.get(key)
-        if field:
-            profile = self.operating_profile()
-            if field in profile:
-                return profile[field]
-        return self.cfg.get(key, default)
+            value = ov[key]
+        else:
+            value = None
+            field = _PROFILE_KEYS.get(key)
+            if field:
+                profile = self.operating_profile()
+                if field in profile:
+                    value = profile[field]
+            if value is None:
+                value = self.cfg.get(key, default)
+        if product is not None:
+            project = self.cfg.setting(key, product)
+            if project.source != "global":
+                return project.value
+        return value
+
+    def save_config_changes(self, changes: dict[str, Any], *, product: str | None = None,
+                            expected_revision: str | None = None, reset: bool = False,
+                            by: str = "cli") -> None:
+        """Persist an ordinary edit through the shared atomic policy boundary."""
+        self.cfg.save_changes(changes, product=product,
+                              expected_revision=expected_revision, reset=reset)
+        for key, value in changes.items():
+            self.events.emit("config_saved", "", key=key,
+                             value="<reset>" if reset else audit_value(key, value),
+                             scope=f"project:{product}" if product else "global",
+                             provenance="inherited" if reset else "saved", by=by)
 
     def effective_source(self, key: str) -> str:
         """Which layer answers `effective(key)` right now: "override" (a live override on

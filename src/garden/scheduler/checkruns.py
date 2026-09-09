@@ -314,7 +314,7 @@ class CheckRunMixin:
         elif st.get("pending_feedback"):
             status = Status.CHANGES_REQUESTED
         elif task.pr:
-            status = Status.AWAITING_TRIAGE if bool(self.cfg.get("github.draft_pr", True)) else Status.IN_REVIEW
+            status = Status.AWAITING_TRIAGE if bool(self.effective("github.draft_pr", True, task.product)) else Status.IN_REVIEW
         else:
             status = Status.READY
         if task.status != status:

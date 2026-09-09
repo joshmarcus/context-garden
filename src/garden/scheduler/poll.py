@@ -330,7 +330,7 @@ class PollMixin:
         if n and ci_note:
             note += " + CI failure"
         self.events.emit("feedback", task.id, items=n, ci=bool(ci_note))
-        if not bool(self.cfg.get("auto_revise", True)):
+        if not bool(self.effective("auto_revise", True, task.product)):
             self._transition(task, Status.CHANGES_REQUESTED, f"{note} (auto_revise off; dispatch by hand)", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested")
             return

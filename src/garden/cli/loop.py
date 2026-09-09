@@ -8,9 +8,10 @@ import time
 from pathlib import Path
 
 import typer
+import yaml
 from rich.table import Table
 
-from ..configuration import CONFIG_FIELDS
+from ..configuration import CONFIG_FIELDS, revision
 from ..github import pull_request_number
 from ..model import Status, now_iso
 from .common import (
@@ -270,6 +271,48 @@ def config_accept():
         raise typer.Exit(1) from None
     sched.accept_config_reload(by="cli")
     console.print("[green]held config reload accepted[/green] (applies on the next tick)")
+
+
+@config_app.command("set")
+def config_set_saved(
+    key: str,
+    value: str,
+    product: str = typer.Option("", "--product", help="Save a project override"),
+    expected_revision: str = typer.Option("", "--revision", help="Reject if configuration changed"),
+) -> None:
+    """Atomically save a known global value or project override to garden.yaml."""
+    store = _store()
+    try:
+        parsed = yaml.safe_load(value)
+        _scheduler(store).save_config_changes(
+            {key: parsed}, product=product or None,
+            expected_revision=expected_revision or revision(store.config.data), by="cli",
+        )
+    except (PermissionError, RuntimeError, ValueError) as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    scope = f"project {product}" if product else "global"
+    console.print(f"[green]{key} saved ({scope})[/green]")
+
+
+@config_app.command("reset")
+def config_reset_saved(
+    key: str,
+    product: str = typer.Option("", "--product", help="Reset a project override"),
+    expected_revision: str = typer.Option("", "--revision", help="Reject if configuration changed"),
+) -> None:
+    """Atomically remove a saved value; project resets resume inheritance."""
+    store = _store()
+    try:
+        _scheduler(store).save_config_changes(
+            {key: None}, product=product or None,
+            expected_revision=expected_revision or revision(store.config.data), reset=True, by="cli",
+        )
+    except (PermissionError, RuntimeError, ValueError) as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    scope = f"project {product}" if product else "global"
+    console.print(f"[green]{key} reset ({scope})[/green]")
 
 
 @app.command(rich_help_panel=PANEL_LOOP)

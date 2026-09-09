@@ -220,7 +220,7 @@ class PersonaMixin:
                 self._required_persona_failed(task, name, "could not post the persona comment", rep)
         rep.transitions.append(f"{task.id} persona {name}: {rev.get('score', '–')}/10")
         highs = [f for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"]
-        if entry.get("request_changes") and highs and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE) and bool(self.cfg.get("auto_revise", True)):
+        if entry.get("request_changes") and highs and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE) and bool(self.effective("auto_revise", True, task.product)):
             st = self.state.get(task.id)
             st["pending_feedback"] = "\n".join(f"- **{name} persona** ({f.get('area', '')}): {f.get('summary', '')} — {f.get('suggestion', '')}" for f in highs)
             st.pop("pending_feedback_easy", None)

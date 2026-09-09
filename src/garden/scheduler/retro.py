@@ -608,7 +608,7 @@ class RetroMixin:
         if slug and self.github.available:
             try:
                 pr = self.github.create_pr(slug, branch, base, title, body,
-                                           draft=bool(self.cfg.get("github.draft_pr", False)))
+                                           draft=bool(self.effective("github.draft_pr", False, phase.product)))
                 pr_url = pr.url
             except GitHubError as e:
                 rep.errors.append(f"retro {phase.key}: branch pushed but PR failed: {e}")

@@ -176,7 +176,7 @@ class Scheduler(
         return self.cfg.product_stack_owner(task.product) == "external"
 
     def stack_enabled_for(self, task: Task) -> bool:
-        return self.stack_enabled and not self.external_stack_owner(task)
+        return bool(self.effective("stack", True, task.product)) and not self.external_stack_owner(task)
 
     def runner_for(self, task: Task, name: str = "", harness_name: str = "") -> Runner:
         name = name or task.runner or self.cfg.product_runner(task.product)
@@ -493,9 +493,37 @@ class Scheduler(
         """Worker slots available to dispatch; checks and edit runs are excluded."""
         return max(0, self.effective_max_parallel() - len(self.worker_runs_active()))
 
+    def slots_free_for(self, task: Task) -> int:
+        """Capacity for a task, honoring both the global pool and its project limit."""
+        global_free = self.slots_free()
+        project_limit = int(self.effective("max_parallel", 10, task.product))
+        tasks = self.store.tasks()
+        project_active = sum(
+            1 for run in self.worker_runs_active()
+            if (active_task := tasks.get(run.task_id)) is not None
+            and active_task.product == task.product
+        )
+        return max(0, min(global_free, project_limit - project_active))
+
     def review_parallel_limit(self) -> int:
         limit = self.effective("review_parallel")
         return int(limit) if limit not in (None, "") else self.effective_max_parallel()
+
+    def review_parallel_limit_for(self, task: Task) -> int:
+        limit = self.effective("review_parallel", None, task.product)
+        return int(limit) if limit not in (None, "") else int(
+            self.effective("max_parallel", 10, task.product)
+        )
+
+    def review_slots_free_for(self, task: Task) -> int:
+        tasks = self.store.tasks()
+        project_active = sum(
+            1 for run in self.review_runs_active()
+            if (active_task := tasks.get(run.task_id)) is not None
+            and active_task.product == task.product
+        )
+        return max(0, min(self.review_slots_free(),
+                          self.review_parallel_limit_for(task) - project_active))
 
     def review_slots_free(self) -> int:
         """Free slots in the global review/persona/comparison pool.
@@ -795,7 +823,10 @@ class Scheduler(
         with self._step(rep, "tool_update"):
             self._guard(rep, "tool update detection", self.detect_tool_upgrade)
         if dispatch is None:
-            dispatch = bool(self.cfg.get("auto_dispatch", True))
+            # Product policy is evaluated for each candidate in dispatch_ready. Enter the
+            # dispatcher even when the global value is false so an explicit project override
+            # can enable its own work without enabling another project.
+            dispatch = True
         if self.is_dispatch_paused():
             dispatch = False
         pending_upgrade = self.upgrade_available()

@@ -182,6 +182,8 @@ def assert_mutation_allowed(data: dict[str, Any], key: str, *, product: str | No
     if product is not None and ConfigScope.PROJECT not in field.scopes:
         raise ValueError(f"{key} is global-only")
     if product is not None:
+        if product not in (data.get("products") or {}):
+            raise ValueError(f"unknown product {product!r}")
         _, locks = product_configuration(data, product)
         if key in locks and not trusted_policy:
             provenance = resolve_value(data, key, product)
@@ -195,7 +197,8 @@ def revision(data: dict[str, Any]) -> str:
 
 
 def apply_changes(data: dict[str, Any], changes: dict[str, Any], *, product: str | None = None,
-                  expected_revision: str | None = None, reset: bool = False) -> dict[str, Any]:
+                  expected_revision: str | None = None, reset: bool = False,
+                  validate: bool = True) -> dict[str, Any]:
     """Return an atomically validated copy containing an ordinary configuration edit.
 
     Project resets remove overrides so inheritance resumes.  Locks live outside this mutation
@@ -218,7 +221,8 @@ def apply_changes(data: dict[str, Any], changes: dict[str, Any], *, product: str
                 overrides.pop(key, None)
             else:
                 overrides[key] = deepcopy(value)
-    validate_configuration(candidate)
+    if validate:
+        validate_configuration(candidate)
     return candidate
 
 

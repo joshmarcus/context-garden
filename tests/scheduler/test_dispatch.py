@@ -543,6 +543,24 @@ def test_pause_overrides_auto_dispatch_true(sched, fake_github):
     assert rep.dispatched == []
 
 
+def test_enforced_project_auto_dispatch_policy_changes_scheduler_decision(sched):
+    sched.cfg.data["auto_dispatch"] = True
+    sched.cfg.data["products"]["demo"]["configuration"] = {
+        "overrides": {},
+        "locks": {"auto_dispatch": {"reason": "release hold", "value": False}},
+    }
+
+    rep = sched.tick()
+
+    assert rep.dispatched == []
+    assert sched.store.task("DM-001").status == Status.READY
+
+    sched.cfg.data["auto_dispatch"] = False
+    sched.cfg.data["products"]["demo"]["configuration"]["locks"]["auto_dispatch"]["value"] = True
+    rep = sched.tick()
+    assert "DM-001(work)" in rep.dispatched
+
+
 def test_audit_flags_stuck_changes_requested(sched, fake_github):
     """A task hand-left in changes_requested with no feedback, no run and no needs_human
     is stuck: the tick audit must give it an attention card, not let it sit silent."""

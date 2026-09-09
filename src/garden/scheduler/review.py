@@ -37,15 +37,15 @@ from .resources import ResourcePressureError
 
 class ReviewMixin:
     # ---- automated review --------------------------------------------------
-    def _review_round_pending(self, st: dict[str, Any]) -> bool:
+    def _review_round_pending(self, st: dict[str, Any], product: str | None = None) -> bool:
         """True when `_maybe_review` will still dispatch (or queue) an automated review round
         for this push. A fresh draft PR's triage ping waits for that verdict instead of firing
         on PR-open, per the phase-02 retro (triage pings fired before the review verdict was
         known); when review is off or its rounds are already spent, there is no verdict coming
         and the ping fires right away."""
-        if not bool(self.cfg.get("review.enabled", True)):
+        if not bool(self.effective("review.enabled", True, product)):
             return False
-        max_rounds = self.cfg.review_max_rounds()
+        max_rounds = self.effective("review.max_rounds", 2, product)
         return max_rounds is None or int(st.get("review_rounds", 0)) < max_rounds
 
     def _maybe_review(self, task: Task, work_run: Run, rep: TickReport) -> None:
@@ -65,8 +65,8 @@ class ReviewMixin:
         for item in requirements:
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         wanted: list[dict[str, Any]] = []
-        if bool(self.cfg.get("review.enabled", True)):
-            max_rounds = self.cfg.review_max_rounds()
+        if bool(self.effective("review.enabled", True, task.product)):
+            max_rounds = self.effective("review.max_rounds", 2, task.product)
             rounds = int(st.get("review_rounds", 0))
             self_product_default = (self.cfg.product_self(task.product)
                                     and "automerge_min_review_rounds" not in self.cfg.product(task.product))
@@ -189,7 +189,7 @@ class ReviewMixin:
             if item["kind"] == "review" and any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
                 deferred.append(item)
                 continue
-            if self.review_slots_free() <= 0:
+            if self.review_slots_free_for(task) <= 0:
                 deferred.append(item)
                 continue
             runner_name, harness_name = self._review_item_route(task, item, work_run)
@@ -862,10 +862,14 @@ class ReviewMixin:
                             "criteria": criteria_snapshot, "validation_plan": plan})
         if clarifies_review_run:
             run.env_snapshot["clarifies_review_run"] = clarifies_review_run
+<<<<<<< HEAD
         run.env_snapshot.update({"product": task.product,
                                  "execution_timeout_minutes": self.cfg.product_timeout_minutes(task.product),
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
-        review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        review_difficulty = str(self.effective("review.difficulty", None, task.product) or task.difficulty or "medium")
+=======
+        review_difficulty = str(self.effective("review.difficulty", None, task.product) or task.difficulty or "medium")
+>>>>>>> 080028d92 (Connect project policy to scheduler and saved edits)
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
@@ -1356,7 +1360,7 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb:
+                if fb and bool(self.effective("auto_revise", True, task.product)):
                     st.setdefault("review_feedback_history", []).append(fb)
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = review_is_description_only(review) and not already_queued
@@ -1386,7 +1390,7 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb:
+                if fb and bool(self.effective("auto_revise", True, task.product)):
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = not already_queued
                     st.pop("pending_feedback_rebase", None)

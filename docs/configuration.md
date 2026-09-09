@@ -45,6 +45,12 @@ trusted author editing the applicable repository-controlled configuration file u
 existing config-fence and filesystem trust model. Removing the lock there restores normal
 editability. Reload validation is the final guard for such direct file changes.
 
+Saved edits use `garden config set KEY YAML [--product NAME]`; project inheritance is
+restored with `garden config reset KEY --product NAME`. Both commands validate the complete
+layered configuration and replace `garden.yaml` atomically. `--revision` accepts an editor's
+previously read revision and rejects a stale write. A running scheduler observes the saved
+file through its normal reload and fence gate on the next tick.
+
 Runtime audit events include the changed key, global scope, runtime provenance, and the actor
 available to the current CLI/web trust model. Values whose key or metadata identifies a
 secret are replaced with `<redacted>` before logging or event emission. Configuration

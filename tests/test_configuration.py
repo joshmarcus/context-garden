@@ -4,7 +4,9 @@ from copy import deepcopy
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
+from garden.cli import app
 from garden.config import Config
 from garden.configuration import (
     CONFIG_FIELDS,
@@ -113,3 +115,44 @@ def test_reload_rejects_inconsistent_locks_global_only_overrides_and_invalid_val
 def test_audit_redacts_sensitive_values_by_key():
     assert audit_value("service.token", "plain text") == "<redacted>"
     assert audit_value("max_parallel", 3) == 3
+
+
+def test_saved_changes_are_atomic_layer_aware_and_reject_locked_reset(tmp_path):
+    base = configured()
+    (tmp_path / "garden.yaml").write_text(yaml.safe_dump(base))
+    (tmp_path / "garden.work.yaml").write_text("auto_revise: false\n")
+    config = Config.load(tmp_path, env="work")
+    token = revision(config.data)
+
+    updated = config.save_changes({"max_parallel": 6}, expected_revision=token)
+    assert updated.get("max_parallel") == 6
+    assert updated.get("auto_revise") is False
+    assert yaml.safe_load((tmp_path / "garden.yaml").read_text())["max_parallel"] == 6
+
+    contents = (tmp_path / "garden.yaml").read_text()
+    with pytest.raises(RuntimeError, match="changed since"):
+        updated.save_changes({"max_parallel": 7}, expected_revision=token)
+    with pytest.raises(PermissionError, match="Protect shared capacity"):
+        updated.save_changes({"max_parallel": None}, product="locked", reset=True)
+    assert (tmp_path / "garden.yaml").read_text() == contents
+
+
+def test_cli_saved_project_edit_and_locked_bypass_use_shared_boundary(garden, monkeypatch):
+    monkeypatch.chdir(garden)
+    monkeypatch.delenv("GARDEN_ROOT", raising=False)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["config", "set", "max_parallel", "3", "--product", "demo"])
+    assert result.exit_code == 0, result.output
+    assert Config.load(garden).setting("max_parallel", "demo").value == 3
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["products"]["demo"]["configuration"]["locks"] = {
+        "max_parallel": {"reason": "capacity policy"},
+    }
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    result = runner.invoke(app, ["config", "reset", "max_parallel", "--product", "demo"])
+    assert result.exit_code == 1
+    assert "capacity policy" in result.output
+    assert Config.load(garden).setting("max_parallel", "demo").value == 3
