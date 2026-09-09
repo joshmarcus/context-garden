@@ -303,9 +303,9 @@ class SSHRunner(Runner):
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")
         opts = [str(o) for o in (self.config.get("options") or ["-o", "BatchMode=yes"])]
         ssh_cmd = " ".join(shlex.quote(c) for c in [ssh_bin, *opts, str(host["host"]), "sh", "-s"])
-        timeout_min = int(self.config.get("timeout_minutes", 90) or 0)
+        timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
         if timeout_min and shutil.which("timeout"):
-            ssh_cmd = f"timeout {timeout_min * 60} {ssh_cmd}"
+            ssh_cmd = f"timeout {timeout_min * 60:g} {ssh_cmd}"
         wrapper = (
             f"{ssh_cmd} < {shlex.quote(str(d / 'remote.sh'))} > {shlex.quote(str(d / 'stdout.json'))} "
             f"2> {shlex.quote(str(d / 'stderr.log'))}; echo $? > {shlex.quote(str(d / 'exit_code'))}"
