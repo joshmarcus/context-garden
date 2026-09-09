@@ -477,6 +477,8 @@ class GitHub:
         info.body = p.get("body") or ""
         info.head_sha = (p.get("head") or {}).get("sha", "")
         if info.head_sha:
+            rollup: list[dict[str, Any]] = []
+            check_errors: list[GitHubError] = []
             try:
                 check_runs: list[dict[str, Any]] = []
                 page = 1
@@ -491,6 +493,14 @@ class GitHub:
                     if len(batch) < 100 or (total and len(check_runs) >= total):
                         break
                     page += 1
+                rollup.extend(
+                    {"name": check.get("name"), "conclusion": check.get("conclusion"),
+                     "state": check.get("status")}
+                    for check in check_runs
+                )
+            except GitHubError as exc:
+                check_errors.append(exc)
+            try:
                 statuses: list[dict[str, Any]] = []
                 page = 1
                 while True:
@@ -504,18 +514,18 @@ class GitHub:
                     if len(batch) < 100 or (total and len(statuses) >= total):
                         break
                     page += 1
-                rollup = [
-                    {"name": c.get("name"), "conclusion": c.get("conclusion"),
-                     "state": c.get("status")}
-                    for c in check_runs
-                ] + [
+                rollup.extend(
                     {"name": status.get("context"), "state": status.get("state")}
                     for status in statuses
-                ]
+                )
+            except GitHubError as exc:
+                check_errors.append(exc)
+            if rollup or not check_errors:
                 info.checks = _rollup_state(rollup)
                 info.failed_checks = _rollup_failed(rollup)
-            except GitHubError as exc:
-                info.checks = _check_error_state(exc)
+            else:
+                states = [_check_error_state(exc) for exc in check_errors]
+                info.checks = "PERMISSION" if "PERMISSION" in states else "UNAVAILABLE"
         try:
             reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
             latest: dict[str, str] = {}
