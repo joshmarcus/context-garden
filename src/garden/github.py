@@ -121,7 +121,8 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
                 remote_host == "github.com" and (not port or port == ":22")
             ) or (remote_host == "ssh.github.com" and port == ":443")
         else:
-            valid_host = remote_host == expected
+            # The documented public SSH alias is never an enterprise API host.
+            valid_host = remote_host == expected and remote_host != "ssh.github.com"
         if valid_host:
             return f"{match['owner']}/{match['repo']}"
     return None
