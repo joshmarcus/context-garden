@@ -11,7 +11,7 @@ import yaml
 
 from garden.brief import build_brief
 from garden.model import Status
-from garden.runner.base import RunnerError, run_setup, setup_marker
+from garden.runner.base import RunnerError, run_setup, setup_marker, setup_stamp
 from garden.scheduler import Scheduler
 from garden.store import Store
 
@@ -30,6 +30,13 @@ def test_run_setup_runs_once_then_reuses(tmp_path):
     assert setup_marker(wt).parent == wt.parent
 
 
+def test_default_setup_stamp_remains_compatible_with_existing_markers():
+    import hashlib
+
+    command = "python -m venv .venv"
+    assert setup_stamp(command) == hashlib.sha256(command.encode()).hexdigest()
+
+
 def test_concurrent_setup_recovery_executes_command_once(tmp_path):
     """A replacement preparation waits for an orphaned setup shell and consumes its
     durable stamp, rather than starting the same setup work again."""
@@ -42,6 +49,33 @@ def test_concurrent_setup_recovery_executes_command_once(tmp_path):
         thread.start()
     for thread in threads:
         thread.join(2)
+    assert tally.read_text() == "x\n"
+
+
+def test_run_setup_reruns_when_worktree_is_recreated_at_same_path(tmp_path):
+    """A sibling marker from a removed base-probe checkout cannot prepare its replacement."""
+    wt = tmp_path / "worktrees" / "T-1.base-probe"
+    wt.mkdir(parents=True)
+    tally = tmp_path / "count.txt"
+    setup = {"command": f"echo x >> {tally}"}
+    run_setup(wt, setup, cache_key="probe-generation-1")
+    wt.rmdir()
+    wt.mkdir()
+
+    run_setup(wt, setup, cache_key="probe-generation-2")
+
+    assert tally.read_text() == "x\nx\n"
+
+
+def test_setup_that_changes_worktree_directory_still_caches(tmp_path):
+    wt = tmp_path / "worktrees" / "T-1"
+    wt.mkdir(parents=True)
+    tally = tmp_path / "count.txt"
+    setup = {"command": f"mkdir -p .venv; echo x >> {tally}"}
+
+    run_setup(wt, setup)
+    run_setup(wt, setup)
+
     assert tally.read_text() == "x\n"
 
 
