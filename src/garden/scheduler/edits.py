@@ -68,6 +68,7 @@ class EditsMixin:
         from ..suggestions import edit_brief, pending_suggestions
 
         self.require_maintenance_running()
+        self._refuse_if_closed_or_frozen(task)
 
         harness_name = str(self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)

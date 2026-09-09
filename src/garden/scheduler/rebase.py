@@ -211,6 +211,7 @@ class RebaseMixin:
         only when `skip_if_current`), `conflict` (an agent was dispatched), `error` (the push
         failed). `merge_head` marks the pre-merge rebase: its continuation holds the head in
         flight until its rollup goes green."""
+        self._refuse_if_closed_or_frozen(task)
         outcome = self._rebase_and_record(task, base, skip_if_current=skip_if_current, reason=reason)
         if outcome.status == "conflict":
             self.events.emit("rebase", task.id, base=base, files=outcome.files, resolved=False, how="agent")
