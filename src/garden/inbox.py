@@ -10,7 +10,7 @@ from typing import Any
 from .brief import brief_gaps
 from .criteria import required_evidence, required_evidence_rows
 from .graph import effective_status, ready
-from .model import Status, Task, phase_refusal
+from .model import Status, Task, effective_owner, phase_refusal
 from .runs import RunStore
 from .store import Store
 
@@ -424,9 +424,10 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 next_open_phase[ph.key] = f"{prod.name}/{nxt.name}"
 
     def add(group: str, t: Task, why: str, actions: list[dict[str, str]], **extra: Any) -> None:
+        owner, owner_source = effective_owner(t, store.phase(t.product, t.phase))
         items.append({"group": group, "group_title": titles[group], "task": t.id, "title": t.title, "phase": t.key,
                       "status": t.status.value, "pr": t.pr, "why": why, "actions": actions, "age": _age(t.updated),
-                      "difficulty": t.difficulty, **extra})
+                      "difficulty": t.difficulty, "owner": owner, "owner_source": owner_source, **extra})
 
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)

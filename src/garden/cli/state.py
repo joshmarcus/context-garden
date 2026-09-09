@@ -5,7 +5,14 @@ from __future__ import annotations
 
 import typer
 
-from ..model import STATUS_ORDER, Status, priority_label
+from ..model import (
+    STATUS_ORDER,
+    Status,
+    _owner_id,
+    join_frontmatter,
+    priority_label,
+    split_frontmatter,
+)
 from .common import (
     PANEL_DECIDE,
     PANEL_LOOP,
@@ -97,6 +104,58 @@ def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium
     t.log(f"difficulty {old} -> {tier}")
     store.save(t)
     console.print(f"{t.id} difficulty {old} -> {tier}")
+
+
+@app.command("assign", rich_help_panel=PANEL_PLAN)
+def assign(task_id: str, owner: str = typer.Argument(..., help="Logical owner id; use '-' to unassign or 'inherit' to use the phase default")):
+    """Assign planning ownership without changing access, execution, or approval rules."""
+    store = _store()
+    t = _task(store, task_id)
+    explicit_unassigned = owner == "-"
+    inherit = owner == "inherit"
+    value = "" if explicit_unassigned or inherit else owner
+    try:
+        value = _owner_id(value, t.path)
+    except ValueError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    old = t.owner or "unassigned"
+    t.owner = value
+    t.owner_unassigned = explicit_unassigned
+    t.log(f"owner {old} -> {value or 'unassigned'}")
+    store.save(t)
+    console.print(f"{t.id} owner {old} -> {'inherits phase default' if inherit else value or 'unassigned'}")
+
+
+@app.command("assign-phase", rich_help_panel=PANEL_PLAN)
+def assign_phase(target: str, owner: str = typer.Argument(..., help="Logical default owner id; use '-' to unassign")):
+    """Set a phase default owner; task overrides continue to take precedence."""
+    store = _store()
+    product, phase_name = _split_target(target)
+    try:
+        phase = store.phase(product, phase_name)
+    except KeyError:
+        err.print(f"[red]unknown phase {target}[/red]")
+        raise typer.Exit(1) from None
+    if phase.goals_path is None:
+        err.print(f"[red]{target} has no goals.md for phase metadata[/red]")
+        raise typer.Exit(1) from None
+    value = "" if owner == "-" else owner
+    try:
+        value = _owner_id(value, phase.goals_path)
+    except ValueError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    meta, body = split_frontmatter(phase.goals_path.read_text())
+    old = phase.owner or "unassigned"
+    if value:
+        meta["owner"] = value
+    else:
+        meta.pop("owner", None)
+        meta.pop("default_owner", None)
+    phase.goals_path.write_text(join_frontmatter(meta, body))
+    store.invalidate()
+    console.print(f"{target} default owner {old} -> {value or 'unassigned'}")
 
 
 @app.command("set-status", rich_help_panel=PANEL_DECIDE)
