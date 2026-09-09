@@ -13,6 +13,7 @@ from garden import gitops
 from garden.events import EventLog
 from garden.events import metrics as _metrics
 from garden.model import Status
+from garden.scheduler.report import TickReport
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -363,6 +364,48 @@ def test_merge_queue_merges_eight_prs_each_rebased_once(sched, fake_github, tmp_
         rebases = [r for r in sched.runs.runs_for(tid) if r.mode == "rebase"]
         assert len(rebases) == 1, (tid, len(rebases))
         assert sched.store.task(tid).status == Status.DONE, tid
+
+
+def test_clean_reviewed_heads_merge_serially_without_rebuild_and_recheck_next_conflict(
+        sched, fake_github, tmp_path, monkeypatch):
+    """The opt-out keeps one queue head, but a stale-base head with clean GitHub mergeability
+    and successful exact-head checks merges without a force-push. The next candidate is fetched
+    only afterward, so a conflict introduced by the first merge still stops it."""
+    assert sched.cfg.data["github"]["automerge_require_current_base"] is True
+    _independent_tasks(sched, 2)
+    sched.cfg.data["max_parallel"] = 2
+    sched.cfg.data["github"].update(
+        automerge=True, automerge_require_current_base=False,
+    )
+    sched.tick()
+    sched.tick()
+    b1, b2 = sched.store.task("DM-001").branch, sched.store.task("DM-002").branch
+    _advance_main(tmp_path, "moved")
+    for index, (task_id, branch) in enumerate((("DM-001", b1), ("DM-002", b2))):
+        _approve(sched, fake_github, task_id, branch, f"2026-09-05T03:0{index}:00+00:00")
+        task = sched.store.task(task_id)
+        head = gitc("rev-parse", "HEAD", cwd=sched.worktree_for(task)).strip()
+        sched.state.get(task_id).update(automerge_candidate=True, last_review_head=head)
+        fake_github.prs[branch].head_sha = head
+    sched.state.save()
+
+    original_merge = fake_github.merge_pr
+
+    def merge_then_conflict(slug, number, method="squash", delete_branch=True, expected_head=""):
+        original_merge(slug, number, method=method, delete_branch=delete_branch,
+                       expected_head=expected_head)
+        fake_github.prs[b2].mergeable = "CONFLICTING"
+
+    monkeypatch.setattr(fake_github, "merge_pr", merge_then_conflict)
+
+    sched._run_merge_queue(TickReport())
+    assert [row["number"] for row in fake_github.merged] == [fake_github.prs[b1].number]
+    assert not [run for run in sched.runs.runs_for("DM-001") if run.mode == "rebase"]
+
+    sched._run_merge_queue(TickReport())
+    assert [row["number"] for row in fake_github.merged] == [fake_github.prs[b1].number]
+    assert not [run for run in sched.runs.runs_for("DM-002") if run.mode == "rebase"]
+    assert "conflicting" in (sched.state.get("DM-002").get("automerge_blocked") or "")
 
 
 def test_pending_rollup_keeps_head_and_does_not_rotate(sched, fake_github, tmp_path):
