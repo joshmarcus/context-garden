@@ -578,9 +578,9 @@ document.querySelectorAll("form[data-profile-slider]").forEach(form => {
     slider.setAttribute("aria-valuetext", accessibleValue);
     if (option && tradeoff) tradeoff.textContent = option.tradeoff;
     if (option && meaning) {
-      if (option.meaning) meaning.textContent = (source || "live override") + " requests " + option.meaning + ".";
-      else if (name) meaning.textContent = (source || "live override") + " names an unavailable profile; using plain garden.yaml values.";
-      else meaning.textContent = "No profile requested; using plain garden.yaml values.";
+      if (!name) meaning.textContent = "No profile requested; using plain garden.yaml values.";
+      else if (option.meaning) meaning.textContent = (source || "live override") + " requests " + option.meaning + ".";
+      else meaning.textContent = (source || "live override") + " names an unavailable profile; using plain garden.yaml values.";
     }
   }
   async function save(name) {

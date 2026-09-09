@@ -2611,6 +2611,19 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.get_by_text("saved ✓").wait_for()
             page.reload(wait_until="networkidle")
             assert "economy" in page.locator(".profile-current").inner_text().lower()
+            # Clearing with no garden.yaml profile returns to plain values and
+            # must not prefix that explanation as though plain config were a profile.
+            slider.press("Home")
+            page.wait_for_function("""
+                () => document.querySelector("[data-profile-meaning]").textContent ===
+                  "No profile requested; using plain garden.yaml values."
+            """)
+            assert slider.get_attribute("aria-valuetext") == (
+                "No operating profile; plain garden.yaml values"
+            )
+            assert page.locator("[data-profile-meaning]").inner_text() == (
+                "No profile requested; using plain garden.yaml values."
+            )
             # Clearing the live override reveals a profile named by garden.yaml.
             # The successful response must immediately reconcile the control and
             # its explanation to that effective value, before any reload.
@@ -2621,9 +2634,11 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
                   }), {status: 200, headers: {"Content-Type": "application/json"}}));
                 }
             """)
-            slider.press("Home")
-            page.get_by_text("saving…").wait_for()
-            page.get_by_text("saved ✓").wait_for()
+            slider.press("End")
+            page.wait_for_function("""
+                () => document.querySelector("#operating-profile-slider")
+                  .getAttribute("aria-valuetext") === "Balanced operating profile"
+            """)
             assert slider.get_attribute("aria-valuetext") == "Balanced operating profile"
             assert "Balanced mixes concurrency" in page.locator(
                 "[data-profile-tradeoff]"
