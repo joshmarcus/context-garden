@@ -320,6 +320,7 @@ def test_web_decision_flow(garden, monkeypatch):
     api = {t["id"]: t for t in c.get("/api/tasks").json()}
     assert api["DM-001"]["status"] == "wont_do"
 
+
 @pytest.mark.parametrize("mode", ["wont_do", "no_change_decision"])
 def test_decision_is_readable_when_waiting_status_is_published(sched, fake_github, monkeypatch, mode):
     """A separate web reader must see the decision as soon as it sees the stop."""
