@@ -12,7 +12,7 @@
   <div class="eyebrow" style="margin-top:18px">Saved configuration</div>
   <div class="eyebrow">Saved configuration</div>
   <h2 style="margin-bottom:6px">Settings</h2>
-  <p class="muted" style="margin:0 0 12px">Each save is validated and replaces <span class="mono">garden.yaml</span> atomically. Open forms carry a revision token, so a stale tab cannot overwrite a newer edit. Collection values use YAML flow or block syntax.</p>
+  <p class="muted" style="margin:0 0 12px">Each save is validated and replaces <span class="mono">garden.yaml</span> atomically. Open forms carry a revision token, so a stale tab cannot overwrite a newer edit. Add, edit, or remove collection rows below; mapping values accept YAML scalars or nested values.</p>
   {% if saved_pending %}<p class="warn" role="status"><strong>Saved changes are waiting to be adopted.</strong> The values below are on disk; “effective now” still reflects the scheduler’s accepted configuration. Restart-only fields need a process restart, and a safety-sensitive reload may be held while a run is active.</p>{% endif %}
   <form method="get" action="/config" class="actions" style="margin-bottom:14px">
     <label for="configuration-scope"><strong>Scope</strong></label>
@@ -48,8 +48,20 @@
         <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}"><option value="true" {% if row.rendered == 'true' %}selected{% endif %}>true</option><option value="false" {% if row.rendered == 'false' %}selected{% endif %}>false</option></select>
         {% elif row.choices %}
         <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}">{% for choice in row.choices %}<option value="{{ choice }}" {% if row.rendered == choice|string %}selected{% endif %}>{{ choice if choice != '' else '(empty)' }}</option>{% endfor %}</select>
-        {% elif row.structured %}
-        <textarea id="config-value-{{ loop.index }}" name="value" rows="{% if row.field.value_type == 'mapping' %}4{% else %}2{% endif %}" spellcheck="false" aria-describedby="config-help-{{ loop.index }}">{{ row.rendered }}</textarea>
+        {% elif row.collection_kind %}
+        {% set setting_index = loop.index %}
+        {% if row.collection_choice %}<select name="collection_kind" data-collection-mode aria-label="Value type"><option value="scalar" {% if row.collection_kind == 'choice' %}selected{% endif %}>Single value</option><option value="list" {% if row.collection_kind == 'list' %}selected{% endif %}>List</option></select>{% endif %}
+        {% if row.collection_kind == "choice" %}
+        <div data-collection-rows><input name="collection_value" value="{{ row.rendered }}" aria-describedby="config-help-{{ setting_index }}"></div>
+        {% elif row.collection_kind == "list" %}
+        {% if not row.collection_choice %}<input type="hidden" name="collection_kind" value="list">{% endif %}
+        <div data-collection-rows class="config-collection">{% for item in row.list_items %}<div class="config-collection-row config-list-row"><input name="collection_value" value="{{ item }}" aria-label="Item {{ loop.index }}"><button type="button" data-remove-row aria-label="Remove item {{ loop.index }}">×</button></div>{% endfor %}</div>
+        <button type="button" data-add-row>Add item</button>
+        {% elif row.collection_kind == "mapping" %}
+        <input type="hidden" name="collection_kind" value="mapping">
+        <div data-collection-rows class="config-collection">{% for item in row.mapping_items %}<div class="config-collection-row"><input name="collection_key" value="{{ item.key }}" placeholder="Key" aria-label="Key {{ loop.index }}" required><input name="collection_value" value="{{ item.value }}" placeholder="Value" aria-label="Value for {{ item.key }}" required><button type="button" data-remove-row aria-label="Remove {{ item.key }}">×</button></div>{% endfor %}</div>
+        <button type="button" data-add-row>Add entry</button>
+        {% endif %}
         {% else %}
         <input id="config-value-{{ loop.index }}" name="value" type="{{ 'password' if row.field.secret else ('number' if 'integer' in row.field.value_type or row.field.value_type == 'number' else 'text') }}" value="{{ row.rendered }}" aria-describedby="config-help-{{ loop.index }}" {% if row.field.minimum is not none %}min="{{ row.field.minimum }}"{% endif %} {% if row.field.secret %}autocomplete="new-password" placeholder="Enter a replacement; saved value is hidden"{% endif %}>
         {% endif %}
@@ -269,4 +281,31 @@
   </dl>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll(".config-setting-form").forEach(form => {
+  const rows = form.querySelector("[data-collection-rows]");
+  if (!rows) return;
+  const mode = form.querySelector("[data-collection-mode]");
+  const bindRemove = row => row.querySelector("[data-remove-row]")?.addEventListener("click", () => row.remove());
+  rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
+  form.querySelector("[data-add-row]")?.addEventListener("click", () => {
+    const mapping = form.querySelector('input[name="collection_kind"]')?.value === "mapping";
+    const row = document.createElement("div");
+    row.className = "config-collection-row" + (mapping ? "" : " config-list-row");
+    row.innerHTML = mapping
+      ? '<input name="collection_key" placeholder="Key" aria-label="New key" required><input name="collection_value" placeholder="Value" aria-label="Value for new key" required><button type="button" data-remove-row aria-label="Remove entry">×</button>'
+      : '<input name="collection_value" aria-label="New item"><button type="button" data-remove-row aria-label="Remove item">×</button>';
+    bindRemove(row); rows.appendChild(row); row.querySelector("input").focus();
+  });
+  mode?.addEventListener("change", () => {
+    rows.innerHTML = mode.value === "list"
+      ? '<div class="config-collection-row config-list-row"><input name="collection_value" aria-label="Item 1"><button type="button" data-remove-row aria-label="Remove item 1">×</button></div>'
+      : '<input name="collection_value" aria-label="Single value">';
+    rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
+  });
+});
+</script>
 {% endblock %}

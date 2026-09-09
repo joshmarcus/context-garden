@@ -2459,6 +2459,64 @@ def test_config_editor_covers_metadata_and_saves_global_and_project_values(garde
     assert Config.load(garden).setting("max_parallel", "demo").source == "global"
 
 
+def test_config_editor_round_trips_empty_and_yaml_sensitive_strings(garden):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    values = {"operating_profile": "", "work_dir": "true", "upgrade.package": "a: b"}
+    data["operating_profile"] = values["operating_profile"]
+    data["work_dir"] = values["work_dir"]
+    data.setdefault("upgrade", {})["package"] = values["upgrade.package"]
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+
+    for key, value in values.items():
+        page = c.get("/config").text
+        token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+        response = c.post(
+            "/config/save", data={"key": key, "value": value, "revision": token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert Config.load(garden).get(key) == value
+
+
+def test_config_editor_saves_structured_list_and_mapping_rows(garden):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["budgets"] = {"demo": 5, "extension": {"soft": 2}}
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+    page = c.get("/config").text
+    assert "Add item" in page and "Add entry" in page
+    assert 'name="collection_key" value="demo"' in page
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "review.ladder", "revision": token, "collection_kind": "list",
+              "collection_value": ["easy", "hard"]},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).get("review.ladder") == ["easy", "hard"]
+
+    token = re.search(r'name="revision" value="([^"]+)"', c.get("/config").text).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "budgets", "revision": token, "collection_kind": "mapping",
+              "collection_key": ["demo", "extension"],
+              "collection_value": ["12.5", "{soft: 4, owner: ops}"]},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).get("budgets") == {
+        "demo": 12.5, "extension": {"soft": 4, "owner": "ops"},
+    }
+
+
 def test_config_editor_rejects_stale_invalid_and_locked_edits_without_partial_save(garden):
     import re
 

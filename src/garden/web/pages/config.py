@@ -74,8 +74,9 @@ def register(app: FastAPI, site: Site) -> None:
                 rendered = ""
                 display = "••••••••" if saved_value not in (None, "", [], {}) else "not set"
             else:
-                rendered = yaml.safe_dump(saved_value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip()
-                display = rendered or "empty"
+                serialized = yaml.safe_dump(saved_value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip()
+                rendered = saved_value if isinstance(saved_value, str) else serialized
+                display = serialized or "empty"
             effective_value = sched.effective(field.key, field.default, product=selected_product or None)
             effective_display = ("protected" if field.secret and effective_value not in (None, "", [], {})
                                  else yaml.safe_dump(effective_value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip())
@@ -87,7 +88,16 @@ def register(app: FastAPI, site: Site) -> None:
                                      else sched.effective_source(field.key)),
                 "reason": provenance.reason, "policy_source": provenance.policy_source,
                 "overridden": field.key in project_overrides,
-                "structured": field.value_type.removeprefix("optional_") in {"list", "mapping", "string_or_list", "any"},
+                "collection_kind": ("mapping" if isinstance(saved_value, dict) else
+                                    "list" if isinstance(saved_value, list) else
+                                    "choice" if field.value_type.removeprefix("optional_") in {"string_or_list", "any"}
+                                    else ""),
+                "collection_choice": field.value_type.removeprefix("optional_") in {"string_or_list", "any"},
+                "list_items": [str(value) for value in saved_value] if isinstance(saved_value, list) else [],
+                "mapping_items": [
+                    {"key": str(key), "value": yaml.safe_dump(value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip()}
+                    for key, value in saved_value.items()
+                ] if isinstance(saved_value, dict) else [],
                 "choices": field.choices,
             })
         return templates.TemplateResponse(request, "config.html", ctx(
