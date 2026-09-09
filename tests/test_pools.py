@@ -71,6 +71,38 @@ def test_dispatch_records_the_selected_pool_member(sched):
     assert (run.harness, run.model, run.pool_member) == ("claude", "sonnet", "claude:sonnet")
 
 
+def test_deferred_ready_task_does_not_consume_a_pool_rotation_slot(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.difficulty = "medium"
+    sched.cfg.data["dispatch"] = {"spread": "round_robin"}
+    _configure_pool(sched)
+    monkeypatch.setattr(sched, "dispatch_queue", lambda: [(task, "work", "ready")])
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: False)
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+    monkeypatch.setattr(sched, "slots_free", lambda: 0)
+
+    sched.dispatch_ready(TickReport())
+
+    assert sched.select_pool_member(task, "medium")["label"] == "claude:sonnet"
+
+
+def test_failed_ready_dispatch_does_not_consume_a_pool_rotation_slot(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.difficulty = "medium"
+    sched.cfg.data["dispatch"] = {"spread": "round_robin"}
+    _configure_pool(sched)
+    monkeypatch.setattr(sched, "dispatch_queue", lambda: [(task, "work", "ready")])
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: False)
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+    monkeypatch.setattr(sched, "dispatch", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    report = TickReport()
+    sched.dispatch_ready(report)
+
+    assert report.errors == ["DM-001: dispatch failed: boom"]
+    assert sched.select_pool_member(task, "medium")["label"] == "claude:sonnet"
+
+
 def test_active_profile_pool_routes_dispatch_and_live_override_wins(sched):
     task = sched.store.task("DM-001")
     task.difficulty = "medium"

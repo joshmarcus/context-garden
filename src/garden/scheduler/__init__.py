@@ -230,11 +230,14 @@ class Scheduler(
                             "label": f"{harness}:{model}"})
         return members
 
-    def select_pool_member(self, task: Task, tier: str, review: bool = False) -> dict[str, Any] | None:
+    def select_pool_member(self, task: Task, tier: str, review: bool = False,
+                           *, advance: bool = True) -> dict[str, Any] | None:
         """Choose an available pool member, preserving work pins and quota-aware weighting.
 
         A review pool is deliberately independent of the task's worker route: a task pinned
         to one worker account must still be reviewable by every configured reviewer account.
+        Callers doing admission before launch may peek with ``advance=False`` and advance
+        only after launch succeeds.
         """
         members = self.pool_members(tier, review=review)
         if not members:
@@ -268,8 +271,9 @@ class Scheduler(
         key = f"{'review' if review else 'work'}:{tier}:" + ",".join(m["label"] for m in members)
         rotation = self.state.get("_pool_rotation")
         index = int(rotation.get(key, 0)) % len(slots)
-        rotation[key] = index + 1
-        self.state.save()
+        if advance:
+            rotation[key] = index + 1
+            self.state.save()
         return dict(slots[index])
 
     def model_for(self, task: Task, runner: Runner, difficulty: str = "") -> str:
