@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
@@ -435,7 +436,7 @@ def test_explicit_actions_and_status_require_rollup_but_none_does_not(sched, fak
     assert sched._automerge_gate(t, pr)[0]
 
 
-def test_command_validation_must_match_exact_pr_head(sched, fake_github):
+def test_command_validation_requires_durable_receipt_for_exact_pr_head(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["validation"] = {
         "provider": "command", "command": "make validate"
@@ -443,8 +444,18 @@ def test_command_validation_must_match_exact_pr_head(sched, fake_github):
     pr.head_sha = gitops.head_sha(sched.worktree_for(t))
     # Command validation does not require a duplicate GitHub checks rollup.
     pr.checks = ""
-    st["validation_head"] = "old"
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "exact PR head" in reason
-    st["validation_head"] = pr.head_sha
+    assert not ok and "worker_check" in reason
+
+    evidence = sched.cfg.garden_dir / "runs" / t.id / "remote-work" / "validations" / "1"
+    evidence.mkdir(parents=True)
+    for name, value in (("execution.json", "{}"), ("exit_code", "0"), ("stderr.log", "")):
+        (evidence / name).write_text(value)
+    (evidence / "result.json").write_text(json.dumps({
+        "source_sha": pr.head_sha,
+        "command": "make validate",
+        "selection": ["make", "validate"],
+        "exit_code": 0,
+        "log_location": str(evidence),
+    }))
     assert sched._automerge_gate(t, pr)[0]

@@ -291,7 +291,7 @@ def test_non_actions_policy_never_briefs_or_runs_publishing_helper(garden):
     assert ReapMixin._pre_pr_specs(Scheduler(), store.task("DM-001"))[0]["requires_worker_push"] is True
 
 
-def test_command_validation_is_an_exact_head_pre_pr_check(garden):
+def test_command_validation_is_not_duplicated_as_a_pre_pr_check(garden):
     path = garden / "garden.yaml"
     config = yaml.safe_load(path.read_text())
     config["products"]["demo"]["validation"] = {
@@ -303,7 +303,7 @@ def test_command_validation_is_an_exact_head_pre_pr_check(garden):
     class Scheduler:
         cfg = store.config
 
-    assert {"name": "validation", "command": "./ci/validate-head"} in ReapMixin._pre_pr_specs(
+    assert {"name": "validation", "command": "./ci/validate-head"} not in ReapMixin._pre_pr_specs(
         Scheduler(), store.task("DM-001")
     )
 

@@ -458,13 +458,9 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     sched.cfg.data["github"]["automerge"] = True
     sched.cfg.data["review"]["enabled"] = False
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
-    sched.cfg.data["products"]["demo"]["validation"] = {
-        "provider": "command", "command": "true",
-    }
-    for _ in range(10):  # worker -> command validation -> PR with an exact-head receipt
+    for _ in range(10):
         sched.tick()
-        if (sched.store.task("DM-001").status == Status.IN_REVIEW
-                and sched.state.get("DM-001").get("validation_head")):
+        if sched.store.task("DM-001").status == Status.IN_REVIEW:
             break
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     b1 = sched.store.task("DM-001").branch
@@ -486,7 +482,6 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
         if fake_github.prs[b1].state == "MERGED":
             break
     assert fake_github.prs[b1].state == "MERGED"
-    assert sched.state.get("DM-001")["validation_head"] == fake_github.prs[b1].head_sha
     assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
 
 

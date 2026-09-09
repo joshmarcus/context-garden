@@ -326,9 +326,6 @@ def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_gith
     the PR opens with no worker run dispatched, no person, and no revise round spent."""
     sched.cfg.data["stack"] = False
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
-    sched.cfg.data["products"]["demo"]["validation"] = {
-        "provider": "command", "command": "true",
-    }
     _seed_base_guard(sched, "bad")  # red base the branch is cut from
 
     sched.tick()  # dispatch DM-001 from the red base (the in-process worker finishes here)
@@ -356,7 +353,6 @@ def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_gith
     # the rebased branch picked up the now-green base file
     wt = sched.worktree_for(sched.store.task("DM-001"))
     assert (wt / "sentinel.txt").read_text().strip() == "ok"
-    assert sched.state.get("DM-001")["validation_head"] == gitops.head_sha(wt)
     # a rebased_stale_base event records the automatic continuation
     assert any(e.get("resolved") for e in sched.events.read(task_id="DM-001", kinds=["rebased_stale_base"]))
 

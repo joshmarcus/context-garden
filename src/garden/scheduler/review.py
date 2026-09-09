@@ -37,9 +37,9 @@ from .resources import ResourcePressureError
 class ReviewMixin:
     def _review_ci_ready(self, task: Task) -> bool:
         """Required exact-head validation must land before an automated code review."""
-        provider = str(self.cfg.get("ci.status_provider", "github") or "github")
-        required = bool(self.cfg.get("ci.required", False) or provider == "worker_check"
-                        or self.cfg.product_setup(task.product).get("worker_push") is True)
+        policy = self.cfg.product_ci_policy(task.product)
+        provider = str(policy.get("status_provider") or "github")
+        required = bool(policy.get("required"))
         if not required:
             return True
         st = self.state.get(task.id)
@@ -48,7 +48,7 @@ class ReviewMixin:
         if provider == "worker_check":
             from ..ci_status import worker_check_status
             status = worker_check_status(self.cfg.garden_dir, task.id, head,
-                                         dict(self.cfg.get("ci.worker_check", {}) or {})).to_dict()
+                                         dict(policy.get("worker_check", {}) or {})).to_dict()
             st["ci_status"] = status
         return bool(status.get("green") and status.get("queried_sha") == head)
 

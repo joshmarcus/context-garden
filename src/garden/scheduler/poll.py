@@ -35,11 +35,8 @@ def _touches_guarded_path(rel: str) -> bool:
 
 class PollMixin:
     def _ci_status(self, task: Task, pr: PRInfo) -> CIStatus:
-        provider = str(self.cfg.get("ci.status_provider", "github") or "github")
-        required = bool(self.cfg.get("ci.required", False)
-                        or self.cfg.product_setup(task.product).get("worker_push") is True)
-        policy = dict(self.cfg.get("ci", {}) or {})
-        policy["required"] = required
+        policy = self.cfg.product_ci_policy(task.product)
+        provider = str(policy.get("status_provider") or "github")
         return resolve_status(provider, self.cfg.garden_dir, task.id, pr, policy)
 
     # ---- poll --------------------------------------------------------------
@@ -374,9 +371,6 @@ class PollMixin:
                 return False, "the configured status provider has no result (unavailable or insufficient permission)"
             if pr.checks != "SUCCESS":
                 return False, f"the required {provider} validation is {pr.checks.lower()}"
-        elif provider == "command":
-            if not pr.head_sha or st.get("validation_head") != pr.head_sha:
-                return False, "the configured validation command has no passing result for the exact PR head"
         elif provider == "legacy":
             if self.cfg.product_setup(task.product).get("worker_push") is True and not pr.checks:
                 return False, "worker CI is enabled but the PR has no CI result yet"

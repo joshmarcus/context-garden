@@ -411,7 +411,14 @@ def register(app: FastAPI, site: Site) -> None:
                 artifacts = receipt.get("artifacts")
                 selection = receipt.get("selection")
                 command = str(receipt.get("command") or "")
-                expected_command = str(hub.store.config.get("ci.worker_check.command", "") or "").strip()
+                try:
+                    task = hub.store.task(run.task_id)
+                    ci_policy = hub.store.config.product_ci_policy(task.product)
+                except KeyError:
+                    ci_policy = {}
+                expected_command = str(
+                    (ci_policy.get("worker_check") or {}).get("command") or ""
+                ).strip()
                 if (str(receipt.get("source_sha") or "") != run.pushed_head
                         or not isinstance(selection, list) or not selection
                         or any(not isinstance(arg, str) or not arg for arg in selection)
