@@ -29,10 +29,11 @@ products:
 
 An override supplies the project's value without changing another project. A lock prohibits
 ordinary mutation. A policy `value` is enforced and wins over both the global and project
-override values. A lock without an enforced value must accompany an explicit project
-override; this keeps its effective value stable when an upstream global value or operating
-profile changes. Loading rejects unknown fields, invalid values, project use of global-only
-fields, missing reasons, and locks that could drift with inheritance.
+override values. A lock without an enforced value freezes the effective value the project
+currently inherits. Ordinary global and runtime edits, profile selection, and scheduler
+reloads are rejected when they would change that value; an explicit project override is not
+required. Loading rejects unknown fields, invalid values, project use of global-only fields,
+and missing reasons.
 
 `Config.setting(key, product)` returns the effective value and its provenance, lock reason,
 and policy source. `apply_changes` is the common mutation boundary for global and project

@@ -882,6 +882,7 @@ class FenceMixin:
         from ..configuration import assert_inherited_locks_unchanged
 
         assert_inherited_locks_unchanged(self.cfg.data, new_cfg.data)
+        self._assert_reload_preserves_runtime_locks(new_cfg)
         accepted = bool(ctrl.pop("config_hold_accept", False))
         exec_keys = executable_diff(self.cfg.data, new_cfg.data)
         in_flight = self._fenced_runs_in_flight() if exec_keys and not accepted else []

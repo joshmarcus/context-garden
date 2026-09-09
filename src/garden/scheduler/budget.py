@@ -235,6 +235,37 @@ class BudgetMixin:
                 reason = str(policy.get("reason") or "Locked by project policy")
                 raise PermissionError(f"{key} is locked for {product}: {reason}")
 
+    def _assert_reload_preserves_runtime_locks(self, new_cfg: Any) -> None:
+        """Reject reloads that move a plain lock through the active profile layer."""
+        for product in (self.cfg.data.get("products") or {}):
+            _, locks = product_configuration(self.cfg.data, str(product))
+            _, new_locks = product_configuration(new_cfg.data, str(product))
+            for key, raw in locks.items():
+                policy = {"reason": raw} if isinstance(raw, str) else dict(raw)
+                new_raw = new_locks.get(key)
+                new_policy = ({"reason": new_raw} if isinstance(new_raw, str)
+                              else dict(new_raw) if isinstance(new_raw, dict) else None)
+                if "value" in policy or new_policy is None or "value" in new_policy:
+                    continue
+                old = self._effective_with_config(key, self.cfg, str(product))
+                new = self._effective_with_config(key, new_cfg, str(product))
+                if old != new:
+                    reason = str(policy.get("reason") or "Locked by project policy")
+                    raise PermissionError(f"{key} is locked for {product}: {reason}")
+
+    def _effective_with_config(self, key: str, cfg: Any, product: str) -> Any:
+        """Resolve a scheduler-effective project value against a prospective config."""
+        overrides = self.overrides()
+        if key in overrides:
+            value = overrides[key]
+        else:
+            profile_key = _PROFILE_KEYS.get(key)
+            profile_name = str(overrides.get("operating_profile", cfg.get("operating_profile") or ""))
+            profile = dict(profile_stops(cfg).get(profile_name) or {})
+            value = profile.get(profile_key, cfg.get(key)) if profile_key else cfg.get(key)
+        project_value = cfg.setting(key, product)
+        return project_value.value if project_value.source != "global" else value
+
     def effective(self, key: str, default: Any = None, product: str | None = None) -> Any:
         """The live override for `key` if one is set, else the active operating profile's
         value for it (see operating_profile) if the profile sets that facet, else the
