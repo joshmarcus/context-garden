@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from garden.onboard import discover_project, onboard_project
+from garden.onboard import _add_github_metadata, discover_project, onboard_project
 from garden.planner import run_planner
 from garden.store import Store
 from tests.conftest import FAKE_CLAUDE, git, write
@@ -74,6 +74,51 @@ def test_discovery_is_deterministic_and_does_not_read_secret_values(tmp_path, mo
     assert "Review: Use conventional commits. Pull requests need one approval. (source: `CONTRIBUTING.md`)." in first.conventions
     assert "Commits: Use conventional commits. Pull requests need one approval. (source: `CONTRIBUTING.md`)." in first.conventions
     assert "Review: Respect path ownership recorded in CODEOWNERS (source: `.github/CODEOWNERS`)." in first.conventions
+
+
+@pytest.mark.parametrize("remote", [
+    "https://github.com/example/sample-web.git",
+    "git@github.com:example/sample-web.git",
+    "ssh://git@ssh.github.com:443/example/sample-web.git",
+])
+def test_onboarding_github_metadata_uses_transport_independent_slug(tmp_path, monkeypatch, remote):
+    repo = _node_repo(tmp_path)
+    git("remote", "add", "origin", remote, cwd=repo)
+    calls = []
+
+    def synthetic_github(_repo, args):
+        calls.append(args)
+        if args[:2] == ["repo", "view"]:
+            return {"defaultBranchRef": {"name": "trunk"}}
+        return []
+
+    monkeypatch.setattr("garden.onboard._gh_json", synthetic_github)
+    info = discover_project(repo)
+    _add_github_metadata(repo, info)
+
+    assert all("example/sample-web" in " ".join(args) for args in calls)
+    assert "github:example/sample-web:repository" in info.read
+    assert "github:example/sample-web:open-issues" in info.read
+    assert "github:example/sample-web:open-prs" in info.read
+    assert "github:example/sample-web:rulesets" in info.read
+    assert info.base_branch == "trunk"
+
+
+def test_onboarding_reports_unavailable_github_metadata_without_fabricating_reads(tmp_path, monkeypatch):
+    repo = _node_repo(tmp_path)
+    git("remote", "add", "origin", "ssh://git@ssh.github.com:443/example/sample-web.git", cwd=repo)
+    monkeypatch.setattr("garden.onboard._gh_json", lambda *_args, **_kwargs: None)
+
+    info = discover_project(repo)
+    _add_github_metadata(repo, info)
+
+    assert info.unavailable == [
+        "GitHub repository metadata for `example/sample-web`",
+        "GitHub open issues for `example/sample-web`",
+        "GitHub open pull requests for `example/sample-web`",
+        "GitHub repository rulesets for `example/sample-web`",
+    ]
+    assert not any(item.startswith("github:example/sample-web:") for item in info.read)
 
 
 def test_discovery_uses_manifest_name_in_a_worktree_directory(tmp_path):

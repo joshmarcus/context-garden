@@ -582,7 +582,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
             until: str = typer.Option("", help="Exclusive ISO end for the matrices")):
     """Lead time, cost per accepted task and first-pass approval by model, tier and harness."""
     from .. import operator_spend as ops
-    from ..events import EventLog, parse_since, with_run_records
+    from ..events import EventLog, brief_context_metrics, parse_since, with_run_records
     from ..events import metrics as _metrics
     from ..runs import RunStore
 
@@ -592,7 +592,8 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
         product, phase = _split_target(target)
         tasks = {k: v for k, v in tasks.items() if v.product == product and v.phase == phase}
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
-    events = with_run_records(events, RunStore(store.config.garden_dir).all_runs())
+    run_records = RunStore(store.config.garden_dir).all_runs()
+    events = with_run_records(events, run_records)
     events += ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
     m = _metrics(events, tasks, parse_since(since) if since else "", until)
     timing = m["tick_duration"]
@@ -623,6 +624,33 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
         table.add_row(r["id"], r["difficulty"], _style(str(r["status"].value if hasattr(r["status"], "value") else r["status"])),
                       str(r["runs"]), str(r["revisions"]), r["first_review"], f"${r['cost_usd']:.2f}",
                       f"{r['lead_hours']:.1f}" if r["lead_hours"] is not None else "")
+    console.print(table)
+    brief = brief_context_metrics(run_records, tasks)
+    console.print(
+        "Brief/context growth: estimated brief tokens are stored estimates; measured input and cache reads are harness usage. "
+        f"A regression flag needs {brief['minimum_samples']} samples in each equal-count window and a "
+        f"{(brief['regression_ratio'] - 1):.0%} estimated-token increase."
+    )
+    table = Table(title="brief and startup context by product / phase / mode / model / tier")
+    for column in ("product", "phase", "mode", "model", "tier", "runs", "estimated (mean/p95/max)",
+                   "measured input (mean/p95/max)", "measured cache read (mean/p95/max)",
+                   "baseline → recent", "flag"):
+        table.add_column(column)
+    for row in brief["groups"]:
+        estimate = row["estimated_tokens"]
+        measured = row["measured_input_tokens"]
+        cache_reads = row["measured_cache_read_tokens"]
+        comparison = row["comparison"]
+        def values(summary: dict) -> str:
+            return (f"{summary['mean']:.0f}/{summary['p95']}/{summary['max']} (n={summary['known']})"
+                    if summary["mean"] is not None else "unknown")
+        windows = (f"{comparison['baseline_mean_estimated_tokens']:.0f} → {comparison['recent_mean_estimated_tokens']:.0f} "
+                   f"(n={comparison['baseline_runs']}/{comparison['recent_runs']})"
+                   if comparison["baseline_mean_estimated_tokens"] is not None
+                   and comparison["recent_mean_estimated_tokens"] is not None else "unknown")
+        table.add_row(row["product"], row["phase"], row["mode"], row["model"], row["tier"], str(row["runs"]),
+                      values(estimate), values(measured), values(cache_reads), windows,
+                      "REGRESSION" if comparison["regression"] else "")
     console.print(table)
     table = Table(title="per difficulty tier (is 'easy' really easy?)")
     for c in ("tier", "tasks", "done", "avg revisions", "first-pass approve", "criteria met", "cost", "cost/accepted", "avg lead h"):
@@ -888,12 +916,22 @@ def triage(
     ready: bool = typer.Option(False, help="The draft PR is good enough for review: mark it ready"),
     changes: str = typer.Option("", help="Send it back with this feedback (a revise run follows)"),
     note: str = typer.Option("", help="Optional note for the log"),
+    supersede_review: bool = typer.Option(
+        False, "--supersede-review",
+        help="Explicitly replace the full automated review with --changes instead of supplementing it",
+    ),
+    resolve_review_item: list[str] = typer.Option(
+        [], "--resolve-review-item",
+        help="Mark this stable finding:/criterion: ID resolved while retaining unmatched review items (repeatable)",
+    ),
 ):
     """Your first look at a draft PR: mark it ready for review, or send it back."""
     store = _store()
     t = _task(store, task_id)
     try:
-        _scheduler(store).triage(t, ready=ready, changes=changes, note=note)
+        _scheduler(store).triage(
+            t, ready=ready, changes=changes, note=note, supersede_review=supersede_review,
+            resolve_review_items=resolve_review_item)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
@@ -945,7 +983,7 @@ def inbox():
             if it["group"] != current:
                 current = it["group"]
                 console.print(f"\n[bold]{it['group_title']}[/bold]")
-            console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why'][:60]}[/dim]")
+            console.print(f"  {it['task']:<8} {it['title'][:44]:<44} [dim]{it['why']}[/dim]")
             for a in it["actions"]:
                 if a.get("command"):
                     detail = f"  [dim]{a['detail']}[/dim]" if a.get("detail") else ""
@@ -960,4 +998,4 @@ def inbox():
                 current = it["group"]
                 count = sum(1 for x in notice_items if x["group"] == current)
                 console.print(f"\n[dim]{it['group_title']} · {count}, no action needed[/dim]")
-            console.print(f"  [dim]{it['task']:<8} {it['title'][:44]:<44} {it['why'][:60]}[/dim]")
+            console.print(f"  [dim]{it['task']:<8} {it['title'][:44]:<44} {it['why']}[/dim]")

@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 
 import pytest
@@ -48,6 +49,137 @@ def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garde
     assert "host identities" in result.output
     assert "ssh.hosts[0].host" in result.output
     assert target not in result.output
+
+
+def test_inbox_only_counts_current_automated_approval_as_pr_action(garden):
+    """CLI and web consume the shared ownership model for queued, stale, and approved PRs."""
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+    from garden.web.app import create_app
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    st = state.get("DM-001")
+    st.update({"head_sha": "new-head", "last_review_head": "old-head",
+               "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+               "pending_reviews": [{"kind": "review"}]})
+    state.save()
+
+    queued = run(garden, "inbox")
+    assert queued.exit_code == 0
+    assert "inbox zero" in queued.output
+    assert "Automated review" in queued.output
+    assert "prior automated verdict: request changes" in queued.output
+    assert "set-status DM-001 done" not in queued.output
+
+    st["last_review"] = {"verdict": "approve", "summary": "ready"}
+    st["last_review_head"] = "new-head"
+    state.save()
+    still_queued = run(garden, "inbox")
+    assert "inbox zero" in still_queued.output
+    assert "prior automated verdict: approve" in still_queued.output
+    assert "Review and merge" not in still_queued.output
+
+    st.pop("pending_reviews")
+    st["review_run"] = "review-72"
+    state.save()
+    running = run(garden, "inbox")
+    assert "inbox zero" in running.output
+    assert "automated review running" in re.sub(r"\s+", " ", running.output)
+
+    st.pop("review_run")
+    state.save()
+    approved = run(garden, "inbox")
+    assert "1 need you" in approved.output
+    assert "Review and merge" in approved.output
+    page = TestClient(create_app(Store(garden), watch=False, host="testserver")).get("/inbox").text
+    assert "automated review approved this PR head" in page
+    assert 'action="/tasks/DM-001/done"' not in page
+
+
+def test_cli_and_web_inbox_show_the_scheduler_review_wait_reason(garden):
+    """Queued reviews use the scheduler's first applicable gate in both renderers."""
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.scheduler import State
+    from garden.store import Store
+    from garden.web.app import create_app
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    st = state.get("DM-001")
+    st.update({"head_sha": "head", "last_review_head": "head",
+               "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+               "pending_reviews": [{"kind": "review"}]})
+
+    def assert_wait(expected: str) -> None:
+        state.save()
+        cli = run(garden, "inbox")
+        web = TestClient(create_app(Store(garden), watch=False, host="testserver")).get("/inbox")
+        cli_text = re.sub(r"\s+", " ", cli.output)
+        assert cli.exit_code == 0, cli.output
+        assert "inbox zero" in cli.output
+        assert expected in cli_text
+        assert expected in web.text
+        assert "prior automated verdict: request changes" in cli_text
+        assert "Review and merge" not in cli.output
+
+    control = state.get("_control")
+    control["dispatch"] = "paused"
+    assert_wait("dispatch paused: reviews start again with dispatch")
+
+    control.pop("dispatch")
+    control["paused_harnesses"] = {"claude": {"reason": "quota", "at": "now"}}
+    assert_wait("claude harness paused")
+
+    control.pop("paused_harnesses")
+    state.save()
+    runs = RunStore(garden / ".garden")
+    for index in range(2):
+        review = runs.new_run(f"OTHER-{index}", "local", mode="review")
+        review.status = "running"
+        review.save()
+    assert_wait("no review slot (2 of 2 busy)")
+
+
+
+def test_queued_review_outranks_an_old_human_stop(garden):
+    """A new automated review owns the current head, even if an old stop remains recorded."""
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001").update({
+        "pending_reviews": [{"kind": "review"}],
+        "needs_human": {"kind": "review_cap", "reason": "prior review cap", "at": "now"},
+    })
+    state.save()
+
+    page = run(garden, "inbox")
+
+    assert page.exit_code == 0
+    assert "inbox zero" in page.output
+    assert "automated review queued: queued: the next tick starts it" in re.sub(r"\s+", " ", page.output)
+    assert "Automated review rounds used" not in page.output
 
 
 def test_status_shows_retro_waiting_for_personas(garden):
@@ -161,6 +293,26 @@ def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
 
     r = run(garden, "set-status", "DM-001", "ready", "--force")
     assert r.exit_code == 0 and "DM-001 -> ready" in r.output
+
+
+def test_retry_and_set_status_record_selected_actor(garden):
+    from garden.events import EventLog
+
+    retry = run(garden, "retry", "DM-001", "--actor", "delegated_operator")
+    assert retry.exit_code == 0, retry.output
+    status = run(garden, "set-status", "DM-002", "ready", "--actor", "delegated_operator")
+    assert status.exit_code == 0, status.output
+
+    actions = [event for event in EventLog(garden / ".garden" / "events.jsonl").read()
+               if event["kind"] in {"retry", "set_status"}]
+    assert [(event["kind"], event["actor"]) for event in actions] == [
+        ("retry", "delegated_operator"),
+        ("set_status", "delegated_operator"),
+    ]
+
+    bad = run(garden, "retry", "DM-001", "--actor", "not-an-actor")
+    assert bad.exit_code == 1
+    assert "actor must be one of" in bad.output
 
 
 def test_new_task_and_approve(garden):
@@ -408,6 +560,50 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
         assert "all good" in r.output
         assert "free space work dir: 1 MB" in r.output
         assert "below doctor.min_free_mb=2048 MB" in r.output
+
+
+def test_doctor_does_not_import_private_runner_adapters(garden, tmp_path, monkeypatch):
+    """A read-only diagnostic must not execute an adapter's import-time code."""
+    import subprocess
+    from types import SimpleNamespace
+    from unittest import mock
+
+    sentinel = tmp_path / "adapter-imported"
+    (tmp_path / "side_effect_adapter.py").write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('imported')\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["runner_adapters"] = {"synthetic": {"path": "side_effect_adapter.Runner"}}
+    config["products"]["demo"]["runner"] = "synthetic"
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setattr("garden.cli.diagnostics.shutil.disk_usage", lambda path: SimpleNamespace(free=1024 * 1024))
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "config" in cmd and "git" in cmd:
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    if "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+                elif _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                elif "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
+                elif "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
+
+        mock_run.side_effect = side_effect
+        result = run(garden, "doctor")
+
+    assert result.exit_code == 0, result.output
+    assert "runner synthetic:" in result.output
+    assert "runtime validation deferred" in result.output
+    assert not sentinel.exists()
 
 
 def test_doctor_wraps_long_diagnostics_to_console_width(garden, monkeypatch):

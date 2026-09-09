@@ -158,7 +158,7 @@ class BudgetMixin:
         """Report installation blockers without treating durable results as live work."""
         live: list[dict[str, str]] = []
         for run in self.runs.active():
-            if run.runner == "local":
+            if run.is_local_execution:
                 blocker = "local process may still depend on the installed runtime"
             elif run.status in {"requested", "preparing"}:
                 blocker = "preparation is incomplete; runtime dependency is not yet knowable"

@@ -1,0 +1,16 @@
+inbox zero — nothing needs you
+
+Notices — no action needed
+
+Operator recovery · 1, no action needed
+  DM-002   A round with nothing to change               Deployment prerequisite
+— deploy the verified build to staging
+
+Automated review · 1, no action needed
+  DM-001   A worker that asks a question                automated review queued:
+queued: the next tick starts it; prior automated verdict: request changes — add
+a boundary test
+
+Deferred work · 1, no action needed
+  DM-003   Deferred work                                deferred by the phase
+freeze · move deliberately to p2 when ready
