@@ -834,7 +834,7 @@ def test_board_prs_handles_empty_and_github_errors(garden):
     app.state.hub.tick()
     assert "No open pull requests in demo." in c.get("/partials/board?view=prs").text
 
-    def unavailable(slug):
+    def unavailable(slug, project_users=None):
         raise GitHubError("authentication failed")
 
     github.list_open_prs = unavailable
