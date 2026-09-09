@@ -942,7 +942,7 @@ class ReviewMixin:
             # persisted, instead of needing a fresh review (CG-198).
             if self._manual_reserved(task):
                 return False
-            if st.get("last_review_run") == run_id or not run.result:
+            if st.get("last_review_run") == run_id:
                 st["review_run"] = ""
                 return False
             pending_clarification = (run.env_snapshot or {}).get("clarification_pending")
