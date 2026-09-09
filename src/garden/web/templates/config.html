@@ -5,6 +5,12 @@
   <div><h1>Configuration</h1><p>Dispatch control and the effective config values most often tuned. Edit the underlying YAML files to change most values: the scheduler re-reads garden.yaml (and its env / local overlays) each tick when the file changes, so an edit takes effect within one tick with no restart. A few keys are read once at startup and need a restart — they are named below. The pause switch and max_parallel can also be overridden live from here.</p></div>
 </div>
 
+<div class="panel" style="margin-bottom:14px">
+  <div class="eyebrow">Release identity</div>
+  <h3>Installed package</h3>
+  <p class="muted" style="margin:0">Version <strong>{{ tool_build.get('installed_version', 'unknown') }}</strong> · installed source <span class="mono">{{ tool_build.get('active', '')[:12] or 'unknown' }}</span>. {% if tool_build.get('sha') %}Latest available release: <span class="mono">{{ tool_build.sha[:12] }}</span> (not installed).{% else %}No newer release has been recorded by this scheduler.{% endif %}</p>
+</div>
+
 {% if config_hold %}
 <div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Configuration</div>

@@ -93,7 +93,7 @@ def status(
     console.print(mp_line)
     up = sched.upgrade_available()
     build = sched.upgrade_status()
-    console.print(f"tool active: {str(build.get('active') or 'unversioned')[:12]}")
+    console.print(f"tool installed: {build.get('installed_version', 'unknown')} · source: {str(build.get('active') or 'unknown')[:12] or 'unknown'}")
     if up:
         sha = str(up.get("sha") or "")[:12]
         count = up.get("count")
