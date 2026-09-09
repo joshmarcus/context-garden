@@ -474,6 +474,92 @@ def test_remote_queue_age_is_not_execution_age_and_timestamps_survive_reclaim(
     assert legacy.execution_minutes() == 0
 
 
+def test_remote_idle_uses_first_claim_and_ignores_controller_checkout(
+    garden, monkeypatch, fake_github, tmp_path,
+):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    now = dt.datetime.now(dt.UTC)
+    queued = (now - dt.timedelta(minutes=20, seconds=4)).isoformat()
+    run.started_at = queued
+    run.queued_at = queued
+    controller_checkout = tmp_path / "controller-checkout"
+    controller_checkout.mkdir()
+    controller_file = controller_checkout / "unrelated.py"
+    controller_file.write_text("# not the remote checkout\n")
+    old = (now - dt.timedelta(hours=2)).timestamp()
+    os.utime(controller_file, (old, old))
+    run.worktree = str(controller_checkout)
+    run.save()
+
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    claimed = RunStore(store.config.garden_dir).latest("DM-001")
+    first_claim = (now - dt.timedelta(minutes=12, seconds=37)).isoformat()
+    claimed.claimed_at = first_claim
+    claimed.execution_started_at = first_claim
+    claimed.lease_updated_at = now.isoformat()
+    claimed.lease_expires_at = (now + dt.timedelta(minutes=8)).isoformat()
+    claimed.claim_history[0]["claimed_at"] = first_claim
+    claimed.save()
+
+    scheduler = Scheduler(store, github=fake_github)
+    scheduler.cfg.data["idle_kill_minutes"] = 20
+    scheduler.cfg.data["timeout_minutes"] = 90
+    runner = scheduler.runner_for(store.task("DM-001"), "remote", claimed.harness)
+    assert 12.5 < claimed.idle_minutes() < 13
+    assert not scheduler._finished_or_timed_out(claimed, runner)
+
+    # A current lease alone is not productive activity. Once actual execution has been
+    # silent for the configured interval, the ordinary bounded idle policy still applies.
+    claimed.execution_started_at = (now - dt.timedelta(minutes=21)).isoformat()
+    claimed.save()
+    assert scheduler._finished_or_timed_out(claimed, runner)
+    expired = RunStore(store.config.garden_dir).latest("DM-001")
+    assert expired.status == "timeout" and "idle 21 min" in expired.error
+    assert claim["lease_token"] and not expired.lease_token and not expired.lease_expires_at
+
+
+def test_remote_idle_legacy_claim_fallback_survives_reclaim(garden, monkeypatch, fake_github):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    now = dt.datetime.now(dt.UTC)
+    original_started = (now - dt.timedelta(hours=3)).isoformat()
+    first_claim = (now - dt.timedelta(minutes=2)).isoformat()
+    auth = {"Authorization": "Bearer secret-token"}
+    first = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth)
+    assert first.status_code == 200
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    run.started_at = original_started
+    run.queued_at = ""
+    run.claimed_at = first_claim
+    run.execution_started_at = ""
+    run.lease_expires_at = (now - dt.timedelta(seconds=1)).isoformat()
+    run.save()
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers=auth)
+    assert response.status_code == 200
+    reclaimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert reclaimed.started_at == original_started
+    assert reclaimed.claimed_at == first_claim
+    assert reclaimed.execution_started_at == first_claim
+    assert len(reclaimed.claim_history) == 2
+    assert 1.9 < reclaimed.idle_minutes() < 2.1
+
+    scheduler = Scheduler(store, github=fake_github)
+    scheduler.cfg.data["idle_kill_minutes"] = 20
+    scheduler.cfg.data["timeout_minutes"] = 1
+    reclaimed.claimed_at = (now - dt.timedelta(minutes=8)).isoformat()
+    reclaimed.execution_started_at = reclaimed.claimed_at
+    reclaimed.save()
+    runner = scheduler.runner_for(store.task("DM-001"), "remote", reclaimed.harness)
+    assert scheduler._finished_or_timed_out(reclaimed, runner)
+    assert RunStore(store.config.garden_dir).latest("DM-001").error == "timed out"
+
+
 def test_remote_timeout_revokes_generation_and_rejects_late_evidence(
     garden, monkeypatch, fake_github,
 ):
