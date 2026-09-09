@@ -216,6 +216,32 @@ def test_waiting_state_recovery_retains_a_live_check_and_its_continuation(sched,
     assert sched.state.get(task.id)["check_run"]["cont"]["task_status"] == "in_review"
 
 
+@pytest.mark.parametrize("run_status", ["requested", "preparing"])
+def test_terminal_check_recovery_retains_a_preparing_check_and_its_stop(sched, run_status):
+    """A reserved check launch has no terminal result for recovery to reconcile yet."""
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="check", initial_status=run_status)
+    run.save()
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": run.run_id, "stage": "ci", "cont": {"task_status": "in_review"}}
+    st["recovery_check"] = {"run": run.run_id, "stage": "ci", "cont": {}, "specs": []}
+    st["needs_human"] = {"kind": "check_did_not_run", "run": run.run_id,
+                         "reason": "check did not run"}
+    sched.state.save()
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert outcome == f"live check {run.run_id} retained; still {run_status}"
+    state = sched.state.get(task.id)
+    assert state["check_run"]["run_id"] == run.run_id
+    assert state["needs_human"]["run"] == run.run_id
+    assert state["recovery_check"]["run"] == run.run_id
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+
+
 def test_waiting_state_recovery_reaps_a_finished_check_normally(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.status = Status.WAITING_HUMAN

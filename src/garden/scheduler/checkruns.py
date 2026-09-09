@@ -191,7 +191,12 @@ class CheckRunMixin:
             # Its terminal run id remains in both halves of the stop, so use that durable
             # identity to recover the stop unless a newer pointer has taken ownership.
             run = self._run_by_id(task, stopped_run_id)
-        if run is not None and run.status == "running":
+        if run is not None and run.lifecycle_state != "finished":
+            # A recovery launch reserves its run before setup and process start.  Those
+            # requested/preparing records are just as active as a running process, but have
+            # no check result to reap or task status to restore yet.
+            if run.status != "running":
+                return f"live check {run.run_id} retained; still {run.lifecycle_state}"
             runner = self.runner_for(task, run.runner, run.harness)
             if self._finished_or_timed_out(run, runner):
                 self.reap_check(task, rep)
@@ -210,7 +215,7 @@ class CheckRunMixin:
         if stop_info.get("kind") == "check_did_not_run" and stopped_run_id:
             # Only dispose of the pointer that names this exact stopped check.  A later
             # check may already own the task, and its continuation must win this race.
-            if run is None or run.status == "running":
+            if run is None or run.lifecycle_state != "finished":
                 return f"check {stopped_run_id} is not proven terminal; left its continuation untouched"
 
             st.pop("check_run", None)
