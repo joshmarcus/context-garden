@@ -161,6 +161,54 @@ def test_product_resource_weight_requires_positive_integer(sched, value):
         sched.cfg.product_resource_weight("demo")
 
 
+def test_explicit_weight_is_reserved_before_taskless_aux_run_is_published(sched):
+    _set_resource_limit(sched, "max_parallel", 3)
+    occupied = sched._new_local_run("DM-001", "work", "work", resource_weight=2)
+
+    with pytest.raises(ResourcePressureError, match="needs 2 capacity unit"):
+        sched._new_local_run("_persona", "persona", "persona", resource_weight=2)
+
+    assert sched.resource_status().active == 2
+    assert not sched.runs.runs_for("_persona")
+    occupied.status = "done"
+    occupied.save()
+
+
+@pytest.mark.parametrize("kind", ["persona", "kickoff"])
+def test_taskless_product_aux_uses_product_weight_during_admission(sched, kind):
+    _set_resource_limit(sched, "max_parallel", 1)
+    sched.cfg.data["products"]["demo"]["resources"] = {"weight": 2}
+
+    with pytest.raises(ResourcePressureError, match="needs 2 capacity unit"):
+        sched.dispatch_aux(
+            kind, None, "brief", sched.store.root,
+            {"id": f"_{kind}-demo-p1", "product": "demo", "phase": "p1"},
+        )
+
+    assert not sched.runs.runs_for(f"_{kind}-demo-p1")
+
+
+def test_unschedulable_weight_does_not_starve_feasible_local_work(sched, garden, monkeypatch):
+    _set_resource_limit(sched, "max_parallel", 4)
+    _add_product(sched, garden, "oversized", "HV-001", 5, 180)
+    heavy = sched.store.task("HV-001")
+    cheap = sched.store.task("DM-001")
+    sched.state.get(heavy.id)["resource_bypasses"] = 3
+    sched.state.save()
+    monkeypatch.setattr(sched, "dispatch_queue", lambda: [
+        (heavy, "work", "older"), (cheap, "work", "newer"),
+    ])
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: False)
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+    dispatched = []
+    monkeypatch.setattr(sched, "dispatch", lambda task, mode, runner: dispatched.append(task.id))
+
+    sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
+
+    assert dispatched == [cheap.id]
+    assert sched.state.get(heavy.id)["resource_bypasses"] == 3
+
+
 def test_memory_or_temp_pressure_records_environment_stop_and_recovers(sched, monkeypatch):
     import garden.scheduler.resources as resources
 

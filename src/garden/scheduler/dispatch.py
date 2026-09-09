@@ -123,7 +123,10 @@ class DispatchMixin:
                 if resource.pressured:
                     continue  # remote candidates may still run while the operator host drains
                 if resource.active + weight > resource.limit:
-                    blocked_local.append(task)
+                    # An impossible reservation can never benefit from starvation
+                    # protection and must not strand feasible work behind it.
+                    if weight <= resource.limit:
+                        blocked_local.append(task)
                     continue
                 # Once an older heavy task has been bypassed enough times, hold the
                 # remaining units for it. Remote work uses another host and may proceed.

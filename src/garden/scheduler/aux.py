@@ -26,13 +26,15 @@ class AuxMixin:
         # have no task, and the old shared `_persona` bucket let reports from two phases
         # overwrite one another.
         run_task_id = probe.id if task or kind == "persona" else f"_{kind}"
+        resource_weight = self.cfg.product_resource_weight(probe.product)
         run = prepared_run or (self.runs.new_run(run_task_id, runner_name, mode=kind)
-                               if runner_name == "remote" else self._new_local_run(run_task_id, kind, kind))
+                               if runner_name == "remote" else self._new_local_run(
+                                   run_task_id, kind, kind, resource_weight=resource_weight))
         run.branch = task.branch or task.default_branch() if task else self.final_base_for(probe)
         run.base = self.base_for(task) if task else self.final_base_for(probe)
         run.env_snapshot.update({"product": probe.product,
                                  "execution_timeout_minutes": self.cfg.product_timeout_minutes(probe.product),
-                                 "resource_weight": self.cfg.product_resource_weight(probe.product)})
+                                 "resource_weight": resource_weight})
         run.worktree = str(worktree)
         run.model = self.model_for(probe, runner, difficulty or "hard")
         if kind in ("persona", "compare"):

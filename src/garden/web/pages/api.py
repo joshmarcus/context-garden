@@ -69,18 +69,21 @@ def register(app: FastAPI, site: Site) -> None:
     def leased(run: Any) -> bool:
         return bool(run.lease_expires_at and run.lease_expires_at > dt.datetime.now(dt.UTC).isoformat())
 
+    def execution_timeout_minutes(run: Any) -> float:
+        """Return the snapshotted execution budget, keeping checks independently bounded."""
+        snapshot = run.env_snapshot or {}
+        if "execution_timeout_minutes" in snapshot:
+            return float(snapshot["execution_timeout_minutes"] or 0)
+        elif run.mode == "check":
+            return 0
+        product = str(snapshot.get("product") or "")
+        return (hub.store.config.product_timeout_minutes(product) if product
+                else float(hub.store.config.get("timeout_minutes", 90) or 0))
+
     def execution_deadline(run: Any) -> dt.datetime | None:
         """Fixed controller deadline; heartbeats renew liveness, never execution budget."""
         started = run.execution_started_at or run.claimed_at
-        snapshot = run.env_snapshot or {}
-        if "execution_timeout_minutes" in snapshot:
-            timeout = float(snapshot["execution_timeout_minutes"] or 0)
-        elif run.mode == "check":
-            timeout = 0
-        else:
-            product = str(snapshot.get("product") or "")
-            timeout = (hub.store.config.product_timeout_minutes(product) if product
-                       else float(hub.store.config.get("timeout_minutes", 90) or 0))
+        timeout = execution_timeout_minutes(run)
         if not started or not timeout:
             return None
         return dt.datetime.fromisoformat(started) + dt.timedelta(minutes=timeout + 5)
@@ -330,8 +333,7 @@ def register(app: FastAPI, site: Site) -> None:
                     "harness_config": {k: v for k, v in ((harness.cfg if harness else {}) or {}).items()
                                        if k in {"bin", "max_turns", "output_format", "permission_mode"}},
                     "turn_cap": harness.max_turns_for(run.difficulty) if harness else 0,
-                    "execution_timeout_minutes": float((run.env_snapshot or {}).get(
-                        "execution_timeout_minutes", hub.store.config.product_timeout_minutes(product))),
+                    "execution_timeout_minutes": execution_timeout_minutes(run),
                     "resource_weight": weight,
                 }
                 checks = run.path / "checks_input.json"
