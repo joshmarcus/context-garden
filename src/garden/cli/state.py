@@ -85,7 +85,11 @@ def priority(task_id: str, value: int = typer.Argument(..., help="lower dispatch
 
 
 @app.command(rich_help_panel=PANEL_PLAN)
-def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium | hard (picks the model tier at dispatch)")):
+def difficulty(
+    task_id: str,
+    tier: str = typer.Argument(..., help="easy | medium | hard (picks the model tier at dispatch)"),
+    reason: str = typer.Option("", "--reason", help="Required to deliberately go below an escalation floor"),
+):
     """Set a task's difficulty tier."""
     from ..harness import DIFFICULTIES
 
@@ -95,9 +99,11 @@ def difficulty(task_id: str, tier: str = typer.Argument(..., help="easy | medium
         err.print(f"[red]unknown tier; one of {', '.join(DIFFICULTIES)}[/red]")
         raise typer.Exit(1) from None
     old = t.difficulty
-    t.difficulty = tier
-    t.log(f"difficulty {old} -> {tier}")
-    store.save(t)
+    try:
+        _scheduler(store).set_difficulty(t, tier, reason=reason, actor="cli")
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     console.print(f"{t.id} difficulty {old} -> {tier}")
 
 

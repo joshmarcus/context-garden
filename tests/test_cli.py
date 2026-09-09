@@ -898,6 +898,31 @@ def test_priority_and_difficulty_commands(garden):
     assert "difficulty medium -> hard" in t.body
 
 
+def test_difficulty_command_requires_reason_below_escalation_floor(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.difficulty = "hard"
+    store.save(task)
+    sched = Scheduler(store, log=print)
+    sched.state.get(task.id)["difficulty_floor"] = "medium"
+    sched.state.save()
+
+    refused = run(garden, "difficulty", task.id, "easy")
+    assert refused.exit_code == 1
+    assert "below the durable medium escalation floor" in refused.output
+    assert Store(garden).task(task.id).difficulty == "hard"
+
+    changed = run(garden, "difficulty", task.id, "easy", "--reason", "isolated docs fix")
+    assert changed.exit_code == 0, changed.output
+    assert Store(garden).task(task.id).difficulty == "easy"
+    persisted = Scheduler(Store(garden), log=print).state.get(task.id)
+    assert persisted["difficulty_floor"] == "medium"
+    assert persisted["difficulty_overrides"][-1]["reason"] == "isolated docs fix"
+
+
 def test_trial_cli_prints_a_contenders_table(garden, monkeypatch):
     """CG-229: `garden trial` prints the same contender states/costs/failure-kind info the
     trials and task pages show, right after dispatching."""
