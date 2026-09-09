@@ -325,8 +325,8 @@ class PollMixin:
                 return False, "worker CI is enabled but the PR has no CI result yet"
             if pr.checks not in ("SUCCESS", ""):
                 return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
-        if not require_current_base and pr.checks != "SUCCESS":
-            return False, "the exact-head PR checks have not reported success"
+            if not require_current_base and pr.checks != "SUCCESS":
+                return False, "the exact-head PR checks have not reported success"
         if pr.mergeable != "MERGEABLE":
             return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
         if pr.review_decision == "CHANGES_REQUESTED":
