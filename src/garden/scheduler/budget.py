@@ -11,21 +11,12 @@ from ..configuration import (
     assert_mutation_allowed,
     audit_value,
     product_configuration,
+    resolve_saved_effective_value,
 )
 from ..model import Task, now_iso
 from ..notify import notify
+from ..profiles import PROFILE_KEYS
 from ..profiles import stops as profile_stops
-
-# effective() key -> the field of the active operating profile that answers it, when no more
-# specific live override is set for that key (see effective and operating_profile below).
-_PROFILE_KEYS: dict[str, str] = {
-    "max_parallel": "workers",
-    "review_parallel": "reviews",
-    "models": "models",
-    "review.difficulty": "review_difficulty",
-    "retro.difficulty": "retro_difficulty",
-    "observe.profile": "observe",
-}
 
 
 class BudgetMixin:
@@ -226,7 +217,7 @@ class BudgetMixin:
                 continue
             old = self.effective(key, product=str(product))
             if clear:
-                profile_key = _PROFILE_KEYS.get(key)
+                profile_key = PROFILE_KEYS.get(key)
                 profile = self.operating_profile()
                 new = profile.get(profile_key, self.cfg.get(key)) if profile_key else self.cfg.get(key)
             else:
@@ -259,12 +250,15 @@ class BudgetMixin:
         if key in overrides:
             value = overrides[key]
         else:
-            profile_key = _PROFILE_KEYS.get(key)
             profile_name = str(overrides.get("operating_profile", cfg.get("operating_profile") or ""))
-            profile = dict(profile_stops(cfg).get(profile_name) or {})
-            value = profile.get(profile_key, cfg.get(key)) if profile_key else cfg.get(key)
-        project_value = cfg.setting(key, product)
-        return project_value.value if project_value.source != "global" else value
+            value = resolve_saved_effective_value(
+                cfg.data, key, product, active_profile=profile_name,
+            )
+        if key in overrides:
+            project_value = cfg.setting(key, product)
+            if project_value.source != "global":
+                return project_value.value
+        return value
 
     def effective(self, key: str, default: Any = None, product: str | None = None) -> Any:
         """The live override for `key` if one is set, else the active operating profile's
@@ -276,7 +270,7 @@ class BudgetMixin:
             value = ov[key]
         else:
             value = None
-            field = _PROFILE_KEYS.get(key)
+            field = PROFILE_KEYS.get(key)
             if field:
                 profile = self.operating_profile()
                 if field in profile:
@@ -308,7 +302,7 @@ class BudgetMixin:
         comes from."""
         if key in self.overrides():
             return "override"
-        field = _PROFILE_KEYS.get(key)
+        field = PROFILE_KEYS.get(key)
         if field and field in self.operating_profile():
             return "profile"
         return "yaml"
@@ -347,7 +341,7 @@ class BudgetMixin:
             raise ValueError(f"unknown operating profile {name!r}")
         old = self.operating_profile_name()
         prospective = dict(self.operating_profile_stops().get(name) or {})
-        for key, profile_key in _PROFILE_KEYS.items():
+        for key, profile_key in PROFILE_KEYS.items():
             if key in self.overrides():
                 continue
             new = prospective.get(profile_key, self.cfg.get(key))

@@ -134,6 +134,29 @@ def test_plain_lock_freezes_inherited_value_across_global_edits_and_reload(tmp_p
     assert reloaded.setting("max_parallel", "p").value == 5
 
 
+def test_saved_profile_selection_cannot_bypass_plain_lock_after_restart(garden):
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["profiles"] = {"expanded": {"workers": 7}}
+    data["products"]["demo"]["configuration"] = {
+        "locks": {"max_parallel": {"reason": "fixed profile capacity"}},
+    }
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    config = Config.load(garden)
+    before = path.read_text()
+
+    with pytest.raises(PermissionError, match="fixed profile capacity"):
+        config.save_changes({"operating_profile": "expanded"})
+
+    assert path.read_text() == before
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    fresh = Scheduler(Store(garden))
+    assert fresh.operating_profile_name() == ""
+    assert fresh.effective("max_parallel", product="demo") == 2
+
+
 def test_audit_redacts_sensitive_values_by_key():
     assert audit_value("service.token", "plain text") == "<redacted>"
     assert audit_value("max_parallel", 3) == 3

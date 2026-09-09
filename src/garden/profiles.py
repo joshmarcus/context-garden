@@ -15,6 +15,17 @@ from typing import Any
 # PROFILE_FIELDS).
 PROFILE_FIELDS = ("workers", "reviews", "models", "review_difficulty", "retro_difficulty", "observe")
 
+# Configuration keys supplied by an active operating profile.  This mapping is shared with
+# the configuration policy boundary so a persisted profile selection cannot bypass a plain
+# inherited project lock before a scheduler has started.
+PROFILE_KEYS: dict[str, str] = {
+    "max_parallel": "workers",
+    "review_parallel": "reviews",
+    "review.difficulty": "review_difficulty",
+    "retro.difficulty": "retro_difficulty",
+    "observe.profile": "observe",
+}
+
 # Built-ins, named in the task brief, ordered efficient to fast. A garden may add its own
 # stops or override one of these outright under `profiles:` in garden.yaml.
 BUILTIN_PROFILES: dict[str, dict[str, Any]] = {

@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from .profiles import PROFILE_KEYS
+from .profiles import stops as profile_stops
+
 
 class ConfigScope(StrEnum):
     GLOBAL = "global"
@@ -139,6 +142,30 @@ def resolve_value(data: dict[str, Any], key: str, product: str | None = None) ->
     return ConfigProvenance(deepcopy(value), source)
 
 
+def resolve_saved_effective_value(data: dict[str, Any], key: str,
+                                  product: str | None = None,
+                                  active_profile: str | None = None) -> Any:
+    """Resolve a setting after saved operating-profile and project policy layers.
+
+    Runtime overrides intentionally do not participate: they live in scheduler state rather
+    than the saved configuration document.  The scheduler checks that additional layer at its
+    mutation and reload boundaries.
+    """
+    value = _get(data, key)
+    profile_key = PROFILE_KEYS.get(key)
+    if profile_key:
+        profile_name = (str(data.get("operating_profile") or "")
+                        if active_profile is None else active_profile)
+        profile = profile_stops(data).get(profile_name) or {}
+        if profile_key in profile:
+            value = profile[profile_key]
+    if product is not None:
+        project_value = resolve_value(data, key, product)
+        if project_value.source != "global":
+            return project_value.value
+    return deepcopy(value)
+
+
 def validate_configuration(data: dict[str, Any]) -> None:
     """Validate known values and project policy declarations."""
     for key, field in CONFIG_FIELDS.items():
@@ -192,8 +219,8 @@ def assert_inherited_locks_unchanged(before: dict[str, Any], after: dict[str, An
             # operation, not an indirect ordinary edit of an inherited lock.
             if after_policy is None or "value" in after_policy:
                 continue
-            old = resolve_value(before, key, str(product)).value
-            new = resolve_value(after, key, str(product)).value
+            old = resolve_saved_effective_value(before, key, str(product))
+            new = resolve_saved_effective_value(after, key, str(product))
             if old != new:
                 reason = str(policy.get("reason") or "Locked by project policy")
                 raise PermissionError(f"{key} is locked for {product}: {reason}")
