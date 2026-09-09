@@ -185,6 +185,9 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     sched.tick()
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
+    # The asynchronous result must identify the exact branch head it analyzed.
+    from garden import gitops
+    pr.head_sha = gitops.head_sha(sched.worktree_for(sched.store.task("DM-001")))
     # 1) flaky -> the CI analyser runs as a detached check run (CG-182); its continuation reruns
     #    CI instead of dispatching a revise round
     monkeypatch.setenv("FAKE_CI_MODE", "flaky")

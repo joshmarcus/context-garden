@@ -82,7 +82,8 @@ class Feedback:
             if str(i.get("author", "")).endswith("[bot]"):
                 kind = f"{kind} from a bot"
             state = f" [{i['state']}]" if i.get("state") else ""
-            out.append(f"- **{i.get('author', '?')}** {kind}{state}{where}:\n\n  " + i.get("body", "").strip().replace("\n", "\n  "))
+            origin = f" (on commit `{i['commit_id']}`)" if i.get("commit_id") else ""
+            out.append(f"- **{i.get('author', '?')}** {kind}{state}{where}{origin}:\n\n  " + i.get("body", "").strip().replace("\n", "\n  "))
         return "\n\n".join(out)
 
 
@@ -563,17 +564,20 @@ class GitHub:
             state = r.get("state", "")
             if state == "CHANGES_REQUESTED" and newer(created) and author not in exclude:
                 if not untrusted(author, created, body or "(changes requested)"):
-                    items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created})
+                    items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created,
+                                  "id": r.get("id"), "commit_id": r.get("commit_id")})
             elif keep(author, created, body) and not untrusted(author, created, body):
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": created, "reason": "notice"})
                 else:
-                    items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created})
+                    items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created,
+                                  "id": r.get("id"), "commit_id": r.get("commit_id")})
         for c in comments:
             author = c.get("user", {}).get("login", "")
             if keep(author, c.get("created_at", ""), c.get("body", "")) and not untrusted(author, c["created_at"], c["body"]):
                 # a comment on a diff line always points at code, notice or not
-                items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"]})
+                items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"],
+                              "id": c.get("id"), "commit_id": c.get("commit_id") or c.get("original_commit_id")})
         for c in issue_comments:
             author = c.get("user", {}).get("login", "")
             body = c.get("body", "")
@@ -581,7 +585,8 @@ class GitHub:
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": c["created_at"], "reason": "notice"})
                 else:
-                    items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"]})
+                    items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"],
+                                  "id": c.get("id")})
         items.sort(key=lambda i: i.get("created", ""))
         ignored.sort(key=lambda i: i.get("created", ""))
         return Feedback(items=items, ignored=ignored)
