@@ -490,6 +490,7 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
     assert rep.transitions == ["DM-001 missing review continuation restored"]
 
 
+<<<<<<< HEAD
 def test_review_audit_does_not_restore_an_extra_round_for_a_hard_task(sched):
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW
@@ -509,6 +510,24 @@ def test_review_audit_does_not_restore_an_extra_round_for_a_hard_task(sched):
     sched._audit_review_continuations(sched.store.tasks(), TickReport())
 
     assert not st.get("pending_reviews")
+
+
+def test_review_audit_honors_project_enable_when_reviews_are_globally_disabled(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    sched.cfg.data["review"]["enabled"] = False
+    sched.cfg.data["products"][task.product]["configuration"] = {
+        "overrides": {"review.enabled": True},
+    }
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 0})
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert rep.transitions == ["DM-001 missing review continuation restored"]
 
 
 def test_review_audit_replaces_stale_head_recovery_with_a_fresh_counted_round(sched, fake_github):

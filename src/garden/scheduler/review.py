@@ -458,10 +458,10 @@ class ReviewMixin:
 
     def _audit_review_continuations(self, tasks: dict[str, Task], rep: TickReport) -> None:
         """Restore a reviewable current head that has neither a verdict nor a continuation."""
-        if not bool(self.cfg.get("review.enabled", True)):
-            return
         for task in tasks.values():
             if task.status not in (Status.AWAITING_TRIAGE, Status.IN_REVIEW):
+                continue
+            if not bool(self.effective("review.enabled", True, task.product)):
                 continue
             st = self.state.get(task.id)
             head = str(st.get("head_sha") or "")
@@ -525,7 +525,7 @@ class ReviewMixin:
                     count_round=bool((lost.env_snapshot or {}).get("count_round", True)),
                 )
                 continue
-            if not self._review_round_pending(st):
+            if not self._review_round_pending(st, task.product):
                 continue
             self._queue_pending_reviews(st, [{"kind": "review", "count_round": True}])
             st["review_recovery"] = {"head": head, "attempts": 0,

@@ -313,7 +313,7 @@ class PollMixin:
                 self._transition(task, Status.IN_REVIEW, "current checks resolved the pending CI feedback")
             self.state.save()
             return
-        if not bool(self.cfg.get("auto_revise", True)) and not st.get("needs_human"):
+        if not bool(self.effective("auto_revise", True, task.product)) and not st.get("needs_human"):
             self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
         if task.status == Status.CHANGES_REQUESTED and st.get("pending_feedback") == before:
             self.state.save()

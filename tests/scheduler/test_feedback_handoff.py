@@ -361,6 +361,26 @@ def test_project_manual_revision_handoff_keeps_review_feedback_without_dispatch(
     assert not any(candidate.id == task.id for candidate, _, _ in sched.dispatch_queue())
 
 
+def test_project_auto_revision_avoids_global_manual_handoff(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    sched.cfg.data["auto_revise"] = False
+    sched.cfg.data["products"][task.product]["configuration"] = {
+        "overrides": {"auto_revise": True},
+    }
+
+    sched._apply_feedback(
+        task,
+        pr,
+        Feedback(items=[{"kind": "comment", "id": 42, "body": "Fix this"}]),
+        "",
+        TickReport(),
+    )
+
+    st = sched.state.get(task.id)
+    assert task.status == Status.CHANGES_REQUESTED
+    assert not st.get("needs_human")
+
+
 def test_project_manual_handoff_keeps_description_only_feedback(sched, fake_github):
     task, pr = _open_task(sched, fake_github)
     sched.cfg.data["products"][task.product]["configuration"] = {
