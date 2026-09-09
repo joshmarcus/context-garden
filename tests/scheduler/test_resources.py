@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
-import shutil
 from pathlib import Path
 
 import pytest

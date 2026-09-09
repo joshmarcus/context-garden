@@ -99,9 +99,9 @@ class DispatchMixin:
         # check.  Give queued validation its priority-ordered turn before this ready
         # queue can fill a slot again.
         self._drain_pending_reviews(tasks, rep)
-        for task, mode, _why in queue:
         blocked_local: list[Task] = []
         max_bypasses = max(0, int(self.cfg.get("resources.max_bypasses", 3)))
+        for task, mode, _why in queue:
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)
