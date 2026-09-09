@@ -55,7 +55,14 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
     supervisor, not parsed from an author's result prose.
     """
     required_command = str(policy.get("command") or "").strip()
-    candidates = sorted((garden_dir / "runs" / task_id).glob("*/validations/*/result.json"), reverse=True)
+    # Validation directory names are PIDs locally and remote sequence numbers after
+    # ingestion; neither is chronological. result.json is written only on completion,
+    # and remote results are recreated by the controller in host-observed write order.
+    candidates = sorted(
+        (garden_dir / "runs" / task_id).glob("*/validations/*/result.json"),
+        key=lambda path: (path.stat().st_mtime_ns, str(path)),
+        reverse=True,
+    )
     mismatched = False
     malformed = False
     for path in candidates:
