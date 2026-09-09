@@ -197,17 +197,43 @@ def test_open_pr_refresh_keeps_stale_rows_and_recovers_after_transient_error(sch
 
 
 def test_rate_limited_repository_refresh_backs_off(sched, fake_github):
-    calls = 0
+    sched.tick()
+    sched.tick()
+    calls = {"list": 0, "get": 0}
+    original_get = fake_github.get_pr
 
     def limited(slug):
-        nonlocal calls
-        calls += 1
+        calls["list"] += 1
         raise GitHubError("429 rate limit exceeded")
 
     fake_github.list_open_prs = limited
+    fake_github.get_pr = lambda slug, number: (
+        calls.__setitem__("get", calls["get"] + 1) or original_get(slug, number)
+    )
     sched.tick()
     sched.tick()
+    assert calls == {"list": 1, "get": 0}
+
+
+def test_successful_open_pr_refresh_falls_back_for_closed_linked_pr(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.state = "CLOSED"
+    calls = 0
+    original_get = fake_github.get_pr
+
+    def counted_get(slug, number):
+        nonlocal calls
+        if number == pr.number:
+            calls += 1
+        return original_get(slug, number)
+
+    fake_github.get_pr = counted_get
+    sched.tick()
+
     assert calls == 1
+    assert sched.store.task("DM-001").status == Status.FAILED
 
 
 def test_bot_notice_does_not_trigger_revise_but_is_logged(sched, fake_github):

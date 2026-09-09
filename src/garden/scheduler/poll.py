@@ -78,13 +78,16 @@ class PollMixin:
         repository["prs"] = rows
         self.state.get(self._PR_OBSERVATIONS)[product] = repository
 
-    def refresh_open_prs(self, tasks: dict[str, Task], rep: TickReport) -> dict[tuple[str, int], tuple[PRInfo, Feedback]]:
+    def refresh_open_prs(
+        self, tasks: dict[str, Task], rep: TickReport
+    ) -> tuple[dict[tuple[str, int], tuple[PRInfo, Feedback]], set[str]]:
         """Refresh the Board's repository observations in this tick's existing poll phase.
 
         The returned objects are also consumed by linked-task polling, so an open linked PR
         is fetched once.  The previous snapshot survives provider failures and is marked stale.
         """
         result: dict[tuple[str, int], tuple[PRInfo, Feedback]] = {}
+        suppressed: set[str] = set()
         root = self.state.get(self._PR_OBSERVATIONS)
         products = {str(product) for product in (self.cfg.data.get("products") or {})}
         linked = {
@@ -98,6 +101,7 @@ class PollMixin:
                 continue
             prior = dict(root.get(product) or {})
             if float(prior.get("retry_at") or 0) > time.time():
+                suppressed.add(product)
                 continue
             slug = RepositorySlug(route["slug"], route["host"])
             try:
@@ -137,13 +141,14 @@ class PollMixin:
                 root[product] = {"prs": rows, "refreshed_at": now_iso(), "error": "", "stale": False,
                                  "failures": 0, "retry_at": 0}
             except (GitHubError, OSError, ValueError) as exc:
+                suppressed.add(product)
                 failures = int(prior.get("failures") or 0) + 1
                 rate_limited = "rate limit" in str(exc).lower() or "429" in str(exc)
                 prior.update({"error": str(exc), "stale": True, "failures": failures,
                               "retry_at": time.time() + min(900, 30 * (2 ** min(failures - 1, 5))) if rate_limited else 0})
                 root[product] = prior
                 rep.errors.append(f"{product}: open PR refresh failed: {exc}")
-        return result
+        return result, suppressed
 
     # ---- poll --------------------------------------------------------------
     def poll(self, task: Task, rep: TickReport, observed: tuple[PRInfo, Feedback] | None = None) -> None:
