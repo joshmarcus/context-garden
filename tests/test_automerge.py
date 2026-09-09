@@ -421,3 +421,28 @@ def test_worker_ci_requires_a_pr_result_before_merge(sched, fake_github):
     assert not sched._automerge_gate(t, pr)[0]
     pr.checks = "SUCCESS"
     assert sched._automerge_gate(t, pr)[0]
+
+
+def test_explicit_actions_and_status_require_rollup_but_none_does_not(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    pr.checks = ""
+    for provider in ("actions", "status"):
+        sched.cfg.data["products"]["demo"]["validation"] = provider
+        ok, reason = sched._automerge_gate(t, pr)
+        assert not ok and "no result" in reason
+    sched.cfg.data["products"]["demo"]["validation"] = "none"
+    assert sched._automerge_gate(t, pr)[0]
+
+
+def test_command_validation_must_match_exact_pr_head(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "make validate"
+    }
+    pr.head_sha = gitops.head_sha(sched.worktree_for(t))
+    pr.checks = "FAILURE"
+    st["validation_head"] = "old"
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "exact PR head" in reason
+    st["validation_head"] = pr.head_sha
+    assert sched._automerge_gate(t, pr)[0]

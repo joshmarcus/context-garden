@@ -272,6 +272,55 @@ def test_publishing_ci_check_waits_for_explicit_worker_push_permission(garden):
     ]
 
 
+def test_non_actions_policy_never_briefs_or_runs_publishing_helper(garden):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"].update({
+        "validation": "status",
+        "setup": {"worker_push": True, "test": "python3 scripts/check_ci.py"},
+    })
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+
+    class Scheduler:
+        cfg = store.config
+
+    brief = build_brief(store, store.task("DM-001")).text
+    assert "Do NOT push and do NOT open" in brief
+    assert "python3 scripts/check_ci.py" not in brief
+    assert ReapMixin._pre_pr_specs(Scheduler(), store.task("DM-001"))[0]["requires_worker_push"] is True
+
+
+def test_command_validation_is_an_exact_head_pre_pr_check(garden):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "./ci/validate-head"
+    }
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+
+    class Scheduler:
+        cfg = store.config
+
+    assert {"name": "validation", "command": "./ci/validate-head"} in ReapMixin._pre_pr_specs(
+        Scheduler(), store.task("DM-001")
+    )
+
+
+@pytest.mark.parametrize("validation", [
+    "actions", "status", "none", {"provider": "command", "command": "make verify"},
+])
+def test_validation_policies_load(garden, validation):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["validation"] = validation
+    path.write_text(yaml.safe_dump(config))
+    assert Store(garden).config.product_validation("demo")["provider"] == (
+        validation if isinstance(validation, str) else validation["provider"]
+    )
+
+
 def test_repository_ci_runs_before_pr_and_keeps_full_suite():
     # BaseLoader preserves the YAML key 'on' under both YAML 1.1 and 1.2.
     cfg = yaml.load((Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)

@@ -499,6 +499,8 @@ class CheckRunMixin:
             st["last_diff_hash"] = diff_h
         if body_h is not None:
             st["last_pr_body_hash"] = body_h
+        if self.cfg.product_validation(task.product)["provider"] == "command":
+            st["validation_head"] = gitops.rev_parse(self.worktree_for(task), "HEAD")
         result = worker_run.result if worker_run else self._last_worker_result(task)
         self._open_or_update_pr(task, worker_run, branch, base, result, rep, cont["cost"])
 
