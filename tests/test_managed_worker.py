@@ -3,7 +3,8 @@ import pytest
 
 from garden.hosts import EnvironmentProfile, HostDeclaration, PoolDeclaration
 from garden.hosts.ec2 import EC2Provider
-from garden.managed_worker import host_slot, run
+from garden.managed_worker import claim_with_retry, host_slot, run
+from garden.remote_worker import WorkerRequestError
 
 
 def declaration(**options):
@@ -30,6 +31,30 @@ def test_resource_gate_precedes_claim(tmp_path, monkeypatch):
     monkeypatch.setattr(worker, "resources", lambda root: {"memory_available_bytes": 0, "disk_free_bytes": 0})
     monkeypatch.setattr(worker.AttributedClient, "post", lambda *args: pytest.fail("resource gate bypassed"))
     run({"work_dir": str(tmp_path), "endpoint": "https://garden.example", "worker_token": "synthetic"}, once=True)
+
+
+def test_idle_claim_retries_transient_failure_with_stable_identity():
+    requests = []
+
+    class Client:
+        def post(self, path, payload):
+            requests.append((path, payload))
+            if len(requests) == 1:
+                raise WorkerRequestError(502, "temporary gateway failure")
+            return 204, {}
+
+    assert claim_with_retry(Client(), {"host": "build-1"}, sleep=lambda _delay: None) == (204, {})
+    assert requests[0] == requests[1]
+    assert len(requests[0][1]["claim_request_id"]) >= 16
+
+
+def test_idle_claim_does_not_retry_permanent_response():
+    class Client:
+        def post(self, _path, _payload):
+            raise WorkerRequestError(403, "unknown worker token")
+
+    with pytest.raises(WorkerRequestError, match="HTTP 403"):
+        claim_with_retry(Client(), {"host": "build-1"}, sleep=lambda _delay: pytest.fail("slept"))
 
 
 def test_setup_runs_inside_host_slot_before_managed_work(tmp_path, monkeypatch):

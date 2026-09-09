@@ -12,10 +12,28 @@ import json
 import os
 import shutil
 import time
+import urllib.error
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .remote_worker import WorkerClient, execute_claim
+from .remote_worker import WorkerClient, WorkerRequestError, execute_claim
+
+
+def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep) -> tuple[int, dict]:
+    """Repeat one logical idle claim with bounded backoff and a stable identity."""
+    request = {**payload, "claim_request_id": uuid.uuid4().hex}
+    delay = 0.25
+    while True:
+        try:
+            return client.post("/api/runs/claim", request)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+            sleep(delay)
+        except WorkerRequestError as exc:
+            if not exc.retryable:
+                raise
+            sleep(delay)
+        delay = min(delay * 2, 5.0)
 
 
 def resources(root: Path) -> dict:
@@ -71,7 +89,7 @@ def run(config: dict, *, once: bool = False):
                     return
                 time.sleep(5)
                 continue
-            status, claim = client.post("/api/runs/claim", {
+            status, claim = claim_with_retry(client, {
                 "host": config["host"], "harnesses": config["harnesses"], "capacity": 1,
             })
             if status == 204 or not claim:

@@ -206,11 +206,23 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/api/runs/claim")
     async def claim(request: Request, authorization: str = Header(default="")):
-        """Atomically lease the oldest compatible queued remote run to one configured host."""
+        """Atomically lease, or replay, one compatible run for a configured host.
+
+        ``claim_request_id`` identifies one idle poll. Its response remains replayable only
+        for the lifetime of the allocated lease generation (ordinary lease plus recovery
+        grace); it cannot be reused after expiry, reclaim, completion, or by another host.
+        """
         host_cfg = worker_host(authorization)
         body = await request.json()
         if str(body.get("host") or "") != str(host_cfg.get("name") or ""):
             raise HTTPException(403, "token does not belong to this host")
+        request_id = body.get("claim_request_id")
+        if request_id is None:
+            # Compatibility for older independent workers. New workers supply this value
+            # so an ambiguous response can be replayed rather than allocating twice.
+            request_id = secrets.token_urlsafe(24)
+        if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id):
+            raise HTTPException(422, "claim_request_id must be 16-128 URL-safe characters")
         offered = {str(x) for x in (body.get("harnesses") or [])}
         tiers = {str(x) for x in (body.get("tiers") or [])}
         capacity = min(max(1, int(body.get("capacity") or 1)), int(host_cfg.get("max_parallel") or 1))
@@ -220,6 +232,17 @@ def register(app: FastAPI, site: Site) -> None:
             from ...runs import RunStore
 
             runs = RunStore(hub.store.config.garden_dir).all_runs()
+            replay = next((r for r in runs if r.runner == "remote" and (
+                r.claim_request_id == request_id
+                or any(item.get("claim_request_id") == request_id for item in r.claim_history)
+            )), None)
+            if replay is not None:
+                response_token = str(replay.claim_response.get("lease_token") or "")
+                if replay.claim_request_id != request_id or replay.host != body["host"] \
+                        or not response_token:
+                    raise HTTPException(409, "claim request identity cannot be replayed")
+                claimed_run(replay.run_id, host_cfg, response_token)
+                return JSONResponse(replay.claim_response)
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))
                      and not r.process_finished()]
@@ -269,6 +292,7 @@ def register(app: FastAPI, site: Site) -> None:
                 renew(run, now)
                 run.lease_updated_at = claim_time
                 run.lease_token = secrets.token_urlsafe(32)
+                run.claim_request_id = request_id
                 fresh = hub.fresh()
                 task = fresh.tasks().get(run.task_id)
                 product = task.product if task is not None else str(run.env_snapshot.get("product") or "")
@@ -293,6 +317,7 @@ def register(app: FastAPI, site: Site) -> None:
                 # to its abandoned ref, never overwrite work from its replacement.
                 run.pushed_ref = f"refs/heads/garden-worker/{run.run_id}/{secrets.token_urlsafe(12)}"
                 run.claim_history.append({"claimed_at": claim_time, "host": run.host,
+                                          "claim_request_id": request_id,
                                           "lease_token_sha256": hashlib.sha256(run.lease_token.encode()).hexdigest(),
                                           "pushed_ref": run.pushed_ref})
                 if run.source_head:
@@ -310,8 +335,6 @@ def register(app: FastAPI, site: Site) -> None:
                         run.start_head = gitops.remote_head(scheduler_repo, run.branch)
                     except (AttributeError, gitops.GitError):
                         run.start_head = ""
-                persist_host_facts(run, body.get("host_facts"))
-                run.save()
                 setup = hub.store.config.product_setup(product) or {}
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
@@ -368,6 +391,9 @@ def register(app: FastAPI, site: Site) -> None:
                         }},
                         **({"ci_rerun": True} if check_payload.get("ci_rerun") else {}),
                     }
+                run.claim_response = payload
+                persist_host_facts(run, body.get("host_facts"))
+                run.save()
                 return JSONResponse(payload)
         return Response(status_code=204)
 
