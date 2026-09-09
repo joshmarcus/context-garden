@@ -94,6 +94,8 @@
         <a class="btn primary" href="/tasks/{{ it.task }}">Return to automation…</a>
       {% elif it.group == 'operator' and it.get('kind') == 'operator_scope' %}
         <form method="post" action="/tasks/{{ it.task }}/operator-evidence" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="What you verified in the live environment" required></textarea><button class="primary">Record evidence and continue</button><span class="faint">{{ it.actions[0].detail }}</span></form>
+      {% elif it.group == 'operator' and it.get('kind') == 'runner_hold' %}
+        <form method="post" action="/tasks/{{ it.task }}/release-runner"><button>Release runner hold</button><span class="faint">{{ it.actions[0].detail }}</span></form>
       {% elif it.group == 'deferred' %}
         {% if it.move_to %}<form method="post" action="/tasks/{{ it.task }}/move"><input type="hidden" name="note" value="{{ it.move_to }}"><button class="quiet">Move to {{ it.move_label }}</button></form>{% endif %}
         <a class="btn quiet" href="/phases/{{ it.phase.split('/', 1)[0] }}/{{ it.phase.split('/', 1)[1] }}">View freeze policy</a>

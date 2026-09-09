@@ -81,6 +81,9 @@ class DispatchMixin:
         candidates = [(task, mode) for task, mode in worker_candidates(
             tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
             if (mode != "work" or not self.state.get(task.id).get("needs_human"))
+            # A persisted hold may briefly precede its task-file routing after an I/O error.
+            # It remains an operational stop for revise rounds as well as new work.
+            and not self.state.get(task.id).get("runner_hold")
             and (mode != "work" or self.stack_enabled_for(task)
                  or not blockers(task, tasks, stack=False))]
         queue = [(task, mode, (

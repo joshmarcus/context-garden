@@ -100,6 +100,7 @@ ATTENTION_KINDS = {
     "check_did_not_run": ("A check could not run", "The check continuation and its PR identity are preserved. A delegated operator may retry it once without changing the task's outcome."),
     "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
     "deployment": ("Deployment prerequisite", "An operator must complete the named deployment or recovery step before the scheduler can continue. This is operational work, not an unanswered product question."),
+    "runner_hold": ("Temporary runner hold", "An operator temporarily routed this task away from automatic dispatch. Releasing it preserves the task's feedback and any unrelated decision."),
     "review_recovery_exhausted": ("Automatic review recovery exhausted", "The scheduler preserved and retried the review request, but its bounded repair budget is spent. Repair review capacity or the reviewer environment, then request one more review."),
     "troubled_task": ("Troubled task", "Substantive revisions are not converging. New implementation dispatch is paused for an explicit bounded decision."),
     "investigation": ("Investigation requested", "Implementation and review mutations are paused while the preserved work reaches a safe boundary for diagnosis."),
@@ -505,6 +506,15 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
         # configured runner from the task/store rather than requiring a live Scheduler.
         is_manual = (t.runner or store.config.product_runner(t.product)) == "manual"
         phase_hold = phase_refusal(phases[t.key], t) if t.key in phases else ""
+        runner_hold = st.get("runner_hold")
+        if isinstance(runner_hold, dict) and not t.status.terminal:
+            reason = str(runner_hold.get("reason") or "temporary manual routing")
+            add("operator", t, f"temporary runner hold: {reason}", [
+                {"label": "Release runner hold", "kind": "release-runner",
+                 "command": f"garden release-runner {t.id}",
+                 "detail": "returns the task to its prior runner and clears only this hold's operational notice"},
+            ], kind="runner_hold", kind_title="Temporary runner hold",
+                kind_blurb=ATTENTION_KINDS["runner_hold"][1], reason=reason, evidence=[])
         if is_manual and not t.status.terminal and t.status == Status.READY and not st.get("needs_human") and not st.get("decision"):
             if phase_hold:
                 add("manual_waiting", t, f"waiting: {phase_hold}", [], kind="frozen")
@@ -616,7 +626,11 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                     prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
                     review_head=str(st.get("last_review_head") or ""),
                     current_head=str(st.get("head_sha") or ""))
-        if (st.get("needs_human") and not t.status.terminal) or t.status == Status.FAILED:
+        hold_stop = (isinstance(runner_hold, dict) and isinstance(st.get("needs_human"), dict)
+                     and st["needs_human"].get("kind") == "runner_hold"
+                     and st["needs_human"].get("hold_id") == runner_hold.get("id"))
+        if ((st.get("needs_human") and not hold_stop and not t.status.terminal)
+                or t.status == Status.FAILED):
             att = attention_view(t, st, runs)
             if att:
                 add("operator" if att.get("delegated") or att["kind"] == "deployment" else "attention", t,

@@ -440,6 +440,35 @@ def take(
     print(brief_path.read_text())
 
 
+@app.command("hold-runner", rich_help_panel=PANEL_LOOP)
+def hold_runner(
+    task_id: str,
+    reason: str = typer.Argument(..., help="Why automatic dispatch is temporarily held"),
+):
+    """Temporarily route a task to manual work without creating an owner decision."""
+    store = _store()
+    task = _task(store, task_id)
+    try:
+        _scheduler(store).hold_runner(task, reason)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task.id}: temporary runner hold recorded")
+
+
+@app.command("release-runner", rich_help_panel=PANEL_LOOP)
+def release_runner(task_id: str):
+    """Release a temporary runner hold and restore automatic eligibility."""
+    store = _store()
+    task = _task(store, task_id)
+    try:
+        _scheduler(store).release_runner_hold(task)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task.id}: temporary runner hold released")
+
+
 @app.command(rich_help_panel=PANEL_LOOP)
 def finish(
     task_id: str,

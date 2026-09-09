@@ -135,6 +135,16 @@ def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor
     sched.retry(t, actor=actor)
 
 
+@action("hold-runner")
+def hold_runner(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.hold_runner(t, note, actor="delegated_operator")
+
+
+@action("release-runner")
+def release_runner(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.release_runner_hold(t, actor="delegated_operator")
+
+
 @action("take")
 def take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
     try:
