@@ -65,6 +65,43 @@ def test_group_by_activity_names_resume():
     assert series["groups"] == ["resume"]
 
 
+def test_per_task_cost_uses_distinct_tasks_and_keeps_unpriced_and_taskless_runs_separate():
+    events = [
+        {"at": "2026-09-05T10:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "cost_usd": 4.0},
+        {"at": "2026-09-05T10:01:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "work", "cost_usd": 4.0},
+        # A revision raises this task's spend but not the denominator.
+        {"at": "2026-09-05T10:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "revise", "cost_usd": 2.0},
+        # A recorded zero is priced activity, while None is not.
+        {"at": "2026-09-05T10:03:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "revise", "cost_usd": 0.0},
+        {"at": "2026-09-05T10:04:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "revise", "cost_usd": None},
+        {"at": "2026-09-05T10:05:00+00:00", "kind": "run_finished", "mode": "review", "cost_usd": 3.0},
+    ]
+    series = cost_series(events, _tasks(), group_by="activity")
+
+    assert series["totals"]["work"]["task_count"] == 2
+    assert series["totals"]["work"]["cost_per_task_usd"] == 4.0
+    assert series["totals"]["revise"]["task_count"] == 2
+    assert series["totals"]["revise"]["cost_usd"] == 2.0
+    assert series["totals"]["revise"]["unpriced_runs"] == 1
+    assert series["totals"]["revise"]["cost_per_task_usd"] is None
+    assert series["totals"]["review"]["taskless_runs"] == 1
+    assert series["totals"]["review"]["cost_per_task_usd"] is None
+    # Overall is total / the union of task IDs, never an average of activity averages.
+    assert series["grand_total"]["task_count"] == 2
+    assert series["grand_total"]["cost_per_task_usd"] is None
+    complete = cost_series(events[:3], _tasks(), group_by="activity")["grand_total"]
+    assert complete["cost_per_task_usd"] == 5.0
+
+
+def test_per_task_average_stays_constant_when_equal_spend_is_doubled():
+    one_task = [{"at": "2026-09-05T10:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "cost_usd": 5.0}]
+    two_tasks = one_task + [{"at": "2026-09-05T10:01:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "work", "cost_usd": 5.0}]
+    assert cost_series(one_task, _tasks())["grand_total"]["cost_usd"] == 5.0
+    doubled = cost_series(two_tasks, _tasks())["grand_total"]
+    assert doubled["cost_usd"] == 10.0
+    assert doubled["cost_per_task_usd"] == 5.0
+
+
 def test_group_by_buckets_by_day():
     series = cost_series(_events(), _tasks(), group_by="activity", bucket="day")
     by_bucket = {b["bucket"]: b["groups"] for b in series["buckets"]}
@@ -195,6 +232,23 @@ def test_cli_and_web_costs_agree_on_a_fixture_log(garden):
     page = client(garden).get("/costs?by=model").text
     assert "$2.55" in page and "$1.60" in page
     assert '<option value="model" selected>' in page
+
+
+def test_costs_page_switches_to_average_per_task_and_preserves_total_context(garden):
+    from tests.test_web import client
+
+    _write_events(garden, [
+        {"at": "2026-09-05T09:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work", "cost_usd": 2.0},
+        {"at": "2026-09-05T09:01:00+00:00", "kind": "run_finished", "task": "DM-002", "mode": "work", "cost_usd": 4.0},
+        {"at": "2026-09-05T09:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "revise", "cost_usd": 2.0},
+    ])
+
+    page = client(garden).get("/costs?metric=per_task&by=activity").text
+    assert '<option value="per_task" selected>' in page
+    assert "Average cost per participating task over time, by activity" in page
+    assert "8.00 over 3 runs and 2 participating tasks" in page
+    assert "Overall average: $4.00 per participating task" in page
+    assert "Work and revise can have different task cohorts" in page
 
 
 def test_backfill_recomputes_codex_cost_from_stored_transcript(garden):

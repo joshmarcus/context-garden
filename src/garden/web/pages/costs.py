@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from ... import operator_spend as ops
-from ...charts import cost_stack_svg
+from ...charts import cost_per_task_svg, cost_stack_svg
 from ...costs import GROUP_BY_CHOICES, cost_series
 from ...events import EventLog, metrics, parse_since
 from ..common import Site
@@ -31,6 +31,7 @@ def register(app: FastAPI, site: Site) -> None:
     def costs_page(
         request: Request, since: str = "", bucket: str = "day", by: str = "activity",
         difficulty: str = "", model: str = "", harness: str = "", phase: str = "", task: str = "", session: str = "",
+        metric: str = "total",
     ):
         s = hub.fresh()
         tasks = s.tasks()
@@ -39,6 +40,7 @@ def register(app: FastAPI, site: Site) -> None:
         events = events + ops.to_cost_events(operator_records)
         by = by if by in GROUP_BY_CHOICES else "activity"
         bucket = bucket if bucket in ("day", "hour") else "day"
+        metric = metric if metric in ("total", "per_task") else "total"
         window_since = resolve_since(since)
         series = cost_series(events, tasks, since=window_since, bucket=bucket, group_by=by,
                              difficulty=difficulty, model=model, harness=harness, phase=phase, task=task,
@@ -56,10 +58,15 @@ def register(app: FastAPI, site: Site) -> None:
             for e in events
             if e.get("kind") == "profile_changed" and (not window_since or str(e.get("at") or "") >= window_since)
         ]
+        chart = (
+            cost_per_task_svg(series)
+            if metric == "per_task"
+            else cost_stack_svg(series, compactions=compactions, annotations=annotations)
+        )
         return templates.TemplateResponse(request, "costs.html", ctx(
             request, page="costs", series=series,
             outcomes=outcomes,
-            chart=cost_stack_svg(series, compactions=compactions, annotations=annotations),
+            chart=chart,
             since=since, bucket=bucket, by=by, difficulty=difficulty, model=model, harness=harness,
-            phase=phase, task=task, session=session, models=models, harnesses=harnesses, task_ids=task_ids,
+            phase=phase, task=task, session=session, metric=metric, models=models, harnesses=harnesses, task_ids=task_ids,
             session_ids=session_ids, phase_keys=phase_keys))

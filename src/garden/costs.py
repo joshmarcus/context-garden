@@ -56,15 +56,50 @@ def _group_key(ev: dict[str, Any], task: Task | None, group_by: str) -> str:
 
 
 def _zero_row() -> dict[str, Any]:
-    return {"runs": 0, "cost_usd": 0.0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    return {
+        "runs": 0, "cost_usd": 0.0, "priced_runs": 0, "unpriced_runs": 0,
+        "task_ids": set(), "taskless_runs": 0, "taskless_cost_usd": 0.0,
+        "cache_read_tokens": 0, "cache_write_tokens": 0,
+    }
 
 
 def _add(row: dict[str, Any], ev: dict[str, Any]) -> None:
     row["runs"] += 1
-    row["cost_usd"] += float(ev.get("cost_usd") or 0.0)
+    cost = ev.get("cost_usd")
+    priced = isinstance(cost, (int, float)) and not isinstance(cost, bool)
+    if priced:
+        row["cost_usd"] += float(cost)
+        row["priced_runs"] += 1
+    else:
+        row["unpriced_runs"] += 1
+    task_id = str(ev.get("task") or "")
+    if task_id:
+        row["task_ids"].add(task_id)
+    else:
+        row["taskless_runs"] += 1
+        if priced:
+            row["taskless_cost_usd"] += float(cost)
     usage = ev.get("usage") or {}
     row["cache_read_tokens"] += int(usage.get("cache_read_input_tokens", 0) or 0)
     row["cache_write_tokens"] += int(usage.get("cache_creation_input_tokens", 0) or 0)
+
+
+def _finish_row(row: dict[str, Any], grand_cost: float | None = None) -> None:
+    """Make an internal aggregation row safe for callers and calculate task-based values."""
+    task_count = len(row.pop("task_ids"))
+    row["task_count"] = task_count
+    row["cost_usd"] = round(row["cost_usd"], 4)
+    row["taskless_cost_usd"] = round(row["taskless_cost_usd"], 4)
+    row["cost_complete"] = row["unpriced_runs"] == 0
+    row["mean_cost_usd"] = round(row["cost_usd"] / row["runs"], 4) if row["runs"] else None
+    # A taskless run cannot be apportioned to a participating task, so its presence makes
+    # this group's per-task value unavailable even when its price is known.
+    row["cost_per_task_usd"] = (
+        round(row["cost_usd"] / task_count, 4)
+        if task_count and row["cost_complete"] and not row["taskless_runs"] else None
+    )
+    if grand_cost is not None:
+        row["share"] = round(row["cost_usd"] / grand_cost, 4) if grand_cost else None
 
 
 def cost_series(
@@ -79,8 +114,9 @@ def cost_series(
     Returns `{"buckets": [{"bucket": <key>, "groups": {group: row}}, ...], "totals": {group:
     row}, "grand_total": row, "groups": [group, ...] ordered by descending cost, "group_by":
     group_by, "bucket": bucket}`, where a `row` is `{runs, cost_usd, cache_read_tokens,
-    cache_write_tokens}` (`totals` and `grand_total` rows also carry `mean_cost_usd` and
-    `share`, the fraction of the grand total's cost).
+    cache_write_tokens}`. Rows also carry their distinct `task_count`,
+    `cost_per_task_usd`, pricing completeness, and `share` (for totals). Missing prices
+    stay missing rather than becoming zero-cost runs.
     """
     if group_by not in GROUP_BY_CHOICES:
         raise ValueError(f"unknown group_by: {group_by}")
@@ -119,15 +155,13 @@ def cost_series(
         _add(buckets.setdefault(bucket_key(at, bucket), {}).setdefault(group, _zero_row()), ev)
         _add(totals.setdefault(group, _zero_row()), ev)
         _add(grand, ev)
-    grand["cost_usd"] = round(grand["cost_usd"], 4)
+    _finish_row(grand)
     for row in totals.values():
-        row["cost_usd"] = round(row["cost_usd"], 4)
-        row["mean_cost_usd"] = round(row["cost_usd"] / row["runs"], 4) if row["runs"] else None
-        row["share"] = round(row["cost_usd"] / grand["cost_usd"], 4) if grand["cost_usd"] else None
+        _finish_row(row, grand["cost_usd"])
     ordered_buckets = [{"bucket": b, "groups": buckets[b]} for b in sorted(buckets)]
     for row_set in ordered_buckets:
         for row in row_set["groups"].values():
-            row["cost_usd"] = round(row["cost_usd"], 4)
+            _finish_row(row)
     return {
         "buckets": ordered_buckets,
         "totals": totals,
