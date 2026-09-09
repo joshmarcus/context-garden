@@ -2,7 +2,7 @@
 
 **Drive autonomous agent development by tending a context garden.** You maintain principles, product overviews, phase goals, and specs as Markdown; context-garden turns that context into plans, working code, and reviewed pull requests. As your project grows, you refine the documents that guide the agents, and the agents carry the work through implementation, checks, review, and revision. Your job is to shape the goals, make decisions, and choose what ships.
 
-Built for developers and small teams working on existing projects. Use Claude Code, Codex, or a custom CLI harness with your project's own setup, test, and lint commands. Run the loop locally, on prepared remote hosts, or alongside an interactive coding session.
+Use Claude Code, Codex, or a custom CLI harness with your project's own setup, test, and lint commands. Run the loop locally, on prepared remote hosts, or alongside an interactive coding session.
 
 ![Inbox showing a worker question, draft work to approve, and phase progress](docs/screenshots/inbox-light.png)
 
