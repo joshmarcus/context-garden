@@ -436,9 +436,34 @@ def test_git_env_forces_hookspath_and_fsmonitor_off(tmp_path: Path, monkeypatch)
     gitops.git("status", cwd=tmp_path, check=False)
 
     env = captured["env"]
-    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_COUNT"] == "3"
     assert env["GIT_CONFIG_KEY_0"] == "core.hooksPath" and env["GIT_CONFIG_VALUE_0"]
     assert env["GIT_CONFIG_KEY_1"] == "core.fsmonitor" and env["GIT_CONFIG_VALUE_1"] == "false"
+    assert env["GIT_CONFIG_KEY_2"] == "maintenance.auto" and env["GIT_CONFIG_VALUE_2"] == "0"
+
+
+def test_tick_read_cache_reuses_stable_metadata_and_successful_fetch(
+    origin_repo: tuple[Path, Path], monkeypatch,
+) -> None:
+    repo, _remote = origin_repo
+    calls: list[tuple[str, ...]] = []
+    real_git = gitops.git
+
+    def recording_git(*args, **kwargs):
+        calls.append(args)
+        return real_git(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "git", recording_git)
+    with gitops.tick_read_cache():
+        assert gitops.remote_url(repo) == gitops.remote_url(repo)
+        assert gitops.base_ref(repo, "main") == gitops.base_ref(repo, "main") == "origin/main"
+        assert gitops.fetch(repo) and gitops.fetch(repo)
+        assert gitops.base_ref(repo, "main") == gitops.base_ref(repo, "main") == "origin/main"
+
+    assert calls.count(("remote", "get-url", "origin")) == 1
+    assert calls.count(("fetch", "--prune", "origin")) == 1
+    # Fetch invalidates ref selection once, while repeated reads on either side are cached.
+    assert calls.count(("rev-parse", "--verify", "refs/remotes/origin/main")) == 2
 
 
 def test_block_repo_refuses_further_git_calls(tmp_path: Path) -> None:

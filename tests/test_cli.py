@@ -603,7 +603,19 @@ def _is_claude_login_probe(cmd) -> bool:
     return isinstance(cmd, list) and "-p" in cmd and "--output-format" in cmd
 
 
-def test_doctor_success_with_valid_setup(garden, monkeypatch):
+@pytest.fixture
+def _gh_available(monkeypatch):
+    """Make mocked doctor tests independent of the platform's executable search path."""
+    import garden.cli.diagnostics as diagnostics
+
+    real_which = diagnostics.shutil.which
+    monkeypatch.setattr(
+        diagnostics.shutil, "which",
+        lambda command: "/usr/bin/gh" if command == "gh" else real_which(command),
+    )
+
+
+def test_doctor_success_with_valid_setup(garden, monkeypatch, _gh_available):
     import subprocess
     from types import SimpleNamespace
     from unittest import mock
@@ -634,7 +646,9 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch):
         assert "below doctor.min_free_mb=2048 MB" in r.output
 
 
-def test_doctor_does_not_import_private_runner_adapters(garden, tmp_path, monkeypatch):
+def test_doctor_does_not_import_private_runner_adapters(
+    garden, tmp_path, monkeypatch, _gh_available,
+):
     """A read-only diagnostic must not execute an adapter's import-time code."""
     import subprocess
     from types import SimpleNamespace
@@ -691,7 +705,7 @@ def test_doctor_wraps_long_diagnostics_to_console_width(garden, monkeypatch):
     assert lines and max(len(line) for line in lines) <= 40
 
 
-def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
+def test_doctor_fails_with_no_gh_login(garden, monkeypatch, _gh_available):
     import subprocess
     from unittest import mock
 
@@ -718,7 +732,7 @@ def test_doctor_fails_with_no_gh_login(garden, monkeypatch):
         assert "NOT LOGGED IN" in " ".join(r.output.split())
 
 
-def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
+def test_doctor_fails_with_no_harness_login(garden, monkeypatch, _gh_available):
     import subprocess
     from unittest import mock
 
@@ -748,7 +762,7 @@ def test_doctor_fails_with_no_harness_login(garden, monkeypatch):
         assert "not logged in" in r.output.lower()  # the fix hint carries Harness.parse's detail
 
 
-def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
+def test_doctor_fails_with_no_git_identity(garden, monkeypatch, _gh_available):
     import subprocess
     from unittest import mock
 
@@ -772,7 +786,7 @@ def test_doctor_fails_with_no_git_identity(garden, monkeypatch):
         assert "missing user.name or user.email" in r.output
 
 
-def test_doctor_reports_a_clone_missing_git_identity(garden, monkeypatch):
+def test_doctor_reports_a_clone_missing_git_identity(garden, monkeypatch, _gh_available):
     """CG-147: `garden doctor` walks every clone under work_dir/repos/, not just the checkout
     it happens to run from, so a clone made without an identity is caught before a worker or
     the scheduler hits "Author identity unknown" on its first commit."""
@@ -811,7 +825,7 @@ def test_doctor_reports_a_clone_missing_git_identity(garden, monkeypatch):
         assert "missing git identity" in r.output
 
 
-def test_doctor_tests_notify_command(garden, monkeypatch):
+def test_doctor_tests_notify_command(garden, monkeypatch, _gh_available):
     """`garden doctor` actually runs a configured notify.command with a synthetic payload,
     rather than just reporting whether the key is set."""
     import subprocess
@@ -843,7 +857,9 @@ def test_doctor_tests_notify_command(garden, monkeypatch):
         assert "notify" in r.output and "test ok" in r.output
 
 
-def test_doctor_warns_on_a_notify_command_that_splices_message_into_json(garden, monkeypatch):
+def test_doctor_warns_on_a_notify_command_that_splices_message_into_json(
+    garden, monkeypatch, _gh_available,
+):
     """The Slack example from CG-201's provenance: GARDEN_MESSAGE spliced straight into a
     hand-built JSON string breaks (or is exploitable) the moment a worker-written message
     contains a quote or newline. `garden doctor` must flag it, not just report the test run
@@ -877,7 +893,7 @@ def test_doctor_warns_on_a_notify_command_that_splices_message_into_json(garden,
         assert "GARDEN_MESSAGE" in r.output and "JSON" in r.output
 
 
-def test_doctor_flags_a_failing_notify_command(garden, monkeypatch):
+def test_doctor_flags_a_failing_notify_command(garden, monkeypatch, _gh_available):
     import subprocess
     from unittest import mock
 

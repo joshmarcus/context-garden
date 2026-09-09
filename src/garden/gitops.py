@@ -9,7 +9,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
 from .github import repo_slug_from_remote
 
@@ -33,6 +35,40 @@ class LeaseRejected(GitError):
         )
 
 
+_READ_CACHE: ContextVar[dict[tuple[object, ...], Any] | None] = ContextVar(
+    "garden_git_read_cache", default=None,
+)
+
+
+@contextlib.contextmanager
+def tick_read_cache():
+    """Reuse stable Git metadata and successful fetches within one scheduler tick.
+
+    A tick is one coherent observation of the repositories it operates on. Repeating the
+    same remote, ref-selection and fetch probes in later phases adds process-launch cost
+    without making that observation more current. The context boundary deliberately keeps
+    the cache out of CLI operations and out of the next tick.
+    """
+    token = _READ_CACHE.set({})
+    try:
+        yield
+    finally:
+        _READ_CACHE.reset(token)
+
+
+def _read_cache_key(kind: str, repo: Path, *parts: object) -> tuple[object, ...]:
+    return kind, str(repo.resolve()), *parts
+
+
+def _invalidate_cached_refs(repo: Path) -> None:
+    cache = _READ_CACHE.get()
+    if cache is None:
+        return
+    path = str(repo.resolve())
+    for key in [key for key in cache if len(key) > 1 and key[1] == path and key[0] == "base_ref"]:
+        cache.pop(key, None)
+
+
 @contextlib.contextmanager
 def _empty_hooks_dir():
     """A freshly created, empty directory for `core.hooksPath` (see `_git_env`), torn down as
@@ -53,7 +89,8 @@ def _empty_hooks_dir():
 @contextlib.contextmanager
 def _git_env():
     """The environment every scheduler-side `git` invocation in this module runs under:
-    `core.hooksPath` forced to a fresh, empty directory and `core.fsmonitor` forced off, via
+    `core.hooksPath` forced to a fresh, empty directory, `core.fsmonitor` forced off and
+    automatic repository maintenance disabled, via
     `GIT_CONFIG_COUNT` (git reads `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` pairs as the
     highest-priority config, above the repo's own `.git/config`). A clone's `.git/config` or
     `.git/hooks` is reachable from inside a worker's own worktree (a worktree shares its
@@ -65,9 +102,10 @@ def _git_env():
     with _empty_hooks_dir() as hooks_dir:
         yield {
             **os.environ,
-            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_COUNT": "3",
             "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": hooks_dir,
             "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "maintenance.auto", "GIT_CONFIG_VALUE_2": "0",
         }
 
 
@@ -150,10 +188,17 @@ def is_repo(path: Path) -> bool:
 
 
 def remote_url(repo: Path, remote: str = "origin") -> str:
+    cache = _READ_CACHE.get()
+    key = _read_cache_key("remote_url", repo, remote)
+    if cache is not None and key in cache:
+        return str(cache[key])
     try:
-        return git("remote", "get-url", remote, cwd=repo).strip()
+        result = git("remote", "get-url", remote, cwd=repo).strip()
     except GitError:
-        return ""
+        result = ""
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 def slug(repo: Path) -> str | None:
@@ -197,10 +242,15 @@ def set_identity(repo: Path, name: str, email: str) -> None:
 
 
 def fetch(repo: Path, remote: str = "origin") -> bool:
-    if not remote_url(repo, remote):
-        return False
+    cache = _READ_CACHE.get()
+    key = _read_cache_key("fetch", repo, remote)
+    if cache is not None and cache.get(key) is True:
+        return True
+    _invalidate_cached_refs(repo)
     try:
         git("fetch", "--prune", remote, cwd=repo)
+        if cache is not None:
+            cache[key] = True
         return True
     except GitError:
         return False
@@ -208,14 +258,19 @@ def fetch(repo: Path, remote: str = "origin") -> bool:
 
 def base_ref(repo: Path, base: str) -> str:
     """Prefer origin/<base> when a remote exists, else the local branch."""
-    if remote_url(repo):
-        try:
-            git("rev-parse", "--verify", f"origin/{base}", cwd=repo)
-            return f"origin/{base}"
-        except GitError:
-            pass
-    git("rev-parse", "--verify", base, cwd=repo)
-    return base
+    cache = _READ_CACHE.get()
+    key = _read_cache_key("base_ref", repo, base)
+    if cache is not None and key in cache:
+        return str(cache[key])
+    try:
+        git("rev-parse", "--verify", f"refs/remotes/origin/{base}", cwd=repo)
+        result = f"origin/{base}"
+    except GitError:
+        git("rev-parse", "--verify", base, cwd=repo)
+        result = base
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 def branch_exists(repo: Path, branch: str) -> bool:
@@ -272,15 +327,14 @@ def prepare_worktree(repo: Path, path: Path, branch: str, base: str) -> Path:
         git("worktree", "add", str(path), branch, cwd=repo)
         _ensure_base(repo, path, base)
     else:
-        remote_branch = f"origin/{branch}" if remote_url(repo) else ""
-        if remote_branch:
-            try:
-                git("rev-parse", "--verify", remote_branch, cwd=repo)
-                git("worktree", "add", "--track", "-b", branch, str(path), remote_branch, cwd=repo)
-                _ensure_base(repo, path, base)
-                return path
-            except GitError:
-                pass
+        remote_branch = f"origin/{branch}"
+        try:
+            git("rev-parse", "--verify", f"refs/remotes/{remote_branch}", cwd=repo)
+            git("worktree", "add", "--track", "-b", branch, str(path), remote_branch, cwd=repo)
+            _ensure_base(repo, path, base)
+            return path
+        except GitError:
+            pass
         git("worktree", "add", "-b", branch, str(path), base_ref(repo, base), cwd=repo)
     return path
 

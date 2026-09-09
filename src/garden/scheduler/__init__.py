@@ -335,10 +335,12 @@ class Scheduler(
 
     def repo_for(self, task: Task) -> Path:
         repo = task.repo or self.cfg.product_repo(task.product)
-        git_name, git_email = self.git_identity()
         if isinstance(repo, str) and is_git_remote_url(repo):
+            git_name, git_email = self.git_identity()
             return gitops.ensure_repo(repo, self.cfg.repos_dir, git_name, git_email)
-        return gitops.ensure_repo(Path(repo), self.cfg.repos_dir, git_name, git_email)
+        # An existing path is never cloned, so ensure_repo cannot use an identity here.
+        # Avoid two process launches on every scheduler lookup just to discard the result.
+        return gitops.ensure_repo(Path(repo), self.cfg.repos_dir)
 
     def worktree_for(self, task: Task) -> Path:
         from ..canonical import configured_root
@@ -733,7 +735,8 @@ class Scheduler(
             # change against an in-flight run's fence manifest until it's safe or an operator
             # confirms it (CG-242) — before anything else in this pass can act on it.
             self._reload_config_if_safe()
-            self._tick_body(rep, dispatch)
+            with gitops.tick_read_cache():
+                self._tick_body(rep, dispatch)
         finally:
             # Saved here, not just at the end of the happy path, so a phase that raises past
             # its own guard (or a bug in a guard itself) cannot lose a transition an earlier

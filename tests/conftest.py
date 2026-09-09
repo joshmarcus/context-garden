@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
-import shutil
 import signal
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
+import pytest_timeout
 import yaml
 
 from garden import runner as runner_registry
@@ -20,6 +21,7 @@ from tests.inprocess import InProcessRunner
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
 FAKE_CODEX = Path(__file__).parent / "fake_codex.py"
 FAKE_SSH = Path(__file__).parent / "fake_ssh.py"
+_SESSION_STARTED_MONOTONIC = 0.0
 
 
 def pytest_addoption(parser):
@@ -39,6 +41,30 @@ def pytest_configure(config):
     reaches every git the suite runs, including the ones product code runs on its behalf.
     """
     os.environ.update(_no_fsmonitor_env())
+
+
+def pytest_sessionstart(session):
+    """Anchor the unchanged session budget to a clock immune to wall-clock corrections."""
+    global _SESSION_STARTED_MONOTONIC
+    _SESSION_STARTED_MONOTONIC = time.monotonic()
+
+
+@pytest.hookimpl(hookwrapper=True, trylast=True)
+def pytest_runtest_protocol(item):
+    """Keep pytest-timeout's wall-clock session guard aligned with monotonic elapsed time.
+
+    pytest-timeout 2.4 stores its session expiry as a `time.time()` deadline. A clock
+    correction can therefore end a new suite hundreds of seconds early. This inner hook
+    runs before the plugin evaluates that deadline after each test and re-anchors its
+    existing 900-second budget; the plugin still owns and reports the limit.
+    """
+    yield
+    configured = item.config.getoption("session_timeout") or item.config.getini("session_timeout")
+    timeout = float(configured or 0)
+    if timeout <= 0 or _SESSION_STARTED_MONOTONIC <= 0:
+        return
+    remaining = timeout - (time.monotonic() - _SESSION_STARTED_MONOTONIC)
+    item.config.stash[pytest_timeout.SESSION_EXPIRE_KEY] = time.time() + remaining
 
 
 def pytest_collection_modifyitems(config, items):
@@ -112,6 +138,12 @@ def git(*args: str, cwd: Path, timeout: float = 30) -> None:
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        partial_stdout = exc.output or ""
+        partial_stderr = exc.stderr or ""
+        if isinstance(partial_stdout, bytes):
+            partial_stdout = partial_stdout.decode(errors="replace")
+        if isinstance(partial_stderr, bytes):
+            partial_stderr = partial_stderr.decode(errors="replace")
         if os.name == "posix":
             os.killpg(process.pid, signal.SIGTERM)
         else:  # pragma: no cover - the suite's supported CI hosts are POSIX.
@@ -124,6 +156,10 @@ def git(*args: str, cwd: Path, timeout: float = 30) -> None:
             else:  # pragma: no cover - the suite's supported CI hosts are POSIX.
                 process.kill()
             stdout, stderr = process.communicate()
+        if partial_stdout and not stdout.startswith(partial_stdout):
+            stdout = partial_stdout + stdout
+        if partial_stderr and not stderr.startswith(partial_stderr):
+            stderr = partial_stderr + stderr
         raise RuntimeError(
             f"fixture git command timed out after {timeout:.1f}s: {' '.join(command)}\n"
             f"stderr:\n{stderr}"
@@ -182,10 +218,14 @@ def garden(tmp_path: Path, garden_template: tuple[Path, Path]) -> Path:
     repo = tmp_path / "repo"
     remote = tmp_path / "remote.git"
     template_repo, template_remote = garden_template
-    # Copy rather than link: tests may rewrite refs, config, and worktree files freely
-    # without mutating the seed or another test's remote.
-    shutil.copytree(template_repo, repo)
-    shutil.copytree(template_remote, remote)
+    # Clone from the immutable session seed instead of copying every loose Git file for
+    # every test.  A shared clone shares only immutable objects through an alternate;
+    # refs, config, the index and worktree files remain independent.  This distinction is
+    # material on filesystems where thousands of small-file copies dominate suite time.
+    subprocess.run(["git", "clone", "-q", "--shared", str(template_repo), str(repo)], check=True)
+    subprocess.run([
+        "git", "clone", "-q", "--bare", "--shared", str(template_remote), str(remote),
+    ], check=True)
     git("remote", "set-url", "origin", str(remote), cwd=repo)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
