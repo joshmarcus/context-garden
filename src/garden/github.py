@@ -408,7 +408,7 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "list", "-R", self._repo(slug), "--state", "open",
-                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,statusCheckRollup,updatedAt,isDraft",
+                "--json", "number,url,state,title,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,statusCheckRollup,updatedAt,isDraft",
                 "--limit", "1000",
             )
             return [
@@ -416,6 +416,7 @@ class GitHub:
                     number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
                     head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                     review_decision=p.get("reviewDecision") or "",
+                    mergeable=p.get("mergeable") or "", head_sha=p.get("headRefOid") or "",
                     checks=_rollup_state(p.get("statusCheckRollup") or []),
                     failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
                     updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
@@ -437,7 +438,9 @@ class GitHub:
             basic = self._pr_from_rest(item)
             try:
                 result.append(self.get_pr(slug, basic.number))
-            except GitHubError:
+            except GitHubError as exc:
+                message = str(exc)
+                basic.checks = "PERMISSION" if " 401 " in message or " 403 " in message else "UNAVAILABLE"
                 result.append(basic)
         return result
 
@@ -563,17 +566,17 @@ class GitHub:
             state = r.get("state", "")
             if state == "CHANGES_REQUESTED" and newer(created) and author not in exclude:
                 if not untrusted(author, created, body or "(changes requested)"):
-                    items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created})
+                    items.append({"id": f"review:{r.get('id', '')}", "kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created})
             elif keep(author, created, body) and not untrusted(author, created, body):
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": created, "reason": "notice"})
                 else:
-                    items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created})
+                    items.append({"id": f"review:{r.get('id', '')}", "kind": "review", "state": state, "author": author, "body": body, "created": created})
         for c in comments:
             author = c.get("user", {}).get("login", "")
             if keep(author, c.get("created_at", ""), c.get("body", "")) and not untrusted(author, c["created_at"], c["body"]):
                 # a comment on a diff line always points at code, notice or not
-                items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"]})
+                items.append({"id": f"line:{c.get('id', '')}", "kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"]})
         for c in issue_comments:
             author = c.get("user", {}).get("login", "")
             body = c.get("body", "")
@@ -581,7 +584,7 @@ class GitHub:
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": c["created_at"], "reason": "notice"})
                 else:
-                    items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"]})
+                    items.append({"id": f"comment:{c.get('id', '')}", "kind": "comment", "author": author, "body": body, "created": c["created_at"]})
         items.sort(key=lambda i: i.get("created", ""))
         ignored.sort(key=lambda i: i.get("created", ""))
         return Feedback(items=items, ignored=ignored)
@@ -811,4 +814,6 @@ def _rollup_state(rollup: list[dict[str, Any]]) -> str:
         return "FAILURE"
     if any(s in ("", "PENDING", "IN_PROGRESS", "QUEUED", "EXPECTED", "WAITING") for s in states):
         return "PENDING"
-    return "SUCCESS"
+    if states <= {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+        return "SUCCESS"
+    return "UNKNOWN"

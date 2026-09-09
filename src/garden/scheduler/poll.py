@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import time
+from dataclasses import asdict
 from typing import Any
 
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
-from ..github import GitHubError, PRInfo
+from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..runs import Run
@@ -30,8 +33,99 @@ def _touches_guarded_path(rel: str) -> bool:
 
 
 class PollMixin:
+    _PR_OBSERVATIONS = "__open_prs__"
+
+    @staticmethod
+    def _feedback_key(item: dict[str, Any]) -> str:
+        identity = str(item.get("id") or "")
+        if identity and not identity.endswith(":"):
+            return identity
+        stable = "\0".join(str(item.get(k) or "") for k in
+                           ("kind", "author", "created", "path", "line", "state", "body"))
+        return hashlib.sha256(stable.encode()).hexdigest()
+
+    def _new_feedback(self, record: dict[str, Any], feedback: Feedback) -> Feedback:
+        seen = set(record.get("feedback_seen") or [])
+        items = [item for item in feedback.items if self._feedback_key(item) not in seen]
+        ignored = [item for item in feedback.ignored if self._feedback_key(item) not in seen]
+        return Feedback(items=items, ignored=ignored)
+
+    def _remember_feedback(self, record: dict[str, Any], feedback: Feedback) -> None:
+        seen_order = list(record.get("feedback_seen") or [])
+        seen = set(seen_order)
+        added = 0
+        for item in [*feedback.items, *feedback.ignored]:
+            key = self._feedback_key(item)
+            if key not in seen:
+                seen.add(key)
+                seen_order.append(key)
+                if item in feedback.items:
+                    added += 1
+        record["feedback_seen"] = seen_order
+        record["feedback_count"] = int(record.get("feedback_count") or 0) + added
+
+    def _remember_pr_feedback(self, product: str, number: int, feedback: Feedback) -> None:
+        repository = dict(self.state.get(self._PR_OBSERVATIONS).get(product) or {})
+        rows = list(repository.get("prs") or [])
+        for row in rows:
+            if int(row.get("number") or 0) == number:
+                self._remember_feedback(row, feedback)
+                break
+        repository["prs"] = rows
+        self.state.get(self._PR_OBSERVATIONS)[product] = repository
+
+    def refresh_open_prs(self, tasks: dict[str, Task], rep: TickReport) -> dict[tuple[str, int], tuple[PRInfo, Feedback]]:
+        """Refresh the Board's repository observations in this tick's existing poll phase.
+
+        The returned objects are also consumed by linked-task polling, so an open linked PR
+        is fetched once.  The previous snapshot survives provider failures and is marked stale.
+        """
+        result: dict[tuple[str, int], tuple[PRInfo, Feedback]] = {}
+        root = self.state.get(self._PR_OBSERVATIONS)
+        products = {str(product) for product in (self.cfg.data.get("products") or {})}
+        linked = {(task.product, self._pr_number(task)) for task in tasks.values() if task.pr}
+        for product in sorted(products):
+            route = self.cfg.product_github(product)
+            if not route:
+                continue
+            prior = dict(root.get(product) or {})
+            if float(prior.get("retry_at") or 0) > time.time():
+                continue
+            slug = RepositorySlug(route["slug"], route["host"])
+            try:
+                prs = self.github.list_open_prs(slug)
+                old_rows = {int(row["number"]): row for row in prior.get("prs", [])}
+                rows = []
+                for pr in prs:
+                    old = dict(old_rows.get(pr.number) or {})
+                    # Identity-based deduplication deliberately rereads provider pages. A
+                    # timestamp cursor alone can skip a comment sharing the cursor timestamp.
+                    # This makes equal timestamps, repeated pages, and restarts safe.
+                    fb = self.github.feedback_since(slug, pr.number, "")
+                    fresh = self._new_feedback(old, fb)
+                    if (product, pr.number) not in linked:
+                        self._remember_feedback(old, fresh)
+                    timestamps = [str(i.get("created") or "") for i in [*fb.items, *fb.ignored]]
+                    if timestamps:
+                        old["feedback_since"] = max(timestamps)
+                    old.update(asdict(pr))
+                    old["number"] = pr.number
+                    old["new_feedback"] = len(fresh.items)
+                    rows.append(old)
+                    result[(product, pr.number)] = (pr, fresh)
+                root[product] = {"prs": rows, "refreshed_at": now_iso(), "error": "", "stale": False,
+                                 "failures": 0, "retry_at": 0}
+            except (GitHubError, OSError, ValueError) as exc:
+                failures = int(prior.get("failures") or 0) + 1
+                rate_limited = "rate limit" in str(exc).lower() or "429" in str(exc)
+                prior.update({"error": str(exc), "stale": True, "failures": failures,
+                              "retry_at": time.time() + min(900, 30 * (2 ** min(failures - 1, 5))) if rate_limited else 0})
+                root[product] = prior
+                rep.errors.append(f"{product}: open PR refresh failed: {exc}")
+        return result
+
     # ---- poll --------------------------------------------------------------
-    def poll(self, task: Task, rep: TickReport) -> None:
+    def poll(self, task: Task, rep: TickReport, observed: tuple[PRInfo, Feedback] | None = None) -> None:
         if not self.github.available:
             return
         slug = self.slug_for(task)
@@ -41,7 +135,7 @@ class PollMixin:
         number = self._pr_number(task)
         if not number:
             return
-        pr = self.github.get_pr(slug, number)
+        pr, observed_feedback = observed or (self.github.get_pr(slug, number), None)
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
@@ -60,6 +154,8 @@ class PollMixin:
         else:
             st.pop("ci_diagnostic", None)
         st["failed_checks"] = list(pr.failed_checks)
+        st["mergeable"] = pr.mergeable
+        st["head_sha"] = pr.head_sha
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
             final_base = self.final_base_for(task)
@@ -85,6 +181,12 @@ class PollMixin:
             return  # merged/closed handled above; the rest (triage, CI, feedback) only applies to the active review flow
         was_draft = bool(st.get("pr_draft"))
         st["pr_draft"] = bool(pr.is_draft)
+        # A manually assigned task remains an observation only. The person who claimed it
+        # owns every source/review/merge transition until they explicitly finish it.
+        if (task.runner or self.cfg.product_runner(task.product)) == "manual":
+            if observed_feedback is not None:
+                self._remember_pr_feedback(task.product, number, observed_feedback)
+            return
         if task.status == Status.AWAITING_TRIAGE and not pr.is_draft:
             self.events.emit("triaged", task.id, pr=task.pr, by="github")
             self._transition(task, Status.IN_REVIEW, "marked ready for review on GitHub; triage done")
@@ -97,7 +199,7 @@ class PollMixin:
         if pr.mergeable == "CONFLICTING":
             self._handle_pr_conflict(task, rep)
             return
-        if pr.updated_at and pr.updated_at == st.get("pr_updated_at"):
+        if pr.updated_at and pr.updated_at == st.get("pr_updated_at") and not observed_feedback:
             # Nothing new on GitHub since last look, so any feedback is already processed:
             # a stable point to consider merging on the garden's own gates (a check rollup
             # can flip to green without bumping updated_at, so re-evaluate every poll).
@@ -106,8 +208,9 @@ class PollMixin:
         st["pr_updated_at"] = pr.updated_at
         st["head_sha"] = pr.head_sha
         ci_note = ""
-        if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
-            st["ci_failed_at"] = pr.updated_at
+        ci_identity = f"{pr.head_sha}:{pr.checks}"
+        if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != ci_identity:
+            st["ci_failed_at"] = ci_identity
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
@@ -119,10 +222,11 @@ class PollMixin:
                                          base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note},
                                          extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
                 return
-        fb = self.github.feedback_since(slug, number, task.last_dispatched_at)
+        fb = observed_feedback if observed_feedback is not None else self.github.feedback_since(slug, number, task.last_dispatched_at)
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)
         self._apply_feedback(task, pr, fb, ci_note, rep)
+        self._remember_pr_feedback(task.product, number, fb)
 
     def _apply_feedback(self, task: Task, pr: PRInfo, fb: Any, ci_note: str, rep: TickReport) -> None:
         """Turn new PR feedback and/or a CI note into a revise round (or a human hand-off at the
@@ -180,10 +284,14 @@ class PollMixin:
             ci_note = ""
         elif check_failures(results):
             ci_note += "\n\n" + to_feedback(results, "CI check")
-        fb = self.github.feedback_since(slug, number, task.last_dispatched_at)
+        repository = self.state.get(self._PR_OBSERVATIONS).get(task.product) or {}
+        record = next((row for row in repository.get("prs", [])
+                       if int(row.get("number") or 0) == number), {})
+        fb = self._new_feedback(record, self.github.feedback_since(slug, number, ""))
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)
         self._apply_feedback(task, pr, fb, ci_note, rep)
+        self._remember_pr_feedback(task.product, number, fb)
 
     def _log_ignored_feedback(self, task: Task, ignored: list[dict[str, Any]]) -> None:
         """One task-log line and one event per skipped comment (a bot notice, or an author

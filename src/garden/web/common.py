@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from .. import operator_spend as ops
 from ..events import EventLog, metrics, parse_since
-from ..github import GitHubError, RepositorySlug, is_safe_pr_url, pull_request_number
+from ..github import PRInfo, RepositorySlug, is_safe_pr_url, pull_request_number
 from ..graph import blockers, effective_status, validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
 from ..model import Status, dispatch_sort_key, now_iso
@@ -366,7 +366,7 @@ class Site:
                 "product": product, "phase": None, "closed": include_closed, "problems": validate(tasks)}
 
     def pr_data(self, product: str | None) -> dict[str, Any]:
-        """Build one repository's open-PR rows without letting GitHub failure break Board."""
+        """Build one repository's open-PR rows from the scheduler-owned observation."""
         s = self.hub.fresh()
         configured = [p.name for p in s.products() if s.config.product_github(p.name)]
         selected = product or (configured[0] if configured else "")
@@ -376,14 +376,9 @@ class Site:
 
         route = s.config.product_github(selected)
         slug = RepositorySlug(route["slug"], route["host"])
-        github = self.hub.reader().github
-        if not github.available:
-            return {**base, "pr_product": selected, "pr_rows": [], "pr_error": f"GitHub is unavailable for {selected}: {github.describe()}."}
-        try:
-            prs = github.list_open_prs(slug)
-        except (GitHubError, OSError, ValueError) as exc:
-            LOGGER.warning("open PR listing failed for %s", selected, exc_info=True)
-            return {**base, "pr_product": selected, "pr_rows": [], "pr_error": f"Could not fetch pull requests: {exc}"}
+        observation = State(s.config.garden_dir / "state.json").get("__open_prs__").get(selected) or {}
+        prs = [PRInfo(**{k: v for k, v in row.items() if k in PRInfo.__dataclass_fields__})
+               for row in observation.get("prs", [])]
 
         tasks_by_number: dict[int, Any] = {}
         for task in s.tasks().values():
@@ -395,23 +390,33 @@ class Site:
 
         validation = s.config.product_validation(selected)["provider"]
         rows = []
+        raw_rows = {int(row["number"]): row for row in observation.get("prs", [])}
         for pr in prs:
             task = tasks_by_number.get(pr.number)
             if task is not None and task.status.terminal:
                 continue
+            task_state = State(s.config.garden_dir / "state.json").get(task.id) if task is not None else {}
+            checks = pr.checks
+            if validation == "command" and task is not None:
+                checks = "SUCCESS" if pr.head_sha and task_state.get("validation_head") == pr.head_sha else ""
             rows.append({
                 "pr": pr,
                 "task": task,
                 "safe_url": pr.url if is_safe_pr_url(pr.url) else "",
                 "review": pr.review_decision.replace("_", " ").lower() or "not reported",
-                "checks": self._pr_check_state(pr.checks, validation),
+                "checks": self._pr_check_state(checks, validation),
+                "new_feedback": int(raw_rows[pr.number].get("new_feedback") or 0),
+                "feedback_count": int(raw_rows[pr.number].get("feedback_count") or 0),
             })
-        return {**base, "pr_product": selected, "pr_rows": rows, "pr_error": ""}
+        return {**base, "pr_product": selected, "pr_rows": rows,
+                "pr_error": str(observation.get("error") or ""),
+                "pr_stale": bool(observation.get("stale")),
+                "pr_refreshed_at": str(observation.get("refreshed_at") or "")}
 
     @staticmethod
     def _pr_check_state(checks: str, provider: str) -> str:
         if checks:
-            return checks.lower()
+            return checks.replace("_", " ").lower()
         if provider == "none":
             return "not configured"
         if provider == "command":
