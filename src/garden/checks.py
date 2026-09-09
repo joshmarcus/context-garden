@@ -246,7 +246,10 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
     slug, branch = ctx.get("repo_slug", ""), ctx.get("branch", "")
     if not gh or not slug or not branch:
         return {"status": "error", "summary": "gh CLI or repo/branch context missing", "details": ""}
-    proc = subprocess.run([gh, "run", "list", "-R", slug, "--branch", branch, "--limit", "10",
+    # Check contexts cross process boundaries, where RepositorySlug becomes an ordinary
+    # string.  Keep the host separately so Actions never inherits gh's ambient host.
+    repo = f"{str(ctx.get('repo_host') or 'github.com').lower().rstrip('.')}/{slug}"
+    proc = subprocess.run([gh, "run", "list", "-R", repo, "--branch", branch, "--limit", "10",
                            "--json", "databaseId,name,conclusion,headSha,status"], capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         return {"status": "error", "summary": proc.stderr.strip()[-300:], "details": ""}
@@ -258,7 +261,7 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
     details: list[str] = []
     flaky_ids: list[int] = []
     for r in failed:
-        log = subprocess.run([gh, "run", "view", str(r["databaseId"]), "-R", slug, "--log-failed"], capture_output=True, text=True, check=False).stdout
+        log = subprocess.run([gh, "run", "view", str(r["databaseId"]), "-R", repo, "--log-failed"], capture_output=True, text=True, check=False).stdout
         clean = "\n".join(ln for ln in log.splitlines() if not NOISE_RE.match(ln))
         details.append(f"### {r.get('name')} (run {r['databaseId']})\n" + "\n".join(interesting_lines(clean, int(spec.get("max_lines", 40)))))
         if classify_log(clean, spec.get("flaky_patterns")) == "flaky":
@@ -266,7 +269,7 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
     if flaky_ids and len(flaky_ids) == len(failed):
         out: dict[str, Any] = {"status": "flaky", "summary": f"{len(flaky_ids)} run(s) matched flaky patterns", "details": "\n\n".join(details)}
         if spec.get("rerun"):
-            out["retry_command"] = " && ".join(f"{gh} run rerun {i} -R {slug} --failed" for i in flaky_ids)
+            out["retry_command"] = " && ".join(f"{gh} run rerun {i} -R {repo} --failed" for i in flaky_ids)
         return out
     return {"status": "fail", "summary": f"{len(failed)} failed workflow run(s): " + ", ".join(str(r.get("name")) for r in failed),
             "details": "\n\n".join(details)}
