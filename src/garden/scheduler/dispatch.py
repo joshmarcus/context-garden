@@ -169,8 +169,8 @@ class DispatchMixin:
                 continue
             if self.slots_free() <= 0:
                 continue
-            runner = self.runner_for(task)
-            if runner.name == "local" and self.local_slots_free() <= 0:
+            runner = self.runner_for(task, "local")
+            if self.local_slots_free() <= 0:
                 continue
             try:
                 self.dispatch_investigation(task, runner=runner)
@@ -197,12 +197,14 @@ class DispatchMixin:
             f"# Investigation of {task.id}: {task.title}", "",
             "You are diagnosing only. Do not edit files, commit, push, update the PR, or implement a fix.",
             f"Scope: {inv['scope']}", f"Budget: {inv['budget']}", f"Question: {inv['reason']}",
+            f"Garden workspace: {self.store.root}", f"Garden diagnostics: {self.cfg.garden_dir}",
+            "You may read the complete workspace, .garden run records and transcripts, briefs, verdicts, events/state, configuration, and local source/check history. Record files that cannot be read. Never reproduce credentials or secrets in the report.",
             f"Task status before investigation: {inv['task_status']}",
             f"Branch: {task.branch or task.default_branch()}", f"PR: {task.pr or 'none'}",
             f"Pending feedback: {st.get('pending_feedback') or 'none'}",
             f"Revision counts: substantive={st.get('substantive_revisions', 0)}, total={st.get('revisions', 0)}, reviews={st.get('review_rounds', 0)}",
             "", "## Attempts", *(attempts or ["- none"]), "", "## Escalations", *(escalations or ["- none"]),
-            "", "Return one GARDEN_RESULT JSON object with status done and an investigation_report object containing: likely_cause, confidence, unknowns (list), evidence (list), attempted_checks (list), retain_work (boolean), alternatives (list), and recommendation. Recommendation must be one of: resume unchanged, raise difficulty, repair environment/verification, change scope/approach, defer, cancel.",
+            "", "Return one GARDEN_RESULT JSON object with status done and an investigation_report object containing: likely_cause, confidence, unknowns (list), evidence (list), attempted_checks (list), retain_work (boolean), alternatives (list), recommendation, source_identities (list), observed_behavior, intended_behavior, impact, corrective_action, and discovered (a list containing a focused corrective task when no existing task/PR is responsible). Recommendation must be one of: resume unchanged, raise difficulty, repair environment/verification, change scope/approach, defer, cancel.",
         ])
 
     def dispatch_investigation(self, task: Task, runner: Runner | None = None) -> Run:
@@ -221,6 +223,7 @@ class DispatchMixin:
         inv["task_status"] = task.status.value
         inv["status"] = "active"
         inv["started_at"] = now_iso()
+        runner = runner if runner is not None and runner.name == "local" else self.runner_for(task, "local")
         run = self.dispatch(task, mode="investigation", runner=runner,
                             prompt_override=self._investigation_dossier(task))
         inv["run_id"] = run.run_id

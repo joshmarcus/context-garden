@@ -229,6 +229,27 @@ class HumanMixin:
         self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))
         self.state.save()
 
+    def retry_investigation_publication(self, task: Task) -> None:
+        """Retry only the workspace push, preserving the completed agent result."""
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict) or inv.get("status") != "report_ready":
+            raise RuntimeError(f"{task.id} has no completed investigation to publish")
+        paths = inv.get("report_paths") or {}
+        from ..deepdives import publish_report
+
+        try:
+            inv["publication"] = publish_report(
+                self.store.root, str(inv.get("run_id")), Path(paths["markdown"]), Path(paths["html"])
+            )
+        except Exception as exc:
+            inv["publication"] = {"status": "failed", "error": str(exc), "failed_at": now_iso()}
+            self.state.save()
+            raise RuntimeError(f"report publication failed: {exc}") from exc
+        self.events.emit("investigation_published", task.id, run=inv.get("run_id"),
+                         commit=inv["publication"]["commit"])
+        self.state.save()
+
     def defer_troubled(self, task: Task, reason: str) -> None:
         """Keep preserved work paused with an explicit durable owner reason."""
         ensure_open(task)
