@@ -72,7 +72,15 @@ def register(app: FastAPI, site: Site) -> None:
     def execution_deadline(run: Any) -> dt.datetime | None:
         """Fixed controller deadline; heartbeats renew liveness, never execution budget."""
         started = run.execution_started_at or run.claimed_at
-        timeout = float(hub.store.config.get("timeout_minutes", 90) or 0)
+        snapshot = run.env_snapshot or {}
+        if "execution_timeout_minutes" in snapshot:
+            timeout = float(snapshot["execution_timeout_minutes"] or 0)
+        elif run.mode == "check":
+            timeout = 0
+        else:
+            product = str(snapshot.get("product") or "")
+            timeout = (hub.store.config.product_timeout_minutes(product) if product
+                       else float(hub.store.config.get("timeout_minutes", 90) or 0))
         if not started or not timeout:
             return None
         return dt.datetime.fromisoformat(started) + dt.timedelta(minutes=timeout + 5)

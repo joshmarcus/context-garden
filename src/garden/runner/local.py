@@ -101,9 +101,9 @@ class LocalRunner(Runner):
         assert self.harness is not None
         d = run.path
         inner = self.harness_shell(run, worktree, d / "final.md")
-        timeout_min = int(self.config.get("timeout_minutes", 90) or 0)
+        timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
         if timeout_min and shutil.which("timeout"):
-            inner = f"timeout {timeout_min * 60} {inner}"
+            inner = f"timeout {timeout_min * 60:g} {inner}"
         script = (
             f"cd {shlex.quote(str(worktree))} && {inner} "
             f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "

@@ -374,6 +374,11 @@ def test_remote_weighted_admission_first_fits_cheap_work_without_bypassing_cap(g
     assert response.json()["id"] == cheap.run_id
     assert response.json()["resource_weight"] == 1
     assert response.json()["execution_timeout_minutes"] == 15
+    claimed_at = dt.datetime.fromisoformat(
+        RunStore(store.config.garden_dir).latest("CHEAP-001").execution_started_at
+    )
+    deadline = dt.datetime.fromisoformat(response.json()["execution_deadline_at"])
+    assert deadline == claimed_at + dt.timedelta(minutes=20)
     assert not RunStore(store.config.garden_dir).latest("HEAVY-001").host
 
     claimed_cheap = RunStore(store.config.garden_dir).latest("CHEAP-001")
@@ -446,6 +451,18 @@ def test_remote_base_probe_materialises_its_advertised_source(garden, monkeypatc
     assert unavailable.source_head == "0" * 40
     assert gitops.git("rev-parse", "origin/garden/dm-001", cwd=repo).strip() == branch_head
 
+def test_remote_check_has_no_worker_execution_deadline(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="check")
+    run.env_snapshot = {"product": "demo", "execution_timeout_minutes": 0}
+    RemoteRunner({}, None).start_checks(run, store.root, {"specs": [], "ctx": {}})
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": []},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["execution_deadline_at"] == ""
+
 def test_in_place_host_claims_one_run_regardless_of_its_resource_weight(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch, capacity=4, in_place=True)
     first = queued_run(store)
@@ -489,6 +506,10 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert set(payload) >= {"repo", "branch", "base", "push_ref", "setup", "turn_cap", "env_allowlist"}
     assert payload["validation_timeout_seconds"] == 731
     assert payload["push_ref"].startswith(f"refs/heads/garden-worker/{run.run_id}/")
+    legacy = RunStore(store.config.garden_dir).latest("DM-001")
+    assert dt.datetime.fromisoformat(payload["execution_deadline_at"]) == (
+        dt.datetime.fromisoformat(legacy.execution_started_at) + dt.timedelta(minutes=6)
+    )
 
     beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
                        json={"lease_token": payload["lease_token"], "transcript": "hello\n"}, headers=auth)
