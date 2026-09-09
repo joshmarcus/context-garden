@@ -851,7 +851,7 @@ class HumanMixin:
             rep.transitions.append(f"{task.id} -> done (external merged PR)")
             # This follows the ordinary merged-PR lifecycle, but deliberately leaves the
             # operator-owned checkout alone rather than calling `_cleanup`.
-            self._on_merged(task, rep, head_sha=pr.merge_commit_sha)
+            self._on_merged(task, rep, head_sha=pr.head_sha)
         elif pr.state == "OPEN":
             self._transition(task, Status.IN_REVIEW, f"external PR attached at {pr.head}; existing CI is {pr.checks or 'unknown'}")
             rep.transitions.append(f"{task.id} -> in_review (external PR)")
