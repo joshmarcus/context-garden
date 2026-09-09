@@ -819,8 +819,8 @@ class HumanMixin:
                     refuse("could not fetch the configured repository")
                 final_base = gitops.base_ref(repo, self.final_base_for(task))
                 merge_in_base = gitops.is_ancestor(repo, merge_commit, final_base)
-                source_in_base = gitops.is_ancestor(repo, head, final_base)
-                equivalent = source_in_base or self._rewritten_pr_is_equivalent(
+                source_in_merge = gitops.is_ancestor(repo, head, merge_commit)
+                equivalent = source_in_merge or self._rewritten_pr_is_equivalent(
                     repo, head, merge_commit, final_base
                 )
             except gitops.GitError as e:

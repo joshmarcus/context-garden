@@ -640,6 +640,29 @@ def test_external_squash_rejects_partial_or_different_content(sched, fake_github
     assert sched.store.task(task.id).status == Status.RUNNING
 
 
+def test_external_completion_rejects_coincidental_merge_commit(sched, fake_github):
+    """Source and merge commit on final base are insufficient when unrelated."""
+    task = sched.store.task("DM-001")
+    pr, head, _ = _merged_external_topology(sched, fake_github, "merge")
+    repo = sched.repo_for(task)
+    gitops.git("checkout", "-q", "-b", "unrelated-result", f"{head}~2", cwd=repo)
+    (repo / "coincidental.txt").write_text("unrelated\n")
+    gitops.git("add", "coincidental.txt", cwd=repo)
+    gitops.git("commit", "-q", "-m", "unrelated merge result", cwd=repo)
+    pr.merge_commit_sha = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    gitops.git("checkout", "-q", "main", cwd=repo)
+    gitops.git("merge", "-q", "--no-ff", "-m", "include unrelated result",
+               pr.merge_commit_sha, cwd=repo)
+    gitops.git("push", "-q", "origin", "main", cwd=repo)
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+
+    with pytest.raises(RuntimeError, match="does not match the result"):
+        sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).status == Status.RUNNING
+
+
 def test_external_merged_pr_retains_refusal_before_verified_retry(sched, fake_github):
     task = sched.store.task("DM-001")
     pr, head, merge_commit = _merged_external_topology(sched, fake_github, "squash")
