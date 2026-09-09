@@ -289,6 +289,7 @@ def test_rest_pr_preserves_explicit_merge_conflict(monkeypatch):
             "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
         },
         "/repos/team/repo/commits/head-7/check-runs": {"check_runs": []},
+        "/repos/team/repo/commits/head-7/status": {"statuses": []},
         "/repos/team/repo/pulls/7/reviews": [],
     }
     monkeypatch.setattr(github, "_rest", lambda method, path, **kwargs: responses[path])
@@ -317,6 +318,8 @@ def test_rest_pr_paginates_check_runs_before_computing_rollup(monkeypatch):
             return {"total_count": 101, "check_runs": [
                 {"name": "late-failure", "status": "completed", "conclusion": "failure"}
             ]}
+        if path.endswith("/status"):
+            return {"statuses": []}
         if path.endswith("/reviews"):
             return []
         return pull
@@ -340,6 +343,8 @@ def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expect
     def rest(method, path, **kwargs):
         if path.endswith("/check-runs"):
             raise GitHubError(f"GET {path}: {status} synthetic failure")
+        if path.endswith("/status"):
+            return {"statuses": []}
         if path.endswith("/reviews"):
             return []
         return pull
@@ -347,6 +352,34 @@ def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expect
     monkeypatch.setattr(github, "_rest", rest)
 
     assert github.get_pr("team/repo", 7).checks == expected
+
+
+def test_rest_pr_combines_commit_statuses_with_check_runs(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    pull = {
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "mergeable": True,
+        "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
+    }
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/check-runs"):
+            return {"check_runs": [
+                {"name": "unit", "status": "completed", "conclusion": "success"}
+            ]}
+        if path.endswith("/status"):
+            return {"statuses": [
+                {"context": "external/validation", "state": "failure"}
+            ]}
+        if path.endswith("/reviews"):
+            return []
+        return pull
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    pr = github.get_pr("team/repo", 7)
+    assert pr.checks == "FAILURE"
+    assert pr.failed_checks == ["external/validation"]
 
 
 def test_rest_open_pr_list_propagates_pr_detail_failure(monkeypatch):

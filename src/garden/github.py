@@ -491,8 +491,27 @@ class GitHub:
                     if len(batch) < 100 or (total and len(check_runs) >= total):
                         break
                     page += 1
-                rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"), "state": c.get("status")}
-                          for c in check_runs]
+                statuses: list[dict[str, Any]] = []
+                page = 1
+                while True:
+                    combined = self._rest(
+                        "GET", f"/repos/{slug}/commits/{info.head_sha}/status",
+                        params={"per_page": 100, "page": page},
+                    ) or {}
+                    batch = combined.get("statuses", [])
+                    statuses.extend(batch)
+                    total = int(combined.get("total_count") or 0)
+                    if len(batch) < 100 or (total and len(statuses) >= total):
+                        break
+                    page += 1
+                rollup = [
+                    {"name": c.get("name"), "conclusion": c.get("conclusion"),
+                     "state": c.get("status")}
+                    for c in check_runs
+                ] + [
+                    {"name": status.get("context"), "state": status.get("state")}
+                    for status in statuses
+                ]
                 info.checks = _rollup_state(rollup)
                 info.failed_checks = _rollup_failed(rollup)
             except GitHubError as exc:
