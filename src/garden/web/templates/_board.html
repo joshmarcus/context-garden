@@ -1,4 +1,6 @@
-{% if view == 'backlog' %}
+{% if view == 'prs' %}
+{% include "_prs.html" %}
+{% elif view == 'backlog' %}
 {% include "_backlog.html" %}
 {% elif view == 'list' %}
 <div class="board-list">

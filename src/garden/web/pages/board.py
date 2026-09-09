@@ -13,6 +13,8 @@ def register(app: FastAPI, site: Site) -> None:
     _board_view = board_view
 
     def _data(view: str, product: str | None, phase: str | None, closed: bool) -> dict:
+        if view == "prs":
+            return site.pr_data(product)
         if view == "backlog":
             return site.backlog_data(product, closed)
         return site.board_data(product, phase, closed)

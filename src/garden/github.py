@@ -233,6 +233,7 @@ class GitHubLike(Protocol):
     def me(self) -> str: ...
     def is_authenticated(self) -> bool: ...
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None: ...
+    def list_open_prs(self, slug: str) -> list[PRInfo]: ...
     def get_pr(self, slug: str, number: int) -> PRInfo: ...
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str,
                   draft: bool = ..., reviewers: list[str] | None = ...) -> PRInfo: ...
@@ -396,6 +397,49 @@ class GitHub:
             return None
         prs.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
         return self._pr_from_rest(prs[0])
+
+    def list_open_prs(self, slug: str) -> list[PRInfo]:
+        """Return open pull requests with whatever review/check state is available.
+
+        REST's list endpoint omits those details, so enrich its rows independently. A
+        missing permission for one PR's review or check must not make the repository
+        appear empty.
+        """
+        if self.gh:
+            out = self._gh(
+                "pr", "list", "-R", self._repo(slug), "--state", "open",
+                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,statusCheckRollup,updatedAt,isDraft",
+                "--limit", "1000",
+            )
+            return [
+                PRInfo(
+                    number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
+                    head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
+                    review_decision=p.get("reviewDecision") or "",
+                    checks=_rollup_state(p.get("statusCheckRollup") or []),
+                    failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
+                    updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
+                )
+                for p in json.loads(out or "[]")
+            ]
+        listed = []
+        page = 1
+        while True:
+            batch = self._rest(
+                "GET", f"/repos/{slug}/pulls", params={"state": "open", "per_page": 100, "page": page}
+            ) or []
+            listed.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        result: list[PRInfo] = []
+        for item in listed:
+            basic = self._pr_from_rest(item)
+            try:
+                result.append(self.get_pr(slug, basic.number))
+            except GitHubError:
+                result.append(basic)
+        return result
 
     def get_pr(self, slug: str, number: int) -> PRInfo:
         if self.gh:
