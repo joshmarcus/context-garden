@@ -80,10 +80,21 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             continue
         if required_command and command != required_command:
             continue
+        try:
+            execution = json.loads((path.parent / "execution.json").read_text())
+            durable_exit_code = int((path.parent / "exit_code").read_text().strip())
+            (path.parent / "stderr.log").read_text()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
+        selection = row.get("selection")
         if (not receipt_has_current_policy(row)
-                or row.get("source_dirty") or row.get("source_changed")):
-            malformed = True
-            continue
+                or row.get("source_dirty") or row.get("source_changed")
+                or not isinstance(selection, list) or not selection
+                or not all(isinstance(item, str) and item for item in selection)
+                or str(Path(log).resolve()) != str(path.parent.resolve())
+                or not isinstance(execution, dict)
+                or durable_exit_code != exit_code):
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
         run_id = path.parents[2].name
         evidence_url = f"/runs/{task_id}/{run_id}" if run_id else log

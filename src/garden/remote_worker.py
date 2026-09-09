@@ -572,6 +572,18 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             except (OSError, json.JSONDecodeError):
                 continue
             if isinstance(receipt, dict):
+                try:
+                    receipt["durable_execution"] = json.loads(
+                        (receipt_path.parent / "execution.json").read_text()
+                    )
+                    receipt["durable_exit_code"] = int(
+                        (receipt_path.parent / "exit_code").read_text().strip()
+                    )
+                    receipt["durable_stderr"] = (
+                        receipt_path.parent / "stderr.log"
+                    ).read_text()
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    pass
                 receipts.append(receipt)
         heartbeat.ensure_current()
         heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
