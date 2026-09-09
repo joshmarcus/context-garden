@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from garden.github import Feedback
+from garden.github import Feedback, PRInfo
 from garden.inbox import build_inbox
 from garden.model import Status
 from garden.scheduler.report import TickReport
@@ -319,7 +319,11 @@ def test_terminal_check_recovery_resumes_green_pr_without_a_revision(sched):
     task.status = Status.IN_REVIEW
     task.pr = "https://example.com/pull/101"
     sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="current-head"
+    )
     run = _terminal_check_stop(sched, task)
+    sched.state.get(task.id)["head_sha"] = "current-head"
 
     outcome = sched.recover_waiting_check(task)
 
@@ -341,7 +345,11 @@ def test_terminal_check_recovery_clears_an_ordinary_parked_stop(sched):
     task.status = Status.IN_REVIEW
     task.pr = "https://example.com/pull/101"
     sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="current-head"
+    )
     run = _parked_terminal_check_stop(sched, task)
+    sched.state.get(task.id)["head_sha"] = "current-head"
 
     outcome = sched.recover_waiting_check(task)
 
@@ -351,6 +359,28 @@ def test_terminal_check_recovery_clears_an_ordinary_parked_stop(sched):
     assert sched._run_by_id(task, run.run_id).error == "original check diagnostic"
     sched.tick(dispatch=False)
     assert not sched.state.get(task.id).get("needs_human")
+
+
+def test_terminal_check_recovery_refuses_success_from_an_older_pr_head(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="new-head"
+    )
+    run = _parked_terminal_check_stop(sched, task)
+    st = sched.state.get(task.id)
+    st["head_sha"] = "old-head"
+
+    with pytest.raises(RuntimeError, match="different PR head"):
+        sched.recover_waiting_check(task)
+
+    state = sched.state.get(task.id)
+    assert state["needs_human"]["run"] == run.run_id
+    assert state["recovery_check"]["run"] == run.run_id
+    assert state["checks"] == "SUCCESS"
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
 
 
 def test_terminal_check_recovery_retains_current_failure_for_existing_revision(sched):
@@ -427,7 +457,11 @@ def test_terminal_check_recovery_waits_for_tick_lock(sched):
     task.status = Status.IN_REVIEW
     task.pr = "https://example.com/pull/101"
     sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="current-head"
+    )
     _terminal_check_stop(sched, task)
+    sched.state.get(task.id)["head_sha"] = "current-head"
     entered = threading.Event()
     finished = threading.Event()
 
