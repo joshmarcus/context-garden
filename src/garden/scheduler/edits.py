@@ -70,6 +70,7 @@ class EditsMixin:
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
+        self._refuse_if_closed_or_frozen(task)
 
         harness_name = str(self.cfg.get("review.harness") or "")
         runner = self.runner_for(task, "local", harness_name)

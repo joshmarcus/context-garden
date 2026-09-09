@@ -90,6 +90,14 @@ def test_web_approve_and_dispatch_actions_refuse_closed_phase(garden):
     assert "closed" in r.text and "reopen-phase" in r.text
 
 
+def test_task_page_labels_a_closed_phase_hold_as_closed(garden):
+    assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
+
+    page = TestClient(create_app(Store(garden), watch=False)).get("/tasks/DM-001").text
+    assert "Held by closed phase" in page
+    assert "Held by frozen phase" not in page
+
+
 def test_new_task_refuses_closed_phase_without_reopen(garden):
     assert run(garden, "close-phase", "demo/p1", "--force").exit_code == 0
     r = run(garden, "new-task", "demo/p1", "Late arrival")

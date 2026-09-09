@@ -321,6 +321,7 @@ class RebaseMixin:
         flight until its rollup goes green."""
         if self._manual_reserved(task):
             return "held"
+        self._refuse_if_closed_or_frozen(task)
         outcome = self._rebase_and_record(task, base, skip_if_current=skip_if_current, reason=reason)
         if outcome.status == "conflict":
             self.events.emit("rebase", task.id, base=base, files=outcome.files, resolved=False, how="agent")
@@ -581,10 +582,11 @@ class RebaseMixin:
         review_run = str(st.get("last_review_run") or "")
         # Retarget every open stacked-child PR to the final base first: deleting this branch while
         # a child still targets it makes GitHub close the child's PR (CG-173). Keep the branch when
-        # a retarget fails, so no child is orphaned; a later pass deletes it once they are clear.
+        # a retarget is deferred or fails, so no child is orphaned; a later pass deletes it once
+        # they are clear.
         delete_branch = self._retarget_children_before_delete(task)
         if not delete_branch:
-            self.log(f"{task.id}: keeping the branch on merge; a stacked child PR could not be retargeted")
+            self.log(f"{task.id}: keeping the branch on merge; a stacked child PR was not retargeted")
         try:
             self.github.merge_pr(slug, number, method=method, delete_branch=delete_branch,
                                  expected_head=pr.head_sha)

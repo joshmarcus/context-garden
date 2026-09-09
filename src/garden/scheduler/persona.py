@@ -72,6 +72,7 @@ class PersonaMixin:
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         ensure_open(task)
+        self._refuse_if_closed_or_frozen(task)
         valid_name(name)
         if not task.pr and not task.branch:
             raise RuntimeError(f"{task.id} has no branch to review")

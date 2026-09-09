@@ -13,7 +13,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
 from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
-from ..model import Status, Task, now_iso
+from ..model import Status, Task, now_iso, phase_refusal
 from ..notify import notify
 from ..runs import Run
 from .feedback import merge_pending_feedback
@@ -216,6 +216,12 @@ class PollMixin:
             return
         if not task.status.pr_open:
             return  # merged/closed handled above; the rest (triage, CI, feedback) only applies to the active review flow
+        # A frozen child can be left stacked when its parent merges.  Defer the restack
+        # without touching its PR or branch, then resume this same reconciliation after
+        # the phase is unfrozen. A closed PR is handled above by its base-deletion recovery.
+        if self._parent_merged(task):
+            self._restack(task, rep)
+            return
         was_draft = bool(st.get("pr_draft"))
         st["pr_draft"] = bool(pr.is_draft)
         # A manually assigned task remains an observation only. The person who claimed it
@@ -232,6 +238,17 @@ class PollMixin:
             self._transition(task, Status.AWAITING_TRIAGE, "converted back to draft on GitHub")
             rep.transitions.append(f"{task.id} -> awaiting_triage")
         if task.status == Status.CHANGES_REQUESTED:
+            deferred = st.get("deferred_ci_check")
+            if deferred and not phase_refusal(self.store.phase(task.product, task.phase), task):
+                st.pop("deferred_ci_check", None)
+                st["ci_failed_at"] = pr.updated_at
+                self._dispatch_check_run(
+                    task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
+                    base=self.base_for(task), specs=list(deferred["specs"]), stage="ci", rep=rep,
+                    cont={"ci_note": str(deferred["ci_note"]), "head": str(deferred["head"])},
+                    extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1},
+                )
+                return
             return  # already waiting for a revise slot (or a human)
         if pr.mergeable == "CONFLICTING":
             self._handle_pr_conflict(task, rep)
@@ -247,18 +264,25 @@ class PollMixin:
         ci_note = ""
         ci_identity = f"{pr.head_sha}:{pr.checks}"
         if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != ci_identity:
-            st["ci_failed_at"] = ci_identity
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
+            phase_hold = phase_refusal(self.store.phase(task.product, task.phase), task)
+            if specs and phase_hold:
+                # Keep the CI facts and route the feedback into the held task, but do not
+                # spend a detached analyser run until the phase is released.
+                st["deferred_ci_check"] = {"specs": specs, "ci_note": ci_note, "head": pr.head_sha}
+            else:
+                st["ci_failed_at"] = ci_identity
             if specs:
                 # The CI analyser runs as a detached check run, reaped a tick later (CG-182): the
                 # tick never runs it in-process. The continuation (`_after_ci_check`) combines its
                 # verdict with the GitHub feedback and starts (or reruns instead of) a revise round.
-                self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
-                                         base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
-                                         extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
-                return
+                if not phase_hold:
+                    self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
+                                             base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
+                                             extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
+                    return
         fb = observed_feedback if observed_feedback is not None else self.github.feedback_since(slug, number, task.last_dispatched_at)
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)
@@ -444,6 +468,12 @@ class PollMixin:
         The task must be `in_review` before this is called (a draft, a stall or a pending
         revise round have already taken it elsewhere)."""
         st = self.state.get(task.id)
+        try:
+            phase_hold = phase_refusal(self.store.phase(task.product, task.phase), task)
+        except KeyError:
+            phase_hold = ""
+        if phase_hold:
+            return False, phase_hold
         if st.get("needs_human"):
             # A rebase right before this merge can trigger a fresh review (rule 2 in
             # rebase.py) that hits the review cap: that sets this stop instead of a verdict,
@@ -709,6 +739,13 @@ class PollMixin:
                 continue
             if pr.state != "OPEN":
                 continue
+            try:
+                self._refuse_if_closed_or_frozen(child)
+            except RuntimeError:
+                # A held child keeps its PR and stack base unchanged.  Returning False
+                # also preserves the parent branch, so GitHub cannot close that PR
+                # before the phase is unfrozen and the ordinary restack can resume.
+                return False
             if self.external_stack_owner(child):
                 if pr.base == parent_branch:
                     reason = (f"external stack owner must retarget its PR from {parent_branch} "
@@ -767,7 +804,18 @@ class PollMixin:
             return
         st = self.state.get(child.id)
         parent_id = st.get("stack_parent", "")
+        try:
+            self._refuse_if_closed_or_frozen(child)
+        except RuntimeError as refusal:
+            # Retain the stack relationship unchanged while the phase is held.  The poll
+            # path retries after an unfreeze, rather than losing the reconciliation work.
+            if not st.get("restack_pending"):
+                st["restack_pending"] = True
+                child.log(f"parent {parent_id} merged; restack deferred: {refusal}")
+                self.store.save(child)
+            return
         new_base = self.final_base_for(child)
+        st.pop("restack_pending", None)
         st["pr_base"] = new_base
         st.pop("stack_parent", None)
         slug = self.slug_for(child)
