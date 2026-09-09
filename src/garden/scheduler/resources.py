@@ -447,10 +447,10 @@ class ResourceMixin:
             )
 
     def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "",
-                       runner_name: str = "local") -> Any:
+                       runner_name: str = "local", resource_weight: int | None = None) -> Any:
         """Atomically admit and publish a running local run across all launchers."""
         with self._local_admission_lock():
-            weight = self.resource_weight(task_id)
+            weight = self.resource_weight(task_id) if resource_weight is None else resource_weight
             self._admit_local_launch(kind, weight)
             run = self.runs.new_run(task_id, runner_name, mode=mode, run_id=run_id)
             run.execution_remote = False
