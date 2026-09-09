@@ -1,0 +1,165 @@
+{
+  "head": "6f457ecdcb1b9e1ac07bfc918d41279133ad06ae",
+  "environment": "disposable",
+  "command": "python scripts/replay_cg455_now.py --out OUTPUT",
+  "pages": [
+    "now"
+  ],
+  "states": [
+    "populated",
+    "failure",
+    "recovery",
+    "sparse",
+    "paused"
+  ],
+  "events": [
+    {
+      "state": "populated",
+      "method": "GET",
+      "url": "http://127.0.0.1:39283/now",
+      "status": 200,
+      "observed": "One live run and queued work appear in the summary."
+    },
+    {
+      "state": "failure",
+      "method": "GET",
+      "url": "http://127.0.0.1:39283/partials/now/nope",
+      "status": 404,
+      "observed": "An invalid live-refresh region fails without corrupting the page."
+    },
+    {
+      "state": "recovery",
+      "method": "GET",
+      "url": "http://127.0.0.1:39283/partials/now/head",
+      "status": 200,
+      "observed": "The valid head fragment recovers with the current summary and slot facts."
+    },
+    {
+      "state": "sparse",
+      "method": "GET",
+      "url": "http://127.0.0.1:39283/now",
+      "status": 200,
+      "observed": "No run or dispatch candidate is reported literally."
+    },
+    {
+      "state": "paused",
+      "method": "GET",
+      "url": "http://127.0.0.1:39283/now",
+      "status": 200,
+      "observed": "The explicit pause leads the neutral measurements."
+    }
+  ],
+  "viewport_evidence": [
+    {
+      "page": "now-populated",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "now-populated",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "dark",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "now-populated",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "light",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "now-populated",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "dark",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "now-sparse",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "now-sparse",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "dark",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "now-sparse",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "light",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "now-sparse",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "dark",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "now-paused",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "now-paused",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "dark",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "now-paused",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "light",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "now-paused",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "dark",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    }
+  ],
+  "artifacts": [
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-1280-dark.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-1280-light.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-390-dark.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-390-light.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-1280-dark.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-1280-light.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-390-dark.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-390-light.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-1280-dark.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-1280-light.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-390-dark.png",
+    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-390-light.png"
+  ],
+  "unverified": []
+}
