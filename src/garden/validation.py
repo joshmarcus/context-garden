@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -17,6 +16,7 @@ STRESS_NODES = (
     "tests/test_web.py::test_served_incident_controls_retry_and_restart_during_overload",
 )
 POLICY_ADDOPTS = tuple(f"--deselect={node}" for node in STRESS_NODES)
+INDIRECT_LAUNCHERS = frozenset({"env", "make", "tox", "uv"})
 
 
 class ValidationPolicyError(RuntimeError):
@@ -45,13 +45,11 @@ def resolve_validation(argv: list[str], cwd: Path) -> tuple[list[str], dict[str,
     """Apply the approved current test policy without modifying the source checkout."""
     requested = list(argv)
     if not _pytest_command(argv):
-        if Path(argv[0]).name in {"sh", "bash", "dash"} and any(
-            re.search(r"(?:^|\s)(?:\S*/)?(?:python\S*\s+-m\s+)?pytest(?:\s|$)", arg)
-            for arg in argv[1:]
-        ):
+        launcher = Path(argv[0]).name
+        if launcher in {"sh", "bash", "dash", *INDIRECT_LAUNCHERS}:
             raise ValidationPolicyError(
-                "pytest validation hidden inside a shell command cannot be governed safely; "
-                "invoke pytest directly through garden.validation"
+                f"validation delegated through {launcher!r} cannot be proven non-pytest; "
+                "invoke the underlying command directly through garden.validation"
             )
         return argv, {"version": 1, "source_sha": POLICY_SOURCE_SHA, "kind": "non-pytest"}
 
@@ -109,6 +107,24 @@ def main() -> int:
     try:
         effective_argv, policy = resolve_validation(argv, cwd)
     except ValidationPolicyError as exc:
+        receipt = {
+            "version": 1,
+            "source_sha": source_sha,
+            "source_dirty": source_dirty,
+            "source_changed": False,
+            "command": shlex.join(argv),
+            "selection": [],
+            "policy": {
+                "version": 1,
+                "source_sha": POLICY_SOURCE_SHA,
+                "kind": "blocked",
+                "reason": str(exc),
+                "requested_selection": argv,
+            },
+            "exit_code": 2,
+            "log_location": str(status_dir),
+        }
+        (status_dir / "result.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
         print(f"validation policy block: {exc}", file=sys.stderr)
         return 2
     if policy.get("stress_opt_in"):
