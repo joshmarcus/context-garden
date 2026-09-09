@@ -467,9 +467,12 @@ load measurement, artifact manifest, or checklist because a path or keyword matc
 
 Check correctness, the task's intended outcomes, scope, and applicable project principles.
 Treat actual defects, failed applicable checks, contradictory source/result claims, and
-outcomes you judge genuinely unmet as blocking. Missing optional evidence fields, capture
-files, checklist rows, mapping fields, or PR-description polish are advisory. Preserve
-useful existing evidence and do not request an unchanged source revision to repackage it.
+outcomes you judge genuinely unmet as blocking. If an artifact is not attached, assume it
+is not included and omit commentary about its absence. Do not add findings, nits, caveats,
+or revision feedback for missing optional evidence fields or attachments. Discuss what
+you actually inspected or tested. Checklist rows, mapping fields, and PR-description
+polish are optional; preserve useful existing evidence without requesting an unchanged
+source revision to repackage it.
 
 For a material UI, CLI, or workflow change, choose a direct verification of the named
 affected behavior when needed. Say what you inspected in `attestation`, `summary`, criterion

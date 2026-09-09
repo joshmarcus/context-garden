@@ -1017,16 +1017,16 @@ class ReviewMixin:
                     if item and reason:
                         task.log(f"review validation scope expansion: {item} — {reason}")
                         self.store.save(task)
+            metadata_warnings: list[str] = []
             expected = set((run.env_snapshot or {}).get("capture_pages") or [])
             seen = set(review.get("pages_seen") or [])
             missing = sorted(expected - seen)
             if review and missing:
-                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
-                                                          "summary": "Optional UI captures not read for: " + ", ".join(missing)})
+                metadata_warnings.append("Optional UI captures not read for: " + ", ".join(missing))
             if review and not bool((run.env_snapshot or {}).get("validation_check_current")):
-                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
-                                                          "summary": "Current-head pre-review check result was not available; reviewer attestation used",
-                                                          "fix": ""})
+                metadata_warnings.append(
+                    "Current-head pre-review check result was not available; reviewer attestation used"
+                )
             unknown = list(((run.env_snapshot or {}).get("validation_plan") or {}).get("unknown_ui") or [])
             mappings = review.get("ui_scope") if isinstance(review.get("ui_scope"), list) else []
             mapped = {str(row.get("path") or "") for row in mappings if isinstance(row, dict)
@@ -1035,10 +1035,9 @@ class ReviewMixin:
                         and str(row.get("reason") or "").strip()}
             unresolved = sorted(path for path in unknown if path not in mapped and path not in expanded)
             if review and unresolved:
-                review.setdefault("findings", []).append({"severity": "nit", "file": "", "line": None,
-                                                          "summary": "Optional UI scope mapping omitted for: " + ", ".join(unresolved),
-                                                          "fix": ""})
-            metadata_warnings: list[str] = []
+                metadata_warnings.append(
+                    "Optional UI scope mapping omitted for: " + ", ".join(unresolved)
+                )
             frozen_criteria = (list((run.env_snapshot or {})["criteria"])
                                if "criteria" in (run.env_snapshot or {}) else None)
             affected_flow = str((run.env_snapshot or {}).get("affected_flow") or "")
@@ -1086,12 +1085,9 @@ class ReviewMixin:
                 metadata_warnings=metadata_warnings,
             ) if review else []
             if metadata_warnings:
-                review.setdefault("findings", []).append({
-                    "severity": "nit", "file": "", "line": None,
-                    "summary": "Evidence metadata advisory: " + "; ".join(metadata_warnings),
-                    "fix": "Attach available source, command and artifact references; reuse inspected evidence. "
-                           "Do not rerun implementation or passing verification solely for metadata.",
-                })
+                # Keep packaging diagnostics for operators without turning omitted
+                # attachments or optional metadata into a posted review finding.
+                run.env_snapshot["evidence_metadata_warnings"] = metadata_warnings
             if gaps:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({

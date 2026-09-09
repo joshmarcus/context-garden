@@ -1774,7 +1774,10 @@ def test_generic_replay_missing_optional_affected_flow_is_advisory(tmp_path):
 
 
 @pytest.mark.parametrize("bug", [False, True])
-def test_scheduler_metadata_advisory_preserves_verdict_and_real_findings(sched, monkeypatch, bug):
+@pytest.mark.parametrize("artifact_kind", ["omitted", "unavailable", "contradictory"])
+def test_scheduler_keeps_missing_artifacts_quiet_and_preserves_real_findings(
+    sched, monkeypatch, tmp_path, bug, artifact_kind,
+):
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
     task = sched.store.task("DM-001")
     run = _review_after_completed_empty_replay(sched, task)
@@ -1782,6 +1785,11 @@ def test_scheduler_metadata_advisory_preserves_verdict_and_real_findings(sched, 
     run.save()
     row = _performed_interaction(run.env_snapshot["review_head"])
     del row["command"]
+    artifact = tmp_path / "author-only.json"
+    if artifact_kind != "omitted":
+        row["artifacts"] = [str(artifact)]
+    if artifact_kind == "contradictory":
+        artifact.write_text(json.dumps({"head": "another-commit"}))
     findings = ([{"severity": "blocking", "file": "src/garden/review.py", "line": 1,
                  "summary": "A wrong repository can be accepted", "fix": "Reject foreign repository identity"}]
                 if bug else [])
@@ -1794,10 +1802,92 @@ def test_scheduler_metadata_advisory_preserves_verdict_and_real_findings(sched, 
     }))
     sched.reap_review(task, TickReport())
     persisted = sched.runs.latest(task.id).result
-    assert persisted["verdict"] == ("request_changes" if bug else "approve")
+    blocked = bug or artifact_kind == "contradictory"
+    assert persisted["verdict"] == ("request_changes" if blocked else "approve")
     notes = [f for f in persisted["findings"] if f["summary"].startswith("Evidence metadata advisory:")]
-    assert len(notes) == 1 and notes[0]["severity"] == "nit"
-    assert any(f["severity"] == "blocking" for f in persisted["findings"]) is bug
+    assert notes == []
+    comment = review_to_markdown(persisted)
+    assert "artifact is unavailable" not in comment
+    assert "artifact paths were not reported" not in comment
+    assert "command was not reported" not in comment
+    assert sched.runs.latest(task.id).env_snapshot["evidence_metadata_warnings"]
+    assert any(f["severity"] == "blocking" for f in persisted["findings"]) is blocked
+    if artifact_kind == "contradictory":
+        assert "artifact source contradicts" in comment
+
+
+def test_scheduler_keeps_optional_ui_scope_mapping_out_of_review_prose(sched, monkeypatch):
+    unmapped = "src/garden/web/widgets/unmapped.py"
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: [unmapped])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["validation_check_current"] = True
+    run.save()
+    review = {"verdict": "approve", "summary": "Verified behavior", "pages_seen": [],
+              "criteria": [], "description_ok": True, "findings": [], "improvements": []}
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+
+    sched.reap_review(task, TickReport())
+
+    persisted = sched.runs.latest(task.id).result
+    comment = review_to_markdown(persisted)
+    assert persisted["verdict"] == "approve"
+    assert "Optional UI scope mapping omitted" not in comment
+    assert sched.runs.latest(task.id).env_snapshot["evidence_metadata_warnings"] == [
+        f"Optional UI scope mapping omitted for: {unmapped}",
+    ]
+
+
+def test_scheduler_keeps_unread_optional_ui_captures_out_of_review_prose(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["capture_pages"] = ["task"]
+    run.env_snapshot["validation_check_current"] = True
+    run.save()
+    review = {"verdict": "approve", "summary": "Verified behavior", "pages_seen": [],
+              "criteria": [], "description_ok": True, "findings": [], "improvements": []}
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+
+    sched.reap_review(task, TickReport())
+
+    persisted = sched.runs.latest(task.id).result
+    comment = review_to_markdown(persisted)
+    assert persisted["verdict"] == "approve"
+    assert "Optional UI captures not read" not in comment
+    assert sched.runs.latest(task.id).env_snapshot["evidence_metadata_warnings"] == [
+        "Optional UI captures not read for: task",
+    ]
+
+
+def test_scheduler_keeps_unavailable_current_head_check_out_of_review_prose(sched, monkeypatch):
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
+    task = sched.store.task("DM-001")
+    run = _review_after_completed_empty_replay(sched, task)
+    run.env_snapshot["validation_check_current"] = False
+    run.save()
+    review = {"verdict": "approve", "summary": "Verified behavior", "pages_seen": [],
+              "criteria": [], "description_ok": True, "findings": [], "improvements": []}
+    (run.path / "stdout.json").write_text(json.dumps({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
+    }))
+
+    sched.reap_review(task, TickReport())
+
+    persisted = sched.runs.latest(task.id).result
+    comment = review_to_markdown(persisted)
+    assert persisted["verdict"] == "approve"
+    assert "Current-head pre-review check result was not available" not in comment
+    assert sched.runs.latest(task.id).env_snapshot["evidence_metadata_warnings"] == [
+        "Current-head pre-review check result was not available; reviewer attestation used",
+    ]
 
 
 def test_required_target_blocks_even_when_reviewer_calls_it_a_limitation():
