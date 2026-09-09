@@ -1,7 +1,7 @@
 """What a person does to a task: retry past the cap, retry a capped pre-PR round."""
 
-
 import subprocess
+import sys
 
 import pytest
 
@@ -611,6 +611,96 @@ def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github)
     assert not st.get("needs_human")
     assert not st.get("pending_feedback")
     assert not st.get("automerge_blocked")
+
+
+@pytest.mark.parametrize("terminal", [Status.DONE, Status.CANCELLED, Status.WONT_DO])
+def test_terminal_task_retires_collected_check_without_losing_evidence(sched, terminal):
+    """CG-386: a stale collected continuation cannot reopen a merged or otherwise closed task."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.cost_usd = 1.25
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "collected": True,
+    }
+    sched.state.save()
+
+    sched._transition(task, terminal, "terminal lifecycle regression")
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.reap_check(sched.store.task(task.id), type("Report", (), {})()) is False
+    assert sched.store.task(task.id).status == terminal
+    preserved = sched._run_by_id(task, run.run_id)
+    assert preserved is not None
+    assert preserved.result == {"checks": []}
+    assert preserved.cost_usd == 1.25
+
+
+def test_check_collection_discards_legacy_continuation_for_terminal_task(sched):
+    """A task made terminal outside `_transition` is still protected at collection time."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "collected": True,
+    }
+    task.status = Status.DONE
+    sched.store.save(task)
+    sched.state.save()
+
+    assert sched.reap_check(sched.store.task(task.id), type("Report", (), {})()) is True
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.store.task(task.id).status == Status.DONE
+    assert not sched.state.get(task.id).get("needs_human")
+
+
+def test_terminal_task_keeps_check_ownership_when_run_record_is_missing(sched):
+    """Missing metadata cannot prove that the detached process behind it has stopped."""
+    task = sched.store.task("DM-001")
+    pointer = {"run_id": "missing-check-run", "stage": "base_probe", "collected": True}
+    sched.state.get(task.id)["check_run"] = pointer
+    sched.state.save()
+
+    sched._transition(task, Status.DONE, "terminal with incomplete run history")
+
+    assert sched.store.task(task.id).status == Status.DONE
+    assert sched.state.get(task.id)["check_run"] == pointer
+
+
+def test_terminal_task_stops_live_check_before_releasing_ownership(sched):
+    """A real detached child is confirmed dead before its continuation is retired."""
+    task = sched.store.task("DM-001")
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    try:
+        run = sched.runs.new_run(task.id, "local", mode="check")
+        run.pid = child.pid
+        run.save()
+        sched.state.get(task.id)["check_run"] = {
+            "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        }
+        sched.state.save()
+
+        sched._transition(task, Status.CANCELLED, "terminal while check is live")
+
+        child.wait(timeout=10)
+        assert child.poll() is not None
+        assert not sched.state.get(task.id).get("check_run")
+        retired = sched._run_by_id(task, run.run_id)
+        assert retired is not None
+        assert retired.status == "cancelled"
+        assert retired.error == "task reached terminal status"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
 
 
 def test_cancel_refuses_an_already_cancelled_task(sched):

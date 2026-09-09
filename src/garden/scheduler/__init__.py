@@ -411,6 +411,7 @@ class Scheduler(
             # a decision on the Inbox, the Board or the task page.
             for k in ("needs_human", "pending_feedback"):
                 changed = st.pop(k, None) is not None or changed
+            changed = self._retire_terminal_check(task) or changed
             changed = self._queue_leave(task) or changed
         elif status != Status.IN_REVIEW:
             # A task that left in_review is no longer the merge queue's head.
