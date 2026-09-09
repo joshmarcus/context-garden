@@ -4,9 +4,21 @@
 {% block head %}
 <style>
 /* ---- the Now page (docs/design/now-1.md) ------------------------------------------- */
-.now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
-.now-five a { text-decoration-color:var(--line-strong); }
-.now-five .pause { color:var(--stamp); }
+.now-summary { margin:9px 0 28px; padding:13px 0 0; border-top:1px solid var(--line-strong); }
+.now-summary > h2 { margin:0 0 12px; font:11px/1.2 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+.now-summary dl { display:grid; grid-template-columns:1.05fr 1.45fr 1fr 1fr; margin:0; }
+.now-summary dl > div { min-width:0; padding:4px 18px 5px; border-left:1px solid var(--line); }
+.now-summary dl > div:first-child { padding-left:0; border-left:0; }
+.now-summary dt { margin-bottom:6px; font:11px/1.3 var(--mono); letter-spacing:.04em; text-transform:uppercase; }
+.now-summary dt a { color:var(--muted); text-decoration-color:var(--line-strong); }
+.now-summary dd { margin:0; display:grid; gap:2px; }
+.now-summary dd strong { font:500 clamp(25px, 2.5vw, 37px)/1.05 var(--display); letter-spacing:-.025em; }
+.now-summary dd strong.summary-title { font-size:clamp(18px, 1.65vw, 25px); line-height:1.15; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.now-summary dd span, .now-summary dd small { font:11.5px/1.35 var(--mono); color:var(--muted); }
+.now-summary dd small { color:var(--faint); }
+.summary-attention { display:grid; grid-template-columns:auto auto minmax(0, 1fr); gap:8px 12px; align-items:baseline; margin:-2px 0 15px; padding:9px 12px; border:1px dashed var(--stamp); color:var(--ink); text-decoration:none; }
+.summary-attention strong { font:600 16px/1.2 var(--display); }
+.summary-attention > span:last-child { font:12px/1.4 var(--mono); color:var(--muted); }
 .region { margin-top:42px; padding-top:17px; border-top:1px solid var(--line-strong); scroll-margin-top:16px; }
 .region-head { display:flex; align-items:baseline; gap:14px; margin-bottom:16px; flex-wrap:wrap; }
 /* A section is a line in the herbarium catalogue: its title has enough ink to be found from
@@ -180,7 +192,13 @@ body.page-now .rail-running { display:none; }
   body.page-now .nav a { min-height:32px; padding:0 8px; border-left:none; border-bottom:2px solid transparent; }
   body.page-now .nav a.on { border-bottom-color:var(--ink); background:transparent; }
   body.page-now main { padding:18px 14px 48px; }
-  .now-five { font-size:17px; }
+  .now-summary { margin-bottom:22px; }
+  .now-summary dl { grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:18px 0; }
+  .now-summary dl > div:nth-child(odd) { padding-left:0; border-left:0; }
+  .now-summary dd strong { font-size:27px; }
+  .now-summary dd strong.summary-title { font-size:19px; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .summary-attention { grid-template-columns:auto 1fr; }
+  .summary-attention > span:last-child { grid-column:1 / -1; }
   .region { margin-top:34px; padding-top:14px; }
   .region-head { gap:7px 12px; margin-bottom:14px; }
   .region-head .section-title { font-size:27px; }
@@ -213,11 +231,11 @@ body.page-now .rail-running { display:none; }
 </style>
 {% endblock %}
 {% block body %}
-{% from "_now1_macros.html" import five, slots with context %}
+{% from "_now1_macros.html" import summary, slots with context %}
 {% set g = snap.garden %}
 <div id="now1" data-window="{{ snap.window }}" data-next-tick="{{ g.next_tick_at }}" data-tick-interval="{{ g.tick_interval }}">
 <div class="page-head"><div><h1>Now</h1></div></div>
-{{ five(snap) }}
+{{ summary(snap) }}
 <div class="now-live" aria-live="polite" id="now-live"></div>
 
 <section class="region" id="now">
@@ -254,9 +272,9 @@ body.page-now .rail-running { display:none; }
   var regions = {
     head: async function () {
       var frag = parse(await fetchText("/partials/now/head?window=" + win));
-      var five = frag.getElementById("now-five"), slots = frag.getElementById("now-slots");
+      var summary = frag.getElementById("now-summary"), slots = frag.getElementById("now-slots");
       var lost = document.querySelector("[data-lost]");
-      if (five) document.getElementById("now-five").replaceWith(five);
+      if (summary) document.getElementById("now-summary").replaceWith(summary);
       if (slots) {
         if (lost && !lost.hidden) slots.querySelector("[data-lost]").hidden = false;
         document.getElementById("now-slots").replaceWith(slots);
