@@ -60,6 +60,16 @@ def test_open_find_get_comment_update(fake_cls):
     assert gh.feedback_since("o/r", pr.number, "") is not None
 
 
+def test_memory_open_pr_observation_advances_check_latency():
+    gh = MemoryGitHub()
+    pr = gh.create_pr("o/r", "garden/feature", "main", "Feature", "body")
+    gh.set_checks(pr.head, "SUCCESS", latency=2)
+
+    assert gh.list_open_prs("o/r")[0].checks == "PENDING"
+    assert gh.list_open_prs("o/r")[0].checks == "PENDING"
+    assert gh.list_open_prs("o/r")[0].checks == "SUCCESS"
+
+
 @pytest.mark.parametrize("fake_cls", FAKES, ids=lambda c: c.__name__)
 def test_draft_ready_and_close(fake_cls):
     gh = fake_cls()
