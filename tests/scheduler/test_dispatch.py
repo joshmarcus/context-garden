@@ -655,6 +655,53 @@ def test_dispatch_ready_failure_does_not_abort_the_tick(sched, fake_github, monk
     assert "audit" in rep.steps  # the tick kept going past the failing phase
 
 
+def test_no_dispatch_tick_reuses_one_snapshot_and_refreshes_next_pass(sched, garden, monkeypatch):
+    """A quiet pass scans once; a later controller pass sees another writer's status."""
+    from garden.store import Store
+
+    scans = 0
+    original_scan = Store._scan
+
+    def counted_scan(self):
+        nonlocal scans
+        scans += 1
+        return original_scan(self)
+
+    monkeypatch.setattr(Store, "_scan", counted_scan)
+
+    sched.tick(dispatch=False)
+    assert scans == 1
+
+    writer = Store(garden)
+    task = writer.task("DM-001")
+    task.status = Status.WAITING_HUMAN
+    writer.save(task)
+
+    scans = 0
+    sched.tick(dispatch=False)
+    assert scans == 1
+    assert sched.store.task("DM-001").status == Status.WAITING_HUMAN
+
+
+def test_tick_refreshes_snapshot_after_its_own_task_mutation(sched, monkeypatch):
+    """A supported transition invalidates the remainder of its tick's task snapshot."""
+    seen = []
+
+    def transition_during_reap(rep):
+        task = sched.store.task("DM-001")
+        sched._transition(task, Status.WAITING_HUMAN, "test snapshot refresh")
+
+    def observe_status(task, rep):
+        seen.append(task.status)
+
+    monkeypatch.setattr(sched, "_reap_all", transition_during_reap)
+    monkeypatch.setattr(sched, "_reprobe_base_broken", observe_status)
+
+    sched.tick(dispatch=False)
+
+    assert seen == [Status.WAITING_HUMAN, Status.READY]
+
+
 def test_exception_in_dispatch_does_not_lose_an_earlier_transition(sched, fake_github, monkeypatch):
     """CG-203: state.save() runs in a `finally`, so a state.json field an earlier phase in the
     same tick wrote — here, the PR-open reap's pr_number cache — is not lost when a later
