@@ -446,3 +446,44 @@ def test_inbox_pr_destinations_separate_enterprise_hosts(garden: Path):
         "github.com/test/demo", "github.example.test/team/work",
     ]
     assert all("token" not in str(destination["url"]).lower() for destination in destinations)
+
+
+def test_inbox_pr_destinations_limit_github_boolean_operators(garden: Path):
+    from dataclasses import replace
+    from urllib.parse import unquote
+
+    from garden.model import Status
+    from garden.web.pages.inbox import open_pr_destinations
+
+    store = Store(garden)
+    task = replace(
+        store.task("DM-001"), status=Status.IN_REVIEW,
+        pr="https://github.com/test/demo/pull/71",
+    )
+    tasks = [replace(task, branch=f"garden/dm-{number}", pr=f"https://github.com/test/demo/pull/{number}")
+             for number in range(1, 8)]
+
+    destinations = open_pr_destinations(tasks, store)
+
+    assert [destination["count"] for destination in destinations] == [6, 1]
+    assert all(unquote(str(destination["url"])).count(" OR ") <= 5 for destination in destinations)
+
+
+def test_inbox_pr_destinations_fall_back_to_an_exact_pr_for_an_overlong_filter(
+    garden: Path, monkeypatch,
+):
+    from dataclasses import replace
+
+    from garden.model import Status
+    from garden.web.pages import inbox
+
+    monkeypatch.setattr(inbox, "_MAX_GITHUB_LIST_URL", 80)
+    task = replace(
+        Store(garden).task("DM-001"), status=Status.IN_REVIEW,
+        branch="garden/dm-001-first-task",
+        pr="https://github.com/test/demo/pull/71",
+    )
+
+    assert inbox.open_pr_destinations([task], Store(garden)) == [{
+        "url": "https://github.com/test/demo/pull/71", "label": "github.com/test/demo", "count": 1,
+    }]

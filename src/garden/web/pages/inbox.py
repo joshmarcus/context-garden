@@ -17,6 +17,7 @@ from ...store import Store
 from ..common import Site, tier_rows
 
 _MAX_GITHUB_LIST_URL = 1800
+_MAX_GITHUB_SEARCH_HEADS = 6
 
 
 def open_pr_destinations(tasks: list[Task], store: Store) -> list[dict[str, str | int]]:
@@ -28,7 +29,7 @@ def open_pr_destinations(tasks: list[Task], store: Store) -> list[dict[str, str 
     unrelated repository PRs out of the list. Search URLs are bounded and split by
     repository when necessary; hosts are never combined because GitHub search is host-local.
     """
-    branches: dict[tuple[str, str], list[str]] = defaultdict(list)
+    branches: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     for task in tasks:
         if task.status.terminal or task.status.value == "cancelled" or not task.pr or not task.branch:
             continue
@@ -36,20 +37,30 @@ def open_pr_destinations(tasks: list[Task], store: Store) -> list[dict[str, str 
         slug, host = route.get("slug", ""), route.get("host", "")
         if slug and host and pull_request_number(task.pr, slug, host):
             key = (host.lower().rstrip("."), slug)
-            if task.branch not in branches[key]:
-                branches[key].append(task.branch)
+            branch = (task.branch, task.pr)
+            if branch not in branches[key]:
+                branches[key].append(branch)
 
     destinations: list[dict[str, str | int]] = []
-    for (host, slug), heads in sorted(branches.items()):
+    for (host, slug), branches_in_repo in sorted(branches.items()):
         prefix = f"https://{host}/{slug}/pulls?q="
         base = "is:open is:pr"
         chunk: list[str] = []
-        for head in sorted(heads):
-            candidate = [*chunk, _head_filter(head)]
-            url = prefix + quote(f"{base} ({' OR '.join(candidate)})", safe="")
-            if chunk and len(url) > _MAX_GITHUB_LIST_URL:
+        for branch, pr_url in sorted(branches_in_repo):
+            head = _head_filter(branch)
+            if len(_search_url(prefix, base, [head])) > _MAX_GITHUB_LIST_URL:
+                if chunk:
+                    destinations.append(_pr_destination(prefix, base, chunk, host, slug))
+                    chunk = []
+                destinations.append(_single_pr_destination(pr_url, host, slug))
+                continue
+            candidate = [*chunk, head]
+            if chunk and (
+                len(candidate) > _MAX_GITHUB_SEARCH_HEADS
+                or len(_search_url(prefix, base, candidate)) > _MAX_GITHUB_LIST_URL
+            ):
                 destinations.append(_pr_destination(prefix, base, chunk, host, slug))
-                chunk = [_head_filter(head)]
+                chunk = [head]
             else:
                 chunk = candidate
         if chunk:
@@ -58,8 +69,16 @@ def open_pr_destinations(tasks: list[Task], store: Store) -> list[dict[str, str 
 
 
 def _pr_destination(prefix: str, base: str, heads: list[str], host: str, slug: str) -> dict[str, str | int]:
-    query = f"{base} ({' OR '.join(heads)})"
-    return {"url": prefix + quote(query, safe=""), "label": f"{host}/{slug}", "count": len(heads)}
+    return {"url": _search_url(prefix, base, heads), "label": f"{host}/{slug}", "count": len(heads)}
+
+
+def _single_pr_destination(pr_url: str, host: str, slug: str) -> dict[str, str | int]:
+    """Keep an overlong search filter exact by linking to its tracked pull request."""
+    return {"url": pr_url, "label": f"{host}/{slug}", "count": 1}
+
+
+def _search_url(prefix: str, base: str, heads: list[str]) -> str:
+    return prefix + quote(f"{base} ({' OR '.join(heads)})", safe="")
 
 
 def _head_filter(branch: str) -> str:
