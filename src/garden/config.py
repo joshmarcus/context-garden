@@ -154,6 +154,9 @@ DEFAULTS: dict[str, Any] = {
         "min_memory_available_mb": 0,
         "min_temp_free_mb": 0,
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
+        "reclaim_max_mb": 512,     # bounded best-effort file-cache reclaim; 0 disables it
+        "reclaim_timeout_seconds": 5,
+        "reclaim_cooldown_seconds": 300,
     },
     "max_attempts": 2,
     "max_consecutive_env_errors": 3,

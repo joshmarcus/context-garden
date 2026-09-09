@@ -15,11 +15,21 @@ import httpx
 from .qa.sandbox import start
 
 
-def main() -> int:
+def _argument_parser() -> argparse.ArgumentParser:
+    """Parse replay arguments so callers can validate constructed argv unchanged."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--nonce", required=True)
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return _argument_parser().parse_args(argv)
+
+
+def main() -> int:
+    parser = _argument_parser()
     args = parser.parse_args()
     actual_head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual_head != args.head:
