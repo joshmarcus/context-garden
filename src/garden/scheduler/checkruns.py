@@ -256,7 +256,8 @@ class CheckRunMixin:
             self.state.save()
             return outcome
 
-        if not run_id and task.status != Status.WAITING_HUMAN:
+        if (not run_id and task.status != Status.WAITING_HUMAN
+                and stop_info.get("kind") != "check_did_not_run"):
             return "no check recovery is needed"
 
         if any(run.task_id == task.id for run in self.runs.active()):
