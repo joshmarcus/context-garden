@@ -101,6 +101,10 @@ class PollMixin:
         if pr.mergeable == "CONFLICTING":
             self._handle_pr_conflict(task, rep)
             return
+        # GitHub does not promise that updated_at changes with the head.  Record the
+        # independently queried identity before the metadata fast path so every later
+        # review and merge gate is bound to the commit we just observed.
+        st["head_sha"] = pr.head_sha
         if pr.updated_at and pr.updated_at == st.get("pr_updated_at"):
             # Nothing new on GitHub since last look, so any feedback is already processed:
             # a stable point to consider merging on the garden's own gates (a check rollup
@@ -108,7 +112,6 @@ class PollMixin:
             self._maybe_automerge(task, pr, rep)
             return
         st["pr_updated_at"] = pr.updated_at
-        st["head_sha"] = pr.head_sha
         ci_note = ""
         failure_key = (
             f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}:"
