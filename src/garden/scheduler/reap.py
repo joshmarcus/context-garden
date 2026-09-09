@@ -597,6 +597,14 @@ class ReapMixin:
                 cmd = str(setup.get(name) or "").strip()
                 if cmd:
                     specs.append({"name": name, "command": cmd})
+        from ..checks import is_publishing_ci_helper
+        if setup.get("worker_push") is not True:
+            specs = [
+                {**spec, "requires_worker_push": True}
+                if is_publishing_ci_helper(str(spec.get("command") or ""))
+                else spec
+                for spec in specs
+            ]
         # A task can require a configured check by name.  It is deliberately a name, rather
         # than a command from task text: check commands run branch code and stay garden config.
         from ..criteria import required_evidence

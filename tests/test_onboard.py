@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from garden.checks import run_check
 from garden.onboard import _add_github_metadata, discover_project, onboard_project
 from garden.planner import run_planner
 from garden.store import Store
@@ -203,7 +204,7 @@ def test_onboard_planner_step_uses_fake_harness(tmp_path, monkeypatch):
     assert all(task.status.value == "draft" for task in tasks)
 
 
-def test_onboard_this_repository_uses_documented_setup_and_ci_tests(tmp_path, monkeypatch):
+def test_onboard_this_repository_preserves_documented_publishing_ci_helper(tmp_path, monkeypatch):
     repo = Path(__file__).parents[1]
     garden = tmp_path / "garden"
     info = discover_project(repo)
@@ -222,9 +223,7 @@ def test_onboard_this_repository_uses_documented_setup_and_ci_tests(tmp_path, mo
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     assert config["products"]["context-garden"]["setup"] == {
         "command": 'uv venv && uv pip install -e ".[dev]"',
-        # The README directs full validation to the CI helper, which discovery
-        # does not recognize; its current fallback is the workflow's pytest step.
-        "test": "pytest -q",
+        "test": "python3 scripts/check_ci.py",
         "lint": ".venv/bin/ruff check src tests",
         "env": {},
     }
@@ -233,6 +232,8 @@ def test_onboard_this_repository_uses_documented_setup_and_ci_tests(tmp_path, mo
     assert "GitHub open issues" in report
     assert "GitHub open pull requests" in report
     assert "GitHub repository rulesets" in report
+    assert "setup.worker_push: true" in report
+    assert "Git/GitHub credentials" in report
 
     from typer.testing import CliRunner
 
@@ -241,6 +242,46 @@ def test_onboard_this_repository_uses_documented_setup_and_ci_tests(tmp_path, mo
     monkeypatch.chdir(garden)
     result = CliRunner().invoke(app, ["validate"])
     assert result.exit_code == 0, result.output
+
+
+def test_discovery_reports_ambiguous_ci_commands_without_granting_push_permission(tmp_path):
+    repo = tmp_path / "python-app"
+    repo.mkdir()
+    write(
+        repo / "README.md",
+        """# Python app
+
+```bash
+python -m pip install -e .
+pytest -q
+ruff check src
+python3 scripts/ci.py
+```
+""",
+    )
+
+    info = discover_project(repo)
+
+    assert (info.test_command, info.lint_command) == ("pytest -q", "ruff check src")
+    assert info.unavailable == [
+        "Whether documented CI command `python3 scripts/ci.py` is a local check or a branch-publishing helper"
+    ]
+    assert not any("worker_push" in item for item in info.inferred)
+
+
+def test_publishing_ci_helper_needs_explicit_worker_push_permission():
+    result = run_check(
+        {"name": "test", "command": "python3 scripts/check_ci.py", "requires_worker_push": True},
+        {},
+    )
+
+    assert result == {
+        "name": "test",
+        "status": "fail",
+        "summary": "CI helper requires explicit worker push permission",
+        "details": "Set products.<name>.setup.worker_push: true and configure the "
+                   "worker's Git/GitHub credentials before running this publishing helper.",
+    }
 
 
 @pytest.mark.parametrize("planner_provenance", [None, "onboard:not-a-real-source"])

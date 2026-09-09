@@ -209,14 +209,26 @@ def _env_rule(setup: dict) -> str:
         "- Your working environment is already prepared: do not install packages, create a "
         "virtualenv, or run a package manager (the runner did any setup before you started)."
     )
+    from .checks import is_publishing_ci_helper
+    test = str((setup or {}).get("test") or "")
+    publishing_helper_needs_permission = (
+        is_publishing_ci_helper(test) and setup.get("worker_push") is not True
+    )
     checks = []
     for label, key in (("tests", "test"), ("lint", "lint")):
         cmd = str((setup or {}).get(key) or "").strip()
+        if key == "test" and publishing_helper_needs_permission:
+            continue
         if cmd:
             checks.append(f"`{cmd}` ({label})")
     if checks:
         prepared += (" During iteration run focused tests only. Before finishing, run the project's checks "
                      "sequentially with " + " and ".join(checks) + "; full CI remains the merge gate.")
+    if publishing_helper_needs_permission:
+        prepared += (
+            " The configured test publishes a branch; do not run it until the product explicitly "
+            "sets setup.worker_push: true and configures Git/GitHub credentials for this worker."
+        )
     return prepared + "\n"
 
 
