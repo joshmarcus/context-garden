@@ -10,10 +10,17 @@
   <div class="kpi {{ 'hot' if inbox_count else '' }}"><div class="v">{{ inbox_count }}</div><div class="l">need you</div></div>
   <div class="kpi"><div class="v">{{ workers_running }}/{{ max_parallel }}</div><div class="l">workers running</div></div>
   <div class="kpi"><div class="v">{{ reviews_running }}/{{ review_parallel }}</div><div class="l">reviews running</div></div>
-  <div class="kpi"><div class="v">{{ prs_open }}</div><div class="l">PRs open</div></div>
+  <div class="kpi"><div class="v">{% if pr_destinations|length == 1 %}<a href="{{ pr_destinations[0].url }}" target="_blank" rel="noopener noreferrer" aria-label="Open {{ prs_open }} tracked garden pull request{{ 's' if prs_open != 1 else '' }} on GitHub">{{ prs_open }}</a>{% elif pr_destinations %}<a href="#tracked-pr-lists" aria-label="View {{ prs_open }} tracked garden pull request{{ 's' if prs_open != 1 else '' }} grouped into GitHub lists">{{ prs_open }}</a>{% else %}{{ prs_open }}{% endif %}</div><div class="l">PRs open</div></div>
   {% if suggestions_pending %}<div class="kpi"><div class="v">{{ suggestions_pending }}</div><div class="l">suggestions to integrate</div></div>{% endif %}
   <div class="kpi"><div class="v">${{ '%.2f' % spent_24h }}</div><div class="l">spent in 24h</div></div>
 </div>
+{% if pr_destinations|length > 1 %}
+<div class="panel" style="margin-bottom:12px" id="tracked-pr-lists">
+  <div class="eyebrow">Tracked PR lists</div>
+  <p>GitHub search is host-local, so these links keep every open garden PR in its configured repository.</p>
+  <p>{% for destination in pr_destinations %}<a href="{{ destination.url }}" target="_blank" rel="noopener noreferrer">{{ destination.label }} · {{ destination.count }} PR{{ 's' if destination.count != 1 else '' }} ↗</a>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+</div>
+{% endif %}
 {% if merge_queue %}
 <div class="panel" style="margin-bottom:12px">
   <div class="eyebrow">Merge queue</div>

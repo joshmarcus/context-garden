@@ -394,3 +394,127 @@ def test_web_inbox_count_excludes_retrying(garden: Path):
     assert '<div class="v">1</div>' in page  # "need you" KPI counts the one decision only
     assert "Auto-retrying" in page and "no action needed" in page
     assert "DM-002" in page and "DM-001" in page
+
+
+def test_inbox_pr_count_links_to_the_configured_garden_pr_search(garden: Path):
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.web.app import create_app
+
+    store = Store(garden)
+    tracked = store.task("DM-001")
+    tracked.status = Status.IN_REVIEW
+    tracked.branch = "garden/dm-001-first-task"
+    tracked.pr = "https://github.com/test/demo/pull/71"
+    store.save(tracked)
+    closed = store.task("DM-002")
+    closed.status = Status.DONE
+    closed.branch = "garden/dm-002-second-task"
+    closed.pr = "https://github.com/test/demo/pull/72"
+    store.save(closed)
+
+    page = TestClient(create_app(Store(garden), watch=False)).get("/inbox").text
+
+    assert 'aria-label="Open 1 tracked garden pull request on GitHub"' in page
+    assert 'href="https://github.com/test/demo/pulls?q=is%3Aopen%20is%3Apr%20%28head%3A%22garden%2Fdm-001-first-task%22%29"' in page
+    assert "dm-002-second-task" not in page
+
+
+def test_inbox_pr_count_respects_effective_owner_filter(garden: Path):
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.web.app import create_app
+
+    (garden / "demo" / "p1" / "goals.md").write_text(
+        "---\nowner: platform-team\n---\n\n# p1\n",
+    )
+    store = Store(garden)
+    inherited = store.task("DM-001")
+    inherited.status = Status.IN_REVIEW
+    inherited.branch = "garden/dm-001-platform"
+    inherited.pr = "https://github.com/test/demo/pull/71"
+    store.save(inherited)
+    other = store.task("DM-002")
+    other.owner = "feature-team"
+    other.status = Status.IN_REVIEW
+    other.branch = "garden/dm-002-feature"
+    other.pr = "https://github.com/test/demo/pull/72"
+    store.save(other)
+
+    page = TestClient(create_app(Store(garden), watch=False)).get(
+        "/inbox?owner=platform-team",
+    ).text
+
+    assert 'aria-label="Open 1 tracked garden pull request on GitHub"' in page
+    assert "dm-001-platform" in page
+    assert "dm-002-feature" not in page
+
+
+def test_inbox_pr_destinations_separate_enterprise_hosts(garden: Path):
+    from dataclasses import replace
+
+    from garden.model import Status
+    from garden.web.pages.inbox import open_pr_destinations
+
+    store = Store(garden)
+    store.config.data["products"]["enterprise"] = {
+        "github": {"slug": "team/work", "host": "github.example.test"},
+    }
+    public = replace(
+        store.task("DM-001"), status=Status.IN_REVIEW, branch="garden/dm-001",
+        pr="https://github.com/test/demo/pull/71",
+    )
+    enterprise = replace(
+        public, product="enterprise", branch="garden/ent-001",
+        pr="https://github.example.test/team/work/pull/4",
+    )
+
+    destinations = open_pr_destinations([public, enterprise], store)
+
+    assert [destination["label"] for destination in destinations] == [
+        "github.com/test/demo", "github.example.test/team/work",
+    ]
+    assert all("token" not in str(destination["url"]).lower() for destination in destinations)
+
+
+def test_inbox_pr_destinations_limit_github_boolean_operators(garden: Path):
+    from dataclasses import replace
+    from urllib.parse import unquote
+
+    from garden.model import Status
+    from garden.web.pages.inbox import open_pr_destinations
+
+    store = Store(garden)
+    task = replace(
+        store.task("DM-001"), status=Status.IN_REVIEW,
+        pr="https://github.com/test/demo/pull/71",
+    )
+    tasks = [replace(task, branch=f"garden/dm-{number}", pr=f"https://github.com/test/demo/pull/{number}")
+             for number in range(1, 8)]
+
+    destinations = open_pr_destinations(tasks, store)
+
+    assert [destination["count"] for destination in destinations] == [6, 1]
+    assert all(unquote(str(destination["url"])).count(" OR ") <= 5 for destination in destinations)
+
+
+def test_inbox_pr_destinations_fall_back_to_an_exact_pr_for_an_overlong_filter(
+    garden: Path, monkeypatch,
+):
+    from dataclasses import replace
+
+    from garden.model import Status
+    from garden.web.pages import inbox
+
+    monkeypatch.setattr(inbox, "_MAX_GITHUB_LIST_URL", 80)
+    task = replace(
+        Store(garden).task("DM-001"), status=Status.IN_REVIEW,
+        branch="garden/dm-001-first-task",
+        pr="https://github.com/test/demo/pull/71",
+    )
+
+    assert inbox.open_pr_destinations([task], Store(garden)) == [{
+        "url": "https://github.com/test/demo/pull/71", "label": "github.com/test/demo", "count": 1,
+    }]
