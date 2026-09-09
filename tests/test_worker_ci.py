@@ -257,7 +257,7 @@ def test_publishing_ci_check_waits_for_explicit_worker_push_permission(garden):
     path.write_text(yaml.safe_dump(config))
     store = Store(garden)
 
-    class Scheduler:
+    class Scheduler(ReapMixin):
         cfg = store.config
 
     specs = ReapMixin._pre_pr_specs(Scheduler(), store.task("DM-001"))
