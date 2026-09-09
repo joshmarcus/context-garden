@@ -90,6 +90,7 @@ CONFIG_FIELDS: dict[str, ConfigField] = {f.key: f for f in (
     _field("retro.difficulty", "string", "hard", "Model tier used for retros and phase persona reviews.", choices=("easy", "medium", "hard")),
     _field("github.draft_pr", "boolean", True, "Opens pull requests as drafts until human triage.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT)),
     _field("budgets", "mapping", {}, "USD caps keyed by product or product/phase; runtime entries take precedence.", units="USD"),
+    _field("resources.execution_cgroup", "string", "", "Delegated cgroup that enforces local descendant resource isolation."),
     _field("work_dir", "string", "", "Directory used for clones and worktrees.", apply=ApplyMode.RESTART),
     _field("tick_interval", "integer", 60, "Seconds between scheduler passes.", apply=ApplyMode.RESTART, minimum=1, units="seconds"),
     _field("github.use_gh", "boolean", True, "Uses the gh CLI before falling back to the GitHub API.", apply=ApplyMode.RESTART),

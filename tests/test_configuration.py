@@ -42,7 +42,7 @@ def test_metadata_inventory_describes_every_value_on_configuration_page():
         "observe.events", "observe.stuck_after", "observe.phases", "review.enabled",
         "review.max_rounds", "review.friction_after", "review.difficulty", "review.ladder",
         "retro.difficulty", "github.draft_pr", "budgets", "work_dir", "tick_interval",
-        "dispatch_paused", "maintenance", "resource_status",
+        "resources.execution_cgroup", "dispatch_paused", "maintenance", "resource_status",
     }
     assert displayed <= CONFIG_FIELDS.keys()
     assert all(field.help and field.value_type and field.scopes for field in CONFIG_FIELDS.values())
