@@ -1666,7 +1666,7 @@ def test_run_page_renders_codex_transcript_and_escapes_item_content(garden):
         json.dumps({"type": "item.completed", "item": {
             "type": "agent_message", "text": "I will inspect <script>alert(1)</script>."}}),
         json.dumps({"type": "item.completed", "item": {
-            "type": "command_execution", "command": "rg Codex", "aggregated_output": "<result>found</result>"}}),
+            "id": "command-1", "type": "command_execution", "command": "rg Codex", "aggregated_output": "<result>found</result>"}}),
         json.dumps({"type": "item.completed", "item": {
             "type": "file_change", "changes": [{"path": "src/garden/web/pages/runs.py", "kind": "update"}]}}),
         json.dumps({"type": "turn.completed", "usage": {}}),
@@ -1685,8 +1685,26 @@ def test_run_page_renders_codex_transcript_and_escapes_item_content(garden):
     assert "/partials/runs/DM-001/" not in body
 
 
+def test_run_page_coalesces_codex_command_lifecycle_events(garden):
+    """A completed Codex command replaces its started envelope and adds its output once."""
+    import json
+
+    stdout = "\n".join([
+        json.dumps({"type": "item.started", "item": {
+            "id": "command-1", "type": "command_execution", "command": "pytest -q"}}),
+        json.dumps({"type": "item.completed", "item": {
+            "id": "command-1", "type": "command_execution", "command": "pytest -q",
+            "aggregated_output": "3 passed"}}),
+    ]) + "\n"
+    run = _record_run(garden, harness="codex", stdout=stdout)
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert body.count("pytest -q") == 1
+    assert body.count("3 passed") == 1
+
+
 def test_run_page_detects_codex_before_output_and_handles_bad_events(garden):
-    """Configured Codex runs tail immediately; malformed or unrecognized JSONL is harmless."""
+    """Configured Codex runs tail immediately and recover after malformed JSONL."""
     import json
 
     run = _record_run(garden, status="running", harness="codex")
@@ -1700,6 +1718,13 @@ def test_run_page_detects_codex_before_output_and_handles_bad_events(garden):
     partial = c.get(f"/partials/runs/DM-001/{run.run_id}/stdout")
     assert partial.status_code == 200
     assert "unknown" in partial.text
+
+    with (run.path / "stdout.json").open("a") as output:
+        output.write(json.dumps({"type": "item.completed", "item": {
+            "id": "message-1", "type": "agent_message", "text": "recovered output"}}) + "\n")
+    recovered = c.get(f"/partials/runs/DM-001/{run.run_id}/stdout")
+    assert recovered.status_code == 200
+    assert "unknown" in recovered.text and "recovered output" in recovered.text
 
 
 def test_timeline_formats_the_new_event_kinds(garden):
