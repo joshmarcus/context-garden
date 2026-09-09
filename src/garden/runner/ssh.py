@@ -20,7 +20,9 @@ garden.yaml:
 
 from __future__ import annotations
 
+import json
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
@@ -215,7 +217,7 @@ class SSHRunner(Runner):
             raise RunnerError(f"no ssh host has a repo for product {product!r}")
         load = {h["name"]: 0 for h in candidates}
         for r in active:
-            if r.runner == self.name and r.host in load:
+            if r.run_id != run.run_id and r.runner == self.name and r.host in load:
                 load[r.host] += 1
         free = [h for h in candidates if load[h["name"]] < int(h.get("max_parallel", 1))]
         if not free:
@@ -227,6 +229,18 @@ class SSHRunner(Runner):
             if h.get("name") == name:
                 return h
         raise RunnerError(f"unknown ssh host {name!r}")
+
+    def canonical_checkout_identity(self, run: Run) -> str:
+        """Return the durable identity of this run's provisioned checkout."""
+        host = self._host(run.host)
+        product = str(self.config.get("_product") or "")
+        repo = str((host.get("repos") or {}).get(product) or "").strip()
+        if not repo:
+            raise RunnerError(f"host {run.host} has no repo path for product {product!r}")
+        # Use the configured SSH destination rather than its garden-local display name so
+        # duplicate host entries that point at the same machine still arbitrate together.
+        destination = str(host.get("host") or "").strip()
+        return json.dumps([destination, posixpath.normpath(repo)], separators=(",", ":"))
 
     def _setup_for(self, host: dict[str, Any]) -> dict[str, Any]:
         """The product's `setup` block, with a per-host `setup` override merged on top
