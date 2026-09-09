@@ -197,6 +197,10 @@ def test_discovery_bounds_retries_during_persistent_external_churn(garden, monke
     assert scans == 3
     assert store._discovery_sig != store._discovery_signature()
 
+    store.discovery_snapshot()
+
+    assert scans == 6
+
 
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
     """The served Inbox owns the manual take journey, including stale-card recovery."""
