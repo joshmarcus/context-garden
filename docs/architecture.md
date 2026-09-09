@@ -499,8 +499,15 @@ files under `tasks/` must not be hand-edited.
     resolution, or a rebase that folds the branch's own commit away as already-applied
     elsewhere.
   - **Automerge is a queue that keeps its head.** Approved candidates are ordered
-    oldest-approved-first; only the head is rebased, checked and merged, and the next candidate
-    is taken once the head is off the queue. A branch already on the base's tip is merged as it
+    oldest-approved-first; only the head is processed, and the next candidate is fetched once the
+    head is off the queue. By default (`github.automerge_require_current_base: true`) the head is
+    rebased, checked and merged. A product may set `automerge_require_current_base: false` to merge
+    a clean, mergeable PR at its already-approved exact head without rewriting it merely because
+    the base advanced. The queue still fetches GitHub again immediately before the merge, requires
+    successful checks and the same reviewed head, and sends that head SHA as an atomic merge guard;
+    a new conflict, unknown mergeability, pending/failed checks or a changed head stops the merge.
+    Candidates remain strictly serial so the next PR is checked against the base produced by the
+    preceding merge. With the default policy, a branch already on the base's tip is merged as it
     stands — not rebased or pushed. A rebase that has to move the branch restarts its rollup, so
     the head goes **in flight** (`merge_head`, holding its `automerge_ready_at`): the queue does
     not pick another head while one is in flight, and it merges the head the moment the rollup
