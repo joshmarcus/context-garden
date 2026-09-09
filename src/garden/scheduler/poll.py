@@ -352,6 +352,11 @@ class PollMixin:
         st["applied_ci_feedback"] = {"head": head, "runs": [*applied_runs, run.run_id]}
         if reran:
             st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
+            # The provider may continue reporting the same head and FAILURE after the
+            # requested rerun. Let that result through the analyser once more; the
+            # ci_reruns limit prevents another flaky rerun, while the head checks above
+            # still reject results for obsolete commits.
+            st.pop("ci_failed_at", None)
         self._apply_feedback(task, pr, fb, ci_note, rep, replace_ci=True)
         self.state.save()
         if reran:
