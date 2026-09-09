@@ -48,6 +48,74 @@ def test_manual_reservation_does_not_interrupt_active_work_and_return_is_guarded
         sched.return_to_automation(task, reservation_id="not-current")
 
 
+def test_manual_reservation_parks_finished_worker_until_return(sched):
+    sched.cfg.data["stack"] = False
+    sched.tick()  # dispatch a worker which finishes in-process
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task, actor="operator")
+
+    sched.tick(dispatch=False)
+
+    run = sched.runs.latest(task.id)
+    assert run.status == "done"
+    assert statuses(sched)[task.id] == "running"
+    assert not any(active.task_id == task.id for active in sched.runs.active())
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=""
+    )
+    sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "in_review"
+
+
+def test_manual_reservation_parks_finished_review_verdict_until_return(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+    sched.tick()
+    sched.tick()  # reap work and dispatch the review, which finishes in-process
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+
+    sched.tick(dispatch=False)
+
+    run_id = sched.state.get(task.id)["review_run"]
+    run = next(run for run in sched.runs.runs_for(task.id) if run.run_id == run_id)
+    assert run.status == "done"
+    assert statuses(sched)[task.id] == "in_review"
+    assert not sched.state.get(task.id).get("pending_feedback")
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected_head=str(sched.state.get(task.id).get("head_sha") or ""),
+    )
+    sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "changes_requested"
+    assert sched.state.get(task.id).get("pending_feedback")
+
+
+def test_manual_reservation_parks_finished_persona_until_return(sched):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": False}
+    sched.tick()
+    sched.tick()  # open the PR without dispatching an automated review
+    task = sched.store.task("DM-001")
+    run = sched.dispatch_persona_pr(task, "security")
+    reservation = sched.reserve_manual(task)
+
+    sched.tick(dispatch=False)
+
+    assert sched.runs.latest(task.id).status == "done"
+    assert not sched.state.get(task.id).get("persona_reviews")
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected_head=str(sched.state.get(task.id).get("head_sha") or ""),
+    )
+    sched.tick(dispatch=False)
+    assert sched.state.get(task.id)["persona_reviews"][-1]["run"] == run.run_id
+
+
 def test_manual_reservation_guards_every_new_task_run_kind(sched):
     task = sched.store.task("DM-001")
     task.branch = task.default_branch()

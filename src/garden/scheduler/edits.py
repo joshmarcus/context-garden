@@ -94,20 +94,26 @@ class EditsMixin:
         return run
 
     def reap_edit(self, task: Task, rep: TickReport) -> bool:
-        from ..suggestions import parse_edit, pending_suggestions
+        from ..suggestions import parse_edit
 
         st = self.state.get(task.id)
         run_id = st.get("edit_run")
         if not run_id:
             return False
         run = next((r for r in self.runs.runs_for(task.id) if r.run_id == run_id), None)
-        if run is None or run.status != "running":
+        if run is None:
             st["edit_run"] = ""
             return False
+        if run.status != "running":
+            if self._manual_reserved(task):
+                return False
+            revised = run.result if isinstance(run.result, dict) else {}
+            st["edit_run"] = ""
+            return self._finish_edit(task, run, revised, rep)
         runner = self.runner_for(task, run.runner, run.harness)
-        if not self._finished_or_timed_out(run, runner):
+        finished = run.process_finished() if self._manual_reserved(task) else self._finished_or_timed_out(run, runner)
+        if not finished:
             return False
-        st["edit_run"] = ""
         revised: dict[str, Any] = {}
         if run.status != "timeout":
             run.exit_code = run.read_exit_code()
@@ -124,6 +130,16 @@ class EditsMixin:
             run.result = revised
             run.status = "done" if revised else "failed"
             run.save()
+        if self._manual_reserved(task):
+            return True
+        st["edit_run"] = ""
+        return self._finish_edit(task, run, revised, rep)
+
+    def _finish_edit(self, task: Task, run: Run, revised: dict[str, Any], rep: TickReport) -> bool:
+        """Apply a collected edit outcome once its task is no longer manually reserved."""
+        from ..suggestions import pending_suggestions
+
+        st = self.state.get(task.id)
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
         self.events.emit("run_finished", task.id, run=run.run_id, mode="edit", cost_usd=run.cost_usd,
                          usage=run.usage, status=run.status)
