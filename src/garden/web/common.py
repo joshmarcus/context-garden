@@ -186,7 +186,7 @@ class Hub:
                 effective = embedded
             else:
                 effective = {"kind": "duplicated", "label": "embedded and standalone watchers both enabled"}
-        return {"embedded": embedded["state"], "embedded_health": embedded, "effective": effective,
+        return {"embedded": embedded["kind"], "embedded_health": embedded, "effective": effective,
                 "standalone": standalone}
 
     def _embedded_health(self, now: dt.datetime | None = None) -> dict[str, Any]:
