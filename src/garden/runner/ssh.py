@@ -48,7 +48,6 @@ cd "$REPO"
 if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ] && [ "$REPO" != "$(pwd -P)" ]; then
   echo "canonical checkout root may not contain symlinks or relative components: $REPO" >&2; exit 4
 fi
-git fetch --prune origin >&2
 if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
   GARDEN_CANONICAL_LEASE="$REPO/.git/garden-canonical-lease"
   GARDEN_ACTIVE_RUN_IDS={active_run_ids}
@@ -75,10 +74,12 @@ if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
   if [ -n "$(git status --porcelain)" ]; then echo "canonical checkout has uncommitted work; refusing preparation" >&2; exit 4; fi
   GARDEN_CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
   if [ "$GARDEN_CURRENT_BRANCH" != "$BRANCH" ] && [ "$GARDEN_CURRENT_BRANCH" != "$BASE" ]; then echo "canonical checkout branch drift: $GARDEN_CURRENT_BRANCH" >&2; exit 4; fi
+  git fetch --prune origin >&2
   if [ "$GARDEN_CURRENT_BRANCH" = "$BASE" ] && [ "$BRANCH" != "$BASE" ]; then
     if git show-ref --verify --quiet "refs/heads/$BRANCH"; then git checkout -q "$BRANCH" >&2; else git checkout -q -b "$BRANCH" "origin/$BASE" >&2; fi
   fi
 else
+git fetch --prune origin >&2
 git worktree prune >&2
 if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
   if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
