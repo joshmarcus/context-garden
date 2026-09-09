@@ -160,11 +160,13 @@ Model sessions and remote-CI waits do not hold this lease, so independently conf
 run capacity can keep agents thinking while heavy commands remain serial. Extra heavy work is visible as waiting;
 cancellation works while waiting, and process exit or a crash releases the lease without stale
 cleanup. Inside a worker, each supported heavy command is launched as
-`"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>`; the variable selects the
+`"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <direct pytest command>`; the variable selects the
 garden installation's Python even when the product uses another environment. Concurrent wrappers
 take both the host slot and a second, owner-scoped lease. Their model-session parent owns
 neither lock, avoiding nested acquisition deadlocks. Raw commands that
 bypass this wrapper still remain inside the aggregate cgroup but are not individually serialized.
+Opaque scripts and build-tool launchers fail closed at the wrapper because they can discard the
+current pytest policy before delegation. Run non-pytest tools directly.
 Arbitrary operator terminal commands and remote runners are not intercepted; use the wrapper
 from a local supervised run, CI, or an equivalent host-side unit for those paths.
 

@@ -1752,7 +1752,7 @@ def test_stale_lease_cannot_quarantine_dirty_checkout(tmp_path):
 
 
 
-@pytest.mark.parametrize("validation_exit", [0, 7])
+@pytest.mark.parametrize("validation_exit", [0, 1])
 def test_remote_harness_receives_working_owned_validation(
     garden, monkeypatch, tmp_path, fake_github, validation_exit,
 ):
@@ -1764,6 +1764,11 @@ def test_remote_harness_receives_working_owned_validation(
     payload = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                           headers=auth).json()
     probe = tmp_path / "validation_harness.py"
+    target = tmp_path / "test_validation_target.py"
+    target.write_text(
+        "def test_validation_target():\n"
+        f"    assert {validation_exit} == 0\n"
+    )
     probe.write_text(
         "import json, os, subprocess, sys\n"
         "from pathlib import Path\n"
@@ -1774,7 +1779,7 @@ def test_remote_harness_receives_working_owned_validation(
         "assert os.environ['GARDEN_VALIDATION_TIMEOUT_SECONDS'] == '900'\n"
         "assert 'GARDEN_EXECUTION_TIMEOUT_SECONDS' not in os.environ\n"
         "command = [os.environ['GARDEN_VALIDATION_RUNNER'], '-m', 'garden.validation', '--', "
-        "sys.executable, '-c', 'import sys; sys.exit(" + str(validation_exit) + ")']\n"
+        f"sys.executable, '-m', 'pytest', {str(target)!r}, '-q']\n"
         "result = subprocess.run(command, capture_output=True, text=True, timeout=10)\n"
         "assert result.returncode == " + str(validation_exit) + ", result.stderr\n"
         "states = list((outer / 'validations').glob('*/execution.json'))\n"
