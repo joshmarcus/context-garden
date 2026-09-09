@@ -97,6 +97,8 @@ def validate_candidate(manifest_path: Path, *, root: Path, github_host: str = "g
     if project_version != version:
         raise ValueError(f"pyproject version {project_version!r} does not match {version!r}")
     resolved_commit = _git(root, "rev-parse", f"{commit}^{{commit}}")
+    if commit != resolved_commit:
+        raise ValueError("release manifest commit must be a full canonical commit object ID")
     if _git(root, "cat-file", "-t", tag) != "tag":
         raise ValueError(f"tag {tag} must be annotated")
     tagged_commit = _git(root, "rev-parse", f"{tag}^{{commit}}")

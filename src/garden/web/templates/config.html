@@ -8,7 +8,7 @@
 <div class="panel" style="margin-bottom:14px">
   <div class="eyebrow">Release identity</div>
   <h3>Installed package</h3>
-  <p class="muted" style="margin:0">Version <strong>{{ tool_build.get('installed_version', 'unknown') }}</strong> · installed source <span class="mono">{{ tool_build.get('active', '')[:12] or 'unknown' }}</span>. {% if tool_build.get('sha') %}Latest available release: <span class="mono">{{ tool_build.sha[:12] }}</span> (not installed).{% else %}No newer release has been recorded by this scheduler.{% endif %}</p>
+  <p class="muted" style="margin:0">Version <strong>{{ tool_build.get('installed_version', 'unknown') }}</strong> · installed source <span class="mono">{{ tool_build.get('active', '')[:12] or 'unknown' }}</span>. {% if tool_build.get('sha') %}Available source update: <span class="mono">{{ tool_build.sha[:12] }}</span> (not installed; not a published release).{% else %}No newer source update has been recorded by this scheduler.{% endif %}</p>
 </div>
 
 {% if config_hold %}

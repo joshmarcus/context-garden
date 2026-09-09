@@ -12,8 +12,9 @@ move a tag.
 3. Write release notes, build the source artifact (and any prebuilt artifacts), and record
    each local path and SHA-256 in an artifact manifest. When no prebuilt artifact is supplied,
    set `prebuilt: absent`; source installs remain supported.
-4. Make a candidate manifest with `kind: draft` or `kind: prerelease`, the exact commit, the
-   repository, release notes, successful exact-commit CI links, and the artifact manifest.
+4. Make a candidate manifest with `kind: draft` or `kind: prerelease`, the full canonical
+   commit object ID (not `HEAD`, a tag, or an abbreviated hash), the repository, release notes,
+   successful exact-commit CI links, and the artifact manifest.
 5. Run `garden release validate --manifest path/to/candidate.yaml`. For GitHub Enterprise,
    pass `--github-host forge.example.com` (and optionally `--repository owner/repo`). The
    command only reads local files and Git metadata; it makes no network request and never

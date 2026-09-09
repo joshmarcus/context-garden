@@ -65,6 +65,22 @@ def test_validate_candidate_rejects_mismatched_artifact_digest(tmp_path):
         raise AssertionError("candidate with a wrong digest passed")
 
 
+def test_validate_candidate_requires_a_full_canonical_commit(tmp_path):
+    manifest = _candidate(tmp_path)
+    data = yaml.safe_load(manifest.read_text())
+    full_commit = data["commit"]
+
+    for commit in ("HEAD", full_commit[:12]):
+        data["commit"] = commit
+        manifest.write_text(yaml.safe_dump(data))
+        try:
+            validate_candidate(manifest, root=tmp_path, github_host="forge.example.test")
+        except ValueError as exc:
+            assert "full canonical commit" in str(exc)
+        else:  # pragma: no cover - protects the assertion's intended failure path
+            raise AssertionError(f"candidate with {commit!r} commit passed")
+
+
 def test_release_validate_command_accepts_github_enterprise_host(tmp_path, monkeypatch):
     manifest = _candidate(tmp_path)
     monkeypatch.chdir(tmp_path)

@@ -298,7 +298,7 @@ def test_shared_rail_keeps_the_active_build_out_of_the_inbox(garden, monkeypatch
     assert '<form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>' in inbox
 
 
-def test_config_shows_installed_and_available_release_identity(garden, monkeypatch):
+def test_config_distinguishes_installed_package_from_available_source_update(garden, monkeypatch):
     monkeypatch.setattr(Scheduler, "upgrade_status", lambda self: {
         "installed_version": "0.1.0", "active": "a" * 40, "sha": "b" * 40,
     })
@@ -308,7 +308,8 @@ def test_config_shows_installed_and_available_release_identity(garden, monkeypat
     assert page.status_code == 200
     assert "Installed package" in page.text
     assert "Version <strong>0.1.0</strong>" in page.text
-    assert "Latest available release" in page.text
+    assert "Available source update" in page.text
+    assert "not a published release" in page.text
 
 def test_owner_inheritance_reassignment_and_inbox_filter(garden):
     goals = garden / "demo" / "p1" / "goals.md"
