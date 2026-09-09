@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -196,6 +197,8 @@ def test_owner_inheritance_reassignment_and_inbox_filter(garden):
     task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
     assert task["owner"] == "unassigned"
     assert task["effective_owner"] == "" and task["owner_source"] == "unassigned"
+    phase_page = c.get("/phases/demo/p1").text
+    assert re.search(r'href="/tasks/DM-001".*?</td><td>.*?</td><td>unassigned</td>', phase_page, re.DOTALL)
     assert c.post("/tasks/DM-001/owner", data={"note": "inherit"}, headers={"Origin": "http://testserver"},
                   follow_redirects=False).status_code == 303
     task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
