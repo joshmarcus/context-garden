@@ -24,10 +24,10 @@ GROUPS = [
     ("decision", "Choose the product outcome", "A worker recommends cancelling or changing the promised outcome. The card explains what each choice does.", "decision"),
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
-    ("operator", "Operator recovery", "A bounded operational repair is available or an infrastructure prerequisite needs attention. It does not ask for a product decision.", "notice"),
+    ("operator", "Operator recovery", "A bounded repair has an explicit owner and preserves the task's current evidence. You do not need to make a product decision.", "notice"),
     ("automated_review", "Automated review", "The scheduler owns this review state. It records the queue, resource wait, and most recent verdict without asking a person to clear it.", "notice"),
     ("deferred", "Deferred work", "This draft is intentionally frozen by phase policy. Move it deliberately when the policy changes; it never needs approval or cancellation merely to clear a badge.", "notice"),
-    ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker.", "decision"),
+    ("attention", "Needs your decision", "The loop stopped because an unresolved product judgment needs you.", "decision"),
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
     ("config_hold", "Confirm a held config change", "garden.yaml changed while a worker run was in flight; the executable parts of the change (notify.command, checks, setup commands, harness bin/command, worker_env.pass) are held until the run is reaped or you confirm it.", "decision"),
@@ -103,6 +103,21 @@ ATTENTION_KINDS = {
     "troubled_task": ("Troubled task", "Substantive revisions are not converging. New implementation dispatch is paused for an explicit bounded decision."),
     "investigation": ("Investigation requested", "Implementation and review mutations are paused while the preserved work reaches a safe boundary for diagnosis."),
     "investigation_report": ("Investigation report ready", "Diagnosis is complete. The report does not restart, cancel, or merge the task; choose the next action explicitly."),
+}
+
+ATTENTION_OWNERS = {
+    "check_did_not_run": ("Interrupted check", "operator", "Retry the interrupted check"),
+    "env_error": ("Interrupted infrastructure", "operator", "Repair the environment, then retry"),
+    "base_broken": ("Normal pending work", "scheduler", "Wait for the base branch check"),
+    "deployment": ("Explicit hold", "operator", "Complete the named deployment step"),
+    "worker_failed": ("Source or worker failure", "implementation worker", "Send the failure to the worker"),
+    "revision_cap": ("Source or CI failure", "implementation worker", "Send the preserved failures to the worker"),
+    "parent_closed": ("Source conflict", "implementation worker", "Send the conflict to the worker"),
+    "rebase_failed": ("Source conflict", "implementation worker", "Send the conflict to the worker"),
+    "review_clarification": ("Stale review bookkeeping", "review operator", "Request a current-head review"),
+    "review_recovery_exhausted": ("Interrupted review infrastructure", "review operator", "Restore review capacity, then retry"),
+    "review_cap": ("Unresolved review decision", "you", "Review the current PR"),
+    "stall": ("Unresolved implementation decision", "you", "Decide whether the unchanged result is acceptable"),
 }
 
 
@@ -253,6 +268,36 @@ def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
     return out
 
 
+def _evidence_links(t: Task, st: Any, runs: RunStore | None) -> list[dict[str, str]]:
+    """Short links to the evidence named by the card, with currentness made explicit."""
+    links = [
+        {"label": f"{r.mode} run · {r.status}", "href": f"/runs/{t.id}/{r.run_id}"}
+        for r in (runs.runs_for(t.id) if runs else [])[-2:]
+    ]
+    if t.pr:
+        head = str(st.get("head_sha") or "")
+        links.append({"label": "Current PR" + (f" at {head[:8]}" if head else " (head unavailable)"),
+                      "href": t.pr})
+    return links
+
+
+def _attention_blockers(info: dict[str, str], st: Any) -> list[dict[str, str]]:
+    """Keep independent operational and source blockers separate on a combined card."""
+    label, _, _ = ATTENTION_OWNERS.get(info["kind"], ("Unclassified stop", "you", "Inspect the task"))
+    blockers = [{"category": label, "summary": info["reason"]}]
+    feedback = str(st.get("pending_feedback") or "").strip()
+    checks = str(st.get("checks") or "").upper()
+    if info["kind"] == "check_did_not_run" and (feedback or checks in {"FAILURE", "FAILED", "ERROR"}):
+        summary = "The branch also has source or CI failures; retrying the interrupted check does not resolve them."
+        blockers.append({"category": "Source or CI failure", "summary": summary})
+    review = st.get("last_review") or {}
+    verdict = str(review.get("verdict") or "")
+    if info["kind"] == "check_did_not_run" and verdict in {"changes_requested", "request_changes"}:
+        blockers.append({"category": "Review findings", "summary":
+                         "The preserved review still asks for implementation changes on its recorded head."})
+    return blockers
+
+
 def discuss_prompt(t: Task, info: dict[str, str], evidence: list[str], actions: list[dict[str, str]]) -> str:
     """A ready-made prompt about a stopped task, for pasting into a chat session or
     `garden take`: the task, the reason, the PR, the run ids and the options."""
@@ -289,13 +334,19 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             return None
         info = _failed_info(t)
     kind_title, kind_blurb = ATTENTION_KINDS.get(info["kind"], ("Needs a decision", ""))
+    category, owner, recommendation = ATTENTION_OWNERS.get(
+        info["kind"], ("Unclassified stop", "you", "Inspect the task before continuing"))
     evidence = _evidence_lines(t, st, runs)
+    evidence_links = _evidence_links(t, st, runs)
     resume_to = _resume_target(t, st, info)
     retry_detail = ("keeps the PR and queues a revise run on this branch to address what is outstanding; it does not start the work over"
                     if t.pr and t.status in (Status.CHANGES_REQUESTED, Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)
                     else "resets attempts and starts a fresh work run from the task brief")
     actions: list[dict[str, str]] = []
-    delegated = bool(info.get("delegated_recovery"))
+    stale_check_stop = (info["kind"] == "check_did_not_run"
+                        and str(st.get("checks") or "").upper() in {"SUCCESS", "PASSED"}
+                        and not st.get("check_run"))
+    delegated = bool(info.get("delegated_recovery")) or info["kind"] == "check_did_not_run"
     reviewer_owned = info["kind"] == "review_clarification"
     check_recovery = info["kind"] == "check_did_not_run"
     if check_recovery:
@@ -309,12 +360,20 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                        "an existing-branch revision" if actionable else
                        "clears this terminal check pointer and resumes pipeline progression without an implementation run"),
         })
-    if delegated:
-        actions.append({"label": "Run delegated recovery", "kind": "recover", "command": f"garden recover {t.id}",
-                        "detail": "queues one bounded continuation with the existing feedback and PR; repeated unchanged failures stop for an owner"})
     troubled = info["kind"] in ("troubled_task", "investigation", "investigation_report")
-    if can_resume and not reviewer_owned and not check_recovery and not troubled:
-        label = "Deployment completed, resume" if info["kind"] == "deployment" else "Nothing to fix, resume"
+    if stale_check_stop:
+        category, owner, recommendation = "Stale bookkeeping", "operator", "Clear the resolved stop"
+        actions.append({"label": "Clear resolved stop", "kind": "recover-check",
+                        "command": f"garden recover-check {t.id}",
+                        "detail": "keeps the successful current check and clears only the obsolete stop"})
+    elif delegated:
+        label = "Retry the interrupted check" if info["kind"] == "check_did_not_run" else "Send failures to the worker"
+        actions.append({"label": label, "kind": "recover", "command": f"garden recover {t.id}",
+                        "detail": "runs one guarded continuation with the current PR, head, feedback, and counters preserved; repeat clicks cannot duplicate it"})
+    if can_resume and info["kind"] == "deployment":
+        label = "Deployment completed — continue"
+    elif can_resume and not reviewer_owned and not check_recovery and not troubled and not stale_check_stop:
+        label = "Continue the loop"
         actions.append({"label": label, "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
     if info["kind"] == "review_cap" and t.pr:
@@ -348,8 +407,9 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             actions.append({"label": "Publish investigation report", "kind": "investigation-report",
                             "command": f'garden investigation-report {t.id} "..."',
                             "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
-    elif not reviewer_owned and not check_recovery:
-        actions.append({"label": "Continue the loop", "kind": "retry", "command": f"garden retry {t.id}",
+    elif not reviewer_owned and not delegated and not stale_check_stop and info["kind"] not in {"base_broken", "deployment"}:
+        retry_label = "Send failure to the worker" if info["kind"] == "worker_failed" else "Send outstanding work to a worker"
+        actions.append({"label": retry_label, "kind": "retry", "command": f"garden retry {t.id}",
                         "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
                     "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
@@ -367,9 +427,25 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             evidence.insert(0, f"likely cause ({report.get('confidence', 'unknown')} confidence): {report.get('likely_cause', 'not stated')}")
         else:
             evidence.insert(0, "investigation report: " + str(report))
+    effect = ("The task remains paused; its branch, PR, findings, and counters are preserved."
+              if actions else "The task remains parked while the scheduler watches its prerequisite.")
+    happened = {
+        "check_did_not_run": "A required check was interrupted twice before it produced a result.",
+        "env_error": "The worker could not complete because its execution environment failed repeatedly.",
+        "worker_failed": "The implementation run ended without a usable result after its automatic retries.",
+        "revision_cap": "Implementation or CI failures remain after the bounded revision rounds.",
+        "parent_closed": "This branch can no longer merge because its parent PR closed without merging.",
+        "rebase_failed": "The automated conflict repair did not complete after its bounded retry.",
+        "review_cap": "The automated review allowance is spent and the current PR needs judgment.",
+        "stall": "The same implementation outcome returned unchanged, so automatic work stopped.",
+    }.get(info["kind"], kind_blurb or info["reason"])
     return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
-            "resume_to": resume_to if can_resume else "", "evidence": evidence, "actions": actions,
-            "delegated": delegated,
+            "category": category, "owner": owner, "recommendation": recommendation,
+            "happened": happened, "effect": effect, "user_decision": owner == "you",
+            "blockers": _attention_blockers(info, st),
+            "resume_to": resume_to if can_resume else "", "evidence": evidence,
+            "evidence_links": evidence_links, "actions": actions,
+            "delegated": delegated or owner != "you",
             "discuss": discuss_prompt(t, info, evidence, actions)}
 
 
@@ -404,7 +480,11 @@ def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[s
                 "reason": "No question was recorded, so there is nothing for you to answer.",
                 "blurb": "This is an operational state mismatch. Continue the loop to reconcile the live run and task state.",
                 "final": "", "evidence": evidence,
-                "attention": {"actions": [
+                "attention": {"category": "Stale bookkeeping",
+                    "effect": "The task stays paused while its live check and continuation are reconciled.",
+                    "owner": "operator", "recommendation": "Reconcile the recorded check state",
+                    "user_decision": False, "blockers": [], "evidence_links": _evidence_links(t, st, runs),
+                    "actions": [
                     {"label": "Reconcile state", "kind": "recover-check", "command": f"garden recover-check {t.id}",
                      "detail": "checks live run state and returns the task to the automated loop"}], "discuss": ""},
             }
@@ -416,12 +496,12 @@ def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[s
         }
     attention = attention_view(t, st, runs)
     if attention is not None:
-        title = (f"Operator recovery: {attention['kind_title']}"
-                 if attention["kind"] == "deployment"
-                 else f"Needs a decision: {attention['kind_title']}")
+        title = (f"Needs your decision: {attention['kind_title']}" if attention["user_decision"]
+                 else f"Operator recovery: {attention['kind_title']}")
         return {"type": "attention", "title": title,
-                "reason": attention["reason"], "blurb": attention["kind_blurb"], "final": "",
-                "evidence": attention["evidence"], "attention": attention}
+                "reason": attention["happened"], "blurb": attention["kind_blurb"], "final": "",
+                "evidence": attention["evidence"], "evidence_links": attention["evidence_links"],
+                "attention": attention}
     return None
 
 
@@ -620,7 +700,9 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             if att:
                 add("operator" if att.get("delegated") or att["kind"] == "deployment" else "attention", t,
                     f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
-                    **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "resume_to", "evidence", "discuss")},
+                    **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "category",
+                                           "owner", "recommendation", "happened", "effect", "user_decision",
+                                           "blockers", "resume_to", "evidence", "evidence_links", "discuss")},
                     decision_card=decision_card_view(t, st, runs), card_task=t)
         elif t.status == Status.DRAFT:
             eff = effective_status(t, tasks, stack)

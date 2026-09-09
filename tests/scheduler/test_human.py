@@ -488,6 +488,47 @@ def test_delegated_check_recovery_keeps_stop_when_resource_admission_defers(sche
     assert not st.get("delegated_recovery_fingerprints")
 
 
+def test_interrupted_check_recovery_is_bounded_without_product_delegation(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out twice"}
+    st["recovery_check"] = {"stage": "ci", "specs": [{"name": "unit", "command": "true"}],
+                            "cont": {"worktree": str(sched.worktree_for(task)), "branch": "garden/test", "base": "main"}}
+    launches = []
+    monkeypatch.setattr(sched, "_dispatch_check_run", lambda *args, **kwargs: launches.append((args, kwargs)))
+
+    assert sched.delegate_recovery(task) == "one preserved check continuation queued"
+    assert len(launches) == 1
+    assert not st.get("needs_human") and not st.get("recovery_check")
+    assert st.get("delegated_recovery_fingerprints")
+
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out twice"}
+    st["recovery_check"] = {"stage": "ci", "specs": [{"name": "unit", "command": "true"}],
+                            "cont": {"worktree": str(sched.worktree_for(task)), "branch": "garden/test", "base": "main"}}
+    with pytest.raises(RuntimeError, match="unchanged recovery"):
+        sched.delegate_recovery(task)
+
+
+def test_interrupted_check_recovery_refuses_a_new_pr_head(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["head_sha"] = "new-head"
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out twice"}
+    st["recovery_check"] = {"stage": "ci", "source_head": "old-head",
+                            "specs": [{"name": "unit", "command": "true"}], "cont": {}}
+
+    with pytest.raises(RuntimeError, match="different PR head"):
+        sched.delegate_recovery(task)
+
+    assert st.get("needs_human") and st.get("recovery_check")
+
+
 def test_infrastructure_and_missing_ci_are_operator_actions_not_owner_cards(sched):
     """Routine prerequisites name their repair without masquerading as product decisions."""
     from garden.inbox import build_inbox, needs_you
