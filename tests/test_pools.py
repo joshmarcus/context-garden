@@ -68,6 +68,26 @@ def test_dispatch_records_the_selected_pool_member(sched):
     assert (run.harness, run.model, run.pool_member) == ("claude", "sonnet", "claude:sonnet")
 
 
+def test_dispatch_keeps_an_empty_pool_member_model(sched):
+    task = sched.store.task("DM-001")
+    task.difficulty = "medium"
+    sched.cfg.data["models"] = {"medium": [{"harness": "codex", "model": ""}]}
+
+    run = sched.dispatch(task)
+
+    assert (run.harness, run.model, run.pool_member) == ("codex", "", "codex:")
+
+
+def test_plain_top_level_tier_model_still_overrides_harness_default(sched):
+    task = sched.store.task("DM-001")
+    task.difficulty = "medium"
+    sched.cfg.data["models"] = {"medium": "garden-medium"}
+
+    run = sched.dispatch(task)
+
+    assert (run.harness, run.model, run.pool_member) == ("claude", "garden-medium", "")
+
+
 def test_review_pool_alternates_and_skips_paused_harness(sched):
     task = sched.store.task("DM-001")
     sched.cfg.data["review"]["pool"] = [
@@ -104,6 +124,16 @@ def test_persona_review_uses_the_selected_review_pool_member(sched):
     assert (run.harness, run.model, run.pool_member) == ("claude", "sonnet", "claude:sonnet")
 
 
+def test_persona_review_keeps_an_empty_review_pool_member_model(sched):
+    task = sched.store.task("DM-001")
+    task.branch = task.default_branch()
+    sched.cfg.data["review"]["pool"] = [{"harness": "codex", "model": ""}]
+
+    run = sched.dispatch_persona_pr(task, "security")
+
+    assert (run.harness, run.model, run.pool_member) == ("codex", "", "codex:")
+
+
 def test_pr_records_the_work_pool_member_in_state_event_and_body(sched, fake_github):
     task = sched.store.task("DM-001")
     run = sched.runs.new_run(task.id, "local", mode="work")
@@ -132,3 +162,13 @@ def test_review_pool_model_beats_a_harness_review_model(sched):
     sched.cfg.data["review"]["pool"] = [{"harness": "claude", "model": "sonnet"}]
     run = sched.dispatch_review(task)
     assert (run.model, run.pool_member) == ("sonnet", "claude:sonnet")
+
+
+def test_review_pool_keeps_an_empty_member_model(sched):
+    task = sched.store.task("DM-001")
+    sched.cfg.data["harnesses"]["codex"]["review_model"] = "review-default"
+    sched.cfg.data["review"]["pool"] = [{"harness": "codex", "model": ""}]
+
+    run = sched.dispatch_review(task)
+
+    assert (run.harness, run.model, run.pool_member) == ("codex", "", "codex:")
