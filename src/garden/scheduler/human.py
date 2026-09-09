@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from pathlib import Path
 from typing import Any
@@ -102,11 +103,29 @@ class HumanMixin:
             raise RuntimeError("a runner hold reason is required")
         actor = self._validate_action_actor(actor)
         st = self.state.get(task.id)
-        if st.get("runner_hold"):
-            raise RuntimeError(f"{task.id} already has a temporary runner hold")
+        existing_hold = st.get("runner_hold")
+        if isinstance(existing_hold, dict):
+            # The side-store is saved first so an interrupted hold remains a safe stop.  A
+            # retry completes the task-file half instead of leaving manual routing without
+            # the provenance needed to release it.
+            prior_runner = str(existing_hold.get("prior_runner") or "")
+            if task.runner == "manual":
+                raise RuntimeError(f"{task.id} already has a temporary runner hold")
+            if task.runner != prior_runner:
+                raise RuntimeError(f"{task.id}'s runner changed while a hold was being recorded")
+            task.runner = "manual"
+            task.log(f"temporary runner hold by {existing_hold.get('actor') or actor}: "
+                     f"{existing_hold.get('reason') or 'no reason recorded'}")
+            self.store.save(task)
+            self.events.emit("runner_hold", task.id, actor=str(existing_hold.get("actor") or actor),
+                             reason=str(existing_hold.get("reason") or ""),
+                             hold_id=str(existing_hold.get("id") or ""))
+            return
         if task.runner == "manual":
             raise RuntimeError(f"{task.id} already uses the manual runner; no temporary hold is needed")
         hold_id = f"{task.id}-{now_iso()}"
+        original_hold = copy.deepcopy(st.get("runner_hold"))
+        original_stop = copy.deepcopy(st.get("needs_human"))
         st["runner_hold"] = {
             "id": hold_id, "reason": reason, "actor": actor,
             "prior_runner": task.runner, "runner": "manual", "at": now_iso(),
@@ -116,11 +135,17 @@ class HumanMixin:
         if not st.get("needs_human") and not st.get("decision"):
             self._set_needs_human(task, "runner_hold", reason, hold_id=hold_id,
                                   actor=actor, operational=True)
+        try:
+            # Persist the stop before changing routing.  If the task write fails, this is a
+            # durable, non-dispatchable incomplete hold which a repeated hold action finishes.
+            self.state.save()
+        except Exception:
+            self._restore_runner_hold_state(st, original_hold, original_stop)
+            raise
         task.runner = "manual"
         task.log(f"temporary runner hold by {actor}: {reason}")
         self.store.save(task)
         self.events.emit("runner_hold", task.id, actor=actor, reason=reason, hold_id=hold_id)
-        self.state.save()
 
     def release_runner_hold(self, task: Task, *, actor: str = "delegated_operator") -> None:
         """Release this task's temporary manual hold and its matching operational stop."""
@@ -130,18 +155,41 @@ class HumanMixin:
         hold = st.get("runner_hold")
         if not isinstance(hold, dict) or not str(hold.get("id") or ""):
             raise RuntimeError(f"{task.id} has no temporary runner hold to release")
-        if task.runner != "manual":
+        prior_runner = str(hold.get("prior_runner") or "")
+        if task.runner not in ("manual", prior_runner):
             raise RuntimeError(f"{task.id}'s runner changed while held; refusing to overwrite it")
         hold_id = str(hold["id"])
-        task.runner = str(hold.get("prior_runner") or "")
-        task.log(f"temporary runner hold released by {actor}: {hold.get('reason') or 'no reason recorded'}")
-        self.store.save(task)
+        if task.runner == "manual":
+            # Save routing first.  If saving state then fails, a retry sees the restored
+            # runner plus its durable hold and removes just that hold's stop.
+            task.runner = prior_runner
+            task.log(f"temporary runner hold released by {actor}: {hold.get('reason') or 'no reason recorded'}")
+            self.store.save(task)
+        original_hold = copy.deepcopy(hold)
+        original_stop = copy.deepcopy(st.get("needs_human"))
         raw_stop = st.get("needs_human")
         if isinstance(raw_stop, dict) and raw_stop.get("kind") == "runner_hold" and raw_stop.get("hold_id") == hold_id:
             st.pop("needs_human", None)
         st.pop("runner_hold", None)
-        self.events.emit("runner_hold_released", task.id, actor=actor, reason=str(hold.get("reason") or ""), hold_id=hold_id)
-        self.state.save()
+        try:
+            self.state.save()
+        except Exception:
+            self._restore_runner_hold_state(st, original_hold, original_stop)
+            raise
+        self.events.emit("runner_hold_released", task.id, actor=actor,
+                         reason=str(hold.get("reason") or ""), hold_id=hold_id)
+
+    @staticmethod
+    def _restore_runner_hold_state(st: _TaskState, hold: Any, stop: Any) -> None:
+        """Restore in-memory side-state after its first persistence step fails."""
+        if hold is None:
+            st.pop("runner_hold", None)
+        else:
+            st["runner_hold"] = hold
+        if stop is None:
+            st.pop("needs_human", None)
+        else:
+            st["needs_human"] = stop
 
     def _apply_revision_policy(self, task: Task, st: _TaskState) -> None:
         """Raise the implementation floor at each durable substantive threshold.

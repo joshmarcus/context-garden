@@ -86,6 +86,58 @@ def test_released_runner_hold_defers_at_capacity_then_dispatches_one_revision(sc
     assert len(sched.runs.runs_for(task.id)) == 1
 
 
+def test_release_runner_hold_retries_after_side_state_save_failure(sched, monkeypatch):
+    """A failed release save leaves a retryable stop and cannot dispatch a revision."""
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["pending_feedback"] = "- retain this review finding"
+    sched.state.save()
+    sched.hold_runner(task, "temporary runner maintenance")
+
+    save_state = sched.state.save
+    monkeypatch.setattr(sched.state, "save", lambda: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        sched.release_runner_hold(task)
+
+    assert task.runner == ""
+    assert st["runner_hold"]
+    assert st["pending_feedback"] == "- retain this review finding"
+    assert sched.tick().dispatched == []
+
+    monkeypatch.setattr(sched.state, "save", save_state)
+    sched.release_runner_hold(task)
+    current = sched.state.get(task.id)
+    assert not current.get("runner_hold")
+    assert not current.get("needs_human")
+    assert current["pending_feedback"] == "- retain this review finding"
+
+
+def test_hold_runner_retries_after_task_save_failure(sched, monkeypatch):
+    """A durable incomplete hold blocks revisions until a repeated hold finishes routing."""
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["pending_feedback"] = "- retain this review finding"
+    sched.state.save()
+
+    save_task = sched.store.save
+    monkeypatch.setattr(sched.store, "save", lambda _: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        sched.hold_runner(task, "temporary runner maintenance")
+
+    assert st["runner_hold"]
+    sched.store.invalidate()
+    assert sched.store.task(task.id).runner == ""
+    assert sched.tick().dispatched == []
+
+    monkeypatch.setattr(sched.store, "save", save_task)
+    sched.hold_runner(sched.store.task(task.id), "temporary runner maintenance")
+    assert sched.store.task(task.id).runner == "manual"
+
+
 def test_retry_grants_one_more_round_past_cap(sched, fake_github):
     """Resuming a capped task rolls the revision counter back one so a revise run runs."""
     t = sched.store.task("DM-001")
