@@ -141,6 +141,25 @@ def test_inbox_can_request_an_agent_investigation(garden):
     assert investigation["reason"] == "diagnose the repeated review finding"
 
 
+def test_inbox_rejects_unsupported_investigation_owner_without_persisting_it(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED)
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "repeated reviews"})
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    response = client.post("/tasks/DM-001/investigate", data={
+        "note": "diagnose the repeated review finding",
+        "applies_to": "other",
+    }, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "owner+must+be+operator+or+agent" in response.headers["location"]
+    persisted = State(garden / ".garden" / "state.json").get("DM-001")
+    assert not persisted.get("investigation")
+    assert persisted["needs_human"]["kind"] == "troubled_task"
+
+
 def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
