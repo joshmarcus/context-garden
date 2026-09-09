@@ -1331,6 +1331,46 @@ def test_materialization_failure_is_preserved_and_clean_generation_retries(
     assert (host_root / "repos" / "DM-001" / ".venv" / "prepared").exists()
 
 
+def test_required_config_materialization_failure_finishes_without_author(
+    garden, monkeypatch, tmp_path, fake_github,
+):
+    """A supported host-config failure remains scoped to its claim generation."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    client, store = remote_client(garden, monkeypatch)
+    scheduler = Scheduler(store, github=fake_github)
+    scheduler.tick()
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post(
+        "/api/runs/claim",
+        json={"host": "build-1", "harnesses": ["claude"]},
+        headers=auth,
+    ).json()
+    claim["config_files"] = {
+        "required-tool": {
+            "source": str(tmp_path / "unavailable.json"),
+            "destination": ".config/tool/config.json",
+            "required": True,
+        },
+    }
+    finish_posts = []
+
+    class PostingClient:
+        def post(self, path, body):
+            response = client.post(path, json=body, headers=auth)
+            if path.endswith("/finish") and response.status_code == 200:
+                finish_posts.append(body)
+            return response.status_code, response.json()
+
+    monkeypatch.setattr(Harness, "command", lambda *args, **kwargs: pytest.fail("author launched"))
+    execute_claim(claim, tmp_path / "config-host", PostingClient())
+
+    assert len(finish_posts) == 1
+    assert finish_posts[0]["env_kind"] == "materialization"
+    assert "required config file 'required-tool' is unavailable" in finish_posts[0]["error"]
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved.read_exit_code() == 1 and not saved.pushed_head
+
+
 def test_live_checkout_owner_is_refused_without_quarantine_or_author_launch(tmp_path, monkeypatch):
     root = tmp_path / "host"
     lock_path = root / "repo-locks" / "T-1.lock"

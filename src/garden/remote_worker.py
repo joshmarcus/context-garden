@@ -327,7 +327,9 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
                 check=True, pass_fds=(lock_fd,),
             ).stdout.strip()
             if actual_source != source_head:
-                raise RuntimeError(f"advertised source {source_head} materialised as {actual_source}")
+                raise ClaimMaterializationError(
+                    stage, f"advertised source {source_head} materialised as {actual_source}"
+                )
         else:
             remote_branch = subprocess.run(
                 ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
@@ -337,7 +339,15 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
                 ["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"],
                 cwd=repo, check=True, pass_fds=(lock_fd,),
             )
-        env = _env(list(run.get("env_allowlist") or []), repo, run)
+        stage = "configuration"
+        try:
+            env = _env(list(run.get("env_allowlist") or []), repo, run)
+        except Exception as exc:
+            # Claim config is host-owned input and can fail validation or installation in
+            # several supported ways. It is still pre-author materialization, not a daemon
+            # failure. No heartbeat operation occurs inside _env, so lease fencing remains
+            # outside this conversion boundary.
+            raise ClaimMaterializationError(stage, str(exc)) from exc
         runtime_dir = root / "runtime"
         runtime_dir.mkdir(mode=0o700, exist_ok=True)
         env["XDG_RUNTIME_DIR"] = str(runtime_dir)
@@ -348,7 +358,7 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
                            timeout=int(setup.get("timeout_seconds") or 600), check=True,
                            pass_fds=(lock_fd,))
         return repo, env
-    except ClaimMaterializationError:
+    except (ClaimMaterializationError, WorkerRequestError):
         raise
     except (OSError, subprocess.SubprocessError) as exc:
         preserved = _quarantine_materialization(repo, root, run, heartbeat)
