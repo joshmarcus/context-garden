@@ -300,7 +300,10 @@ class CheckRunMixin:
             raise RuntimeError(f"{task.id} has active work; stale recovery was not applied")
         if (task.pr and str(st.get("checks") or "").upper() == "SUCCESS"
                 and not st.get("pending_feedback") and not st.get("failed_checks")):
-            self._require_current_success_head(task, str(st.get("head_sha") or ""))
+            # ``head_sha`` is refreshed by PR polling and therefore cannot identify
+            # the source that produced a cached check result.  Only the parked check
+            # continuation carries immutable provenance for this legacy no-run path.
+            self._require_current_success_head(task, str(recovery.get("source_head") or ""))
         st.pop("check_run", None)
         stop = st.get("needs_human") or {}
         if isinstance(stop, dict) and stop.get("kind") == "check_did_not_run":

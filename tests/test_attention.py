@@ -428,7 +428,8 @@ def test_stale_successful_check_stop_can_be_cleared_without_rerunning(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
     _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "older timeout"},
-               checks="SUCCESS", head_sha="abcdef123456")
+               checks="SUCCESS", head_sha="abcdef123456",
+               recovery_check={"source_head": "abcdef123456"})
     sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
     sched.github.prs["garden/test"] = PRInfo(
         number=7, url="https://example.com/pull/7", state="OPEN", head_sha="abcdef123456"
@@ -453,7 +454,8 @@ def test_stale_successful_check_stop_refuses_a_changed_live_head(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
     _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "older timeout"},
-               checks="SUCCESS", head_sha="old-head")
+               checks="SUCCESS", head_sha="old-head",
+               recovery_check={"source_head": "old-head"})
     sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
     sched.github.prs["garden/test"] = PRInfo(
         number=7, url="https://example.com/pull/7", state="OPEN", head_sha="new-head"
@@ -465,6 +467,25 @@ def test_stale_successful_check_stop_refuses_a_changed_live_head(garden):
     state = sched.state.get("DM-001")
     assert state["needs_human"]["reason"] == "older timeout"
     assert state["checks"] == "SUCCESS"
+
+
+def test_stale_successful_check_stop_refuses_mutable_head_without_check_provenance(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.IN_REVIEW, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "older timeout"},
+               checks="SUCCESS", head_sha="abcdef123456")
+    sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=7, url="https://example.com/pull/7", state="OPEN", head_sha="abcdef123456"
+    )
+
+    with pytest.raises(RuntimeError, match="no recorded source head"):
+        sched.recover_waiting_check(sched.store.task("DM-001"))
+
+    state = sched.state.get("DM-001")
+    assert state["needs_human"]["reason"] == "older timeout"
+    assert state["checks"] == "SUCCESS"
+    assert Store(garden).task("DM-001").status == Status.IN_REVIEW
 
 
 def test_explicit_hold_and_real_question_name_the_correct_owner(garden):
