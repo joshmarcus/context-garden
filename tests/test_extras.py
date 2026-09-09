@@ -1,5 +1,6 @@
 """Trials, persona reviews, and token-free checks."""
 
+import json
 import os
 from pathlib import Path
 
