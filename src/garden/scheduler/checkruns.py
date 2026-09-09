@@ -245,7 +245,8 @@ class CheckRunMixin:
         stage = str(info.get("stage") or "pre_pr")
         if run.status == "running":
             runner = self.runner_for(task, run.runner, run.harness)
-            if not self._finished_or_timed_out(run, runner):
+            finished = run.process_finished() if self._manual_reserved(task) else self._finished_or_timed_out(run, runner)
+            if not finished:
                 return False
             results = self._collect_check_results(run)
             run.exit_code = run.read_exit_code()
@@ -269,6 +270,10 @@ class CheckRunMixin:
         else:
             st["check_run"] = {}
             return False
+        if self._manual_reserved(task):
+            # The terminal result is durable and no longer consumes capacity. Its exact
+            # continuation, including any retry decision, stays parked in check_run.
+            return True
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         plan = (run.env_snapshot or {}).get("validation_plan") or {}
         capture_policy = str(plan.get("capture_infrastructure_policy") or "require")
@@ -328,10 +333,6 @@ class CheckRunMixin:
             "scratch_merge": self._after_scratch_merge_check,
             "ci": self._after_ci_check,
         }.get(stage)
-        if self._manual_reserved(task):
-            # Results and logs are collected, but the continuation remains parked until the
-            # explicit return action removes the reservation.
-            return True
         if handler is None:
             self.log(f"{task.id}: unknown check stage {stage!r}; results dropped")
             st["check_run"] = {}

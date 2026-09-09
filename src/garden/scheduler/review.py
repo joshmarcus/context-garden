@@ -722,6 +722,8 @@ class ReviewMixin:
             # run_finished (both already happened before the crash); otherwise drop the pointer.
             # This is what lets a restart recover a review the old process reaped but never
             # persisted, instead of needing a fresh review (CG-198).
+            if self._manual_reserved(task):
+                return False
             if st.get("last_review_run") == run_id or not run.result:
                 st["review_run"] = ""
                 return False
@@ -731,7 +733,8 @@ class ReviewMixin:
                     task, run, [str(entry) for entry in pending_clarification], rep)
             return self._apply_review(task, run, run.result, rep, emitted=True)
         runner = self.runner_for(task, run.runner, run.harness)
-        if not self._finished_or_timed_out(run, runner):
+        finished = run.process_finished() if self._manual_reserved(task) else self._finished_or_timed_out(run, runner)
+        if not finished:
             return False
         review: dict[str, Any] = {}
         if run.status != "timeout":
@@ -772,7 +775,7 @@ class ReviewMixin:
                 (run.path / "final.md").write_text(final)
             review = enforce_criteria_verdict(parse_review(final))
             expansions = review.get("scope_expansions") if isinstance(review, dict) else None
-            if isinstance(expansions, list):
+            if isinstance(expansions, list) and not self._manual_reserved(task):
                 for expansion in expansions:
                     if not isinstance(expansion, dict):
                         continue
@@ -808,6 +811,11 @@ class ReviewMixin:
             affected_flow = str((run.env_snapshot or {}).get("affected_flow") or "")
             ambiguous = ambiguous_unverified(
                 review, expected_criteria=frozen_criteria, affected_flow=affected_flow)
+            if self._manual_reserved(task):
+                run.result = review
+                run.status = "done" if review else "failed"
+                run.save()
+                return True
             if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
                 # Preserve the original report, but spend one reviewer continuation to
                 # classify legacy prose. Persist the continuation on this result first so a
@@ -866,6 +874,8 @@ class ReviewMixin:
             run.result = review
             run.status = "done" if review else "failed"
             run.save()
+        if self._manual_reserved(task):
+            return True
         return self._apply_review(task, run, review, rep, emitted=False)
 
     def _review_evidence_is_current(self, task: Task, run: Run) -> bool:

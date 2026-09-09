@@ -55,11 +55,15 @@ class AuxMixin:
             run = next((r for r in self.runs.runs_for(entry["task"]) if r.run_id == entry["run_id"]), None)
             if run is None:
                 continue
+            task = self.store.tasks().get(entry["task"])
+            reserved = task is not None and self._manual_reserved(task)
             runner = self.runner_for(self.store.tasks().get(entry["task"]) or Task(path=self.store.root, id=entry["task"], title=""), run.runner, run.harness)
-            if not self._finished_or_timed_out(run, runner):
+            finished = (run.process_finished() if reserved else self._finished_or_timed_out(run, runner))
+            if run.status == "running" and not finished:
                 remaining.append(entry)
                 continue
-            final = ""
+            final_path = run.path / "final.md"
+            final = final_path.read_text() if run.status != "running" and final_path.exists() else ""
             collected: dict[str, Any] = {}
             if run.status != "timeout":
                 run.exit_code = run.read_exit_code()
@@ -74,6 +78,9 @@ class AuxMixin:
                     (run.path / "final.md").write_text(final)
                 run.status = "env_error" if collected.get("env_error") else "done"
                 run.save()
+            if reserved:
+                remaining.append(entry)
+                continue
             if collected.get("env_error"):
                 # The harness's own account, not this round: pause it and put the request
                 # back where it can try again once it resumes, instead of a broken verdict.
