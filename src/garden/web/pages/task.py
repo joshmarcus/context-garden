@@ -82,6 +82,7 @@ def register(app: FastAPI, site: Site) -> None:
         runs = rs.runs_for(t.id)
         latest_run = rs.latest(t.id)
         st = State(s.config.garden_dir / "state.json").get(t.id)
+        manual_return_guard = hub.reader().manual_return_guard(t)
         _, log = split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
         usage = rs.usage_for(t.id)
@@ -146,6 +147,8 @@ def register(app: FastAPI, site: Site) -> None:
             task=t, eff=effective_status(t, tasks, stack), blockers=blockers(t, tasks, stack), usage=usage,
             dependency_after=lambda dep: dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
+            manual_reservation=(st.get("manual_reservation") if isinstance(st.get("manual_reservation"), dict) else None),
+            manual_return_guard=manual_return_guard,
             body_html=render_md(spec_body(t.body)),
             criteria_rows=criteria_rows,
             evidence_rows=evidence_rows,

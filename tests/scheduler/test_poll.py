@@ -310,6 +310,107 @@ def test_pr_closed_fails(sched, fake_github):
     assert statuses(sched)["DM-001"] == "failed"
 
 
+def test_manual_reservation_observes_merged_pr_and_parks_transition(sched, fake_github):
+    sched.cfg.data["stack"] = False
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.state = "MERGED"
+
+    rep = sched.tick(dispatch=False)
+
+    state = sched.state.get(task.id)
+    assert statuses(sched)[task.id] == "in_review"
+    assert state["pr_state"] == "MERGED"
+    assert state["manual_observed_pr"]["head_sha"] == pr.head_sha
+    assert not rep.transitions
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    rep = sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "done"
+    assert f"{task.id} -> done" in rep.transitions
+
+
+def test_manual_reservation_parks_feedback_without_advancing_processing_cursor(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    processed_at = sched.state.get(task.id).get("pr_updated_at")
+    pr.updated_at = "feedback-during-manual"
+    fake_github.feedback[pr.number] = Feedback(items=[{
+        "kind": "comment", "author": "josh", "body": "handle after return",
+        "created": "2099-01-01T00:00:00Z",
+    }])
+
+    sched.tick(dispatch=False)
+
+    state = sched.state.get(task.id)
+    assert state.get("pr_updated_at") == processed_at
+    assert state["manual_observed_pr"]["updated_at"] == "feedback-during-manual"
+    assert statuses(sched)[task.id] == "in_review"
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    rep = sched.tick(dispatch=False)
+    assert f"{task.id} -> changes_requested" in rep.transitions
+    assert "handle after return" in sched.state.get(task.id)["pending_feedback"]
+
+
+def test_manual_reservation_parks_draft_transition_until_return(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    assert sched.state.get(task.id).get("pr_draft") is False
+    pr.is_draft = True
+    pr.updated_at = "draft-during-manual"
+
+    sched.tick(dispatch=False)
+
+    assert sched.state.get(task.id).get("pr_draft") is False
+    assert sched.state.get(task.id)["manual_observed_pr"]["draft"] is True
+    assert statuses(sched)[task.id] == "in_review"
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    rep = sched.tick(dispatch=False)
+    assert f"{task.id} -> awaiting_triage" in rep.transitions
+    assert statuses(sched)[task.id] == "awaiting_triage"
+
+
+def test_manual_reservation_observes_closed_pr_and_parks_transition(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.state = "CLOSED"
+
+    sched.tick(dispatch=False)
+
+    assert statuses(sched)[task.id] == "in_review"
+    assert sched.state.get(task.id)["pr_state"] == "CLOSED"
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "failed"
+
+
 def test_failed_task_with_merged_pr_becomes_done(sched, fake_github):
     """CG-046/CG-039: a revise round (or a retry) can die with the task's PR still open.
     A human merging that PR on GitHub must still resolve the task to done, worktree cleaned

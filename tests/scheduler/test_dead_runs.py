@@ -77,6 +77,36 @@ def test_dead_run_sweep_closes_a_vanished_process(sched):
     assert sched.store.task("DM-001").status == Status.READY
 
 
+def test_dead_run_failure_is_parked_during_manual_reservation(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    task.attempts = 1
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="work")
+    run.pid = 999999
+    run.save()
+    reservation = sched.reserve_manual(task)
+
+    rep = TickReport()
+    sched.reap_dead_runs(rep)
+
+    parked = sched.runs.latest(task.id)
+    assert parked.status == "failed"
+    assert parked.env_snapshot["parked_dead_run_reason"] == "process vanished"
+    assert sched.store.task(task.id).status == Status.RUNNING
+    assert sched.store.task(task.id).attempts == 1
+    assert not sched.runs.active()
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    rep = TickReport()
+    assert sched.reap(sched.store.task(task.id), rep)
+    assert sched.store.task(task.id).status == Status.READY
+    assert f"{task.id} -> ready (retry)" in rep.transitions
+
+
 def test_dead_run_sweep_never_touches_manual_runs(sched):
     """A manual run's record is only ever finalised by `garden finish`; a dead-looking
     record it left behind (exit_code written, task moved on) is not this sweep's to

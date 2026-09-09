@@ -16,6 +16,280 @@ from garden.store import Store
 from tests.scheduler.conftest import statuses
 
 
+def test_manual_reservation_is_retry_safe_and_suppresses_dispatch(sched):
+    task = sched.store.task("DM-001")
+    first = sched.reserve_manual(task, actor="operator", note="repairing directly")
+    again = sched.reserve_manual(task, actor="operator", note="repairing directly")
+
+    assert again == first
+    assert sched.tick().dispatched == []
+    assert statuses(sched)[task.id] == "ready"
+    assert sched.state.get(task.id)["manual_reservation"]["actor"] == "operator"
+    assert "Manual mode reserved by operator" in sched.store.task(task.id).body
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=first["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    assert sched.manual_reservation(task) is None
+    assert "DM-001(work)" in sched.tick().dispatched
+
+
+def test_manual_reservation_does_not_interrupt_active_work_and_return_is_guarded(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", "work")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    reservation = sched.reserve_manual(task, actor="human_owner")
+
+    assert sched.runs.runs_for(task.id)[-1].run_id == run.run_id
+    with pytest.raises(RuntimeError, match="still active"):
+        sched.return_to_automation(
+            task, reservation_id=reservation["id"], expected=sched.manual_return_guard(task)
+        )
+    with pytest.raises(RuntimeError, match="stale"):
+        sched.return_to_automation(
+            task, reservation_id="not-current", expected=sched.manual_return_guard(task)
+        )
+
+
+@pytest.mark.parametrize("changed", ["status", "pr", "pr_number", "pr_state", "head_sha"])
+def test_return_to_automation_refuses_each_stale_task_and_pr_field(sched, changed):
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+    expected = sched.manual_return_guard(task)
+
+    if changed == "status":
+        task.status = Status.IN_REVIEW
+        sched.store.save(task)
+    elif changed == "pr":
+        task.pr = "https://example.com/pull/2"
+        sched.store.save(task)
+    else:
+        replacements = {"pr_number": 2, "pr_state": "OPEN", "head_sha": "new-head"}
+        sched.state.get(task.id)[changed] = replacements[changed]
+        sched.state.save()
+
+    with pytest.raises(RuntimeError, match="task or PR state changed"):
+        sched.return_to_automation(
+            sched.store.task(task.id), reservation_id=reservation["id"], expected=expected
+        )
+    assert sched.manual_reservation(task) is not None
+
+
+def test_manual_reservation_parks_finished_worker_until_return(sched):
+    sched.cfg.data["stack"] = False
+    sched.tick()  # dispatch a worker which finishes in-process
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task, actor="operator")
+
+    sched.tick(dispatch=False)
+
+    run = sched.runs.latest(task.id)
+    assert run.status == "done"
+    assert statuses(sched)[task.id] == "running"
+    assert not any(active.task_id == task.id for active in sched.runs.active())
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "in_review"
+
+
+def test_manual_reservation_parks_finished_review_verdict_until_return(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
+    sched.tick()
+    sched.tick()  # reap work and dispatch the review, which finishes in-process
+    task = sched.store.task("DM-001")
+    reservation = sched.reserve_manual(task)
+
+    sched.tick(dispatch=False)
+
+    run_id = sched.state.get(task.id)["review_run"]
+    run = next(run for run in sched.runs.runs_for(task.id) if run.run_id == run_id)
+    assert run.status == "done"
+    assert statuses(sched)[task.id] == "in_review"
+    assert not sched.state.get(task.id).get("pending_feedback")
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    sched.tick(dispatch=False)
+    assert statuses(sched)[task.id] == "changes_requested"
+    assert sched.state.get(task.id).get("pending_feedback")
+
+
+def test_manual_reservation_parks_finished_review_recovery_until_return(sched):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {
+        "enabled": True,
+        "max_rounds": 2,
+        "max_diff_chars": 60000,
+        "recovery_attempts": 2,
+        "recovery_backoff_seconds": 0,
+    }
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    run.result = None
+    run.status = "failed"
+    run.error = "review process failed"
+    run.save()
+    reservation = sched.reserve_manual(task)
+
+    assert not sched.reap_review(task, TickReport())
+    assert st["review_run"] == run.run_id
+    assert not st.get("review_recovery")
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    assert sched.reap_review(task, TickReport())
+    st = sched.state.get(task.id)
+    assert st["review_run"] == ""
+    assert st["review_recovery"]["last_run"] == run.run_id
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+
+
+def test_manual_reservation_parks_finished_persona_until_return(sched):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": False}
+    sched.tick()
+    sched.tick()  # open the PR without dispatching an automated review
+    task = sched.store.task("DM-001")
+    run = sched.dispatch_persona_pr(task, "security")
+    reservation = sched.reserve_manual(task)
+
+    sched.tick(dispatch=False)
+
+    assert sched.runs.latest(task.id).status == "done"
+    assert not sched.state.get(task.id).get("persona_reviews")
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    sched.tick(dispatch=False)
+    assert sched.state.get(task.id)["persona_reviews"][-1]["run"] == run.run_id
+
+
+def test_manual_reservation_parks_finished_trial_contenders_until_return(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    task = sched.store.task("DM-001")
+    runs = sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    reservation = sched.reserve_manual(sched.store.task(task.id))
+    finished_or_timed_out = sched._finished_or_timed_out
+    monkeypatch.setattr(
+        sched, "_finished_or_timed_out",
+        lambda *_args: pytest.fail("Manual mode must not enforce contender timeouts"),
+    )
+
+    rep = sched.tick(dispatch=False)
+
+    trial = sched.state.get(task.id)["trial"]
+    assert [c["status"] for c in trial["contenders"]] == ["collected", "collected"]
+    stored = {run.run_id: run for run in sched.runs.runs_for(task.id)}
+    assert all(stored[run.run_id].status == "done" for run in runs)
+    assert not any(active.task_id == task.id for active in sched.runs.active())
+    assert not fake_github.created
+    assert not rep.dispatched
+    assert statuses(sched)[task.id] == "running"
+
+    monkeypatch.setattr(sched, "_finished_or_timed_out", finished_or_timed_out)
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    rep = sched.tick(dispatch=False)
+    assert "DM-001(compare)" in rep.dispatched
+    assert sched.state.get(task.id)["trial"]["status"] == "comparing"
+    assert len(fake_github.created) == 2
+
+    sched.tick(dispatch=False)
+    assert sched.state.get(task.id)["trial"]["status"] == "done"
+    assert statuses(sched)[task.id] == "in_review"
+
+
+def test_manual_reservation_leaves_active_trial_contender_running(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    runs = sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    active = runs[0]
+    (active.path / "exit_code").unlink()
+    reservation = sched.reserve_manual(sched.store.task(task.id))
+    monkeypatch.setattr(
+        sched, "_finished_or_timed_out",
+        lambda *_args: pytest.fail("Manual mode must not enforce contender timeouts"),
+    )
+
+    sched.tick(dispatch=False)
+
+    trial = sched.state.get(task.id)["trial"]
+    assert [c["status"] for c in trial["contenders"]] == ["running", "collected"]
+    assert sched.runs.active()[0].run_id == active.run_id
+    with pytest.raises(RuntimeError, match="still active"):
+        sched.return_to_automation(
+            sched.store.task(task.id), reservation_id=reservation["id"],
+            expected=sched.manual_return_guard(sched.store.task(task.id)),
+        )
+
+
+def test_manual_reservation_refuses_new_and_replacement_trials(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    sched.reserve_manual(task)
+
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    assert sched.state.get(task.id).get("trial") is None
+
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/1"
+    sched.store.save(task)
+    sched.state.get(task.id)["trial"] = {"status": "done", "contenders": []}
+    monkeypatch.setattr(
+        sched, "_reset_trial", lambda *_args, **_kwargs: pytest.fail(
+            "Manual mode must reject --again before resetting the previous trial"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.start_trial(task, ["claude:sonnet", "claude:opus"], again=True)
+    assert task.status == Status.IN_REVIEW
+    assert task.pr == "https://example.com/pull/1"
+
+
+def test_manual_reservation_guards_every_new_task_run_kind(sched):
+    task = sched.store.task("DM-001")
+    task.branch = task.default_branch()
+    task.pr = "https://example.com/pull/1"
+    sched.store.save(task)
+    sched.reserve_manual(task)
+
+    for mode in ("work", "revise", "resume", "rebase"):
+        with pytest.raises(RuntimeError, match="Manual mode"):
+            sched.dispatch(task, mode=mode)
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.dispatch_review(task)
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.dispatch_persona_pr(task, "security")
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.dispatch_edit(task)
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched._dispatch_check_run(
+            task, worktree=sched.worktree_for(task), branch=task.branch, base="main",
+            specs=[], stage="pre_pr", cont={}, rep=sched.tick(dispatch=False),
+        )
+    assert sched.mechanical_rebase(task, "main", sched.tick(dispatch=False), reason="test") == "held"
+
+
 def test_take_manual_refuses_a_stale_ready_task_with_an_active_manual_claim(sched):
     """A manual run owns its task even if an interrupted state write left it READY."""
     task = sched.store.task("DM-001")

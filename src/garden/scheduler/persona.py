@@ -69,6 +69,8 @@ class PersonaMixin:
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
                             required_evidence: bool = False) -> Run:
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
         ensure_open(task)
         valid_name(name)
         if not task.pr and not task.branch:

@@ -110,6 +110,8 @@ class DispatchMixin:
         max_bypasses = max(0, int(self.cfg.get("resources.max_bypasses", 3)))
         self._dispatch_pending_investigations(tasks, rep)
         for task, mode, _why in queue:
+            if self._manual_reserved(task):
+                continue
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)
@@ -444,6 +446,8 @@ class DispatchMixin:
                  worktree_override: Path | None = None, model_override: str | None = None,
                  reserved_run: Run | None = None, completion_mode: str = "managed",
                  external_pr: str = "", external_pr_number: int | None = None) -> Run:
+        if self._manual_reserved(task):
+            raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
         # runs.new_run(), including worktree/brief preparation failures, closes it.
         self._dispatching_run = None

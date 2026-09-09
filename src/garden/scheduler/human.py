@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from ..runner.manual import ManualRunner
 from ..runs import Run
 from ..stabilization import ACTORS
 from .report import TickReport
-from .state import _TaskState
+from .state import State, _TaskState
 
 INVESTIGATION_RECOMMENDATIONS = frozenset({
     "resume unchanged", "raise difficulty", "repair environment/verification",
@@ -42,6 +43,86 @@ class HumanMixin:
                 "actor must be one of " + ", ".join(sorted(ACTORS))
             )
         return actor
+
+    def reserve_manual(self, task: Task, *, actor: str = "operator", note: str = "") -> dict[str, Any]:
+        """Reserve future lifecycle actions without interrupting work already in flight."""
+        if actor not in {"operator", "human_owner"}:
+            raise RuntimeError("manual reservation actor must be operator or human_owner")
+        return self._set_manual_reservation(task.id, actor=actor, note=note)
+
+    def manual_return_guard(self, task: Task) -> dict[str, Any]:
+        """Return the task/PR state a guarded Manual-mode return must still match."""
+        st = self.state.get(task.id)
+        observed = st.get("manual_observed_pr") or {}
+        return {
+            "status": task.status.value,
+            "pr": task.pr or "",
+            "pr_number": int(st.get("pr_number") or 0),
+            "pr_state": str(st.get("pr_state") or ""),
+            "head_sha": str(observed.get("head_sha") or st.get("head_sha") or ""),
+        }
+
+    def return_to_automation(
+        self, task: Task, *, reservation_id: str, expected: dict[str, Any]
+    ) -> None:
+        """Remove the current reservation at a safe boundary, rejecting stale forms."""
+        self._set_manual_reservation(
+            task.id, actor="", note="", reservation_id=reservation_id, expected=expected
+        )
+
+    def _set_manual_reservation(
+        self, task_id: str, *, actor: str, note: str, reservation_id: str = "",
+        expected: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._controller_lock():
+            self.store.invalidate_tasks()
+            self.state = State(self.state.path)
+            current = self.store.task(task_id)
+            ensure_open(current)
+            st = self.state.get(task_id)
+            existing = self.manual_reservation(current)
+            if actor:
+                if existing:
+                    if existing.get("actor") == actor and existing.get("note", "") == note.strip():
+                        return existing
+                    raise RuntimeError(f"{task_id} is already reserved in Manual mode")
+                reservation = {"id": uuid.uuid4().hex, "actor": actor, "note": note.strip()[:240], "at": now_iso()}
+                st["manual_reservation"] = reservation
+                st.pop("manual_observed_pr", None)
+                active = [run.run_id for run in self.runs.active() if run.task_id == task_id]
+                self.events.emit("manual_reserved", task_id, actor=actor, note=reservation["note"], active_runs=active)
+                suffix = f": {reservation['note']}" if reservation["note"] else ""
+                current.log(f"Manual mode reserved by {actor}{suffix}")
+                self.store.save(current)
+                self.state.save()
+                return reservation
+            if not existing or existing.get("id") != reservation_id:
+                raise RuntimeError("stale Manual mode request; reload the task and try again")
+            active = [run.run_id for run in self.runs.active() if run.task_id == task_id]
+            if active:
+                raise RuntimeError("automatic work is still active; wait for its safe boundary or stop it separately")
+            current_guard = self.manual_return_guard(current)
+            try:
+                normalized_expected = {
+                    "status": str((expected or {}).get("status") or ""),
+                    "pr": str((expected or {}).get("pr") or ""),
+                    "pr_number": int((expected or {}).get("pr_number") or 0),
+                    "pr_state": str((expected or {}).get("pr_state") or ""),
+                    "head_sha": str((expected or {}).get("head_sha") or ""),
+                }
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    "invalid Manual mode return guard; reload the task and try again"
+                ) from None
+            if normalized_expected != current_guard:
+                raise RuntimeError("the observed task or PR state changed; reload before returning to automation")
+            st.pop("manual_reservation", None)
+            st.pop("manual_observed_pr", None)
+            self.events.emit("manual_returned", task_id, actor=existing.get("actor"), head=current_guard["head_sha"])
+            current.log("returned from Manual mode to automation")
+            self.store.save(current)
+            self.state.save()
+            return {}
 
     def _last_review_source_head(self, task: Task, st: _TaskState) -> str:
         """Return immutable review provenance, backfilling pre-upgrade state from its run."""
