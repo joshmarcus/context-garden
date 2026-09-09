@@ -18,12 +18,12 @@ for that route in the ordered run; warm requests follow in the same process.
 
 | Page | Server before | Server after | Browser response before | Browser response after | Browser render before | Browser render after |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Now | 809.6 | 381.5 | 992.1 | 670.6 | 38.6 | 42.0 |
-| Inbox | 632.7 | 193.1 | 626.2 | 233.2 | 31.6 | 35.9 |
-| Board | 609.7 | 251.6 | 1,347.6 | 458.7 | 105.9 | 35.6 |
-| Task detail | 743.3 | 181.8 | 1,339.4 | 472.5 | 29.9 | 39.8 |
-| Run detail | 650.8 | 164.2 | 576.8 | 260.4 | 25.1 | 26.7 |
-| Config | 742.5 | 338.0 | 579.0 | 301.9 | 26.9 | 41.7 |
+| Now | 809.6 | 398.2 | 992.1 | 515.5 | 38.6 | 34.7 |
+| Inbox | 632.7 | 223.8 | 626.2 | 245.5 | 31.6 | 39.2 |
+| Board | 609.7 | 309.8 | 1,347.6 | 460.1 | 105.9 | 103.0 |
+| Task detail | 743.3 | 188.6 | 1,339.4 | 566.1 | 29.9 | 39.4 |
+| Run detail | 650.8 | 266.9 | 576.8 | 260.9 | 25.1 | 26.5 |
+| Config | 742.5 | 365.4 | 579.0 | 334.4 | 26.9 | 29.0 |
 
 The profile attributed 13.6 seconds of the 12-request run to `Store.tasks`/`Store._scan`,
 including 7,200 task YAML parses. Request-local snapshots had prevented duplicate scans
