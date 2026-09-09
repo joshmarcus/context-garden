@@ -139,6 +139,32 @@ def test_troubled_card_is_distinct_and_offers_bounded_decisions(garden):
     assert "recommended next action: investigate the parser boundary" in evidence
 
 
+def test_inbox_can_request_an_agent_investigation(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "repeated reviews did not converge"},
+               substantive_revisions=4)
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    page = client.get("/inbox")
+    form = re.search(r'<form[^>]+action="/tasks/DM-001/investigate".*?</form>',
+                     page.text, re.S)
+    assert form is not None
+    assert re.findall(r'<option value="([^"]+)">', form.group()) == ["operator", "agent"]
+    assert "Request investigation agent" in form.group()
+
+    response = client.post("/tasks/DM-001/investigate", data={
+        "note": "diagnose the repeated review finding",
+        "applies_to": "agent",
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    investigation = State(garden / ".garden" / "state.json").get("DM-001")["investigation"]
+    assert investigation["owner"] == "agent"
+    assert investigation["status"] == "requested"
+    assert investigation["reason"] == "diagnose the repeated review finding"
+
+
 def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
