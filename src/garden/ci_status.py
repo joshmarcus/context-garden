@@ -6,58 +6,13 @@ immutable revision passed; analysers may still turn a known failure into useful 
 
 from __future__ import annotations
 
-import datetime as dt
 import json
-<<<<<<< HEAD
-import math
-import re
+import shlex
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-from .validation import receipt_has_current_policy
-
-
-def _malformed_receipt_sources(raw: str) -> set[str]:
-    """Recover source identities that were fully written before a JSON truncation."""
-    return set(re.findall(r'"source_sha"\s*:\s*"([^"\\]*)"', raw))
-
-
-def _completed_supervisor_execution(execution: object) -> bool:
-    """Validate the bounded admission record emitted by ``run_supervisor``."""
-    if not isinstance(execution, dict) or execution.get("state") != "finished":
-        return False
-    owner = execution.get("owner")
-    pid = execution.get("pid")
-    timeout = execution.get("timeout_seconds")
-    if (not isinstance(owner, str) or not owner
-            or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
-            or not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
-            or not math.isfinite(timeout) or timeout <= 0):
-        return False
-    try:
-        started = dt.datetime.fromisoformat(execution["execution_started_at"])
-        deadline = dt.datetime.fromisoformat(execution["deadline_at"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    if started.tzinfo is None or deadline.tzinfo is None:
-        return False
-    if abs((deadline - started).total_seconds() - timeout) > 1e-6:
-        return False
-    if execution.get("inherited_lease") is True:
-        return True
-    slot = execution.get("slot")
-    limit = execution.get("limit")
-    requested_limit = execution.get("requested_limit")
-    return (
-        execution.get("owner_scoped") is True
-        and isinstance(slot, int) and not isinstance(slot, bool) and slot >= 0
-        and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
-        and slot < limit
-        and isinstance(requested_limit, int) and not isinstance(requested_limit, bool)
-        and requested_limit > 0
-    )
 
 
 @dataclass(frozen=True)
@@ -86,9 +41,7 @@ def github_status(pr: Any, required: bool) -> CIStatus:
         return CIStatus("not_required", sha, evidence_url=str(pr.url or ""))
     states = {"SUCCESS": "success", "FAILURE": "failure", "PENDING": "pending"}
     return CIStatus(states.get(rollup, "missing" if not rollup else "unknown"), sha,
-                    # A PR rollup is already scoped to the PR's current head. Some API
-                    # fakes and legacy providers omit the redundant head field.
-                    exists_for_sha=bool(rollup), evidence_url=str(pr.url or ""),
+                    exists_for_sha=bool(sha and rollup), evidence_url=str(pr.url or ""),
                     failures=list(pr.failed_checks or []))
 
 
@@ -100,85 +53,60 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
     supervisor, not parsed from an author's result prose.
     """
     required_command = str(policy.get("command") or "").strip()
-    # Validation directory names are PIDs locally and remote sequence numbers after
-    # ingestion; neither is chronological. result.json is written only on completion,
-    # and remote results are recreated by the controller in host-observed write order.
+    def attempt_started_at(path: Path) -> float:
+        try:
+            execution = json.loads((path.parent / "execution.json").read_text())
+            started_at = execution.get("execution_started_at")
+            if isinstance(started_at, str):
+                return datetime.fromisoformat(started_at).timestamp()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        try:
+            return path.stat().st_mtime_ns / 1_000_000_000
+        except OSError:
+            return 0
+
     candidates = sorted(
         (garden_dir / "runs" / task_id).glob("*/validations/*/result.json"),
-        key=lambda path: (path.stat().st_mtime_ns, str(path)),
+        key=attempt_started_at,
         reverse=True,
     )
     mismatched = False
     malformed = False
     for path in candidates:
         try:
-            raw = path.read_text()
-            row = json.loads(raw)
-        except OSError:
+            row = json.loads(path.read_text())
+            receipt_sha = str(row["source_sha"])
+            command = str(row["command"])
+        except (OSError, TypeError, KeyError, json.JSONDecodeError):
             malformed = True
             continue
-        except json.JSONDecodeError:
-            malformed_shas = _malformed_receipt_sources(raw)
-            if sha in malformed_shas:
-                return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
-            if not malformed_shas:
-                # This is the newest completion candidate, but truncation happened
-                # before its source identity became durable.  It therefore cannot be
-                # proven unrelated to the queried head, so an older success must not
-                # become authoritative.
-                return CIStatus("malformed", sha, provider="worker_check")
-            mismatched = True
-            continue
-        if not isinstance(row, dict):
-            # The newest completion has no trustworthy source identity, so an older
-            # success cannot safely stand in for it.
-            return CIStatus("malformed", sha, provider="worker_check")
-        try:
-            receipt_sha = str(row["source_sha"])
-        except (TypeError, KeyError):
-            if row.get("malformed_validation_receipt") is True:
-                sources = row.get("recoverable_source_shas")
-                overflow = row.get("recoverable_source_shas_overflow", False)
-                if not isinstance(sources, list) or not all(
-                    isinstance(item, str) for item in sources
-                ) or not isinstance(overflow, bool):
-                    return CIStatus("malformed", sha, provider="worker_check")
-                if sha in sources:
-                    return CIStatus(
-                        "malformed", sha, exists_for_sha=True, provider="worker_check"
-                    )
-                if overflow or not sources:
-                    return CIStatus("malformed", sha, provider="worker_check")
-                mismatched = True
-                continue
-            return CIStatus("malformed", sha, provider="worker_check")
         if receipt_sha != sha:
             mismatched = True
             continue
-        try:
-            command = str(row["command"])
-            exit_code = int(row["exit_code"])
-            log = str(row["log_location"])
-        except (ValueError, TypeError, KeyError):
-            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         if required_command and command != required_command:
             continue
-<<<<<<< HEAD
         try:
-            execution = json.loads((path.parent / "execution.json").read_text())
-            durable_exit_code = int((path.parent / "exit_code").read_text().strip())
-            (path.parent / "stderr.log").read_text()
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            selection = row["selection"]
+            exit_code = int(row["exit_code"])
+            log = Path(str(row["log_location"]))
+        except (ValueError, TypeError, KeyError):
             return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
-        selection = row.get("selection")
-        if (not receipt_has_current_policy(row)
-                or row.get("source_dirty") or row.get("source_changed")
-                or not isinstance(selection, list) or not selection
-                or not all(isinstance(item, str) and item for item in selection)
-                or str(Path(log).resolve()) != str(path.parent.resolve())
-                or not _completed_supervisor_execution(execution)
-                or ("exit_code" in execution and execution.get("exit_code") != exit_code)
-                or durable_exit_code != exit_code):
+        if (not isinstance(selection, list) or not selection
+                or any(not isinstance(arg, str) or not arg for arg in selection)
+                or shlex.join(selection) != command):
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
+        # A receipt is only authoritative while its Garden-owned supervisor evidence
+        # remains alongside it.  A caller-supplied path or result JSON alone cannot pass.
+        if log != path.parent or not all((log / name).is_file() for name in (
+            "execution.json", "exit_code", "stderr.log",
+        )):
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
+        try:
+            if int((log / "exit_code").read_text().strip()) != exit_code:
+                return CIStatus("malformed", sha, exists_for_sha=True,
+                                provider="worker_check")
+        except (OSError, ValueError):
             return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
         run_id = path.parents[2].name
