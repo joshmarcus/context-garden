@@ -787,11 +787,15 @@ class HumanMixin:
         try:
             pr = self.github.get_pr(slug, number)
         except (GitHubError, KeyError) as exc:
-            raise RuntimeError(f"could not read PR for attachment: {exc}") from exc
+            detail = exc.args[0] if exc.args else exc
+            raise RuntimeError(f"could not read external PR: {detail}") from exc
         if pr.number != number or pr.url.rstrip("/") != url.rstrip("/"):
             raise RuntimeError("PR URL does not match the configured repository's PR")
-        if not pr.head or not pr.head_sha:
-            raise RuntimeError("PR attachment needs one resolved head branch and SHA")
+        if not pr.head or not pr.head_sha or not pr.base:
+            raise RuntimeError(
+                "external PR is missing immutable head or base metadata; "
+                "attachment needs one resolved head branch and SHA"
+            )
         if pr.head_repo and pr.head_repo.lower() != slug.lower():
             raise RuntimeError("PR attachment refuses a fork head that the scheduler cannot revise")
         return pr
@@ -1306,7 +1310,11 @@ class HumanMixin:
         if claimed_base and pr.base != claimed_base:
             refuse(f"external PR base moved from {claimed_base!r} to {pr.base!r}")
         claimed_head = str(run.env_snapshot.get("external_head_sha") or "")
-        if claimed_head and pr.head_sha != claimed_head:
+        # An open operator-owned PR can advance between claim and completion.  Its URL,
+        # repository, branch, and base remain the stable attachment identity, and the
+        # current provider SHA is recorded below.  A merged PR is different: its claimed
+        # source SHA participates in the provenance proof, so movement must fail closed.
+        if pr.state == "MERGED" and claimed_head and pr.head_sha != claimed_head:
             refuse("external PR head moved since it was claimed; take it again to authorize the new source")
         if pr.base != self.final_base_for(task):
             refuse(
