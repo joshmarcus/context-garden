@@ -224,6 +224,10 @@ class ReapMixin:
             run.status = "timeout"
             run.finished_at = now_iso()
             run.error = f"idle {round(idle_min)} min (no output or file change)"
+            if run.runner == "remote":
+                # Idle expiry fences the claim just as the overall deadline does.
+                run.lease_token = ""
+                run.lease_expires_at = ""
             run.save()
             return True
         return False

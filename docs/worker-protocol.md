@@ -418,6 +418,14 @@ exits, `garden serve` may be restarted, the laptop may sleep. The run's existenc
   `.git` aside) and the growth of the run's `stdout.json`/`stderr.log`; `idle_kill_minutes: 0`
   disables the stop.
 
+For a pull-based remote run, both execution age and idle age begin at the first
+`execution_started_at` claim (`claimed_at` is the compatibility fallback for older records),
+never at queue entry. The controller checkout is not the remote execution checkout, so its
+mtime is excluded; only output received by the controller advances remote activity. Lease
+heartbeats retain and fence the claim but do not count as productive activity, which means a
+claimed remote process with no output remains subject to the idle limit and the independent
+overall execution deadline. An unclaimed queued record has no execution-idle age.
+
 The web UI's "Running now" list and `garden runs` read the same `run.json` files. The
 worker, meanwhile, sees a normal repository checkout on a branch and a prompt that ends
 with the operating rules: commit in small steps, do not open a PR, do not edit `tasks/`,

@@ -262,7 +262,10 @@ def register(app: FastAPI, site: Site) -> None:
                 if not run.claimed_at:
                     run.claimed_at = claim_time
                 if not run.execution_started_at:
-                    run.execution_started_at = claim_time
+                    # A pre-execution_started_at record may already have been claimed.
+                    # Preserve that first execution boundary across reclaim instead of
+                    # resetting its execution deadline to the newest generation.
+                    run.execution_started_at = run.claimed_at
                 renew(run, now)
                 run.lease_updated_at = claim_time
                 run.lease_token = secrets.token_urlsafe(32)
