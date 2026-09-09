@@ -10,6 +10,7 @@ import json
 import shlex
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,24 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
     supervisor, not parsed from an author's result prose.
     """
     required_command = str(policy.get("command") or "").strip()
-    candidates = sorted((garden_dir / "runs" / task_id).glob("*/validations/*/result.json"), reverse=True)
+    def attempt_started_at(path: Path) -> float:
+        try:
+            execution = json.loads((path.parent / "execution.json").read_text())
+            started_at = execution.get("execution_started_at")
+            if isinstance(started_at, str):
+                return datetime.fromisoformat(started_at).timestamp()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        try:
+            return path.stat().st_mtime_ns / 1_000_000_000
+        except OSError:
+            return 0
+
+    candidates = sorted(
+        (garden_dir / "runs" / task_id).glob("*/validations/*/result.json"),
+        key=attempt_started_at,
+        reverse=True,
+    )
     mismatched = False
     malformed = False
     for path in candidates:
@@ -60,10 +78,7 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             row = json.loads(path.read_text())
             receipt_sha = str(row["source_sha"])
             command = str(row["command"])
-            selection = row["selection"]
-            exit_code = int(row["exit_code"])
-            log = Path(str(row["log_location"]))
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        except (OSError, TypeError, KeyError, json.JSONDecodeError):
             malformed = True
             continue
         if receipt_sha != sha:
@@ -71,25 +86,28 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             continue
         if required_command and command != required_command:
             continue
+        try:
+            selection = row["selection"]
+            exit_code = int(row["exit_code"])
+            log = Path(str(row["log_location"]))
+        except (ValueError, TypeError, KeyError):
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         if (not isinstance(selection, list) or not selection
                 or any(not isinstance(arg, str) or not arg for arg in selection)
                 or shlex.join(selection) != command):
-            malformed = True
-            continue
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         # A receipt is only authoritative while its Garden-owned supervisor evidence
         # remains alongside it.  A caller-supplied path or result JSON alone cannot pass.
         if log != path.parent or not all((log / name).is_file() for name in (
             "execution.json", "exit_code", "stderr.log",
         )):
-            malformed = True
-            continue
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         try:
             if int((log / "exit_code").read_text().strip()) != exit_code:
-                malformed = True
-                continue
+                return CIStatus("malformed", sha, exists_for_sha=True,
+                                provider="worker_check")
         except (OSError, ValueError):
-            malformed = True
-            continue
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
         run_id = path.parents[2].name
         evidence_url = f"/runs/{task_id}/{run_id}" if run_id else str(log)
