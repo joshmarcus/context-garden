@@ -81,6 +81,12 @@ class PollMixin:
             rep.transitions.append(f"{task.id} -> failed (PR closed)")
             self._on_parent_closed(task, rep)
             return
+        if self._manual_reserved(task):
+            # Keep external PR/check evidence fresh, but do not turn it into lifecycle work.
+            st["pr_draft"] = bool(pr.is_draft)
+            st["head_sha"] = pr.head_sha
+            st["pr_updated_at"] = pr.updated_at
+            return
         if not task.status.pr_open:
             return  # merged/closed handled above; the rest (triage, CI, feedback) only applies to the active review flow
         was_draft = bool(st.get("pr_draft"))

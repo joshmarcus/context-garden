@@ -105,6 +105,8 @@ class ReapMixin:
         # a revise is still in flight (CG-177) — is left to reap_review/reap_orphaned, so its
         # record can never be read as "no active run found" and send the task back to ready.
         run = self.latest_worker_run(task.id)
+        if self._manual_reserved(task):
+            return False
         # garden finish is the sole finaliser of manual runs.  Skip the task
         # while a manual run is active (status "running") or while finalize()
         # has completed the run record but has not yet written the task
