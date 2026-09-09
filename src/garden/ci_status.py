@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+<<<<<<< HEAD
 import math
 import re
 from collections.abc import Callable
@@ -162,6 +163,7 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         if required_command and command != required_command:
             continue
+<<<<<<< HEAD
         try:
             execution = json.loads((path.parent / "execution.json").read_text())
             durable_exit_code = int((path.parent / "exit_code").read_text().strip())
@@ -180,7 +182,7 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
         run_id = path.parents[2].name
-        evidence_url = f"/runs/{task_id}/{run_id}" if run_id else log
+        evidence_url = f"/runs/{task_id}/{run_id}" if run_id else str(log)
         return CIStatus("success" if exit_code == 0 else "failure", sha,
                         exists_for_sha=True, evidence_url=evidence_url, failures=failures,
                         provider="worker_check")

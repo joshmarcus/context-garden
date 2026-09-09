@@ -488,6 +488,22 @@ def test_worker_check_old_green_does_not_clear_merge_gate(sched, fake_github):
     assert not ok and ("missing" in reason or "mismatched" in reason)
 
 
+def test_poll_records_changed_head_when_updated_at_is_unchanged(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    fake_github.remote = None
+    previous_updated_at = pr.updated_at
+    pr.head_sha = "replacement-head"
+
+    sched.tick()
+
+    st = sched.state.get("DM-001")
+    assert pr.updated_at == previous_updated_at
+    assert st["head_sha"] == "replacement-head"
+    assert st["ci_status"]["queried_sha"] == "replacement-head"
+
+
 def test_pr_closed_fails(sched, fake_github):
     sched.tick()
     sched.tick()
