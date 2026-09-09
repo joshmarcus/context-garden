@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
 from ...config import RESTART_KEYS, Config
-from ...configuration import CONFIG_FIELDS, ApplyMode, ConfigScope, product_configuration, revision
+from ...configuration import CONFIG_FIELDS, ConfigScope, product_configuration, revision
 from ...observe import BUILTIN_PROFILES
 from ...profiles import describe as describe_stop
 from ...scheduler import WORKER_MODES, State
@@ -83,6 +83,8 @@ def register(app: FastAPI, site: Site) -> None:
                 "field": field, "editable": editable, "rendered": rendered,
                 "display": display, "effective": effective_display,
                 "source": provenance.source, "locked": provenance.locked,
+                "effective_source": (provenance.source if provenance.source != "global"
+                                     else sched.effective_source(field.key)),
                 "reason": provenance.reason, "policy_source": provenance.policy_source,
                 "overridden": field.key in project_overrides,
                 "structured": field.value_type.removeprefix("optional_") in {"list", "mapping", "string_or_list", "any"},
@@ -106,4 +108,4 @@ def register(app: FastAPI, site: Site) -> None:
             operating_profile_active=active, operating_profile_stop_names=list(stops),
             operating_profile_rows=stop_rows, editor_rows=editor_rows, configuration_products=products,
             selected_product=selected_product, config_revision=revision(saved_cfg.data),
-            saved_pending=revision(saved_cfg.data) != revision(cfg.data), apply_mode=ApplyMode))
+            saved_pending=revision(saved_cfg.data) != revision(cfg.data)))

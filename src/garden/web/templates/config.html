@@ -31,7 +31,7 @@
       </div>
       <p class="metadata">
         Saved: <strong class="mono">{{ row.display }}</strong> · source: <strong>{{ row.source }}</strong>
-        · effective now: <strong class="mono">{{ row.effective }}</strong>
+        · effective now: <strong class="mono">{{ row.effective }}</strong> from <strong>{{ row.effective_source }}</strong>
         {% if row.field.units %} · units: {{ row.field.units }}{% endif %}
       </p>
       {% if row.locked %}
