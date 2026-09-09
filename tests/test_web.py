@@ -52,6 +52,25 @@ def test_pages_render(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_task_page_back_control_keeps_a_safe_in_app_origin(garden):
+    c = client(garden)
+
+    page = c.get("/tasks/DM-001", headers={"referer": "http://testserver/board?view=backlog&phase=demo"}).text
+    assert 'class="task-back"' in page
+    assert 'href="/board?view=backlog&amp;phase=demo"' in page
+    assert 'aria-label="Back to previous Garden page"' in page
+
+    for referrer in (
+        "",
+        "http://testserver/tasks/DM-001",
+        "https://evil.example/board?view=backlog",
+        "not a URL",
+        "http://testserver//evil.example",
+    ):
+        page = c.get("/tasks/DM-001", headers={"referer": referrer} if referrer else {}).text
+        assert 'class="task-back"' not in page
+
+
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
     """The served Inbox owns the manual take journey, including stale-card recovery."""
     from garden.model import Status

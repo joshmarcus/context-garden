@@ -2,8 +2,11 @@
 {% block title %}{{ task.id }}{% endblock %}
 {% block body %}
 <div class="page-head">
-  <div><span class="eyebrow">{{ task.product }} / {{ task.phase }} · <a href="/tasks/{{ task.id }}" class="id">{{ task.id }}</a></span><h1>{{ task.title }}</h1>
-    <p style="display:flex;align-items:center;gap:10px">{{ stage(eff, 24) }}<span class="state s-{{ eff }}">{{ eff.replace('_',' ') }} <span class="stage-word">{{ stage_word(eff) }}</span></span><span class="muted">priority {{ priority_label(task.priority) }} · {{ task.difficulty }} · owner {{ owner or 'unassigned' }}{% if owner_source != 'unassigned' %} ({{ owner_source }}){% endif %}{% if task.estimate %} · {{ task.estimate }}{% endif %}{% if task.pr %} · <a href="{{ task.pr }}" target="_blank">PR ↗</a>{% endif %}</span></p></div>
+  <div class="task-heading">
+    {% if return_to %}<a class="task-back" href="{{ return_to }}" aria-label="Back to previous Garden page" title="Back to previous page">‹</a>{% endif %}
+    <div><span class="eyebrow">{{ task.product }} / {{ task.phase }} · <a href="/tasks/{{ task.id }}" class="id">{{ task.id }}</a></span><h1>{{ task.title }}</h1>
+      <p style="display:flex;align-items:center;gap:10px">{{ stage(eff, 24) }}<span class="state s-{{ eff }}">{{ eff.replace('_',' ') }} <span class="stage-word">{{ stage_word(eff) }}</span></span><span class="muted">priority {{ priority_label(task.priority) }} · {{ task.difficulty }} · owner {{ owner or 'unassigned' }}{% if owner_source != 'unassigned' %} ({{ owner_source }}){% endif %}{% if task.estimate %} · {{ task.estimate }}{% endif %}{% if task.pr %} · <a href="{{ task.pr }}" target="_blank">PR ↗</a>{% endif %}</span></p></div>
+  </div>
   <div class="tools"><a class="btn" href="/tasks/{{ task.id }}/brief" target="_blank">Brief</a>{% if latest_run %}<a class="btn" href="/runs/{{ task.id }}/{{ latest_run.run_id }}">Latest run</a>{% endif %}</div>
 </div>
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -24,6 +25,30 @@ from ...runs import RunStore
 from ...scheduler import State
 from ...trials import TrialLog, ranking_markdown
 from ..common import Site, render_md
+
+
+def _return_to(request: Request, task_id: str) -> str:
+    """Return a same-Garden referrer as a safe relative URL, or an empty string."""
+    referrer = request.headers.get("referer", "").strip()
+    if not referrer:
+        return ""
+    try:
+        origin = urlsplit(referrer)
+    except ValueError:
+        return ""
+    current = request.url
+    if (
+        origin.scheme.lower() != current.scheme.lower()
+        or origin.netloc.lower() != current.netloc.lower()
+        or origin.username is not None
+        or origin.password is not None
+        or not origin.path.startswith("/")
+        or origin.path.startswith("//")
+        or "\\" in origin.path
+        or origin.path == f"/tasks/{task_id}"
+    ):
+        return ""
+    return urlunsplit(("", "", origin.path, origin.query, origin.fragment))
 
 
 def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
@@ -143,6 +168,7 @@ def register(app: FastAPI, site: Site) -> None:
             owner=effective_owner(t, s.phase(t.product, t.phase))[0],
             owner_source=effective_owner(t, s.phase(t.product, t.phase))[1],
             design_files=_design_files(t, s),
+            return_to=_return_to(request, task_id),
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
