@@ -138,8 +138,13 @@ class Store:
 
     def products(self) -> list[Product]:
         if self._products is None:
-            self._products = self._scan()
-            self._discovery_sig = self._discovery_signature()
+            while self._products is None:
+                before = self._discovery_signature()
+                products = self._scan()
+                after = self._discovery_signature()
+                if before == after:
+                    self._products = products
+                    self._discovery_sig = after
         return self._products
 
     def _scan(self) -> list[Product]:
