@@ -52,10 +52,10 @@
         {% set setting_index = loop.index %}
         {% if row.collection_choice %}<select name="collection_kind" data-collection-mode aria-label="Value type"><option value="scalar" {% if row.collection_kind == 'choice' %}selected{% endif %}>Single value</option><option value="list" {% if row.collection_kind == 'list' %}selected{% endif %}>List</option></select>{% endif %}
         {% if row.collection_kind == "choice" %}
-        <div data-collection-rows><input name="collection_value" value="{{ row.rendered }}" aria-describedby="config-help-{{ setting_index }}"></div>
+        <div data-collection-rows data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"><input id="config-value-{{ setting_index }}" name="collection_value" value="{{ row.rendered }}" aria-describedby="config-help-{{ setting_index }}"></div>
         {% elif row.collection_kind == "list" %}
         {% if not row.collection_choice %}<input type="hidden" name="collection_kind" value="list">{% endif %}
-        <div data-collection-rows class="config-collection">{% for item in row.list_items %}<div class="config-collection-row config-list-row"><input name="collection_value" value="{{ item }}" aria-label="Item {{ loop.index }}"><button type="button" data-remove-row aria-label="Remove item {{ loop.index }}">×</button></div>{% endfor %}</div>
+        <div data-collection-rows class="config-collection"{% if row.collection_choice %} data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"{% endif %}>{% for item in row.list_items %}<div class="config-collection-row config-list-row"><input name="collection_value" value="{{ item }}" aria-label="Item {{ loop.index }}"><button type="button" data-remove-row aria-label="Remove item {{ loop.index }}">×</button></div>{% endfor %}</div>
         <button type="button" data-add-row>Add item</button>
         {% elif row.collection_kind == "mapping" %}
         <input type="hidden" name="collection_kind" value="mapping">
@@ -301,9 +301,11 @@ document.querySelectorAll(".config-setting-form").forEach(form => {
     bindRemove(row); rows.appendChild(row); row.querySelector("input").focus();
   });
   mode?.addEventListener("change", () => {
+    const valueId = rows.dataset.valueId;
+    const helpId = rows.dataset.helpId;
     rows.innerHTML = mode.value === "list"
       ? '<div class="config-collection-row config-list-row"><input name="collection_value" aria-label="Item 1"><button type="button" data-remove-row aria-label="Remove item 1">×</button></div>'
-      : '<input name="collection_value" aria-label="Single value">';
+      : `<input id="${valueId}" name="collection_value" aria-describedby="${helpId}">`;
     rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
   });
 });
