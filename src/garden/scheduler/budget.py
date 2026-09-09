@@ -14,6 +14,7 @@ from ..profiles import stops as profile_stops
 _PROFILE_KEYS: dict[str, str] = {
     "max_parallel": "workers",
     "review_parallel": "reviews",
+    "models": "models",
     "review.difficulty": "review_difficulty",
     "retro.difficulty": "retro_difficulty",
     "observe.profile": "observe",
