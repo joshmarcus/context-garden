@@ -161,11 +161,22 @@ def _set_execution_state(run_dir: Path, state: str) -> None:
 
 
 def _write_execution_state(run_dir: Path, status: dict[str, object]) -> None:
-    """Publish a complete execution status for concurrent observers."""
+    """Publish execution state as one complete JSON document.
+
+    The scheduler and web surfaces read this small status file while a supervisor is
+    running.  Replacing a sibling temporary file prevents them from observing the
+    empty interval created by an in-place truncate-and-write.
+    """
     path = run_dir / "execution.json"
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(status))
-    temporary.replace(path)
+    try:
+        temporary.write_text(json.dumps(status))
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _recorded_waiting_since(run_dir: Path) -> str | None:
