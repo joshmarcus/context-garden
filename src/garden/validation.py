@@ -182,6 +182,9 @@ def main() -> int:
         return 2
     status_dir = Path(outer) / "validations" / str(os.getpid())
     status_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the durable supervisor evidence shape stable even when the command writes
+    # no diagnostics. Error paths may replace or append to this file.
+    (status_dir / "stderr.log").touch()
     cwd = Path.cwd()
     source_sha, source_dirty = _source_state(cwd)
     try:

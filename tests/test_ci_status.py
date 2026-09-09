@@ -27,6 +27,15 @@ def receipt(source_sha="new", command="pytest -q", exit_code=0):
             "source_dirty": "", "source_changed": False}
 
 
+def write_receipt(path, row):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {**row, "log_location": str(path.parent)}
+    path.write_text(json.dumps(row))
+    (path.parent / "execution.json").write_text('{"state": "done"}')
+    (path.parent / "exit_code").write_text(str(row["exit_code"]))
+    (path.parent / "stderr.log").write_text("")
+
+
 def test_github_status_fails_closed_for_missing_unknown_and_failure():
     pr = PRInfo(1, "https://example.test/pr/1", "OPEN", head_sha="abc")
     assert github_status(pr, required=True).state == "missing"
@@ -39,14 +48,13 @@ def test_github_status_fails_closed_for_missing_unknown_and_failure():
 
 def test_worker_check_is_exact_head_and_authoritative(tmp_path):
     result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "1" / "result.json"
-    result.parent.mkdir(parents=True)
-    result.write_text(json.dumps(receipt(source_sha="old")))
+    write_receipt(result, receipt(source_sha="old"))
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
     assert status.state == "mismatched" and status.stale and not status.green
 
-    result.write_text(json.dumps(receipt(exit_code=1)))
+    write_receipt(result, receipt(exit_code=1))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "failure"
-    result.write_text(json.dumps(receipt()))
+    write_receipt(result, receipt())
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
     assert status.green and status.exists_for_sha and status.evidence_url == "/runs/CG-1/run"
 
@@ -55,10 +63,8 @@ def test_worker_check_uses_newest_completion_not_receipt_name(tmp_path):
     validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
     older = validations / "remote-9" / "result.json"
     newer = validations / "remote-10" / "result.json"
-    older.parent.mkdir(parents=True)
-    newer.parent.mkdir(parents=True)
-    older.write_text(json.dumps(receipt()))
-    newer.write_text(json.dumps(receipt(exit_code=1)))
+    write_receipt(older, receipt())
+    write_receipt(newer, receipt(exit_code=1))
     os.utime(older, ns=(1, 1))
     os.utime(newer, ns=(2, 2))
 
@@ -66,6 +72,22 @@ def test_worker_check_uses_newest_completion_not_receipt_name(tmp_path):
 
     assert status.state == "failure"
     assert status.failures == ["validation exited 1"]
+
+
+def test_worker_check_newest_matching_malformed_receipt_supersedes_older_success(tmp_path):
+    validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
+    older = validations / "remote-20" / "result.json"
+    newer = validations / "remote-3" / "result.json"
+    write_receipt(older, receipt())
+    write_receipt(newer, receipt())
+    newer.unlink()
+    newer.write_text(json.dumps({**receipt(), "selection": []}))
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.state == "malformed" and status.exists_for_sha and not status.green
 
 
 def test_worker_check_rejects_malformed_or_wrong_command(tmp_path):
@@ -88,18 +110,27 @@ def test_worker_check_rejects_incomplete_or_inconsistent_remote_receipt(tmp_path
 
     inconsistent = receipt()
     inconsistent["selection"] = ["pytest", "-q"]
-    result.write_text(json.dumps(inconsistent))
+    write_receipt(result, inconsistent)
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
 
     missing_clean_source_proof = receipt()
     missing_clean_source_proof.pop("source_changed")
-    result.write_text(json.dumps(missing_clean_source_proof))
+    write_receipt(result, missing_clean_source_proof)
+    assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+    write_receipt(result, receipt())
+    (result.parent / "exit_code").write_text("1")
+    assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+    write_receipt(result, receipt())
+    stored = json.loads(result.read_text())
+    stored["log_location"] = str(result.parent.parent)
+    result.write_text(json.dumps(stored))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
 
 
 def test_worker_check_accepts_old_branch_authorized_stress_opt_in_receipt(tmp_path):
     result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "remote-0" / "result.json"
-    result.parent.mkdir(parents=True)
     requested = ["pytest", "--run-stress", "-q"]
     opted_in = receipt(command="pytest --run-stress -q", exit_code=1)
     opted_in["selection"] = ["pytest", "-q"]
@@ -109,7 +140,7 @@ def test_worker_check_accepts_old_branch_authorized_stress_opt_in_receipt(tmp_pa
         "requested_selection": requested,
         "effective_selection": ["pytest", "-q"],
     })
-    result.write_text(json.dumps(opted_in))
+    write_receipt(result, opted_in)
 
     status = worker_check_status(
         tmp_path, "CG-1", "new", {"command": "pytest --run-stress -q"},
