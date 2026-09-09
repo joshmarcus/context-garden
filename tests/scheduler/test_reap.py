@@ -681,7 +681,10 @@ def test_real_local_check_hard_timeout_preserves_exact_recovery_cause(sched, tmp
     }
     sched.state.save()
     try:
-        deadline = time.monotonic() + 3
+        # The nested supervisor must first acquire and release its own validation slot.
+        # Keep the assertion bounded, but allow a saturated serial suite enough time to
+        # observe the 0.1-second execution deadline and reap the process group.
+        deadline = time.monotonic() + 10
         while not run.process_finished() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert run.process_finished() and run.read_exit_code() == 124

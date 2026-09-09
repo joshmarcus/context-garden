@@ -80,6 +80,36 @@ python3 scripts/check_ci.py
 
 ## Serial timing comparison
 
+## Ordinary-suite runtime diagnostics
+
+The ordinary suite is serial.  Its runtime target applies to pytest after dependencies and
+the Chromium browser are prepared: installation, validation admission wait, and an
+unfinished descendant are recorded separately and never counted as a passing test run.
+Run the command below from the exact commit being measured, with no other validation using
+the host slot.  It preserves the 120-second test and 900-second session caps, clears pytest's
+cache, and gives tests an empty temporary-state root for a cold measurement.
+
+```bash
+runtime_root=$(mktemp -d)
+timeout --signal=TERM --kill-after=10s 900 "$GARDEN_VALIDATION_RUNNER" -m garden.validation -- \
+  .venv/bin/python -m pytest -q --durations=40 --timeout=120 --timeout-method=thread --cache-clear \
+  --basetemp="$runtime_root/cold"
+```
+
+For the warm measurement, immediately repeat at the same source and limits with a distinct
+`--basetemp="$runtime_root/warm"` and without `--cache-clear`.  Keep the terminal output:
+pytest reports the collected/deselected totals, wall time, and current slowest nodes; the
+validation run's `execution.json` distinguishes `running`, `waiting` (admission), and a
+completed process with descendants still alive.  CI runs the same ordinary selection with
+`--durations=40`, so a regression leaves the slow-node table in its job log.  Stress tests
+remain excluded unless `--run-stress` is explicitly supplied.
+
+The current representative AWS measurement and environment are recorded in the
+[CG-453 report](validation/cg453/report.md): 1,713 passed, 3 skipped and 4 stress tests
+deselected in 424.93s cold and 432.31s warm on Python 3.12.14. Compare the slowest-node
+table before changing fixtures; a validation record still in `waiting` is admission time,
+while a completed pytest process whose wrapper remains live indicates a descendant leak.
+
 For a retro document renderer/parser change, the baseline must precede the extraction.
 This comparison uses `58e13b99ddaf62b751b01771e5660039a421d46c`, the parent of split commit
 `4cfcc8c`, with its original **34-test** mixed `tests/test_retro.py`. The focused selection

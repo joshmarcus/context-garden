@@ -187,6 +187,8 @@ def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
         bits.append(f"at capacity {pressure.active}/{pressure.limit} — eligible work waits for a slot")
     if pressure.pressured:
         bits.append("pressure " + "; ".join(pressure.pressure_reasons) + " — new local launches wait for recovery")
+    if pressure.reclaim:
+        bits.append(pressure.reclaim)
     if count_bits:
         bits.append(count_bits)
     return "  ".join(bits)

@@ -247,6 +247,10 @@ def test_now_page_renders_the_four_regions_and_the_nav(garden):
     assert '<span class="why"><span class="id">DM-001</span> · priority 1 · work · medium →' in page
     assert "p1, seed" in page and "0 of 2 merged" in page
     assert now1.QUIET_PERIOD in page
+    # Section names are real landmarks rather than quiet metadata: their supporting copy
+    # remains alongside them, so a screen reader and a scanning reader get the same hierarchy.
+    for title in ("Now", "Next", "Where we are", "The last period"):
+        assert f'<h2 class="section-title">{title}</h2>' in page
     for region in ("head", "now", "next", "where", "period"):
         assert _client(garden).get(f"/partials/now/{region}").status_code == 200
     assert _client(garden).get("/partials/now/nope").status_code == 404

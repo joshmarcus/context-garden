@@ -96,7 +96,7 @@ class ReapMixin:
         for run in self.runs.all_runs():
             # A terminal metadata value alone is not enough: prove the wrapper exited (or
             # wrote its exit_code) before deleting files a still-live descendant may use.
-            if run.runner == "local" and run.status != "running" and run.process_finished():
+            if run.is_local_execution and run.status != "running" and run.process_finished():
                 shutil.rmtree(run_temp_dir(work_dir, run), ignore_errors=True)
 
     # ---- reap --------------------------------------------------------------
@@ -184,11 +184,17 @@ class ReapMixin:
         if not runner.detached:
             return False
         timeout_min = float(self.cfg.get("timeout_minutes", 90) or 0)
-        if timeout_min and run.elapsed_minutes() > timeout_min + 5:
+        elapsed = run.execution_minutes() if run.runner == "remote" else run.elapsed_minutes()
+        if timeout_min and elapsed > timeout_min + 5:
             run.kill()
             run.status = "timeout"
             run.finished_at = now_iso()
             run.error = "timed out"
+            if run.runner == "remote":
+                # Revoke the accepted generation before a retry can be dispatched.  A late
+                # heartbeat/result is then rejected even when its former lease had time left.
+                run.lease_token = ""
+                run.lease_expires_at = ""
             run.save()
             return True
         admission_reason = run.supervisor_waiting_reason()

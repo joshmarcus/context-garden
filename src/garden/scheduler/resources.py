@@ -11,7 +11,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import signal
+import subprocess
+import sys
 import threading
+import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +47,8 @@ class ResourceStatus:
     heavy_running: int
     heavy_waiting: int
     pressure_reasons: tuple[str, ...]
+    reclaim: str = ""
+    host_memory_available_mb: int | None = None
 
     @property
     def capacity_full(self) -> bool:
@@ -125,7 +132,94 @@ def _cgroup_memory_available_mb(root: Path = Path("/sys/fs/cgroup")) -> int | No
     return _cgroup_memory_status(group)[0] if group else None
 
 
+def _memory_stat(group: Path) -> dict[str, int] | None:
+    try:
+        values = dict(line.split(maxsplit=1) for line in (group / "memory.stat").read_text().splitlines())
+        return {name: int(values.get(name, "0")) for name in ("file", "shmem", "inactive_file")}
+    except (OSError, ValueError):
+        return None
+
+
+def _reclaim_pid_alive(pid: int, token: str) -> bool:
+    try:
+        os.kill(pid, 0)
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        return b"garden.resource_reclaim" in command and token.encode() in command
+    except (OSError, ValueError):
+        return False
+
+
 class ResourceMixin:
+    def _reclaim_paths(self) -> tuple[Path, Path]:
+        return (self.cfg.garden_dir / "resource-reclaim.json",
+                self.cfg.garden_dir / "resource-reclaim-report.json")
+
+    def _read_reclaim_state(self) -> dict[str, Any]:
+        """Observe published state without reconciling or writing from UI/read paths."""
+        state_path, report_path = self._reclaim_paths()
+        try:
+            state = json.loads(state_path.read_text())
+        except (OSError, ValueError):
+            state = {}
+        try:
+            report = json.loads(report_path.read_text())
+        except (OSError, ValueError):
+            report = None
+        if state.get("running") and report and report.get("token") == state.get("token"):
+            return {**state, "running": False, "result": report,
+                    "finished_at": report.get("finished_at")}
+        return state
+
+    def _reconcile_reclaim_state(self) -> dict[str, Any]:
+        """Publish helper completion while the caller holds the admission lock."""
+        state_path, report_path = self._reclaim_paths()
+        state = self._read_reclaim_state()
+        try:
+            report = json.loads(report_path.read_text())
+        except (OSError, ValueError):
+            report = None
+        if state.get("running") is False and report and report.get("token") == state.get("token"):
+            state.update({"running": False, "result": report, "finished_at": report.get("finished_at")})
+            self._write_reclaim_state(state_path, state)
+        elif state.get("running"):
+            pid = int(state.get("pid") or 0)
+            token = str(state.get("token") or "")
+            timeout = float(self.effective("resources.reclaim_timeout_seconds", 5) or 5)
+            if time.time() - float(state.get("started_at") or 0) > timeout + 1:
+                if _reclaim_pid_alive(pid, token):
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                state.update({"running": False, "finished_at": time.time(),
+                              "result": {"status": "error", "error": "reclaim helper timed out"}})
+                self._write_reclaim_state(state_path, state)
+            elif not _reclaim_pid_alive(pid, token):
+                state.update({"running": False, "finished_at": time.time(),
+                              "result": {"status": "error", "error": "reclaim helper exited without a report"}})
+                self._write_reclaim_state(state_path, state)
+        return state
+
+    @staticmethod
+    def _write_reclaim_state(path: Path, state: dict[str, Any]) -> None:
+        temporary = path.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
+        os.replace(temporary, path)
+
+    def _reclaim_description(self) -> str:
+        state = self._read_reclaim_state()
+        if state.get("running"):
+            return f"bounded cache reclaim running for {state.get('boundary', 'limiting cgroup')}"
+        result = state.get("result") or {}
+        if result:
+            before = result.get("headroom_before_bytes")
+            after = result.get("headroom_after_bytes")
+            headroom = (f" ({int(before) // (1024 * 1024)}→{int(after) // (1024 * 1024)} MiB actual headroom"
+                        if isinstance(before, int) and isinstance(after, int) else "")
+            error = f": {result['error']}" if result.get("error") else ""
+            return f"last bounded cache reclaim {result.get('status', 'unknown')}{headroom}{')' if headroom else ''}{error}"
+        return ""
+
     @contextmanager
     def _local_admission_lock(self):
         """Serialize the capacity decision with publishing its running record.
@@ -158,7 +252,7 @@ class ResourceMixin:
 
     def local_runs_active(self) -> list[Any]:
         """Every process launched on this host, regardless of scheduler queue or CLI path."""
-        return [r for r in self.active_runs() if r.runner == "local"]
+        return [r for r in self.active_runs() if r.is_local_execution]
 
     def resource_status(self) -> ResourceStatus:
         active = len(self.local_runs_active())
@@ -180,7 +274,7 @@ class ResourceMixin:
         known_cgroup_values = [(name, value) for name, value in cgroup_values if value is not None]
         cgroup_memory = min((value for _, value in known_cgroup_values), default=None)
         cgroup_boundary = min(known_cgroup_values, key=lambda item: item[1])[0] if known_cgroup_values else "none"
-        events = execution_events if execution_group else controller_events
+        events = execution_events if cgroup_boundary == "execution cgroup" else controller_events
         values = [v for v in (host_memory, cgroup_memory) if v is not None]
         memory = min(values) if values else None
         temp = _free_mb(self.cfg.work_dir / "tmp")
@@ -231,7 +325,67 @@ class ResourceMixin:
         return ResourceStatus(active, limit, memory, memory_min, temp, temp_min, cgroup_memory,
                               cgroup_boundary, tuple(sorted(events.items())), isolation,
                               requested_heavy_limit, heavy_limit, heavy_conflict,
-                              heavy_running, heavy_waiting, tuple(pressure_reasons))
+                              heavy_running, heavy_waiting, tuple(pressure_reasons), self._reclaim_description(), host_memory)
+
+    def _start_reclaim_if_eligible(self, status: ResourceStatus) -> bool:
+        """Start one helper only when cgroup headroom is the sole remaining gate."""
+        if len(status.reasons) != 1 or "available memory" not in status.reasons[0]:
+            return False
+        if status.cgroup_boundary not in ("controller cgroup", "execution cgroup"):
+            return False
+        if status.memory_available_mb is None or status.cgroup_available_mb != status.memory_available_mb:
+            return False
+        if status.host_memory_available_mb is None or status.host_memory_available_mb < status.memory_min_mb:
+            return False
+        if status.memory_available_mb >= status.memory_min_mb:
+            return False
+        group = (_cgroup_path_for_process() if status.cgroup_boundary == "controller cgroup" else
+                 Path(str(self.effective("resources.execution_cgroup", "") or "")))
+        maximum_mb = max(0, int(self.effective("resources.reclaim_max_mb", 512) or 0))
+        stats = _memory_stat(group) if group else None
+        if not group or not maximum_mb or not stats or stats["inactive_file"] <= 0:
+            return False
+        state = self._reconcile_reclaim_state()
+        if state.get("running"):
+            return False
+        cooldown = max(0, float(self.effective("resources.reclaim_cooldown_seconds", 300) or 0))
+        if time.time() - float(state.get("finished_at") or 0) < cooldown:
+            return False
+        # inactive_file is an eligibility signal and request bound, never admission credit.
+        request = min(maximum_mb * 1024 * 1024, stats["inactive_file"])
+        state_path, report_path = self._reclaim_paths()
+        proc: subprocess.Popen[bytes] | None = None
+        try:
+            identity = group.stat()
+            report_path.unlink(missing_ok=True)
+            started = time.time()
+            token = uuid.uuid4().hex
+            timeout = max(0.1, float(self.effective("resources.reclaim_timeout_seconds", 5) or 5))
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "garden.resource_reclaim", "--cgroup", str(group),
+                 "--bytes", str(request), "--timeout", str(timeout), "--report", str(report_path),
+                 "--token", token, "--device", str(identity.st_dev), "--inode", str(identity.st_ino)],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            state = {"running": True, "pid": proc.pid, "started_at": started, "token": token,
+                     "boundary": status.cgroup_boundary, "requested_bytes": request,
+                     "memory_stat": stats}
+            self._write_reclaim_state(state_path, state)
+        except OSError as exc:
+            if proc is not None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            self._write_reclaim_state(state_path, {"running": False, "finished_at": time.time(),
+                                                    "result": {"status": "error", "error": str(exc)}})
+            return False
+        self.events.emit("resource_reclaim", "", status="started", boundary=status.cgroup_boundary,
+                         requested_bytes=request, headroom_before_mb=status.cgroup_available_mb)
+        self.log(f"resource pressure: started bounded cache reclaim in {status.cgroup_boundary}; "
+                 f"requested {request // (1024 * 1024)} MiB, admission remains deferred pending a fresh check")
+        return True
 
     def _record_resource_status(self, status: ResourceStatus) -> None:
         ctrl = self.control()
@@ -260,6 +414,12 @@ class ResourceMixin:
             return 0
         return max(0, status.limit - status.active)
 
+    def _try_reclaim_for_pending_local_launch(self) -> bool:
+        """Give queued local work one serialized reclaim attempt without admitting it."""
+        with self._local_admission_lock():
+            status = self.refresh_resource_pressure()
+            return status.pressured and self._start_reclaim_if_eligible(status)
+
     def _admit_local_launch(self, kind: str) -> None:
         status = self.refresh_resource_pressure()
         if status.admission_blocked:
@@ -268,13 +428,18 @@ class ResourceMixin:
                     f"{kind} waits for a local execution slot ({status.active}/{status.limit} busy); "
                     "eligible work dispatches automatically when one finishes"
                 )
+            if status.pressured:
+                self._start_reclaim_if_eligible(status)
             raise ResourcePressureError(
                 f"{kind} deferred by resource pressure: {'; '.join(status.reasons)}; "
                 "pause dispatch or wait for active runs to drain, then retry"
             )
 
-    def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "") -> Any:
+    def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "",
+                       runner_name: str = "local") -> Any:
         """Atomically admit and publish a running local run across all launchers."""
         with self._local_admission_lock():
             self._admit_local_launch(kind)
-            return self.runs.new_run(task_id, "local", mode=mode, run_id=run_id)
+            run = self.runs.new_run(task_id, runner_name, mode=mode, run_id=run_id)
+            run.execution_remote = False
+            return run

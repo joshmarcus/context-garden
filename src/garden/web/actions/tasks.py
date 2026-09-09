@@ -111,8 +111,8 @@ def cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> N
 
 
 @action("retry")
-def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    sched.retry(t)
+def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor: str = "human_owner") -> None:
+    sched.retry(t, actor=actor)
 
 
 @action("recover")
@@ -136,8 +136,8 @@ def resume(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> N
 
 
 @action("done")
-def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    sched.mark_done(t, note or "marked done without merging (web)", force=True)
+def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor: str = "human_owner") -> None:
+    sched.mark_done(t, note or "marked done without merging (web)", force=True, actor=actor)
 
 
 @action("review")
@@ -363,6 +363,7 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/tasks/{task_id}/{action}")
     def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form(""),
+                    actor: str = Form("human_owner"),
                     likely_cause: str = Form(""), confidence: str = Form(""), unknowns: str = Form(""),
                     evidence: str = Form(""), attempted_checks: str = Form(""), retain_work: str = Form(""),
                     alternatives: str = Form(""), recommendation: str = Form(""), links: str = Form("")):
@@ -393,7 +394,10 @@ def register(app: FastAPI, site: Site) -> None:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)
-                warning = run_action(s, sched, t, note, applies_to)
+                if action in {"retry", "done"}:
+                    warning = run_action(s, sched, t, note, applies_to, actor)  # type: ignore[call-arg]
+                else:
+                    warning = run_action(s, sched, t, note, applies_to)
         except HTTPException:
             raise
         except (RuntimeError, GitError, GitHubError) as e:

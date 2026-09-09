@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import textwrap
@@ -138,15 +139,14 @@ def complete_brief(garden_root: Path, task_id: str) -> None:
     store.save(t)
 
 
-@pytest.fixture
-def garden(tmp_path: Path) -> Path:
-    """A garden with one product whose repo is a local git repo with a bare origin."""
-    root = tmp_path / "garden"
-    repo = tmp_path / "repo"
-    remote = tmp_path / "remote.git"
+@pytest.fixture(scope="session")
+def garden_template(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """Build the immutable starting Git topology once for the test session."""
+    template_root = tmp_path_factory.mktemp("garden-template")
+    repo = template_root / "repo"
+    remote = template_root / "remote.git"
     repo.mkdir()
     git("init", "-q", "-b", "main", cwd=repo)
-    # set local user config so git-rebase can create commits without a global config
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
     write(repo / "README.md", "# demo\n")
@@ -159,6 +159,23 @@ def garden(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
     git("remote", "add", "origin", str(remote), cwd=repo)
     git("push", "-q", "-u", "origin", "main", cwd=repo)
+    return repo, remote
+
+
+@pytest.fixture
+def garden(tmp_path: Path, garden_template: tuple[Path, Path]) -> Path:
+    """A garden with independently mutable copies of one seeded Git topology."""
+    root = tmp_path / "garden"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    template_repo, template_remote = garden_template
+    # Copy rather than link: tests may rewrite refs, config, and worktree files freely
+    # without mutating the seed or another test's remote.
+    shutil.copytree(template_repo, repo)
+    shutil.copytree(template_remote, remote)
+    git("remote", "set-url", "origin", str(remote), cwd=repo)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
     root.mkdir()
     (root / "garden.yaml").write_text(yaml.safe_dump({
         "name": "test",
