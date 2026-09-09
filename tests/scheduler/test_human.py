@@ -115,6 +115,64 @@ def test_manual_reservation_parks_finished_persona_until_return(sched):
     assert sched.state.get(task.id)["persona_reviews"][-1]["run"] == run.run_id
 
 
+def test_manual_reservation_parks_finished_trial_contenders_until_return(sched, fake_github, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_WINNER", "claude:opus")
+    task = sched.store.task("DM-001")
+    runs = sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    reservation = sched.reserve_manual(sched.store.task(task.id))
+    finished_or_timed_out = sched._finished_or_timed_out
+    monkeypatch.setattr(
+        sched, "_finished_or_timed_out",
+        lambda *_args: pytest.fail("Manual mode must not enforce contender timeouts"),
+    )
+
+    rep = sched.tick(dispatch=False)
+
+    trial = sched.state.get(task.id)["trial"]
+    assert [c["status"] for c in trial["contenders"]] == ["collected", "collected"]
+    stored = {run.run_id: run for run in sched.runs.runs_for(task.id)}
+    assert all(stored[run.run_id].status == "done" for run in runs)
+    assert not any(active.task_id == task.id for active in sched.runs.active())
+    assert not fake_github.created
+    assert not rep.dispatched
+    assert statuses(sched)[task.id] == "running"
+
+    monkeypatch.setattr(sched, "_finished_or_timed_out", finished_or_timed_out)
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"], expected_head="",
+    )
+    rep = sched.tick(dispatch=False)
+    assert "DM-001(compare)" in rep.dispatched
+    assert sched.state.get(task.id)["trial"]["status"] == "comparing"
+    assert len(fake_github.created) == 2
+
+    sched.tick(dispatch=False)
+    assert sched.state.get(task.id)["trial"]["status"] == "done"
+    assert statuses(sched)[task.id] == "in_review"
+
+
+def test_manual_reservation_leaves_active_trial_contender_running(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    runs = sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    active = runs[0]
+    (active.path / "exit_code").unlink()
+    reservation = sched.reserve_manual(sched.store.task(task.id))
+    monkeypatch.setattr(
+        sched, "_finished_or_timed_out",
+        lambda *_args: pytest.fail("Manual mode must not enforce contender timeouts"),
+    )
+
+    sched.tick(dispatch=False)
+
+    trial = sched.state.get(task.id)["trial"]
+    assert [c["status"] for c in trial["contenders"]] == ["running", "collected"]
+    assert sched.runs.active()[0].run_id == active.run_id
+    with pytest.raises(RuntimeError, match="still active"):
+        sched.return_to_automation(
+            sched.store.task(task.id), reservation_id=reservation["id"], expected_head="",
+        )
+
+
 def test_manual_reservation_guards_every_new_task_run_kind(sched):
     task = sched.store.task("DM-001")
     task.branch = task.default_branch()
