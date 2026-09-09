@@ -41,7 +41,7 @@
     {% else %}<span class="stamp">{{ s.state | replace('_', ' ') }}</span>{% endif %}
   </div>
   {% if no_process %}
-  <div class="bar"><span class="faint">no process recorded · started {{ s.started_at[11:16] }}Z · a slot is held until a tick reaps it</span></div>
+  <div class="bar"><span class="faint">{{ s.lifecycle_detail }} · started {{ s.started_at[11:16] }}Z</span></div>
   {% elif s.kind == "run" %}
   {%- set typical = s.typical_s -%}
   <div class="bar">
@@ -53,6 +53,7 @@
       <span class="clock"><span data-elapsed>{{ f.clock(s.elapsed_s) }}</span></span>
     {% endif %}
     {% if finished %}<span class="verdict">{{ s.verdict }}</span>
+    {% elif s.lifecycle_detail %}<span class="spend faint">{{ s.lifecycle_detail }}</span>
     {% elif s.spend_usd is not none %}<span class="spend" data-spend>{{ f.money(s.spend_usd) }} so far</span>
     {% elif s.tokens_so_far | default(0) %}<span class="spend" data-spend>{{ f.ktok(s.tokens_so_far) }} tokens so far</span>
     {% elif not s.harness %}<span class="spend faint" data-spend>token-free</span>

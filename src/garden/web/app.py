@@ -21,7 +21,7 @@ from markupsafe import Markup
 
 from ..harness import DIFFICULTIES
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
-from ..now1 import live_clock_html
+from ..now1 import board_run_fact_html, live_clock_html
 from ..plants import (
     DEFS,
     PLATE_CREDIT,
@@ -119,6 +119,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     # A running run's elapsed time as the markup the clock in base.html ticks (the Board's
     # running cards, a task page's run row): trusted markup built from the run record.
     templates.env.globals["live_clock"] = lambda run: Markup(live_clock_html(run))
+    templates.env.globals["board_run_fact"] = lambda run: Markup(board_run_fact_html(run))
     templates.env.globals["PRIORITY_SCALE"] = PRIORITY_SCALE
     templates.env.globals["priority_label"] = priority_label
     templates.env.globals["DIFFICULTIES"] = DIFFICULTIES
