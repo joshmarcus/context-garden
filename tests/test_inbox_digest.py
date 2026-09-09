@@ -29,6 +29,11 @@ class _FakeSched:
 
         return ready(tasks)
 
+    def task_effective_status(self, task, tasks):
+        from garden.graph import effective_status
+
+        return effective_status(task, tasks)
+
 
 def _sched(garden: Path) -> _FakeSched:
     return _FakeSched(garden / ".garden")
