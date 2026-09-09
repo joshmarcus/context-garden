@@ -10,12 +10,19 @@ from garden.ci_status import (
     worker_check_status,
 )
 from garden.github import PRInfo
-from garden.validation import POLICY_SOURCE_SHA
+from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 
 
 def receipt(source_sha="new", command="pytest -q", exit_code=0):
-    return {"source_sha": source_sha, "command": command, "exit_code": exit_code,
-            "log_location": "/logs/1", "policy": {"source_sha": POLICY_SOURCE_SHA},
+    requested = ["pytest", "-q"]
+    effective = [*requested, *POLICY_ADDOPTS]
+    return {"version": 1, "source_sha": source_sha, "command": command,
+            "selection": effective, "exit_code": exit_code,
+            "log_location": "/logs/1", "policy": {
+                "version": 1, "source_sha": POLICY_SOURCE_SHA, "kind": "pytest",
+                "stress_opt_in": False, "excluded_nodes": list(STRESS_NODES),
+                "requested_selection": requested, "effective_selection": effective,
+            },
             "source_dirty": "", "source_changed": False}
 
 
@@ -50,6 +57,47 @@ def test_worker_check_rejects_malformed_or_wrong_command(tmp_path):
     assert worker_check_status(tmp_path, "CG-1", "new", {}).state == "malformed"
     result.write_text(json.dumps(receipt(command="focused")))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "ordinary"}).state == "missing"
+
+
+def test_worker_check_rejects_incomplete_or_inconsistent_remote_receipt(tmp_path):
+    result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "remote-0" / "result.json"
+    result.parent.mkdir(parents=True)
+    incomplete = {"source_sha": "new", "command": "pytest -q", "exit_code": 0,
+                  "log_location": "/remote/path", "source_dirty": "", "source_changed": False,
+                  "policy": {"source_sha": POLICY_SOURCE_SHA}}
+    result.write_text(json.dumps(incomplete))
+    assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+    inconsistent = receipt()
+    inconsistent["selection"] = ["pytest", "-q"]
+    result.write_text(json.dumps(inconsistent))
+    assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+    missing_clean_source_proof = receipt()
+    missing_clean_source_proof.pop("source_changed")
+    result.write_text(json.dumps(missing_clean_source_proof))
+    assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+
+def test_worker_check_accepts_old_branch_authorized_stress_opt_in_receipt(tmp_path):
+    result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "remote-0" / "result.json"
+    result.parent.mkdir(parents=True)
+    requested = ["pytest", "--run-stress", "-q"]
+    opted_in = receipt(command="pytest --run-stress -q", exit_code=1)
+    opted_in["selection"] = ["pytest", "-q"]
+    opted_in["policy"].update({
+        "stress_opt_in": True,
+        "excluded_nodes": [],
+        "requested_selection": requested,
+        "effective_selection": ["pytest", "-q"],
+    })
+    result.write_text(json.dumps(opted_in))
+
+    status = worker_check_status(
+        tmp_path, "CG-1", "new", {"command": "pytest --run-stress -q"},
+    )
+
+    assert status.state == "failure" and status.exists_for_sha
 
 
 def test_pluggable_provider_timeout_and_mismatched_response_fail_closed(tmp_path):
