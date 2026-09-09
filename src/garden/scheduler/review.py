@@ -1056,12 +1056,9 @@ class ReviewMixin:
                 metadata_warnings=metadata_warnings,
             ) if review else []
             if metadata_warnings:
-                review.setdefault("findings", []).append({
-                    "severity": "nit", "file": "", "line": None,
-                    "summary": "Evidence metadata advisory: " + "; ".join(metadata_warnings),
-                    "fix": "Attach available source, command and artifact references; reuse inspected evidence. "
-                           "Do not rerun implementation or passing verification solely for metadata.",
-                })
+                # Keep packaging diagnostics for operators without turning omitted
+                # attachments or optional metadata into a posted review finding.
+                run.env_snapshot["evidence_metadata_warnings"] = metadata_warnings
             if gaps:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({
