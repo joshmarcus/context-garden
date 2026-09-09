@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
@@ -26,6 +27,28 @@ def _is_streamed_transcript(events: list[dict[str, object]], output: str = "") -
                           "thread.started", "turn.started", "turn.completed", "turn.failed"}:
             return True
     return False
+
+
+def _transcript_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse Codex lifecycle updates into the latest event for each item.
+
+    Codex emits a command item when it starts and again when it completes.  The completed
+    event carries its aggregated output, so replacing the earlier event keeps the command's
+    place in the conversation while rendering one command and its result.
+    """
+    rendered: list[dict[str, Any]] = []
+    item_positions: dict[str, int] = {}
+    for event in events:
+        item = event.get("item")
+        item_id = item.get("id") if isinstance(item, dict) else None
+        if event.get("type") in {"item.started", "item.completed"} and isinstance(item_id, str):
+            position = item_positions.get(item_id)
+            if position is not None:
+                rendered[position] = event
+                continue
+            item_positions[item_id] = len(rendered)
+        rendered.append(event)
+    return rendered
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -68,6 +91,7 @@ def register(app: FastAPI, site: Site) -> None:
             except Exception:  # noqa: BLE001
                 pass
         is_stream = _is_streamed_transcript(events, output)
+        events = _transcript_events(events)
         final_path = run.path / "final.md"
         final_text = final_path.read_text() if final_path.exists() else ""
         if not final_text:
@@ -100,7 +124,7 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         rs = RunStore(s.config.garden_dir)
         run = next((r for r in rs.runs_for(task_id) if r.run_id == run_id), None)
-        events = run.stdout_events(n=None) if run else []
+        events = _transcript_events(run.stdout_events(n=None)) if run else []
         return templates.TemplateResponse(request, "_stdout.html", ctx(request, events=events))
 
     @app.get("/runs", response_class=HTMLResponse)
