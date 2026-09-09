@@ -10,6 +10,7 @@ from garden.github import Feedback
 from garden.inbox import build_inbox
 from garden.model import Status
 from garden.scheduler.state import State
+from garden.scheduler.report import TickReport
 from tests.conftest import FakeGitHub
 
 
@@ -269,6 +270,24 @@ def _terminal_check_stop(sched, task, *, checks="SUCCESS", feedback=""):
     return run
 
 
+def _parked_terminal_check_stop(sched, task, *, checks="SUCCESS", feedback=""):
+    """Create the ordinary exhausted-check stop through its production parking path."""
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.error = "original check diagnostic"
+    run.save()
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": run.run_id, "stage": "ci", "cont": {}}
+    st["checks"] = checks
+    if feedback:
+        st["pending_feedback"] = feedback
+    sched.state.save()
+    sched._retry_or_park_check(task, run, "ci", {}, [], 1, TickReport())
+    assert not sched.state.get(task.id).get("check_run")
+    return run
+
+
 def test_terminal_check_recovery_resumes_green_pr_without_a_revision(sched):
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW
@@ -290,12 +309,30 @@ def test_terminal_check_recovery_resumes_green_pr_without_a_revision(sched):
     assert not sched.state.get(task.id).get("needs_human")
 
 
+def test_terminal_check_recovery_clears_an_ordinary_parked_stop(sched):
+    """The normal exhausted-check path removes check_run before presenting recovery."""
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    run = _parked_terminal_check_stop(sched, task)
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert outcome == "terminal check pointer cleared; pipeline progression resumed"
+    st = sched.state.get(task.id)
+    assert not st.get("check_run") and not st.get("needs_human") and not st.get("recovery_check")
+    assert sched._run_by_id(task, run.run_id).error == "original check diagnostic"
+    sched.tick(dispatch=False)
+    assert not sched.state.get(task.id).get("needs_human")
+
+
 def test_terminal_check_recovery_retains_current_failure_for_existing_revision(sched):
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW
     task.pr = "https://example.com/pull/101"
     sched.store.save(task)
-    _terminal_check_stop(sched, task, checks="FAILURE", feedback="- substantive review finding")
+    _parked_terminal_check_stop(sched, task, checks="FAILURE", feedback="- substantive review finding")
 
     outcome = sched.recover_waiting_check(task)
 

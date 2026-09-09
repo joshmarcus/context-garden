@@ -1068,7 +1068,6 @@ def test_terminal_check_card_uses_guarded_recovery_not_plain_resume(garden):
     state = State(store.config.garden_dir / "state.json")
     state.get(task.id)["needs_human"] = {"kind": "check_did_not_run", "run": "terminal-check",
                                            "reason": "check did not run"}
-    state.get(task.id)["check_run"] = {"run_id": "terminal-check", "stage": "ci", "cont": {}}
     state.get(task.id)["recovery_check"] = {"run": "terminal-check", "stage": "ci"}
     state.get(task.id)["checks"] = "SUCCESS"
     state.save()

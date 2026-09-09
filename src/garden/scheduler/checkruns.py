@@ -187,7 +187,10 @@ class CheckRunMixin:
             if run_id:
                 return (f"current check {run_id} does not match stopped check {stopped_run_id}; "
                         "left both continuations untouched")
-            return f"stopped check {stopped_run_id} was already recovered"
+            # Parking an exhausted check deliberately removes its redundant active pointer.
+            # Its terminal run id remains in both halves of the stop, so use that durable
+            # identity to recover the stop unless a newer pointer has taken ownership.
+            run = self._run_by_id(task, stopped_run_id)
         if run is not None and run.status == "running":
             runner = self.runner_for(task, run.runner, run.harness)
             if self._finished_or_timed_out(run, runner):
