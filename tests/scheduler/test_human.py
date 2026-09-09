@@ -1170,6 +1170,7 @@ def test_attached_pr_revision_keeps_the_verified_non_default_pr(sched, fake_gith
     second.status = Status.DRAFT
     sched.store.save(second)
     pr = fake_github.create_pr("test/demo", "operator/adopted", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     repo = sched.repo_for(task)
     gitops.git("checkout", "-q", "-b", pr.head, cwd=repo)
     gitops.git("push", "-q", "-u", "origin", pr.head, cwd=repo)
@@ -1325,6 +1326,8 @@ def test_attach_pr_adopts_verified_identity_and_keeps_feedback_history(sched, fa
     task = sched.store.task("DM-001")
     old = fake_github.create_pr("test/demo", "operator/old", "main", "old", "")
     new = fake_github.create_pr("test/demo", "operator/non-default", "main", "new", "")
+    old.head_sha, old.head_repo = "old-head", "test/demo"
+    new.head_sha, new.head_repo = "new-head", "test/demo"
     st = sched.state.get(task.id)
     st.update({"pr_number": old.number, "head_sha": "stale", "review_run": "stale-run",
                "automerge_blocked": "stale queue", "pending_feedback": "- keep this request"})
@@ -1348,6 +1351,7 @@ def test_attach_pr_adopts_verified_identity_and_keeps_feedback_history(sched, fa
 def test_attach_pr_refuses_unusable_head_identity(sched, fake_github, attribute, value, message):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     setattr(pr, attribute, value)
 
     with pytest.raises(RuntimeError, match=message):
@@ -1418,6 +1422,7 @@ def test_external_claim_refuses_incomplete_pr_metadata_without_creating_run(
 def test_external_completion_records_a_moved_head_on_the_same_pr(sched, fake_github):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
     pr.head_sha = "head-moved-outside-garden"
