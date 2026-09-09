@@ -151,6 +151,26 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
 
 
+def test_shared_rail_keeps_the_active_build_out_of_the_inbox(garden, monkeypatch):
+    """The routine serving revision is a quiet shell detail, not an Inbox panel."""
+    active = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr(Scheduler, "upgrade_status", lambda self: {"active": active})
+    monkeypatch.setattr(Scheduler, "upgrade_available", lambda self: {
+        "sha": "f" * 40, "status": "available", "product": "garden",
+    })
+
+    c = client(garden)
+    inbox = c.get("/inbox").text
+    board = c.get("/board").text
+
+    assert 'class="build-detail"' in inbox
+    assert f"build · {active[:12]}" in inbox
+    assert f"build · {active[:12]}" in board
+    assert "Serving build" not in inbox
+    assert "Garden tool update" in inbox
+    assert '<form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>' in inbox
+
+
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
     """The served fence journey keeps an operator's committed spec edit during a completed
     worker run: dispatch, operator commit, and reap all happen through the web app's tick."""
