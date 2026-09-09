@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import shlex
+import sys
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +14,7 @@ import yaml
 
 from garden.brief import build_brief
 from garden.model import Status
+from garden.proctree import pid_alive
 from garden.runner.base import RunnerError, run_setup, setup_marker, setup_stamp
 from garden.scheduler import Scheduler
 from garden.store import Store
@@ -113,6 +117,34 @@ def test_run_setup_failure_raises_with_log(tmp_path):
         run_setup(wt, {"command": "echo boom-details >&2; exit 7"}, log_path=log)
     assert "boom-details" in log.read_text()
     assert not setup_marker(wt).exists()  # a failed setup does not mark the worktree as prepared
+
+
+def test_run_setup_timeout_kills_session_escaping_descendant(tmp_path):
+    wt = tmp_path / "worktrees" / "T-1"
+    wt.mkdir(parents=True)
+    child_pid = tmp_path / "child.pid"
+    script = tmp_path / "setup.py"
+    script.write_text(
+        "import os, pathlib, signal\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        " os.setsid()\n"
+        f" pathlib.Path({str(child_pid)!r}).write_text(str(os.getpid()))\n"
+        " signal.pause()\n"
+        "signal.pause()\n"
+    )
+
+    with pytest.raises(RunnerError, match="timed out after 0.2s"):
+        run_setup(wt, {
+            "command": shlex.join([sys.executable, str(script)]), "timeout_seconds": 0.2,
+        })
+
+    assert child_pid.exists()
+    pid = int(child_pid.read_text())
+    deadline = time.monotonic() + 1
+    while pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not pid_alive(pid)
 
 
 # ---- integration: local runner, checks, brief -------------------------------

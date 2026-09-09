@@ -15,8 +15,8 @@ Two properties of the BSD process model drive the branches below:
   outside Linux can own it. What a supervisor can always do is find and signal every
   descendant still reachable through live parentage, which is what ``ps`` reports.
 
-``ps`` is consulted only when the cheap kill probe cannot settle the question, so the paths
-that a poll loop takes repeatedly stay syscall-only.
+Linux keeps the repeated poll path on procfs. Systems without procfs use the process table
+only for the lifecycle decisions that need it.
 """
 
 from __future__ import annotations
@@ -24,9 +24,24 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 _PROC = Path("/proc")
+
+
+@dataclass(frozen=True)
+class ProcessInfo:
+    """The process fields Garden needs, normalized across procfs and BSD/procps ``ps``."""
+
+    pid: int
+    ppid: int
+    pgid: int
+    state: str
+
+    @property
+    def exited(self) -> bool:
+        return self.state.startswith("Z")
 
 
 def _proc_root() -> Path | None:
@@ -60,20 +75,65 @@ def _ps_pid_live(pid: int) -> bool | None:
     return any(not line.strip().startswith("Z") for line in lines)
 
 
+def _proc_processes(proc: Path) -> list[ProcessInfo] | None:
+    """One procfs process-table snapshot, or None when procfs cannot be inspected."""
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return None
+    processes: list[ProcessInfo] = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            # ``comm`` is parenthesized and may itself contain a closing parenthesis.
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            processes.append(ProcessInfo(
+                pid=int(entry.name), state=fields[0], ppid=int(fields[1]), pgid=int(fields[2]),
+            ))
+        except (OSError, ValueError, IndexError):
+            continue
+    return processes
+
+
+def _ps_processes() -> list[ProcessInfo] | None:
+    """One process-table snapshot using options shared by BSD and procps ``ps``."""
+    lines = _ps_lines("-A", "-o", "pid=,ppid=,pgid=,stat=")
+    if lines is None:
+        return None
+    processes: list[ProcessInfo] = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        try:
+            processes.append(ProcessInfo(
+                pid=int(fields[0]), ppid=int(fields[1]), pgid=int(fields[2]), state=fields[3],
+            ))
+        except ValueError:
+            continue
+    return processes
+
+
+def process_snapshot() -> list[ProcessInfo]:
+    """Processes visible to this user, with procfs preferred and ``ps`` as the fallback."""
+    proc = _proc_root()
+    processes = _proc_processes(proc) if proc is not None else None
+    if processes is None:
+        processes = _ps_processes()
+    return processes or []
+
+
 def _ps_group_live(pgid: int) -> bool | None:
     """Whether ``ps`` sees a non-exited member of process group *pgid*; None when it cannot.
 
     Every process is listed and filtered here rather than selected with ``ps -g``, whose
     meaning is not the same on BSD (process group) as it is with procps (session).
     """
-    lines = _ps_lines("-A", "-o", "pgid=,stat=")
-    if lines is None:
+    processes = _ps_processes()
+    if processes is None:
         return None
-    for line in lines:
-        fields = line.split(None, 1)
-        if len(fields) == 2 and fields[0] == str(pgid) and not fields[1].strip().startswith("Z"):
-            return True
-    return False
+    return any(process.pgid == pgid and not process.exited for process in processes)
 
 
 def pid_alive(pid: int) -> bool:
@@ -103,26 +163,19 @@ def process_group_alive(pgid: int) -> bool:
     """Whether any process that has not yet exited remains in process group *pgid*."""
     proc = _proc_root()
     if proc is not None:
-        try:
-            for entry in proc.iterdir():
-                if not entry.name.isdigit():
-                    continue
-                fields = (entry / "stat").read_text().split(")", 1)[1].split()
-                if len(fields) > 2 and int(fields[2]) == pgid and fields[0] != "Z":
-                    return True
-            return False
-        except (OSError, ValueError):
-            pass
+        processes = _proc_processes(proc)
+        if processes is not None:
+            return any(process.pgid == pgid and not process.exited for process in processes)
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return False  # No such group: every member has exited and been reaped.
     except PermissionError:
-        # Darwin answers EPERM both for a group holding only an unreaped zombie and for a
-        # live group owned by another user. Only a state read tells the two apart.
-        live = _ps_group_live(pgid)
-        return True if live is None else live
-    return True  # A signal reached a member, so at least one member can still receive one.
+        pass
+    # BSD kernels may report either success or EPERM for a group whose only members are
+    # unreaped zombies. In both cases only the process-state snapshot settles liveness.
+    live = _ps_group_live(pgid)
+    return True if live is None else live
 
 
 def _proc_children(pid: int, proc: Path) -> list[int]:
@@ -137,16 +190,17 @@ def _proc_children(pid: int, proc: Path) -> list[int]:
 def _ps_children() -> dict[int, list[int]]:
     """A parent-pid to direct-children map covering every process ``ps`` can see."""
     tree: dict[int, list[int]] = {}
-    for line in _ps_lines("-A", "-o", "pid=,ppid=") or []:
-        fields = line.split()
-        if len(fields) < 2:
-            continue
-        try:
-            child, parent = int(fields[0]), int(fields[1])
-        except ValueError:
-            continue
-        tree.setdefault(parent, []).append(child)
+    for process in _ps_processes() or []:
+        tree.setdefault(process.ppid, []).append(process.pid)
     return tree
+
+
+def direct_children(pid: int) -> list[int]:
+    """Direct children of *pid* from procfs or a portable process-table snapshot."""
+    proc = _proc_root()
+    if proc is not None:
+        return _proc_children(pid, proc)
+    return _ps_children().get(pid, [])
 
 
 def descendants(pid: int) -> list[int]:

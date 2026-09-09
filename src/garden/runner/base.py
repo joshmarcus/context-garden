@@ -6,12 +6,14 @@ import hashlib
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 from ..harness import Harness
+from ..proctree import descendants
 from ..runs import Run
 
 
@@ -50,7 +52,7 @@ PASS_ENV: tuple[str, ...] = (
 
 
 def _no_fsmonitor_env() -> dict[str, str]:
-    """Force `core.fsmonitor` off for every `git` a worker or a check runs.
+    """Disable persistent Git background helpers for a worker or check.
 
     A machine-wide `core.fsmonitor` makes git start `git fsmonitor--daemon` the first time it
     reads the index in a worktree. That daemon detaches from its caller but keeps the run's
@@ -62,8 +64,11 @@ def _no_fsmonitor_env() -> dict[str, str]:
     which is the same reason `gitops._git_env` forces it off scheduler-side. The isolated HOME
     means an operator's own `core.fsmonitor false` is not inherited, so it is set here rather
     than assumed."""
-    return {"GIT_CONFIG_COUNT": "1",
-            "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false"}
+    return {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "maintenance.auto", "GIT_CONFIG_VALUE_1": "0",
+    }
 
 
 def pass_env_patterns(config: dict[str, Any] | None) -> list[str]:
@@ -300,7 +305,7 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
         env.setdefault(str(k), str(v))
-    timeout = int((setup or {}).get("timeout_seconds") or 600)
+    timeout = float((setup or {}).get("timeout_seconds") or 600)
     lock_path = marker.with_suffix(marker.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a") as setup_lock:
@@ -314,13 +319,22 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         temp_marker = marker.with_suffix(marker.suffix + ".tmp")
         wrapped = (f"({command}) && printf %s {shlex.quote(stamp)} > {shlex.quote(str(temp_marker))} "
                    f"&& mv {shlex.quote(str(temp_marker))} {shlex.quote(str(marker))}")
+        proc = subprocess.Popen(
+            wrapped, shell=True, cwd=str(worktree), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            pass_fds=(setup_lock.fileno(),), start_new_session=True,
+        )
         try:
-            proc = subprocess.run(wrapped, shell=True, cwd=str(worktree), env=env,
-                                  capture_output=True, text=True, timeout=timeout, check=False,
-                                  pass_fds=(setup_lock.fileno(),))
-        except subprocess.TimeoutExpired as e:
-            raise RunnerError(f"setup command timed out after {timeout}s: {command}") from e
-    out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _signal_process_tree(proc.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                _signal_process_tree(proc.pid, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
+            raise RunnerError(f"setup command timed out after {timeout:g}s: {command}") from exc
+    out = ((stdout or "") + "\n" + (stderr or "")).strip()
     if log_path is not None:
         try:
             log_path.write_text(out)
@@ -332,6 +346,19 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
             f"setup command failed (exit {proc.returncode}): {command}\n{tail}",
             returncode=proc.returncode,
         )
+
+
+def _signal_process_tree(leader_pgid: int, sig: int) -> None:
+    """Signal session-escaping descendants before their parent process group."""
+    for pid in reversed(descendants(leader_pgid)):
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        os.killpg(leader_pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 class Runner(ABC):

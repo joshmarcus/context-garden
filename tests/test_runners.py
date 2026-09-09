@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from garden.model import Status
+from garden.proctree import descendants, pid_alive, process_snapshot
 from garden.runner.local import LocalRunner
 from garden.runner.manual import ManualRunner
 from garden.runs import Run
@@ -43,22 +44,12 @@ def _synthetic_child_env(
 
 def _local_process_snapshot(pgid: int) -> list[dict[str, object]]:
     """Describe the owned local-run group for a bounded-test failure message."""
-    processes: list[dict[str, object]] = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            fields = (entry / "stat").read_text().split(")", 1)[1].split()
-            if len(fields) <= 2 or int(fields[2]) != pgid:
-                continue
-            processes.append({
-                "pid": int(entry.name),
-                "state": fields[0],
-                "stdin": os.readlink(entry / "fd" / "0"),
-            })
-        except (OSError, ValueError, IndexError):
-            continue
-    return processes
+    owned = {pgid, *descendants(pgid)}
+    return [
+        {"pid": process.pid, "ppid": process.ppid, "pgid": process.pgid,
+         "state": process.state}
+        for process in process_snapshot() if process.pid in owned
+    ]
 
 
 def _stop_and_reap_local_run(run: Run) -> None:
@@ -141,16 +132,15 @@ def _wait_for_local_run(run: Run, *, timeout: float = 3.0) -> None:
         _stop_and_reap_local_run(run)
 
 
-def _wait_for_local_stdin_owner(run, brief: Path, *, timeout: float = 1.0) -> None:
-    """Confirm the harness group, not the detached supervisor, owns the brief fd."""
+def _wait_for_local_harness_child(run, *, timeout: float = 1.0) -> None:
+    """Confirm the detached supervisor launched its harness before the test continues."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        processes = _local_process_snapshot(run.pid)
-        if any(process["stdin"] == str(brief) for process in processes):
+        if descendants(run.pid):
             return
         time.sleep(0.01)
     pytest.fail(
-        f"brief stdin was not owned by a live local-run child "
+        f"local-run harness did not start "
         f"(interpreter={sys.executable}, pid={run.pid}, group={_local_process_snapshot(run.pid)})"
     )
 
@@ -416,7 +406,33 @@ def test_local_runner_preserves_fractional_timeout_minutes(tmp_path):
     ))
     os.waitpid(run.pid, 0)
 
-    assert "timeout 30 " in (run.path / "command.txt").read_text()
+    assert run.read_exit_code() == 0
+    execution = json.loads((run.path / "execution.json").read_text())
+    assert execution["timeout_seconds"] == 30
+    assert execution["timeout_kind"] == "worker"
+    assert "timeout 30 " not in (run.path / "command.txt").read_text()
+
+
+def test_local_runner_enforces_timeout_without_a_shell_timeout_utility(tmp_path):
+    """The Python supervisor, not an optional GNU command, owns the worker deadline."""
+    from garden.harness import Harness
+
+    runner = LocalRunner({"timeout_minutes": 0.005}, Harness("tiny", {"command": ["sleep", "30"]}))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    brief.write_text("")
+    run = Run(task_id="T-1", run_id="bounded", dir=str(run_dir), runner="local")
+
+    runner.launch(run, tmp_path, brief, _synthetic_child_env(
+        GARDEN_HEAVY_TEST_PARALLEL="1", XDG_RUNTIME_DIR=str(tmp_path),
+    ))
+    _wait_for_local_run(run)
+
+    assert run.read_exit_code() == 124
+    timeout = json.loads((run.path / "execution_timeout.json").read_text())
+    assert timeout["kind"] == "worker_execution_timeout"
+    assert timeout["reason"] == "worker execution exceeded 0.3 seconds"
 
 
 def test_local_runner_harness_shell_resolves_bin(tmp_path):
@@ -481,7 +497,7 @@ def test_local_runner_launch_flips_process_finished(tmp_path):
     with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
         assert run.pid is not None and run.harness == "tiny"
         assert not run.process_finished()  # still sleeping: pid alive, exit_code not written yet
-        _wait_for_local_stdin_owner(run, brief)
+        _wait_for_local_harness_child(run)
         _wait_for_local_run(run)
         assert (d / "exit_code").read_text().strip() == "0"
         assert "hello from the brief" in (d / "stdout.json").read_text()
@@ -520,7 +536,7 @@ def test_local_runner_cancellation_stops_a_stdin_consumer(tmp_path):
 
     with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
         assert not run.process_finished()
-        _wait_for_local_stdin_owner(run, brief)
+        _wait_for_local_harness_child(run)
         assert run.stop(timeout=2.0)
         _wait_for_local_run(run)
         assert run.read_exit_code() in (-signal.SIGTERM, 143)
@@ -540,7 +556,7 @@ def test_local_runner_lifecycle_fixture_reaps_after_an_early_assertion(tmp_path)
 
     with pytest.raises(AssertionError, match="intentional fixture failure"):
         with _launched_local_run(runner, run, tmp_path, brief, dict(os.environ)):
-            _wait_for_local_stdin_owner(run, brief)
+            _wait_for_local_harness_child(run)
             raise AssertionError("intentional fixture failure")
 
     assert run.process_finished()
@@ -548,6 +564,7 @@ def test_local_runner_lifecycle_fixture_reaps_after_an_early_assertion(tmp_path)
         os.waitpid(run.pid, os.WNOHANG)
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="requires Linux subreaper semantics")
 def test_local_runner_owns_daemonized_descendants_until_they_exit(tmp_path):
     """A child in a new session still keeps its run active through the subreaper."""
     from garden.harness import Harness
@@ -762,8 +779,17 @@ def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
     from garden.harness import Harness
     from garden.runs import Run
 
+    release = tmp_path / "release-pytest"
     target = tmp_path / "test_bounded_target.py"
-    target.write_text("import time\n\ndef test_bounded_workload():\n    time.sleep(0.25)\n")
+    target.write_text(
+        "import os, time\nfrom pathlib import Path\n\n"
+        "def test_bounded_workload():\n"
+        "    release = Path(os.environ['TEST_RELEASE'])\n"
+        "    deadline = time.monotonic() + 5\n"
+        "    while not release.exists() and time.monotonic() < deadline:\n"
+        "        time.sleep(0.01)\n"
+        "    assert release.exists()\n"
+    )
     command = [sys.executable, "-m", "pytest", str(target), "-q"]
     runner = LocalRunner({"timeout_minutes": 1}, Harness("focused-pytest", {"command": command}))
     runs = []
@@ -775,7 +801,7 @@ def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
         run = Run(task_id=f"T-{number}", run_id=f"pytest-{number}", dir=str(run_dir), runner="local")
         runner.launch(run, tmp_path, brief, _synthetic_child_env(
             GARDEN_HEAVY_TEST_PARALLEL="1", XDG_RUNTIME_DIR=str(tmp_path),
-            GARDEN_HEAVY_EXECUTION="1", GARDEN_EXECUTION_CGROUP="",
+            GARDEN_HEAVY_EXECUTION="1", GARDEN_EXECUTION_CGROUP="", TEST_RELEASE=str(release),
         ))
         runs.append(run)
 
@@ -788,6 +814,7 @@ def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
         if observed == {"running", "waiting"}:
             break
         time.sleep(0.01)
+    release.touch()
     assert observed == {"running", "waiting"}
     running = next(run for run in runs
                    if json.loads((run.path / "execution.json").read_text())["state"] == "running")
@@ -860,7 +887,7 @@ def test_validation_execution_timeout_kills_adopted_child_and_releases_slot(tmp_
         "  with progress.open('a') as output: output.write('still running\\n')\n"
         "  time.sleep(0.03)\n"
         " os._exit(0)\n"
-        "os._exit(0)\n"
+        "while True: time.sleep(1)\n"
     )
     run_dir = tmp_path / "timed"
     run_dir.mkdir()
@@ -880,7 +907,7 @@ def test_validation_execution_timeout_kills_adopted_child_and_releases_slot(tmp_
     assert timeout["kind"] == "validation_execution_timeout"
     assert timeout["timeout_seconds"] == 0.25 and timeout["exit_code"] == 124
     assert execution["state"] == "timeout" and execution["reason"] == timeout["reason"]
-    assert child_pid.exists() and not Path(f"/proc/{child_pid.read_text()}").exists()
+    assert child_pid.exists() and not pid_alive(int(child_pid.read_text()))
     assert progress.read_text().count("still running") >= 2  # output never resets the fixed clock
 
     # The parent pytest/model process is still executing, and the kernel lock was released.
@@ -1091,6 +1118,18 @@ def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, 
         supervisor._authoritative_limit(1)
 
 
+def test_runtime_leases_accept_the_system_tmp_directory(monkeypatch):
+    """Linux's /tmp directory and Darwin's root-owned /tmp symlink are both safe fallbacks."""
+    import garden.run_supervisor as supervisor
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    root = supervisor._private_runtime_dir()
+
+    assert root.parent == Path("/tmp").resolve()
+    assert root.name == f"garden-{os.getuid()}"
+    assert root.stat().st_mode & 0o777 == 0o700
+
+
 @pytest.mark.parametrize("name", [
     "garden-heavy-test-{uid}-capacity.json",
     "garden-heavy-test-{uid}-capacity.lock",
@@ -1109,11 +1148,27 @@ def test_safe_runtime_file_rejects_foreign_and_nonregular_fstat_results(tmp_path
     expected_name = name.format(uid=os.getuid())
     real_fstat = supervisor.os.fstat
 
+    def answering_for_the_expected_file(**unsafe):
+        """An `fstat` that reports *unsafe* for the descriptor open on the expected file.
+
+        The descriptor is recognised by the inode it is open on, rather than by a
+        `/proc/self/fd` readlink, so the substitution works wherever the suite runs.
+        """
+        def fstat(fd):
+            truth = real_fstat(fd)
+            try:
+                target = os.stat(root / expected_name)
+            except OSError:
+                return truth
+            if (truth.st_dev, truth.st_ino) != (target.st_dev, target.st_ino):
+                return truth
+            return type("UnsafeStat", (), unsafe)()
+        return fstat
+
     monkeypatch.setattr(
         supervisor.os,
         "fstat",
-        lambda fd: type("UnsafeStat", (), {"st_uid": os.getuid() + 1, "st_mode": stat.S_IFREG | 0o600})()
-        if expected_name in os.readlink(f"/proc/self/fd/{fd}") else real_fstat(fd),
+        answering_for_the_expected_file(st_uid=os.getuid() + 1, st_mode=stat.S_IFREG | 0o600),
     )
     with pytest.raises(RuntimeError, match="not a user-owned regular file"):
         supervisor._safe_runtime_file(root, expected_name)
@@ -1121,8 +1176,7 @@ def test_safe_runtime_file_rejects_foreign_and_nonregular_fstat_results(tmp_path
     monkeypatch.setattr(
         supervisor.os,
         "fstat",
-        lambda fd: type("UnsafeStat", (), {"st_uid": os.getuid(), "st_mode": mode | 0o600})()
-        if expected_name in os.readlink(f"/proc/self/fd/{fd}") else real_fstat(fd),
+        answering_for_the_expected_file(st_uid=os.getuid(), st_mode=mode | 0o600),
     )
     with pytest.raises(RuntimeError, match="not a user-owned regular file"):
         supervisor._safe_runtime_file(root, expected_name)
@@ -1233,9 +1287,10 @@ def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
             GARDEN_HEAVY_EXECUTION="1",
         ))
         runs.append(run)
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 5
     while not all((r.path / "execution.json").exists() for r in runs) and time.monotonic() < deadline:
         time.sleep(0.01)
+    assert all((r.path / "execution.json").exists() for r in runs)
     waiting = next(r for r in runs if '"state": "waiting"' in (r.path / "execution.json").read_text())
     assert waiting.stop(timeout=2)
     assert waiting.read_exit_code() == 143
@@ -1297,7 +1352,10 @@ def test_ssh_runner_preserves_fractional_timeout_minutes(sched, fake_github):
     task.runner = "ssh"
     sched.store.save(task)
 
-    sched.tick()
+    # GNU timeout is an optional first line of defence for this controller-side SSH
+    # process. Exercise command construction without assuming the macOS host ships it.
+    with patch("garden.runner.ssh.shutil.which", return_value="/usr/bin/timeout"):
+        sched.tick()
 
     assert "timeout 30 " in (sched.runs.latest("DM-001").path / "command.txt").read_text()
 
@@ -1393,7 +1451,8 @@ def test_ssh_remote_worker_installs_only_named_config_file(sched, garden, fake_g
     }
     cfg["products"]["demo"]["setup"] = {
         "command": "test \"$(cat \"$HOME/.config/synthetic/tool.json\")\" = approved-tool-config "
-                   "&& test \"$(stat -c %a \"$HOME/.config/synthetic/tool.json\")\" = 600",
+                   "&& test \"$(LC_ALL=C ls -ld \"$HOME/.config/synthetic/tool.json\" | cut -c1-10)\" "
+                   "= -rw-------",
     }
     (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
     from garden.scheduler import Scheduler

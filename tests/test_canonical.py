@@ -141,9 +141,23 @@ def _wait_run(run) -> int:
     raise AssertionError("wrapped SSH run did not finish")
 
 
-def test_ssh_in_place_executes_reconciliation_and_recovers_named_stale_lease(garden, tmp_path):
+def test_ssh_in_place_executes_reconciliation_and_recovers_named_stale_lease(
+    garden, tmp_path, monkeypatch,
+):
     remote = _remote_clone(garden)
     tally = tmp_path / "remote-reconciled"
+    # The fake SSH host is this test machine, but the configured remote contract requires
+    # GNU timeout. Supply that remote prerequisite even when the controller is macOS.
+    fake_bin = tmp_path / "remote-bin"
+    fake_bin.mkdir()
+    timeout = fake_bin / "timeout"
+    timeout.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo 'timeout (test)'; exit 0; fi\n"
+        "shift\nexec \"$@\"\n"
+    )
+    timeout.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
     store = _enable(garden, (garden / "../repo").resolve(),
                     reconcile_command=f"echo run >> {tally}")
     scheduler = Scheduler(store)

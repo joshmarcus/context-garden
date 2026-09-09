@@ -1,4 +1,4 @@
-"""Own every descendant of one local run, including children that call ``setsid``."""
+"""Own one local run's process group and every descendant still attributable to it."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import IO
 
-from .proctree import descendants
+from .proctree import descendants, direct_children, process_group_alive
 
 
 def _finite_cgroup_limits(target: Path) -> tuple[bool, dict[str, str], str]:
@@ -66,20 +66,41 @@ def _private_runtime_dir() -> Path:
     """
     uid = os.getuid()
     raw = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(raw) if raw else Path("/tmp")
+    requested = Path(raw) if raw else Path("/tmp")
     try:
-        base_stat = base.lstat()
+        requested_stat = requested.lstat()
     except OSError as exc:
         raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
-    if not base.is_dir() or base.is_symlink():
-        raise RuntimeError("runtime directory is not a real directory")
     if raw:
-        if base_stat.st_uid != uid:
+        base = requested
+        if not base.is_dir() or base.is_symlink():
+            raise RuntimeError("runtime directory is not a real directory")
+        if requested_stat.st_uid != uid:
             raise RuntimeError("XDG_RUNTIME_DIR is not a user-owned directory")
-        if base_stat.st_mode & 0o077:
+        if requested_stat.st_mode & 0o077:
             raise RuntimeError("XDG_RUNTIME_DIR is not private (requires mode 0700)")
-    elif base_stat.st_uid != 0 or not base_stat.st_mode & stat.S_ISVTX:
-        raise RuntimeError("/tmp fallback is not a root-owned sticky directory")
+    else:
+        # Darwin exposes /tmp as a root-owned system symlink to /private/tmp. Following that
+        # one trusted link preserves the same root-owned sticky-directory boundary Linux uses;
+        # a symlink writable by this user remains forbidden.
+        if requested.is_symlink():
+            if requested_stat.st_uid != 0:
+                raise RuntimeError("/tmp fallback symlink is not root-owned")
+            try:
+                base = requested.resolve(strict=True)
+            except OSError as exc:
+                raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
+            try:
+                base_stat = base.stat()
+            except OSError as exc:
+                raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
+        else:
+            base = requested
+            base_stat = requested_stat
+        if not base.is_dir() or base.is_symlink():
+            raise RuntimeError("runtime directory is not a real directory")
+        if base_stat.st_uid != 0 or not base_stat.st_mode & stat.S_ISVTX:
+            raise RuntimeError("/tmp fallback is not a root-owned sticky directory")
     root = base / f"garden-{uid}"
     try:
         root.mkdir(mode=0o700, exist_ok=True)
@@ -101,14 +122,27 @@ def _safe_runtime_file(root: Path, name: str) -> IO[str]:
         directory_flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
         directory_flags |= os.O_NOFOLLOW
-    try:
+    def open_once() -> int:
         directory_fd = os.open(root, directory_flags)
-        fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
-    except OSError as exc:
-        raise RuntimeError(f"unsafe runtime file {name}: {exc}") from exc
-    finally:
-        if "directory_fd" in locals():
+        try:
+            return os.open(name, flags, 0o600, dir_fd=directory_fd)
+        finally:
             os.close(directory_fd)
+
+    # Darwin can transiently return ENOENT when two processes race to create the same
+    # O_NOFOLLOW file through openat. Retry only that result; a symlink, foreign owner or
+    # other unsafe condition still fails closed on the first observation.
+    for attempt in range(3):
+        try:
+            fd = open_once()
+            break
+        except FileNotFoundError as exc:
+            if attempt == 2:
+                raise RuntimeError(f"unsafe runtime file {name}: {exc}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"unsafe runtime file {name}: {exc}") from exc
+    else:  # pragma: no cover - the bounded loop either opens or raises above.
+        raise RuntimeError(f"unsafe runtime file {name}: unavailable")
     file_stat = os.fstat(fd)
     if file_stat.st_uid != os.getuid() or not stat.S_ISREG(file_stat.st_mode):
         os.close(fd)
@@ -318,12 +352,10 @@ def _adopted_children() -> list[int]:
     Only Linux reparents orphans here, and only Linux publishes the list; on every other
     platform this supervisor's sole child is the run leader, which ``Popen`` reaps.
     """
-    pid = os.getpid()
-    try:
-        text = Path(f"/proc/{pid}/task/{pid}/children").read_text()
-        return [int(value) for value in text.split()]
-    except (OSError, ValueError):
-        return []
+    # Only Linux enabled subreaper ownership above. On systems without it, asking ``ps``
+    # for our children would observe the short-lived ``ps`` probe itself and could make the
+    # drain loop self-sustaining.
+    return direct_children(os.getpid()) if sys.platform.startswith("linux") else []
 
 
 def _reap_exited_children(*, excluding: int | None = None) -> None:
@@ -342,12 +374,25 @@ def _reap_exited_children(*, excluding: int | None = None) -> None:
             pass
 
 
+def _signal_owned_processes(leader_pgid: int | None, sig: int) -> None:
+    """Signal the run leader's group plus descendants that created another session."""
+    # Snapshot and signal session-escaping descendants while their live parentage still
+    # identifies them. Killing the leader group first would reparent them on Darwin and lose
+    # the only portable ownership link before they received the signal.
+    _signal_descendants(sig)
+    if leader_pgid is not None:
+        try:
+            os.killpg(leader_pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 def _execution_timeout_seconds() -> float | None:
     """Return this supervisor's hard execution budget, when explicitly requested.
 
-    Ordinary worker supervisors retain their task-level timeout. ``garden.validation`` and
-    detached check launchers translate the configured validation budget into this private
-    supervisor input; model-session launchers do not.
+    Local workers, probes, detached checks and ``garden.validation`` all translate their
+    configured budget into this private supervisor input, avoiding a dependency on a
+    platform-specific shell utility.
     """
     raw = os.environ.get("GARDEN_EXECUTION_TIMEOUT_SECONDS", "").strip()
     if not raw:
@@ -376,6 +421,11 @@ def _preserved_child_fds() -> tuple[int, ...]:
     return tuple(dict.fromkeys(descriptors))
 
 
+def _execution_timeout_kind() -> str:
+    kind = os.environ.get("GARDEN_EXECUTION_TIMEOUT_KIND", "validation").strip().lower()
+    return kind if kind in {"validation", "worker", "probe"} else "execution"
+
+
 def _mark_execution_started(run_dir: Path, timeout_seconds: float | None) -> tuple[float, str]:
     """Publish one fixed execution-clock origin after admission has completed."""
     started_monotonic = time.monotonic()
@@ -389,6 +439,7 @@ def _mark_execution_started(run_dir: Path, timeout_seconds: float | None) -> tup
     status.update({
         "execution_started_at": started_at,
         "timeout_seconds": timeout_seconds,
+        "timeout_kind": _execution_timeout_kind(),
         "deadline_at": (
             dt.datetime.fromisoformat(started_at) + dt.timedelta(seconds=timeout_seconds)
         ).isoformat(),
@@ -404,16 +455,18 @@ def _record_execution_timeout(
 ) -> None:
     """Persist a timeout result before signalling this supervisor's descendants."""
     timed_out_at = dt.datetime.now(dt.UTC).isoformat()
+    timeout_kind = _execution_timeout_kind()
     result = {
-        "kind": "validation_execution_timeout",
+        "kind": f"{timeout_kind}_execution_timeout",
         "timeout_seconds": timeout_seconds,
         "execution_started_at": started_at,
         "timed_out_at": timed_out_at,
         "pid": os.getpid(),
         "exit_code": exit_code,
-        "reason": f"validation execution exceeded {timeout_seconds:g} seconds",
+        "reason": f"{timeout_kind} execution exceeded {timeout_seconds:g} seconds",
     }
-    (run_dir / "validation_timeout.json").write_text(json.dumps(result, indent=2))
+    receipt = "validation_timeout.json" if timeout_kind == "validation" else "execution_timeout.json"
+    (run_dir / receipt).write_text(json.dumps(result, indent=2))
     try:
         status = json.loads((run_dir / "execution.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -427,6 +480,8 @@ def _record_execution_timeout(
         "exit_code": exit_code,
     })
     _write_execution_state(run_dir, status)
+
+
 def _run_setup(run_dir: Path) -> bool:
     payload = run_dir / "setup_input.json"
     if not payload.exists():
@@ -453,11 +508,12 @@ def main() -> int:
     os.environ.setdefault("GARDEN_EXECUTION_RUN_DIR", str(run_dir.resolve()))
     os.environ.setdefault("GARDEN_VALIDATION_RUNNER", sys.executable)
     stopping = False
+    child: subprocess.Popen[bytes] | None = None
 
     def stop(_signum: int, _frame: object) -> None:
         nonlocal stopping
         stopping = True
-        _signal_descendants(signal.SIGTERM)
+        _signal_owned_processes(child.pid if child is not None else None, signal.SIGTERM)
 
     signal.signal(signal.SIGTERM, stop)
     try:
@@ -497,7 +553,15 @@ def main() -> int:
         return 2
     execution_started, execution_started_at = _mark_execution_started(run_dir, timeout_seconds)
     execution_deadline = execution_started + timeout_seconds if timeout_seconds is not None else None
-    child = subprocess.Popen(["sh", "-c", script], pass_fds=_preserved_child_fds())
+    # Keep the workload in a group separate from the supervisor. The supervisor can then
+    # signal and observe that whole group after its shell leader exits, on both Linux and
+    # Darwin, without signalling itself. Linux's subreaper additionally retains children
+    # that deliberately create another session; other POSIX kernels provide no equivalent.
+    child = subprocess.Popen(
+        ["sh", "-c", script],
+        pass_fds=_preserved_child_fds(),
+        start_new_session=True,
+    )
     kill_deadline = None
     timed_out = False
 
@@ -518,30 +582,26 @@ def main() -> int:
                 except OSError:
                     pass
             finally:
-                _signal_descendants(signal.SIGTERM)
+                _signal_owned_processes(child.pid, signal.SIGTERM)
             kill_deadline = now + 5.0
         elif timed_out and kill_deadline is not None and now >= kill_deadline:
-            _signal_descendants(signal.SIGKILL)
+            _signal_owned_processes(child.pid, signal.SIGKILL)
 
     while (code := child.poll()) is None:
         _reap_exited_children(excluding=child.pid)
         if stopping:
             kill_deadline = kill_deadline or time.monotonic() + 5.0
             if time.monotonic() >= kill_deadline:
-                _signal_descendants(signal.SIGKILL)
+                _signal_owned_processes(child.pid, signal.SIGKILL)
         enforce_deadline()
         time.sleep(0.05)
     deadline = time.monotonic() + 5.0 if stopping else None
-    while True:
-        try:
-            waited, _ = os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError:
-            break
-        if waited == 0:
-            if deadline is not None and time.monotonic() >= deadline:
-                _signal_descendants(signal.SIGKILL)
-            enforce_deadline()
-            time.sleep(0.05)
+    while process_group_alive(child.pid) or _adopted_children():
+        _reap_exited_children()
+        if deadline is not None and time.monotonic() >= deadline:
+            _signal_owned_processes(child.pid, signal.SIGKILL)
+        enforce_deadline()
+        time.sleep(0.05)
     if timed_out:
         code = 124
     (run_dir / "exit_code").write_text(str(code))

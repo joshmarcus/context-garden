@@ -106,8 +106,13 @@ class LocalRunner(Runner):
         d = run.path
         inner = self.harness_shell(run, worktree, d / "final.md")
         timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
-        if timeout_min and shutil.which("timeout"):
-            inner = f"timeout {timeout_min * 60:g} {inner}"
+        env = dict(env)
+        if timeout_min:
+            # GNU ``timeout`` is not part of macOS. The Python supervisor owns the same
+            # monotonic deadline on every supported POSIX host and can terminate the whole
+            # process tree rather than only the shell leader.
+            env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{timeout_min * 60:g}"
+            env["GARDEN_EXECUTION_TIMEOUT_KIND"] = "worker"
         script = (
             f"cd {shlex.quote(str(worktree))} && {inner} "
             f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "
@@ -134,6 +139,7 @@ class LocalRunner(Runner):
         env["GARDEN_HEAVY_EXECUTION"] = "1"
         execution_timeout = bounded_validation_timeout_seconds(env.get("GARDEN_VALIDATION_TIMEOUT_SECONDS"))
         env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{execution_timeout:g}"
+        env["GARDEN_EXECUTION_TIMEOUT_KIND"] = "validation"
         if env.get("TMPDIR"):
             payload = {**payload, "temp_dir": env["TMPDIR"]}
         (d / "checks_input.json").write_text(json.dumps(payload))
@@ -196,6 +202,8 @@ class LocalRunner(Runner):
                 "GARDEN_EXECUTION_CGROUP": str(
                     self.config.get("resources", {}).get("execution_cgroup", "") or ""
                 ),
+                "GARDEN_EXECUTION_TIMEOUT_SECONDS": "90",
+                "GARDEN_EXECUTION_TIMEOUT_KIND": "probe",
             }
             subprocess.run(
                 [sys.executable, "-m", "garden.run_supervisor", str(run_dir), script],
