@@ -372,7 +372,7 @@ class GitHub:
             return "PENDING", [f"GitHub status unavailable; rate limit resets in {wait}s"]
         try:
             if self.gh:
-                payload = json.loads(self._gh(
+                checks_payload = json.loads(self._gh(
                     "api", f"repos/{slug}/commits/{sha}/check-runs", "-X", "GET",
                     "-f", "per_page=100",
                 ) or "{}")
