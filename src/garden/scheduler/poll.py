@@ -238,6 +238,17 @@ class PollMixin:
             self._transition(task, Status.AWAITING_TRIAGE, "converted back to draft on GitHub")
             rep.transitions.append(f"{task.id} -> awaiting_triage")
         if task.status == Status.CHANGES_REQUESTED:
+            deferred = st.get("deferred_ci_check")
+            if deferred and not phase_refusal(self.store.phase(task.product, task.phase), task):
+                st.pop("deferred_ci_check", None)
+                st["ci_failed_at"] = pr.updated_at
+                self._dispatch_check_run(
+                    task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
+                    base=self.base_for(task), specs=list(deferred["specs"]), stage="ci", rep=rep,
+                    cont={"ci_note": str(deferred["ci_note"]), "head": str(deferred["head"])},
+                    extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1},
+                )
+                return
             return  # already waiting for a revise slot (or a human)
         if pr.mergeable == "CONFLICTING":
             self._handle_pr_conflict(task, rep)
@@ -253,18 +264,25 @@ class PollMixin:
         ci_note = ""
         ci_identity = f"{pr.head_sha}:{pr.checks}"
         if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != ci_identity:
-            st["ci_failed_at"] = ci_identity
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
+            phase_hold = phase_refusal(self.store.phase(task.product, task.phase), task)
+            if specs and phase_hold:
+                # Keep the CI facts and route the feedback into the held task, but do not
+                # spend a detached analyser run until the phase is released.
+                st["deferred_ci_check"] = {"specs": specs, "ci_note": ci_note, "head": pr.head_sha}
+            else:
+                st["ci_failed_at"] = ci_identity
             if specs:
                 # The CI analyser runs as a detached check run, reaped a tick later (CG-182): the
                 # tick never runs it in-process. The continuation (`_after_ci_check`) combines its
                 # verdict with the GitHub feedback and starts (or reruns instead of) a revise round.
-                self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
-                                         base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
-                                         extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
-                return
+                if not phase_hold:
+                    self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
+                                             base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
+                                             extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
+                    return
         fb = observed_feedback if observed_feedback is not None else self.github.feedback_since(slug, number, task.last_dispatched_at)
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)

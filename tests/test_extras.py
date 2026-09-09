@@ -209,6 +209,29 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     assert "failed checks: build" in brief and "test_x.py::test_y" in brief
 
 
+def test_frozen_pr_defers_ci_analysis_until_the_phase_unfreezes(sched, fake_github):
+    """A CI failure remains recorded while frozen, without starting its detached analyser."""
+    from tests.conftest import write
+
+    sched.cfg.data["checks"] = {"pre_pr": [], "ci": [{"name": "plugin", "python": "tests.ci_plugin:analyse"}]}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs[task.branch]
+    pr.updated_at, pr.checks, pr.failed_checks = "ci-failure", "FAILURE", ["build"]
+    write(sched.store.root / "demo" / "p1" / "goals.md", "---\nfrozen: '2026-09-01'\n---\n\n# p1\n\nShip it.\n")
+    sched.store.invalidate()
+
+    sched.tick()
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
+    assert sched.state.get(task.id)["deferred_ci_check"]["head"] == pr.head_sha
+
+    write(sched.store.root / "demo" / "p1" / "goals.md", "# p1\n\nShip it.\n")
+    sched.store.invalidate()
+    rep = sched.tick()
+    assert f"{task.id}(check:ci)" in rep.dispatched
+
+
 # ---- trials -------------------------------------------------------------------
 def test_parse_contender():
     assert parse_contender("claude:opus", "claude") == ("claude:opus", "claude", "opus")
