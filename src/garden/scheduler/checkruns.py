@@ -427,6 +427,11 @@ class CheckRunMixin:
             return True
         for index, result in enumerate(results):
             summary = str(result.get("summary") or "")
+            if (str(result.get("name") or "") == "setup"
+                    and str(result.get("status") or "") not in ("pass", "passed", "done")):
+                # Setup runs before every check spec.  Its failure is infrastructure/config
+                # evidence, never a verdict about the candidate or the probed base.
+                return True
             if ("check did not finish (killed" in summary
                     or "check run produced no results" in summary
                     or "check execution timed out" in summary

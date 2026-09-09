@@ -16,7 +16,9 @@ from ..runs import Run
 
 
 class RunnerError(Exception):
-    pass
+    def __init__(self, message: str, *, returncode: int | None = None):
+        super().__init__(message)
+        self.returncode = returncode
 
 
 def run_temp_dir(work_dir: Path | str, run: Run) -> Path:
@@ -308,7 +310,10 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
             pass
     if proc.returncode != 0:
         tail = "\n".join(out.splitlines()[-40:])
-        raise RunnerError(f"setup command failed (exit {proc.returncode}): {command}\n{tail}")
+        raise RunnerError(
+            f"setup command failed (exit {proc.returncode}): {command}\n{tail}",
+            returncode=proc.returncode,
+        )
 
 
 class Runner(ABC):
