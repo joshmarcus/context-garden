@@ -36,7 +36,7 @@
 {% if owner_filter is not none and not owner_task_items %}<div class="inbox-zero"><b>No work assigned to {{ owner_filter or 'unassigned' }}</b>Task cards for other owners are hidden by this filter.</div>{% endif %}
 {% for group, gtitle, gdesc, gkind in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
 <section class="group {{ 'notice' if gkind == 'notice' else '' }}">
-  <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}{% if gkind == 'notice' %} · {{ gitems|length }}, no user decision{% endif %}</h2><p>{{ gdesc }}</p></header>
+  <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}{% if gkind == 'notice' %} · {{ gitems|length }}, no action needed{% endif %}</h2><p>{{ gdesc }}</p></header>
   {% for it in gitems %}
   <div class="item {{ 'q-open' if it.group == 'question' else '' }}">
     <div>{% if it.status %}{{ stage(it.status, 26) }}{% endif %}</div>

@@ -361,6 +361,9 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                        "clears this terminal check pointer and resumes pipeline progression without an implementation run"),
         })
     troubled = info["kind"] in ("troubled_task", "investigation", "investigation_report")
+    if info["kind"] == "revision_cap" and not delegated:
+        owner = "you"
+        recommendation = "Authorize one more bounded revision"
     if stale_check_stop:
         category, owner, recommendation = "Stale bookkeeping", "operator", "Clear the resolved stop"
         actions.append({"label": "Clear resolved stop", "kind": "recover-check",
@@ -409,6 +412,8 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                             "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
     elif not reviewer_owned and not delegated and not stale_check_stop and info["kind"] not in {"base_broken", "deployment"}:
         retry_label = "Send failure to the worker" if info["kind"] == "worker_failed" else "Send outstanding work to a worker"
+        if info["kind"] == "revision_cap":
+            retry_label = "Authorize one more revision"
         actions.append({"label": retry_label, "kind": "retry", "command": f"garden retry {t.id}",
                         "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
