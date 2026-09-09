@@ -676,10 +676,10 @@ def test_exact_head_check_reads_are_coalesced_and_refresh(monkeypatch):
     monkeypatch.setattr("garden.github.time.time", lambda: clock[0])
     assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
     assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
-    assert len(calls) == 1
+    assert len(calls) == 2
     clock[0] += 11
     assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
-    assert len(calls) == 2
+    assert len(calls) == 4
 
 
 def test_rate_limited_check_read_is_pending_until_reset_then_recovers(monkeypatch):
@@ -702,7 +702,22 @@ def test_rate_limited_check_read_is_pending_until_reset_then_recovers(monkeypatc
     assert calls[0] == 1
     clock[0] = 121
     assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
-    assert calls[0] == 2
+    assert calls[0] == 3
+
+
+def test_exact_head_rollup_includes_commit_status_contexts(monkeypatch):
+    github = GitHub(use_gh=False, token="one")
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/check-runs"):
+            return {"check_runs": [{"name": "tests", "status": "completed",
+                                    "conclusion": "success"}]}
+        return {"statuses": [{"context": "external/deploy", "state": "failure"}]}
+
+    monkeypatch.setattr(github, "_rest", rest)
+    state, failures = github._checks_for_sha("team/repo", "abc")
+    assert state == "FAILURE"
+    assert failures == ["external/deploy"]
 
 
 @pytest.mark.parametrize("slug", [
