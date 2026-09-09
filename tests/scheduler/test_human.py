@@ -174,6 +174,30 @@ def test_manual_reservation_leaves_active_trial_contender_running(sched, monkeyp
         )
 
 
+def test_manual_reservation_refuses_new_and_replacement_trials(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    sched.reserve_manual(task)
+
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.start_trial(task, ["claude:sonnet", "claude:opus"])
+    assert sched.state.get(task.id).get("trial") is None
+
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/1"
+    sched.store.save(task)
+    sched.state.get(task.id)["trial"] = {"status": "done", "contenders": []}
+    monkeypatch.setattr(
+        sched, "_reset_trial", lambda *_args, **_kwargs: pytest.fail(
+            "Manual mode must reject --again before resetting the previous trial"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Manual mode"):
+        sched.start_trial(task, ["claude:sonnet", "claude:opus"], again=True)
+    assert task.status == Status.IN_REVIEW
+    assert task.pr == "https://example.com/pull/1"
+
+
 def test_manual_reservation_guards_every_new_task_run_kind(sched):
     task = sched.store.task("DM-001")
     task.branch = task.default_branch()
