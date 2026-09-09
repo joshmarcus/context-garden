@@ -14,7 +14,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.request
@@ -102,8 +101,7 @@ def tick(source: Path, fixture: Path, samples: int) -> dict[str, Any]:
 
 def archive_parent(destination: Path) -> None:
     archive = subprocess.check_output(["git", "archive", BASELINE_REVISION], cwd=ROOT)
-    with tarfile.open(fileobj=__import__("io").BytesIO(archive)) as files:
-        files.extractall(destination, filter="data")
+    subprocess.run(["tar", "-x"], cwd=destination, input=archive, check=True)
 
 
 def main() -> None:
