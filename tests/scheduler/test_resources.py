@@ -201,7 +201,10 @@ def test_unschedulable_weight_does_not_starve_feasible_local_work(sched, garden,
     monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: False)
     monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
     dispatched = []
-    monkeypatch.setattr(sched, "dispatch", lambda task, mode, runner: dispatched.append(task.id))
+    monkeypatch.setattr(
+        sched, "dispatch",
+        lambda task, mode, runner, **_route: dispatched.append(task.id),
+    )
 
     sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
 
