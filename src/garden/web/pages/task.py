@@ -142,7 +142,16 @@ def register(app: FastAPI, site: Site) -> None:
                 "blurb": "This example is captured for the walkthrough; it does not describe a live task decision.",
                 "final": "",
                 "evidence": [],
-                "attention": {"actions": [], "discuss": ""},
+                "attention": {
+                    "category": "Example",
+                    "effect": "No live task is affected.",
+                    "owner": "you",
+                    "recommendation": "Review the example card",
+                    "user_decision": True,
+                    "blockers": [],
+                    "actions": [],
+                    "discuss": "",
+                },
             }
 
         return templates.TemplateResponse(request, "task.html", ctx(
