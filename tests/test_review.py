@@ -1,11 +1,8 @@
 import hashlib
 import json
-import shlex
-from pathlib import Path
 
 import pytest
 
-from garden import interaction_replay
 from garden.brief import build_brief
 from garden.inbox import build_inbox
 from garden.model import Status
@@ -1574,124 +1571,8 @@ def test_review_after_stale_base_rebase_round_does_not_count_toward_review_cap(s
 
 
 def _review_after_completed_empty_replay(sched, task):
-    from garden import gitops
-
-    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
-                                task.branch or task.default_branch(), sched.base_for(task))
-    sched.state.get(task.id)["interaction_replay"] = {"head": gitops.head_sha(wt)}
+    """Compatibility helper for reviews that no longer require replay admission."""
     return sched.dispatch_review(task)
-
-
-def test_interaction_replay_defers_model_review_and_survives_collection(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    check = sched.dispatch_review(task)
-    assert check.mode == "check"
-    assert not sched.state.get(task.id).get("review_run")
-    assert sched.state.get(task.id).get("review_rounds", 0) == 0
-    # Repeated requests while the detached check owns the slot must reuse that run.
-    assert sched.dispatch_review(task).run_id == check.run_id
-    assert len([r for r in sched.runs.runs_for(task.id) if r.mode == "check"]) == 1
-    info = sched.state.get(task.id)["check_run"]
-    manifest = Path(info["cont"]["manifest"])
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text('{"fixture": "completed independently before reviewer"}')
-    (check.path / "checks.json").write_text(json.dumps([
-        {"name": "interaction replay", "status": "pass", "summary": "fixture"}]))
-    (check.path / "exit_code").write_text("0")
-    sched.state.save()
-    sched = Scheduler(Store(sched.store.root), github=sched.github)
-    task = sched.store.task(task.id)
-    assert sched.reap_check(task, TickReport())
-    digest = sched.state.get(task.id)["interaction_replay"]["digest"]
-    assert digest == hashlib.sha256(manifest.read_bytes()).hexdigest()
-    run = sched.dispatch_review(task)
-    assert run.mode == "review"
-    assert run.env_snapshot["interaction_replay_digest"] == digest
-    assert sched.state.get(task.id)["review_rounds"] == 1
-
-
-def test_interaction_replay_is_the_matching_current_validation_check(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "current-head")
-    task = sched.store.task("DM-001")
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    stale = sched.runs.new_run(task.id, "local", mode="check")
-    stale.status = "done"
-    stale.env_snapshot = {"validation_plan": validation_plan(
-        ["src/garden/review.py"], task.title, head="old-head")}
-    stale.save()
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks", lambda *_args: None)
-
-    replay = sched.dispatch_review(task)
-    assert replay.mode == "check"
-    assert replay.env_snapshot["validation_plan"]["head"] == "current-head"
-    info = sched.state.get(task.id)["check_run"]
-    manifest = Path(info["cont"]["manifest"])
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text('{"head":"current-head","events":[]}')
-    (replay.path / "checks.json").write_text(json.dumps([
-        {"name": "interaction replay", "status": "pass", "summary": "served journey passed"}]))
-    (replay.path / "exit_code").write_text("0")
-    assert sched.reap_check(task, TickReport())
-
-    review = sched.dispatch_review(task)
-    assert review.mode == "review"
-    assert review.env_snapshot["validation_plan"]["head"] == "current-head"
-    assert review.env_snapshot["validation_check_current"] is True
-
-
-def test_remote_authored_interaction_replay_stays_on_controller_and_records_ownership(sched, monkeypatch):
-    """A replay command contains controller paths, so task runner inheritance is unsafe."""
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    task.runner = "remote"
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    submitted = []
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks",
-                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
-
-    check = sched.dispatch_review(task)
-
-    assert check.runner == "local"
-    assert check.env_snapshot["check_execution"] == {
-        "backend": "local", "provenance": "controller-owned replay inputs",
-    }
-    assert sched.state.get(task.id)["check_run"]["backend"] == "local"
-    command = submitted[0][1]["specs"][0]["command"]
-    assert str(sched.worktree_for(task)) in command
-    assert str(sched.cfg.garden_dir / "interaction-replays") in command
-
-
-@pytest.mark.parametrize("nonce", ["-leading", "--double-hyphen", "ordinary_urlsafe_value"])
-def test_interaction_replay_command_passes_option_like_nonce_as_a_value(sched, monkeypatch, nonce):
-    """CG-456: replay nonce identity reaches argparse even when it resembles an option."""
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    monkeypatch.setattr("garden.scheduler.review.secrets.token_urlsafe", lambda _size: nonce)
-    task = sched.store.task("DM-001")
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    submitted = []
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks",
-                        lambda _self, _run, _worktree, payload: submitted.append(payload))
-
-    sched.dispatch_review(task)
-
-    command = submitted[0]["specs"][0]["command"]
-    argv = shlex.split(command)
-    replay_argv = argv[argv.index("garden.interaction_replay") + 1:]
-    parsed = interaction_replay.parse_args(replay_argv)
-    assert parsed.nonce == nonce
-    continuation = sched.state.get(task.id)["check_run"]["cont"]
-    assert parsed.head == continuation["head"]
-    assert continuation["nonce"] == nonce
 
 
 def test_remote_authored_portable_check_remains_remote(sched):
