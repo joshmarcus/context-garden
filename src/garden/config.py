@@ -245,6 +245,8 @@ DEFAULTS: dict[str, Any] = {
     "github": {
         "use_gh": True,  # prefer the gh CLI when available, else REST with GITHUB_TOKEN
         "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
+        "project_users": [],      # additional PR authors shown in repository observations; the
+                                   # authenticated user is always included
         "reviewers": [],
         "trusted_authors": [],    # logins whose PR comments may become a worker prompt, besides the
                                   # garden's own login and `reviewers`; others are logged and ignored
@@ -411,6 +413,20 @@ class Config:
             "api_base": str(value.get("api_base") or value.get("api_url") or ""),
             "token_env": str(value.get("token_env") or ""),
         }
+
+    def product_project_users(self, name: str) -> list[str]:
+        """Additional PR authors whose open work is relevant to this product.
+
+        The authenticated GitHub user is always included by the provider. A product-level
+        list replaces the garden-wide default, including when it is deliberately empty.
+        This scope controls repository observation only; it does not trust those users'
+        comments as worker instructions.
+        """
+        value: Any = self.get("github.project_users", [])
+        product_github = self.product(name).get("github")
+        if isinstance(product_github, dict) and "project_users" in product_github:
+            value = product_github["project_users"]
+        return [str(user).strip() for user in value]
 
     def product_repo(self, name: str) -> Path | str:
         """A local path (resolved against root) or a URL for the product's code repo."""
@@ -638,6 +654,10 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
     capture_policy = review.get("capture_infrastructure_policy", "require")
     if capture_policy not in ("require", "advisory"):
         raise ValueError("review.capture_infrastructure_policy must be 'require' or 'advisory'")
+    github = data.get("github") or {}
+    if not isinstance(github, dict):
+        raise ValueError("github must be a mapping")
+    _validate_project_users(github.get("project_users", []), "github.project_users")
     products = data.get("products") or {}
     if not isinstance(products, dict):
         raise ValueError("products must be a mapping")
@@ -650,6 +670,11 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         paths = product.get("protected_paths", [])
         if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
             raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
+        product_github = product.get("github")
+        if isinstance(product_github, dict) and "project_users" in product_github:
+            _validate_project_users(
+                product_github["project_users"], f"products.{name}.github.project_users"
+            )
         validation = product.get("validation")
         if validation is not None:
             if isinstance(validation, str):
@@ -667,6 +692,13 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
                 raise ValueError(f"products.{name}.validation.command is required for the command provider")
             if provider != "command" and validation_command:
                 raise ValueError(f"products.{name}.validation.command is only valid with the command provider")
+
+
+def _validate_project_users(value: Any, dotted: str) -> None:
+    if not isinstance(value, list) or any(
+        not isinstance(user, str) or not user.strip() for user in value
+    ):
+        raise ValueError(f"{dotted} must be a list of non-empty GitHub logins")
 
 
 def find_root(start: Path | None = None) -> Path:

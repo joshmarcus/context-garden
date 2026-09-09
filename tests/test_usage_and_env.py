@@ -72,6 +72,7 @@ def test_enterprise_profile_keeps_human_gates_and_fixed_notification_recipient()
 
     assert profile["github"] == {
         "draft_pr": True,
+        "project_users": ["maintainer-two"],
         "trusted_bots": ["review-app[bot]"],
         "bot_notice_patterns": ["usage limit", "no issues", "looks good"],
         "automerge": False,

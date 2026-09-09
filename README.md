@@ -177,6 +177,7 @@ review:
   enabled: true
 github:
   draft_pr: true
+  project_users: [] # additional PR authors to observe; the authenticated user is always included
   automerge: false
   # Tier pools may spread work across harness/model members.
 models:

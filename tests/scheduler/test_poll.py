@@ -106,7 +106,9 @@ def test_repository_refresh_reuses_linked_pr_and_deduplicates_feedback_after_res
     fake_github.feedback[pr.number] = Feedback(items=[item])
     calls = {"list": 0, "get": 0}
     original_list, original_get = fake_github.list_open_prs, fake_github.get_pr
-    fake_github.list_open_prs = lambda slug: (calls.__setitem__("list", calls["list"] + 1) or original_list(slug))
+    fake_github.list_open_prs = lambda slug, users=None: (
+        calls.__setitem__("list", calls["list"] + 1) or original_list(slug, users)
+    )
     fake_github.get_pr = lambda slug, number: (calls.__setitem__("get", calls["get"] + 1) or original_get(slug, number))
 
     sched.tick()
@@ -119,6 +121,21 @@ def test_repository_refresh_reuses_linked_pr_and_deduplicates_feedback_after_res
     restarted = Scheduler(sched.store, github=fake_github)
     restarted.tick()
     assert restarted.state.get("DM-001")["revisions"] == 1
+
+
+def test_repository_refresh_passes_configured_project_users(sched, fake_github):
+    sched.cfg.data["github"]["project_users"] = ["maintainer"]
+    seen: list[list[str]] = []
+    original = fake_github.list_open_prs
+
+    def scoped(slug, project_users=None):
+        seen.append(list(project_users or []))
+        return original(slug, project_users)
+
+    fake_github.list_open_prs = scoped
+    sched.tick()
+
+    assert seen == [["maintainer"]]
 
 
 def test_first_observation_seeds_linked_pr_feedback_before_existing_cursor(sched, fake_github):
@@ -182,7 +199,7 @@ def test_open_pr_refresh_keeps_stale_rows_and_recovers_after_transient_error(sch
     )
     sched.tick()
     original = fake_github.list_open_prs
-    fake_github.list_open_prs = lambda slug: (_ for _ in ()).throw(
+    fake_github.list_open_prs = lambda slug, users=None: (_ for _ in ()).throw(
         GitHubError("temporary outage")
     )
     sched.tick()
@@ -202,7 +219,7 @@ def test_rate_limited_repository_refresh_backs_off(sched, fake_github):
     calls = {"list": 0, "get": 0}
     original_get = fake_github.get_pr
 
-    def limited(slug):
+    def limited(slug, users=None):
         calls["list"] += 1
         raise GitHubError("429 rate limit exceeded")
 

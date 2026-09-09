@@ -140,8 +140,13 @@ class MemoryGitHub:
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None:
         return self.prs.get(head_branch)
 
-    def list_open_prs(self, slug: str) -> list[PRInfo]:
-        return [self.get_pr(slug, pr.number) for pr in self.prs.values() if pr.state == "OPEN"]
+    def list_open_prs(self, slug: str, project_users: list[str] | None = None) -> list[PRInfo]:
+        authors = {self.me(), *(project_users or [])}
+        return [
+            self.get_pr(slug, pr.number)
+            for pr in self.prs.values()
+            if pr.state == "OPEN" and (pr.author or self.me()) in authors
+        ]
 
     def set_checks(self, branch: str, state: str, latency: int | None = None) -> None:
         """Arm a PR's checks rollup the way a push does on real GitHub: PENDING for `latency`
@@ -166,7 +171,7 @@ class MemoryGitHub:
                   reviewers: list[str] | None = None) -> PRInfo:
         self._n += 1
         pr = PRInfo(number=self._n, url=f"/qa/github/pull/{self._n}", state="OPEN", title=title, head=head, base=base,
-                    mergeable="MERGEABLE", updated_at=f"t{self._n}", body=body, is_draft=draft)
+                    mergeable="MERGEABLE", updated_at=f"t{self._n}", body=body, is_draft=draft, author=self.me())
         self.prs[head] = pr
         if self.check_latency > 0:  # a fresh push starts CI
             self.set_checks(head, "SUCCESS")

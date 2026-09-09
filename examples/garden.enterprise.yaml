@@ -4,6 +4,7 @@
 
 github:
   draft_pr: true                    # a person must triage each draft before review/merge
+  project_users: [maintainer-two]   # also observe this user's PRs; the current user is implicit
   trusted_bots: ["review-app[bot]"] # only this installed review bot may request a revision
   bot_notice_patterns: ["usage limit", "no issues", "looks good"]
   automerge: false                  # human approval and merge stay mandatory

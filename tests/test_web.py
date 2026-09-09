@@ -789,9 +789,9 @@ def test_board_prs_lists_open_linked_and_unlinked_prs(garden):
     listed_slugs = []
     original_list = github.list_open_prs
 
-    def list_open_prs(slug):
+    def list_open_prs(slug, project_users=None):
         listed_slugs.append(str(slug))
-        return original_list(slug)
+        return original_list(slug, project_users)
 
     github.list_open_prs = list_open_prs
     github.prs = {
@@ -834,7 +834,7 @@ def test_board_prs_handles_empty_and_github_errors(garden):
     app.state.hub.tick()
     assert "No open pull requests in demo." in c.get("/partials/board?view=prs").text
 
-    def unavailable(slug):
+    def unavailable(slug, project_users=None):
         raise GitHubError("authentication failed")
 
     github.list_open_prs = unavailable

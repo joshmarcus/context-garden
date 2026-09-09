@@ -71,6 +71,22 @@ def test_memory_open_pr_observation_advances_check_latency():
 
 
 @pytest.mark.parametrize("fake_cls", FAKES, ids=lambda c: c.__name__)
+def test_open_pr_observation_scopes_to_current_and_project_users(fake_cls):
+    gh = fake_cls()
+    own = gh.create_pr("o/r", "garden/own", "main", "Own", "body")
+    teammate = gh.create_pr("o/r", "garden/teammate", "main", "Teammate", "body")
+    teammate.author = "teammate"
+    outsider = gh.create_pr("o/r", "garden/outsider", "main", "Outsider", "body")
+    outsider.author = "outsider"
+
+    assert [pr.number for pr in gh.list_open_prs("o/r")] == [own.number]
+    assert {pr.number for pr in gh.list_open_prs("o/r", ["teammate"])} == {
+        own.number,
+        teammate.number,
+    }
+
+
+@pytest.mark.parametrize("fake_cls", FAKES, ids=lambda c: c.__name__)
 def test_draft_ready_and_close(fake_cls):
     gh = fake_cls()
     pr = gh.create_pr("o/r", "garden/draft", "main", "Draft", "body", draft=True)

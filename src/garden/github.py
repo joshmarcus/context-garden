@@ -57,6 +57,7 @@ class PRInfo:
     merge_commit_sha: str = ""
     is_draft: bool = False
     node_id: str = ""
+    author: str = ""
 
 
 @dataclass
@@ -242,7 +243,7 @@ class GitHubLike(Protocol):
     def me(self) -> str: ...
     def is_authenticated(self) -> bool: ...
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None: ...
-    def list_open_prs(self, slug: str) -> list[PRInfo]: ...
+    def list_open_prs(self, slug: str, project_users: list[str] | None = ...) -> list[PRInfo]: ...
     def get_pr(self, slug: str, number: int) -> PRInfo: ...
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str,
                   draft: bool = ..., reviewers: list[str] | None = ...) -> PRInfo: ...
@@ -420,52 +421,66 @@ class GitHub:
         prs.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
         return self._pr_from_rest(prs[0])
 
-    def list_open_prs(self, slug: str) -> list[PRInfo]:
-        """Return open pull requests with whatever review/check state is available.
+    def list_open_prs(self, slug: str, project_users: list[str] | None = None) -> list[PRInfo]:
+        """Return relevant open pull requests with review/check state when available.
 
-        REST's list endpoint omits those details, so enrich its rows independently. A
-        missing permission for one PR's review or check is represented by ``get_pr``;
-        failure to fetch the PR itself propagates so callers can retain stale facts.
+        Repository observations are scoped to the authenticated user plus configured
+        project users. This avoids a repository-wide scan in large shared repositories.
+        REST search results omit PR details, so enrich those rows independently. A missing
+        permission for one PR's review or check is represented by ``get_pr``; failure to
+        fetch the PR itself propagates so callers can retain stale facts.
         """
+        authors = {str(user).strip() for user in (project_users or []) if str(user).strip()}
+        current_user = self.me()
+        if current_user:
+            authors.add(current_user)
+        if not authors:
+            raise GitHubError("cannot scope open PRs: authenticated GitHub user is unknown and github.project_users is empty")
         if self.gh:
-            out = self._gh(
-                "pr", "list", "-R", self._repo(slug), "--state", "open",
-                "--json", "number,url,state,title,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,statusCheckRollup,updatedAt,isDraft",
-                "--limit", "1000",
-            )
-            return [
-                PRInfo(
-                    number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
-                    head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
-                    review_decision=p.get("reviewDecision") or "",
-                    mergeable=p.get("mergeable") or "", head_sha=p.get("headRefOid") or "",
-                    checks=_rollup_state(p.get("statusCheckRollup") or []),
-                    failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
-                    updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
+            rows: dict[int, PRInfo] = {}
+            for author in sorted(authors):
+                out = self._gh(
+                    "pr", "list", "-R", self._repo(slug), "--state", "open", "--author", author,
+                    "--json", "number,url,state,title,author,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,statusCheckRollup,updatedAt,isDraft",
+                    "--limit", "1000",
                 )
-                for p in json.loads(out or "[]")
-            ]
-        listed = []
-        page = 1
-        while True:
-            batch = self._rest(
-                "GET", f"/repos/{slug}/pulls", params={"state": "open", "per_page": 100, "page": page}
-            ) or []
-            listed.extend(batch)
-            if len(batch) < 100:
-                break
-            page += 1
-        result: list[PRInfo] = []
-        for item in listed:
-            basic = self._pr_from_rest(item)
-            result.append(self.get_pr(slug, basic.number))
-        return result
+                for p in json.loads(out or "[]"):
+                    rows[p["number"]] = PRInfo(
+                        number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
+                        head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
+                        review_decision=p.get("reviewDecision") or "",
+                        mergeable=p.get("mergeable") or "", head_sha=p.get("headRefOid") or "",
+                        checks=_rollup_state(p.get("statusCheckRollup") or []),
+                        failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
+                        updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
+                        author=str((p.get("author") or {}).get("login") or author),
+                    )
+            return sorted(rows.values(), key=lambda pr: pr.updated_at, reverse=True)
+        numbers: set[int] = set()
+        for author in sorted(authors):
+            page = 1
+            while True:
+                response = self._rest(
+                    "GET", "/search/issues",
+                    params={
+                        "q": f"repo:{slug} is:pr is:open author:{author}",
+                        "per_page": 100,
+                        "page": page,
+                    },
+                ) or {}
+                batch = response.get("items", [])
+                numbers.update(int(item["number"]) for item in batch)
+                if len(batch) < 100:
+                    break
+                page += 1
+        result = [self.get_pr(slug, number) for number in sorted(numbers)]
+        return sorted(result, key=lambda pr: pr.updated_at, reverse=True)
 
     def get_pr(self, slug: str, number: int) -> PRInfo:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
+                "--json", "number,url,state,title,body,author,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
             rollup = p.get("statusCheckRollup") or []
@@ -477,6 +492,7 @@ class GitHub:
                 body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
                 merge_commit_sha=(p.get("mergeCommit") or {}).get("oid", ""),
                 is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
+                author=str((p.get("author") or {}).get("login") or ""),
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
         info = self._pr_from_rest(p)
@@ -555,6 +571,7 @@ class GitHub:
             mergeable=("MERGEABLE" if p.get("mergeable") else "CONFLICTING")
             if p.get("mergeable") is not None else "",
             updated_at=p.get("updated_at", ""), is_draft=bool(p.get("draft")), node_id=str(p.get("node_id") or ""),
+            author=str((p.get("user") or {}).get("login") or ""),
         )
 
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str, draft: bool = False,

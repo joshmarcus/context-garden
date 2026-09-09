@@ -105,7 +105,7 @@ class PollMixin:
                 continue
             slug = RepositorySlug(route["slug"], route["host"])
             try:
-                prs = self.github.list_open_prs(slug)
+                prs = self.github.list_open_prs(slug, self.cfg.product_project_users(product))
                 old_rows = {int(row["number"]): row for row in prior.get("prs", [])}
                 rows = []
                 for pr in prs:

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from garden.github import (
     GitHub,
     GitHubError,
     GitHubRouter,
+    PRInfo,
     RepositorySlug,
     is_git_remote_url,
     pull_request_number,
@@ -419,20 +422,108 @@ def test_rest_pr_combines_commit_statuses_with_check_runs(monkeypatch):
 
 def test_rest_open_pr_list_propagates_pr_detail_failure(monkeypatch):
     github = GitHub(use_gh=False, token="scoped-token")
-    listed = [{
-        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
-        "state": "open", "head": {"ref": "feature"}, "base": {"ref": "main"},
-    }]
+    github._me = "operator"
 
     def rest(method, path, **kwargs):
-        if path == "/repos/team/repo/pulls":
-            return listed
+        if path == "/search/issues":
+            return {"items": [{"number": 7}]}
         raise GitHubError(f"GET {path}: 503 synthetic detail failure")
 
     monkeypatch.setattr(github, "_rest", rest)
 
     with pytest.raises(GitHubError, match="synthetic detail failure"):
         github.list_open_prs("team/repo")
+
+
+def test_gh_open_pr_list_queries_only_current_and_project_users(monkeypatch):
+    github = GitHub(use_gh=True)
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args, **kwargs):
+        if args[:2] == ("api", "user"):
+            return "operator\n"
+        calls.append(args)
+        author = args[args.index("--author") + 1]
+        number = 1 if author == "operator" else 2
+        return json.dumps([{
+            "number": number,
+            "url": f"https://github.com/team/repo/pull/{number}",
+            "state": "OPEN",
+            "title": author,
+            "author": {"login": author},
+            "updatedAt": f"2026-01-0{number}T00:00:00Z",
+        }])
+
+    monkeypatch.setattr(github, "_gh", gh)
+
+    prs = github.list_open_prs("team/repo", ["maintainer", "operator"])
+
+    assert [call[call.index("--author") + 1] for call in calls] == ["maintainer", "operator"]
+    assert [pr.author for pr in prs] == ["maintainer", "operator"]
+    assert all(call[call.index("--limit") + 1] == "1000" for call in calls)
+
+
+def test_rest_open_pr_list_searches_each_relevant_author_without_listing_repository(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    github._me = "operator"
+    searches: list[str] = []
+
+    def rest(method, path, **kwargs):
+        assert path == "/search/issues"
+        searches.append(kwargs["params"]["q"])
+        author = kwargs["params"]["q"].rsplit("author:", 1)[1]
+        return {"items": [{"number": 1 if author == "operator" else 2}]}
+
+    monkeypatch.setattr(github, "_rest", rest)
+    monkeypatch.setattr(
+        github,
+        "get_pr",
+        lambda slug, number: PRInfo(
+            number, f"https://github.com/{slug}/pull/{number}", "OPEN", updated_at=str(number)
+        ),
+    )
+
+    assert [pr.number for pr in github.list_open_prs("team/repo", ["maintainer"])] == [2, 1]
+    assert searches == [
+        "repo:team/repo is:pr is:open author:maintainer",
+        "repo:team/repo is:pr is:open author:operator",
+    ]
+
+
+def test_project_users_inherit_globally_and_allow_product_override(tmp_path):
+    from garden.config import Config
+
+    (tmp_path / "garden.yaml").write_text("""
+github:
+  project_users: [shared-maintainer]
+products:
+  inherited:
+    github: team/inherited
+  overridden:
+    github:
+      slug: team/overridden
+      project_users: [repo-maintainer]
+  current-only:
+    github:
+      slug: team/current-only
+      project_users: []
+""")
+
+    config = Config.load(tmp_path)
+    assert config.product_project_users("inherited") == ["shared-maintainer"]
+    assert config.product_project_users("overridden") == ["repo-maintainer"]
+    assert config.product_project_users("current-only") == []
+
+
+@pytest.mark.parametrize("value", ["maintainer", [""], [1]])
+def test_project_users_reject_invalid_values(tmp_path, value):
+    from garden.config import Config
+
+    (tmp_path / "garden.yaml").write_text(
+        "github:\n  project_users: " + json.dumps(value) + "\n"
+    )
+    with pytest.raises(ValueError, match="github.project_users"):
+        Config.load(tmp_path)
 
 
 @pytest.mark.parametrize("repo", [
