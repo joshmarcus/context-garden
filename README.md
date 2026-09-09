@@ -4,7 +4,7 @@
 
 You can change the direction of the project in the same place you define it. Each worker gets a focused brief built from the shared context, and each phase leaves evidence you can use to improve the next one: what shipped, where agents got stuck, how reviewers responded, and what the work cost.
 
-[Features](#what-you-can-do) · [See it in action](#feature-tour) · [Install](#install) · [First project](#your-first-project) · [Operating guide](docs/operations.md)
+[Features](#what-you-can-do) · [See it in action](#feature-tour) · [Install](#install) · [First project](#your-first-project) · [CLI](#use-the-cli) · [Operating guide](docs/operations.md)
 
 ![The development loop: maintain principles, product context, goals, and specs; plan and approve; build and check; review and merge. Feedback drives revisions, and retrospectives inform the next phase.](docs/development-loop.svg)
 
@@ -203,17 +203,25 @@ Follow the task's runs and evidence, answer any questions in the **Inbox**, and 
 
 From another terminal with the same environment active, run `garden status`, `garden inbox`, or `garden observe --profile quiet`. `garden watch` runs the scheduler without the web UI; `garden tui` opens the terminal interface.
 
-## Keep the loop running
+## Use the CLI
 
-| When you need to… | Start here |
-| --- | --- |
-| See what needs attention | `garden observe --profile quiet`, `garden inbox` |
-| Answer a worker | `garden answer ID "answer"` |
-| Inspect a stopped task | Its task page and runs; fix the cause, then `garden retry ID` |
-| Request another review | `garden review ID` |
-| Stop new work from dispatching | `garden pause`; resume with `garden unpause` |
-| Inspect spending | `garden costs --by model`, `garden usage`, `garden metrics` |
-| Work on a task interactively | `garden take --help`, `garden finish --help` |
+The CLI operates the same garden as the web UI and TUI. Inspect a plan, follow the workers, handle decisions, and compare outcomes from your terminal:
+
+```bash
+garden status
+garden observe --profile quiet
+garden inbox
+garden brief WID-003 --stats
+garden runs WID-003
+garden costs --since 24h --by model
+garden metrics widget/phase-01
+```
+
+Run commands from your garden directory with the installed environment active. Replace `WID-003` and `widget/phase-01` with your task and phase. `garden watch` runs the scheduler on its own; `garden observe --follow` follows progress alongside an existing controller. `garden --help` lists the command groups.
+
+The [CLI guide](docs/cli.md) walks through planning and approval, following runs, answering workers, reviewing PRs, recovering tasks, and exporting JSON for scripts.
+
+## Keep the loop running
 
 A dispatch pause still allows collection, checks, reviews, and merges. Installation maintenance uses a separate drain-and-resume protocol. Run one long-lived controller per garden and keep its UI on loopback or behind authenticated access.
 
@@ -223,6 +231,7 @@ The [operating guide](docs/operations.md) covers merge policy, capacity, remote 
 
 ## Development and documentation
 
+- [CLI guide](docs/cli.md): day-to-day commands, control modes, and scripting.
 - [Design](docs/design.md): vocabulary and the development loop.
 - [Architecture](docs/architecture.md): modules, state, scheduling, configuration, and merge policy.
 - [Worker protocol](docs/worker-protocol.md): briefs, results, transports, and failure recovery.
