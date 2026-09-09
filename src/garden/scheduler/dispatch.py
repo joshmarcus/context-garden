@@ -112,7 +112,10 @@ class DispatchMixin:
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
             if self.budget_exceeded(task):
                 continue
-            member = self.select_pool_member(task, task.difficulty)
+            # Admission may defer this task for several reasons below. Peek at its route so
+            # those deferrals do not consume a pool slot; commit the rotation only once the
+            # worker has actually started.
+            member = self.select_pool_member(task, task.difficulty, advance=False)
             runner = self.runner_for(task, harness_name=str(member["harness"]) if member else "")
             if not runner.detached:
                 continue  # manual tasks are taken by a human, not auto-dispatched
@@ -146,6 +149,8 @@ class DispatchMixin:
                 self.dispatch(task, mode=mode, runner=runner,
                               model_override=member["model"] if member is not None else None,
                               pool_member=(member or {}).get("label") or "")
+                if member is not None:
+                    self.select_pool_member(task, task.difficulty)
                 rep.dispatched.append(f"{task.id}({mode})")
                 if runner.name == "local":
                     self.state.get(task.id).pop("resource_bypasses", None)
