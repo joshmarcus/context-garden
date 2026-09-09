@@ -574,13 +574,29 @@ def test_empty_collected_check_parks_once_without_fabricating_success(sched):
 def test_only_a_generated_ui_check_treats_a_renderer_protocol_mismatch_as_recovery(sched):
     task = sched.store.task("DM-001")
     run = sched.runs.new_run(task.id, "local", mode="check")
-    result = {"name": "ui", "status": "error", "summary": "UI renderer protocol mismatch"}
+    result = {
+        "name": "ui", "status": "error", "summary": "UI renderer protocol mismatch",
+        "capture_infrastructure": {
+            "source": "garden.walkthrough:ui_check", "kind": "capture_protocol_mismatch",
+        },
+    }
 
     run.env_snapshot["generated_ui_check_indices"] = [0]
     assert sched._check_did_not_run(run, [result])
 
     run.env_snapshot["generated_ui_check_indices"] = []
     assert not sched._check_did_not_run(run, [result])
+
+
+def test_child_summary_cannot_turn_a_renderer_failure_into_recovery(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    child_result = {
+        "name": "ui", "status": "error", "summary": "UI renderer protocol mismatch",
+    }
+
+    run.env_snapshot["generated_ui_check_indices"] = [0]
+    assert not sched._check_did_not_run(run, [child_result])
 
 
 def test_auxiliary_reapers_do_not_dispatch_work_directly():

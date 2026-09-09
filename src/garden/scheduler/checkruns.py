@@ -347,10 +347,9 @@ class CheckRunMixin:
                     or "check execution timed out" in summary
                     or "check execution did not complete" in summary):
                 return True
-            # The branch controls ordinary check output, so only the scheduler-generated
-            # UI wrapper may classify this exact protocol handshake as interrupted.
-            if (summary == "UI renderer protocol mismatch"
-                    and CheckRunMixin._trusted_generated_ui_result(run, index)):
+            # The branch controls ordinary check output, so recovery requires both the
+            # generated wrapper position and its wrapper-authored protocol metadata.
+            if CheckRunMixin._trusted_capture_protocol_mismatch(run, result, index):
                 return True
         return False
 
@@ -361,6 +360,18 @@ class CheckRunMixin:
         return (isinstance(raw, list)
                 and index in {value for value in raw
                               if isinstance(value, int) and not isinstance(value, bool)})
+
+    @staticmethod
+    def _trusted_capture_protocol_mismatch(run: Run, result: dict[str, Any], index: int) -> bool:
+        """Whether the installed wrapper identified a legacy renderer handshake failure."""
+        infrastructure = result.get("capture_infrastructure")
+        return (
+            str(result.get("summary") or "") == "UI renderer protocol mismatch"
+            and CheckRunMixin._trusted_generated_ui_result(run, index)
+            and isinstance(infrastructure, dict)
+            and infrastructure.get("source") == "garden.walkthrough:ui_check"
+            and infrastructure.get("kind") == "capture_protocol_mismatch"
+        )
 
     @staticmethod
     def _capture_infrastructure_advisory(
