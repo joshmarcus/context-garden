@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -18,6 +19,7 @@ from garden.remote_worker import (
     WorkerRequestError,
     _host_check_data,
     _LeaseHeartbeat,
+    _wait_for_process,
     doctor_worker,
     execute_claim,
 )
@@ -798,6 +800,47 @@ def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
     now = heartbeat.recovery_deadline + 0.01
     with pytest.raises(ConnectionRefusedError, match="controller restarting"):
         heartbeat.ensure_current()
+
+
+def test_terminal_lease_loss_stops_supervised_process_tree(tmp_path):
+    execution_dir = tmp_path / "execution"
+    execution_dir.mkdir()
+    stopped = tmp_path / "stopped"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import signal, time\n"
+        "from pathlib import Path\n"
+        f"stopped = Path({str(stopped)!r})\n"
+        "def stop(*_args):\n"
+        "    stopped.write_text('stopped')\n"
+        "    raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "stopped.with_suffix('.ready').write_text('ready')\n"
+        "while True: time.sleep(0.1)\n"
+    )
+    execution_env = dict(os.environ)
+    for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
+                "GARDEN_HEAVY_EXECUTION", "GARDEN_OWNER_SCOPED"):
+        execution_env.pop(key, None)
+    proc = subprocess.Popen([
+        sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+        f"{sys.executable} {child}",
+    ], env=execution_env)
+    ready = stopped.with_suffix(".ready")
+    deadline = time.monotonic() + 5
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready.exists()
+    heartbeat = _LeaseHeartbeat({
+        "id": "obsolete", "lease_token": "replaced", "recovery_seconds": 1,
+    }, object())
+    heartbeat.failure = WorkerRequestError(409, "lease replaced")
+
+    with pytest.raises(RuntimeError, match="lease renewal failed"):
+        _wait_for_process(proc, heartbeat)
+
+    assert proc.poll() is not None
+    assert stopped.read_text() == "stopped"
 
 
 def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):

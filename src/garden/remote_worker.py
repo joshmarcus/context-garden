@@ -129,13 +129,16 @@ class _LeaseHeartbeat:
                 return
 
     def ensure_current(self) -> None:
-        if self.failure is not None:
-            raise RuntimeError(f"remote run lease renewal failed: {self.failure}") from self.failure
+        self.ensure_not_failed()
         self._post()
 
-    def upload(self, offset: int, chunk: str) -> int:
+    def ensure_not_failed(self) -> None:
+        """Fence local execution as soon as background renewal becomes terminal."""
         if self.failure is not None:
             raise RuntimeError(f"remote run lease renewal failed: {self.failure}") from self.failure
+
+    def upload(self, offset: int, chunk: str) -> int:
+        self.ensure_not_failed()
         response = self._post({"transcript_offset": offset, "transcript": chunk})
         return int(response.get("transcript_offset", offset + len(chunk.encode())))
 
@@ -159,6 +162,31 @@ class _LeaseHeartbeat:
     def stop(self) -> None:
         self.stop_event.set()
         self.thread.join(timeout=5)
+
+
+def _stop_obsolete_process(proc: subprocess.Popen[Any]) -> None:
+    """Stop a supervised process tree after its remote authority is lost."""
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _wait_for_process(proc: subprocess.Popen[Any], heartbeat: _LeaseHeartbeat,
+                      *, interval: float = 0.1) -> int:
+    """Wait while fencing an active child against terminal lease loss."""
+    while (returncode := proc.poll()) is None:
+        try:
+            heartbeat.ensure_not_failed()
+        except BaseException:
+            _stop_obsolete_process(proc)
+            raise
+        time.sleep(interval)
+    return returncode
 
 
 def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str]:
@@ -247,26 +275,27 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 f"> {shlex.quote(str(execution_dir / 'stdout.json'))} "
                 f"2> {shlex.quote(str(execution_dir / 'stderr.log'))}"
             )
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
-                cwd=repo, env=execution_env, check=False,
+                cwd=repo, env=execution_env,
             )
+            check_returncode = _wait_for_process(proc, heartbeat)
             result_path = execution_dir / "checks.json"
             if result_path.exists():
                 results = json.loads(result_path.read_text())
                 error = ""
             else:
-                timeout_result = validation_timeout_result(execution_dir, proc.returncode)
+                timeout_result = validation_timeout_result(execution_dir, check_returncode)
                 if timeout_result is not None:
                     results = [timeout_result]
                     error = timeout_result["details"]
                 else:
-                    error = f"remote check supervisor exited {proc.returncode} without results"
+                    error = f"remote check supervisor exited {check_returncode} without results"
                     results = [{
                         "name": "checks", "status": "error",
                         "summary": "check execution did not complete", "details": error,
                     }]
-            final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, proc.returncode
+            final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             final_path = repo.parent / f"{run['id']}-final.md"
@@ -293,7 +322,12 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 transcript_read_offset = 0
                 transcript_upload_offset = 0
                 while proc.poll() is None:
-                    time.sleep(1)
+                    try:
+                        heartbeat.ensure_not_failed()
+                    except BaseException:
+                        _stop_obsolete_process(proc)
+                        raise
+                    time.sleep(0.1)
                     stdout_file.flush()
                     with open(stdout_file.name) as transcript_file:
                         transcript_file.seek(transcript_read_offset)
