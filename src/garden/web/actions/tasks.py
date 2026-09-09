@@ -263,15 +263,78 @@ def integrate(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -
 
 @action("reset-revisions")
 def reset_revisions(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    st = sched.state.get(t.id)
-    st["revisions"] = 0
-    sched.state.save()
-    t.log("revision counter reset (web)")
-    s.save(t)
+    sched.continue_troubled(t, allowance=1)
+
+
+@action("troubled-continue")
+def troubled_continue(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    tier = applies_to.strip()
+    sched.continue_troubled(t, allowance=1, difficulty=tier)
+
+
+@action("investigate")
+def investigate(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.pause_for_investigation(t, note, owner=applies_to.strip() or "operator")
+
+
+@action("investigation-report")
+def investigation_report(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    try:
+        report = json.loads(note)
+    except (TypeError, json.JSONDecodeError):
+        raise RuntimeError("investigation report fields could not be read") from None
+    sched.complete_investigation(t, report)
+
+
+@action("investigation-take")
+def investigation_take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.take_investigation(t)
+
+
+@action("investigation-retry")
+def investigation_retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.retry_investigation(t)
+
+
+@action("investigation-publish-retry")
+def investigation_publish_retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.retry_investigation_publication(t)
+
+
+@action("troubled-change-approach")
+def troubled_change_approach(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.change_troubled_approach(t, note)
+
+
+@action("troubled-defer")
+def troubled_defer(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.defer_troubled(t, note)
+
+
+@action("troubled-cancel")
+def troubled_cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.cancel_troubled(t, note)
 
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+
+    @app.post("/investigations")
+    def create_incident_investigation(scope: str = Form(""), question: str = Form(""),
+                                      references: str = Form("")) -> RedirectResponse:
+        product, separator, phase = scope.partition("/")
+        if not separator or not product or not phase:
+            raise HTTPException(422, "a product/phase investigation scope is required")
+        try:
+            with hub.action_lock:
+                task = hub.scheduler().request_incident_investigation(
+                    product, phase, question, references
+                )
+        except KeyError:
+            raise HTTPException(404, "investigation scope was not found") from None
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return RedirectResponse(f"/tasks/{task.id}", status_code=303)
 
     def prepare_recovery_launch(task_id: str, run: Run) -> None:
         """Continue a reserved launch after its 202 response has left the server."""
@@ -369,7 +432,10 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/tasks/{task_id}/{action}")
     def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form(""),
-                    actor: str = Form("human_owner")):
+                    actor: str = Form("human_owner"), likely_cause: str = Form(""),
+                    confidence: str = Form(""), unknowns: str = Form(""), evidence: str = Form(""),
+                    attempted_checks: str = Form(""), retain_work: str = Form(""),
+                    alternatives: str = Form(""), recommendation: str = Form(""), links: str = Form("")):
         s = hub.fresh()
         try:
             t = s.task(task_id)
@@ -378,6 +444,15 @@ def register(app: FastAPI, site: Site) -> None:
         run_action = ACTIONS.get(action)
         if run_action is None:
             raise HTTPException(400, f"unknown action {action}")
+        if action == "investigation-report":
+            def lines(value: str) -> list[str]:
+                return [line.strip() for line in value.splitlines() if line.strip()]
+
+            note = json.dumps({"likely_cause": likely_cause.strip(), "confidence": confidence.strip(),
+                               "unknowns": lines(unknowns), "evidence": lines(evidence),
+                               "attempted_checks": lines(attempted_checks),
+                               "retain_work": retain_work == "true", "alternatives": lines(alternatives),
+                               "recommendation": recommendation.strip(), "links": lines(links)})
         back = request.headers.get("referer", "")
         # Board actions (backlog reorder/move) return to the board so the flash and the new order
         # show there; task-page and Inbox actions stay where they were pressed.

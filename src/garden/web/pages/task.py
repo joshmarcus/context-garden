@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from ...brief import brief_gaps, build_brief
 from ...criteria import (
@@ -226,6 +226,19 @@ def register(app: FastAPI, site: Site) -> None:
         if stderr.strip():
             parts.append("---- stderr ----\n" + stderr[-8000:])
         return "\n\n".join(parts)
+
+    @app.get("/investigations/{task_id}/{run_id}/{name}")
+    def investigation_report(task_id: str, run_id: str, name: str):
+        if name not in {"report.md", "report.html"}:
+            raise HTTPException(404)
+        run = next((item for item in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
+                    if item.run_id == run_id and item.mode == "investigation"), None)
+        path = run.path / name if run else None
+        if path is None or not path.is_file():
+            raise HTTPException(404)
+        media = "text/html" if name.endswith(".html") else "text/markdown"
+        headers = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"} if media == "text/html" else {}
+        return Response(path.read_bytes(), media_type=media, headers=headers)
 
 
 def _edit_diff(runs: list[Any]) -> str:

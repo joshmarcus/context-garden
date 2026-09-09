@@ -177,6 +177,11 @@ DEFAULTS: dict[str, Any] = {
     "max_attempts": 2,
     "max_consecutive_env_errors": 3,
     "max_revisions": 3,
+    "revision_policy": {
+        "enabled": True,
+        "every": 2,
+        "decision_after": 6,
+    },
     "timeout_minutes": 90,
     "idle_minutes": 10,           # warn: show "idle N min" once a running worker has gone this long with no output or file change
     "idle_kill_minutes": 20,      # stop: past this a silent worker is killed and handled like a timeout (retry or fail); 0 disables
@@ -356,6 +361,20 @@ class Config:
         if value not in ("require", "advisory"):
             raise ValueError("review.capture_infrastructure_policy must be 'require' or 'advisory'")
         return value
+
+    def revision_policy(self) -> dict[str, int | bool]:
+        """Validated live policy for escalating substantive implementation revisions."""
+        enabled = self.get("revision_policy.enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError("revision_policy.enabled must be true or false")
+        every = self.get("revision_policy.every", 2)
+        decision_after = self.get("revision_policy.decision_after", 6)
+        for key, value in (("every", every), ("decision_after", decision_after)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"revision_policy.{key} must be a positive integer")
+        if decision_after < every:
+            raise ValueError("revision_policy.decision_after must be at least revision_policy.every")
+        return {"enabled": enabled, "every": every, "decision_after": decision_after}
 
     def _positive_optional_int(self, dotted: str) -> int | None:
         value = self.get(dotted)

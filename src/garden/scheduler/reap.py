@@ -18,6 +18,7 @@ from ..notify import notify
 from ..preflight import missing_preflight
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run
+from .human import INVESTIGATION_RECOMMENDATIONS
 from .report import TickReport
 
 
@@ -156,6 +157,9 @@ class ReapMixin:
         if not self._finished_or_timed_out(run, runner):
             return False
         if run.status == "timeout":
+            if run.mode == "investigation":
+                self._fail_investigation(task, run, rep, "investigation agent timed out")
+                return True
             self._preserve_timeout_worktree(task, run)
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="timeout", cost_usd=None)
             self._retry_or_fail(task, run, rep, f"worker {run.error}" if run.error else "worker timed out")
@@ -232,6 +236,101 @@ class ReapMixin:
             return True
         return False
 
+    def _restore_investigation_task_status(self, task: Task, inv: dict[str, Any], note: str) -> None:
+        raw = str(inv.get("task_status") or Status.CHANGES_REQUESTED.value)
+        try:
+            target = Status(raw)
+        except ValueError:
+            target = Status.CHANGES_REQUESTED
+        self._transition(task, target, note, needs_human=True)
+
+    def _fail_investigation(self, task: Task, run: Run, rep: TickReport, reason: str) -> None:
+        st = self.state.get(task.id)
+        inv = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
+        inv.update({"status": "failed", "error": reason, "failed_at": now_iso(), "run_id": run.run_id,
+                    "transcript": str(run.path / "final.md"), "cost_usd": run.cost_usd})
+        st["investigation"] = inv
+        self._set_needs_human(task, "investigation", f"investigation agent failed: {reason}; retry or take it as operator")
+        self._restore_investigation_task_status(task, inv, f"investigation agent failed: {reason}")
+        self.events.emit("investigation_failed", task.id, run=run.run_id, reason=reason, cost_usd=run.cost_usd)
+        self.state.save()
+        rep.transitions.append(f"{task.id} investigation failed")
+
+    def _finalize_investigation(self, task: Task, run: Run, rep: TickReport,
+                                collected: dict[str, Any]) -> None:
+        """Persist a read-only diagnosis independently of implementation revisions."""
+        result = run.result or {}
+        report = result.get("investigation_report")
+        required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
+                    "retain_work", "alternatives", "recommendation"}
+        if collected.get("env_error"):
+            self._fail_investigation(task, run, rep, str(collected.get("error") or "investigation environment unavailable"))
+            return
+        if result.get("status") != "done" or not isinstance(report, dict) or not required.issubset(report):
+            self._fail_investigation(task, run, rep, "agent returned no complete investigation report")
+            return
+        if report.get("recommendation") not in INVESTIGATION_RECOMMENDATIONS:
+            self._fail_investigation(task, run, rep, "agent returned an unsupported recommendation")
+            return
+        report.setdefault("source_identities", [run.run_id, task.branch or task.default_branch()])
+        report.setdefault("observed_behavior", report["likely_cause"])
+        report.setdefault("intended_behavior", "The task should progress through Garden's configured workflow.")
+        report.setdefault("impact", "Not separately established by the investigation.")
+        report.setdefault("corrective_action", report["recommendation"])
+        st = self.state.get(task.id)
+        inv = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
+        inv.update({"status": "report_ready", "report": report, "completed_at": now_iso(),
+                    "run_id": run.run_id, "transcript": str(run.path / "final.md"),
+                    "cost_usd": run.cost_usd, "usage": run.usage})
+        discoveries = report.get("discovered") or []
+        if isinstance(discoveries, list):
+            from ..deepdives import redact_secrets
+
+            diagnosis = "\n\n".join([
+                "## Deep dive diagnosis",
+                str(report.get("likely_cause") or "Not established."),
+                "## Evidence",
+                "\n".join(f"- {item}" for item in report.get("evidence") or []),
+                "## Required outcome",
+                str(report.get("corrective_action") or report.get("recommendation") or ""),
+            ])
+            diagnosis = redact_secrets(diagnosis)
+            for item in discoveries:
+                if isinstance(item, dict) and str(item.get("kind") or "task") == "task":
+                    item["body"] = (str(item.get("body") or "").rstrip() + "\n\n" + diagnosis).strip()
+            run.result["discovered"] = discoveries
+            run.result["_discovery_context"] = diagnosis
+            self._file_discovered(task, run, run.result)
+            linked = list(dict.fromkeys(run.result.get("_linked_tasks") or []))
+            for task_id in linked:
+                linked_state = self.state.get(task_id)
+                linked_state["investigation_handoff"] = {
+                    "request_id": inv.get("request_id") or f"{task.id}-{run.run_id}",
+                    "origin_task_id": task.id,
+                    "origin_pr": task.pr or "",
+                    "diagnosis": diagnosis,
+                    "fallback_feedback": str(inv.get("feedback_markdown") or ""),
+                    "report": f"/investigations/{task.id}/{run.run_id}/report.html",
+                }
+            report["links"] = [*report.get("links", []), *(f"/tasks/{task_id}" for task_id in linked)]
+        from ..deepdives import publish_report, save_report
+
+        md_path, html_path = save_report(run.path, run.run_id, str(inv.get("reason") or ""), report)
+        inv["report_paths"] = {"markdown": str(md_path), "html": str(html_path)}
+        try:
+            inv["publication"] = publish_report(self.store.root, run.run_id, md_path, html_path)
+        except Exception as exc:  # publication retries must not rerun or discard the diagnosis
+            inv["publication"] = {"status": "failed", "error": str(exc), "failed_at": now_iso()}
+        st["investigation"] = inv
+        run.status = "done"
+        run.save()
+        self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
+        self._restore_investigation_task_status(task, inv, "investigation report ready; task remains paused")
+        self.events.emit("investigation_reported", task.id, run=run.run_id,
+                         recommendation=report["recommendation"], cost_usd=run.cost_usd)
+        self.state.save()
+        rep.transitions.append(f"{task.id} investigation report ready")
+
     def finalize(self, task: Task, run: Run, runner: Runner, rep: TickReport, resumed: bool = False) -> None:
         run.exit_code = run.read_exit_code()
         run.finished_at = now_iso()
@@ -280,6 +379,10 @@ class ReapMixin:
         self._release_fence_bookkeeping(task)
         if violations:
             self._fence_fail(task, run, violations, rep)
+            return
+
+        if run.mode == "investigation":
+            self._finalize_investigation(task, run, rep, collected)
             return
 
         # A result only vouches for commits.  Preserve every uncommitted path before any
@@ -693,7 +796,7 @@ class ReapMixin:
             st["pending_feedback_rebase"] = True
         else:
             max_rev = int(self.cfg.get("max_revisions", 3))
-            if int(st.get("revisions", 0)) >= max_rev:
+            if not self.cfg.revision_policy()["enabled"] and int(st.get("revisions", 0)) >= max_rev:
                 # Cap reached: hand it to a human like the review path, rather than leaving a
                 # task in changes_requested that the dispatch queue skips forever.
                 reason = f"pre-PR checks failed ({names}) and {max_rev} revision rounds already used"

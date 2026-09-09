@@ -86,6 +86,110 @@ def test_revision_cap_card(garden):
     assert "3 revision rounds used" in it["why"]
 
 
+def test_troubled_card_is_distinct_and_offers_bounded_decisions(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001", needs_human={"kind": "troubled_task", "reason": "6 substantive revisions did not converge"},
+               substantive_revisions=6, revisions=6, review_rounds=4,
+               difficulty_escalations=[{"from": "easy", "to": "medium", "counter": 2, "model": "terra"}])
+    it = _attention(garden, "DM-001")
+    assert it["kind_title"] == "Troubled task"
+    assert {a["kind"] for a in it["actions"]} >= {
+        "troubled-continue", "investigate", "change-approach", "defer", "troubled-cancel",
+    }
+    evidence = "\n".join(it["evidence"])
+    assert "6 revision" in evidence and "4 automated review" in evidence
+    assert "easy → medium" in evidence and "current owner" in evidence
+
+
+def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    report = {"likely_cause": "stale verifier", "confidence": "high", "unknowns": ["remote image"],
+              "evidence": ["base passes"], "attempted_checks": ["focused comparison"],
+              "retain_work": True, "alternatives": ["repair verifier"],
+              "recommendation": "repair environment/verification"}
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "investigation_report", "reason": "report ready"},
+               investigation={"status": "report_ready", "owner": "agent", "report": report})
+    it = _attention(garden, "DM-001")
+    evidence = "\n".join(it["evidence"])
+    assert "likely cause (high confidence): stale verifier" in evidence
+    assert "investigation recommendation: repair environment/verification" in evidence
+    assert {a["kind"] for a in it["actions"]} >= {
+        "troubled-continue", "change-approach", "investigate", "defer", "troubled-cancel",
+    }
+
+
+def test_served_operator_report_failure_recovery_and_explicit_followup(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    task = store.task("DM-001")
+    task.branch = "garden/preserved"
+    store.save(task)
+    _set_state(garden, "DM-001", needs_human={"kind": "investigation", "reason": "diagnose"},
+               investigation={"status": "active", "owner": "operator", "request_id": "served"},
+               substantive_revisions=6, pending_feedback="retain this finding")
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    failed = client.post("/tasks/DM-001/investigation-report",
+                         data={"likely_cause": "stale fixture"}, follow_redirects=False)
+    assert failed.status_code == 303 and "confidence+is+required" in failed.headers["location"]
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert state["investigation"]["status"] == "active"
+
+    corrected = client.post("/tasks/DM-001/investigation-report", data={
+        "likely_cause": "stale fixture", "confidence": "high", "unknowns": "remote image",
+        "evidence": "base passes\n/runs/served", "attempted_checks": "focused comparison",
+        "retain_work": "true", "alternatives": "repair fixture", "recommendation": "repair environment/verification",
+        "links": "https://example.com/evidence/7",
+    }, follow_redirects=False)
+    assert corrected.status_code == 303
+    page = client.get("/").text
+    assert "Investigation report ready" in page and "stale fixture" in page
+    task = Store(garden).task("DM-001")
+    assert task.status == Status.CHANGES_REQUESTED and task.branch == "garden/preserved"
+    assert not RunStore(garden / ".garden").active()
+
+    followed = client.post("/tasks/DM-001/troubled-change-approach",
+                           data={"note": "repair the fixture, then rerun the focused check"},
+                           follow_redirects=False)
+    assert followed.status_code == 303
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert "repair the fixture" in state["pending_feedback"]
+    assert not state.get("needs_human") and not RunStore(garden / ".garden").active()
+
+
+def test_web_troubled_actions_preserve_work_and_reject_stale_clicks(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    task = store.task("DM-001")
+    task.branch = "garden/preserved"
+    store.save(task)
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "not converging"},
+               pending_feedback="keep finding", substantive_revisions=6)
+    c = TestClient(create_app(Store(garden), watch=False))
+    page = c.get("/").text
+    assert "Troubled task" in page
+    assert 'action="/tasks/DM-001/troubled-change-approach"' in page
+    assert 'action="/tasks/DM-001/troubled-cancel"' in page
+    assert "Required cancellation reason" in page
+
+    response = c.post("/tasks/DM-001/troubled-change-approach",
+                      data={"note": "replace parser without changing API"},
+                      follow_redirects=False)
+    assert response.status_code == 303
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert "replace parser" in state["pending_feedback"]
+    assert Store(garden).task("DM-001").branch == "garden/preserved"
+
+    stale = c.post("/tasks/DM-001/troubled-cancel", data={"note": "stale click"},
+                   follow_redirects=False)
+    assert stale.status_code == 303 and "no+troubled-task+decision" in stale.headers["location"]
+    assert Store(garden).task("DM-001").status == Status.CHANGES_REQUESTED
+
+
 def test_parent_closed_card(garden):
     store = Store(garden)
     _set_task(store, "DM-002", Status.IN_REVIEW, pr="https://example.com/pull/8")

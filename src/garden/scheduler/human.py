@@ -27,6 +27,11 @@ from ..stabilization import ACTORS
 from .report import TickReport
 from .state import _TaskState
 
+INVESTIGATION_RECOMMENDATIONS = frozenset({
+    "resume unchanged", "raise difficulty", "repair environment/verification",
+    "change scope/approach", "defer", "cancel",
+})
+
 
 class HumanMixin:
     @staticmethod
@@ -84,6 +89,272 @@ class HumanMixin:
         mode = "revise" if task.status == Status.CHANGES_REQUESTED else "work"
         return self.dispatch(task, mode=mode, runner=ManualRunner({}), worktree=False)
 
+    def _apply_revision_policy(self, task: Task, st: _TaskState) -> None:
+        """Raise the implementation floor at each durable substantive threshold.
+
+        Explicit task models are never replaced: the conflict becomes an owner decision.
+        The operation runs only at a dispatch boundary, so an active run keeps its model.
+        """
+        policy = self.cfg.revision_policy()
+        if not policy["enabled"]:
+            return
+        count = int(st.get("substantive_revisions", st.get("revisions", 0)))
+        every, decision_after = int(policy["every"]), int(policy["decision_after"])
+        thresholds = list(st.get("revision_thresholds") or [])
+        if st.get("troubled_decisions") and int(st.get("revision_allowance", 0)) <= 0:
+            reason = f"the granted revision allowance is exhausted after {count} substantive revisions"
+            self._set_needs_human(task, "troubled_task", reason)
+            st["troubled"] = {"reason": reason, "counter": count, "at": now_iso(),
+                               "owner": "product owner", "recommendation": "investigate before granting more revisions"}
+            self.events.emit("troubled_task", task.id, counter=count, reason=reason,
+                             difficulty=task.difficulty, model=task.model or "")
+            self.state.save()
+            raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
+        if count < every or count % every or count in thresholds:
+            return
+        levels = ("easy", "medium", "hard")
+        current = task.difficulty if task.difficulty in levels else "medium"
+        if count >= decision_after or current == "hard" or task.model:
+            reason = (f"{count} substantive revision rounds reached the decision threshold"
+                      if not task.model else
+                      f"{count} substantive revision rounds reached an escalation threshold, but explicit model {task.model} is protected")
+            self._set_needs_human(task, "troubled_task", reason)
+            st["troubled"] = {"reason": reason, "counter": count, "at": now_iso(),
+                               "owner": "product owner", "recommendation": "pause and investigate the repeated findings"}
+            thresholds.append(count)
+            st["revision_thresholds"] = thresholds
+            self.events.emit("troubled_task", task.id, counter=count, reason=reason,
+                             difficulty=current, model=task.model or "")
+            self.state.save()
+            raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
+        new = levels[levels.index(current) + 1]
+        runner = self.runner_for(task)
+        old_model = self.model_for(task, runner)
+        task.difficulty = new
+        new_model = self.model_for(task, runner)
+        at = now_iso()
+        event = {"from": current, "to": new, "prior_model": old_model, "model": new_model,
+                 "trigger": "substantive_revision_threshold", "reason": f"{count} substantive revisions",
+                 "at": at, "counter": count}
+        st.setdefault("difficulty_escalations", []).append(event)
+        thresholds.append(count)
+        st["revision_thresholds"] = thresholds
+        st["difficulty_floor"] = new
+        task.log(f"difficulty {current} -> {new} after {count} substantive revisions; model {old_model or '(runner default)'} -> {new_model or '(runner default)'}")
+        self.store.save(task)
+        self.events.emit("difficulty_escalated", task.id, **event)
+
+    def pause_for_investigation(self, task: Task, reason: str, requester: str = "operator",
+                                owner: str = "operator", scope: str = "read-only diagnosis",
+                                budget: str = "one bounded investigation",
+                                origins: dict[str, str] | None = None) -> None:
+        """Request an idempotent safe-boundary investigation without touching live work."""
+        ensure_open(task)
+        st = self.state.get(task.id)
+        existing = st.get("investigation")
+        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active", "report_ready"):
+            return
+        if isinstance(existing, dict):
+            st.setdefault("investigation_history", []).append(dict(existing))
+        active = any(r.status in ("running", "requested", "preparing") for r in self.runs.runs_for(task.id))
+        status = "draining" if active else "requested"
+        st["investigation"] = {"status": status, "reason": reason.strip() or "troubled task",
+            "requester": requester, "owner": owner, "scope": scope, "budget": budget,
+            "requested_at": now_iso(), "task": task.id, "task_status": task.status.value,
+            "request_id": f"{task.id}-{now_iso()}", "origins": dict(origins or {})}
+        self._set_needs_human(task, "investigation", f"investigation {status}: {reason.strip() or 'troubled task'}")
+        self.events.emit("investigation_requested", task.id, status=status, owner=owner, scope=scope, budget=budget)
+        self.state.save()
+
+    def request_incident_investigation(self, product: str, phase: str, question: str,
+                                       references: str = "") -> Task:
+        """Create a durable incident anchor when no existing task describes the question."""
+        question = question.strip()
+        if not question:
+            raise RuntimeError("an investigation question is required")
+        self.store.phase(product, phase)  # validate the selected workspace context
+        for existing in self.store.tasks().values():
+            if (existing.product == product and existing.phase == phase and existing.kind == "investigation"
+                    and not existing.status.terminal):
+                inv = self.state.get(existing.id).get("investigation")
+                if isinstance(inv, dict) and inv.get("reason") == question:
+                    return existing
+        title = "Deep dive: " + question.splitlines()[0][:72]
+        body = ("## Goal\n\nInvestigate this Garden incident and connect supported findings to corrective work.\n\n"
+                "## Investigation question\n\n" + question)
+        if references.strip():
+            body += "\n\n## Origin references\n\n" + references.strip()
+        task = self.store.create_task(product, phase, title, body, status="draft", kind="investigation")
+        self.pause_for_investigation(task, question, owner="agent",
+                                     origins={"references": references.strip(), "context": "garden incident"})
+        return task
+
+    def retry_investigation(self, task: Task, owner: str = "agent") -> None:
+        """Retry a failed diagnosis without losing its transcript, cost, or original bounds."""
+        ensure_open(task)
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict) or inv.get("status") != "failed":
+            raise RuntimeError(f"{task.id} has no failed investigation to retry")
+        if owner not in ("agent", "operator"):
+            raise RuntimeError("investigation owner must be operator or agent")
+        st.setdefault("investigation_history", []).append(dict(inv))
+        active = any(r.status in ("running", "requested", "preparing") for r in self.runs.runs_for(task.id))
+        inv = {key: inv[key] for key in ("reason", "requester", "scope", "budget", "task", "task_status") if key in inv}
+        inv.update({"status": "draining" if active else "requested", "owner": owner,
+                    "requested_at": now_iso(), "request_id": f"{task.id}-{now_iso()}"})
+        st["investigation"] = inv
+        self._set_needs_human(task, "investigation", f"investigation retry requested for {owner}")
+        self.events.emit("investigation_retried", task.id, owner=owner, request_id=inv["request_id"])
+        self.state.save()
+
+    def take_investigation(self, task: Task) -> None:
+        """Let the operator claim a ready investigation without changing task work."""
+        ensure_open(task)
+        inv = self.state.get(task.id).get("investigation")
+        if not isinstance(inv, dict) or inv.get("status") not in ("requested", "failed"):
+            raise RuntimeError(f"{task.id} has no operator investigation ready to take")
+        if inv.get("status") == "failed":
+            st = self.state.get(task.id)
+            st.setdefault("investigation_history", []).append(dict(inv))
+        inv.update({"status": "active", "owner": "operator", "taken_at": now_iso()})
+        self._set_needs_human(task, "investigation", "operator investigation active; implementation remains paused")
+        self.events.emit("investigation_taken", task.id, owner="operator", request_id=inv["request_id"])
+        self.state.save()
+
+    def complete_investigation(self, task: Task, report: dict[str, Any]) -> None:
+        ensure_open(task)
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict) or inv.get("status") not in ("requested", "active"):
+            raise RuntimeError(f"{task.id} has no active investigation")
+        required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
+                    "retain_work", "alternatives", "recommendation"}
+        missing = sorted(required - report.keys()) if isinstance(report, dict) else sorted(required)
+        if missing:
+            raise RuntimeError(f"investigation report is missing: {', '.join(missing)}")
+        for field in ("likely_cause", "confidence"):
+            if not isinstance(report[field], str) or not report[field].strip():
+                raise RuntimeError(f"investigation report {field} is required")
+        for field in ("unknowns", "evidence", "attempted_checks", "alternatives"):
+            if not isinstance(report[field], list) or not all(isinstance(item, str) for item in report[field]):
+                raise RuntimeError(f"investigation report {field} must be a list of text values")
+        if not report["evidence"] or not report["attempted_checks"] or not report["alternatives"]:
+            raise RuntimeError("investigation report requires evidence, attempted checks, and alternatives")
+        if not isinstance(report["retain_work"], bool):
+            raise RuntimeError("investigation report retain_work must be true or false")
+        if report["recommendation"] not in INVESTIGATION_RECOMMENDATIONS:
+            raise RuntimeError("investigation report has an unsupported recommendation")
+        links = report.get("links", [])
+        if not isinstance(links, list) or not all(isinstance(item, str) for item in links):
+            raise RuntimeError("investigation report links must be a list of text values")
+        inv.update({"status": "report_ready", "report": report, "completed_at": now_iso()})
+        self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
+        self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))
+        self.state.save()
+
+    def retry_investigation_publication(self, task: Task) -> None:
+        """Retry only the workspace push, preserving the completed agent result."""
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict) or inv.get("status") != "report_ready":
+            raise RuntimeError(f"{task.id} has no completed investigation to publish")
+        paths = inv.get("report_paths") or {}
+        from ..deepdives import publish_report
+
+        try:
+            inv["publication"] = publish_report(
+                self.store.root, str(inv.get("run_id")), Path(paths["markdown"]), Path(paths["html"])
+            )
+        except Exception as exc:
+            inv["publication"] = {"status": "failed", "error": str(exc), "failed_at": now_iso()}
+            self.state.save()
+            raise RuntimeError(f"report publication failed: {exc}") from exc
+        self.events.emit("investigation_published", task.id, run=inv.get("run_id"),
+                         commit=inv["publication"]["commit"])
+        self.state.save()
+
+    def defer_troubled(self, task: Task, reason: str) -> None:
+        """Keep preserved work paused with an explicit durable owner reason."""
+        ensure_open(task)
+        st = self.state.get(task.id)
+        info = st.get("needs_human")
+        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to defer")
+        if not reason.strip():
+            raise RuntimeError("a defer reason is required")
+        st["troubled_deferred"] = {"reason": reason.strip(), "at": now_iso(), "counter": int(st.get("substantive_revisions", 0))}
+        self._set_needs_human(task, "troubled_task", f"deferred: {reason.strip()}")
+        self.events.emit("troubled_deferred", task.id, reason=reason.strip())
+        self.state.save()
+
+    def change_troubled_approach(self, task: Task, approach: str, allowance: int = 1) -> None:
+        """Queue one preserved revision with the owner's distinct revised approach."""
+        if not approach.strip():
+            raise RuntimeError("the changed approach is required")
+        st = self.state.get(task.id)
+        info = st.get("needs_human")
+        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to change")
+        old_feedback = str(st.get("pending_feedback") or "").strip()
+        st["pending_feedback"] = (old_feedback + "\n\n## Owner-selected change of approach\n\n" + approach.strip()).strip()
+        st.setdefault("approach_changes", []).append({"at": now_iso(), "approach": approach.strip()})
+        self.continue_troubled(task, allowance=allowance)
+
+    def cancel_troubled(self, task: Task, reason: str) -> None:
+        """Cancel from a troubled decision while retaining all branch/run artifacts."""
+        ensure_open(task)
+        info = self.state.get(task.id).get("needs_human")
+        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to cancel")
+        if not reason.strip():
+            raise RuntimeError("a cancellation reason is required")
+        if any(run.status in ("requested", "preparing", "running") for run in self.runs.runs_for(task.id)):
+            raise RuntimeError(f"{task.id} has a run in flight; cancellation decision is stale")
+        self._transition(task, Status.CANCELLED, f"cancelled after troubled-task decision: {reason.strip()}")
+        self.events.emit("troubled_cancelled", task.id, reason=reason.strip(), preserved_branch=task.branch, preserved_pr=task.pr)
+
+    def continue_troubled(self, task: Task, allowance: int = 1, difficulty: str = "") -> None:
+        """Idempotently grant bounded preserved revisions without erasing lifetime history."""
+        ensure_open(task)
+        if allowance <= 0 or allowance > 3:
+            raise RuntimeError("allowance must be between 1 and 3")
+        st = self.state.get(task.id)
+        raw = st.get("needs_human")
+        if not raw or (isinstance(raw, dict) and raw.get("kind") not in ("revision_cap", "troubled_task", "investigation_report")):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to continue")
+        if difficulty:
+            levels = ("easy", "medium", "hard")
+            if difficulty not in levels or levels.index(difficulty) < levels.index(task.difficulty):
+                raise RuntimeError("difficulty must preserve or raise the current floor")
+            task.difficulty = difficulty
+        decision = {"at": now_iso(), "allowance": allowance, "difficulty": task.difficulty,
+                    "counter": int(st.get("substantive_revisions", st.get("revisions", 0)))}
+        st.setdefault("troubled_decisions", []).append(decision)
+        st["revision_allowance"] = int(st.get("revision_allowance", 0)) + allowance
+        investigation = st.get("investigation")
+        if isinstance(investigation, dict) and isinstance(investigation.get("report"), dict):
+            report = investigation["report"]
+            st["investigation_handoff"] = {
+                "request_id": investigation.get("request_id") or f"{task.id}-{now_iso()}",
+                "origin_task_id": task.id,
+                "origin_pr": task.pr or "",
+                "fallback_feedback": str(investigation.get("feedback_markdown") or ""),
+                "diagnosis": "\n\n".join([
+                    f"Root cause: {report.get('likely_cause') or 'not established'}",
+                    "Evidence:\n" + "\n".join(f"- {item}" for item in report.get("evidence") or []),
+                    f"Required outcome: {report.get('corrective_action') or report.get('recommendation')}",
+                    f"Report: /investigations/{task.id}/{investigation.get('run_id')}/report.html",
+                ]),
+                "report": f"/investigations/{task.id}/{investigation.get('run_id')}/report.html",
+            }
+        st.pop("needs_human", None)
+        st.pop("troubled", None)
+        st.pop("investigation", None)
+        self._grant_one_more_round(st)
+        self._transition(task, Status.CHANGES_REQUESTED, f"troubled task continued with {allowance} bounded revision(s) at {task.difficulty}")
+        self.events.emit("troubled_continued", task.id, **decision)
+        self.state.save()
     # ---- approving a draft --------------------------------------------------
     def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> str:
         """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a

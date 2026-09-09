@@ -3,6 +3,8 @@ cancel, retry, discuss, decide, commit, pr."""
 
 from __future__ import annotations
 
+import json
+
 import typer
 
 from ..model import (
@@ -243,6 +245,117 @@ def retry(task_id: str, actor: str = typer.Option("human_owner", "--actor",
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
+
+
+@app.command("troubled-continue", rich_help_panel=PANEL_DECIDE)
+def troubled_continue(task_id: str, difficulty: str = typer.Option("", help="Optional same-or-higher tier")):
+    """Grant one bounded revision while preserving lifetime counts and existing work."""
+    store = _store()
+    try:
+        _scheduler(store).continue_troubled(_task(store, task_id), difficulty=difficulty)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: one preserved revision queued")
+
+
+@app.command("investigate", rich_help_panel=PANEL_DECIDE)
+def investigate(
+    task_id: str,
+    reason: str = typer.Argument(..., help="Question or suspected cause to investigate"),
+    owner: str = typer.Option("operator", help="operator or agent"),
+    scope: str = typer.Option("read-only diagnosis", help="Explicit investigation boundary"),
+    budget: str = typer.Option("one bounded investigation", help="Explicit time or cost budget"),
+):
+    """Pause a task at a safe boundary and create a durable investigation request."""
+    if owner not in ("operator", "agent"):
+        err.print("[red]owner must be operator or agent[/red]")
+        raise typer.Exit(1)
+    store = _store()
+    try:
+        _scheduler(store).pause_for_investigation(
+            _task(store, task_id), reason, owner=owner, scope=scope, budget=budget
+        )
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: investigation requested for {owner}")
+
+
+@app.command("investigation-report", rich_help_panel=PANEL_DECIDE)
+def investigation_report(
+    task_id: str,
+    report: str = typer.Argument(..., help="JSON object containing the structured investigation report"),
+):
+    """Publish a completed diagnosis without changing the task outcome."""
+    store = _store()
+    try:
+        parsed = json.loads(report)
+        _scheduler(store).complete_investigation(_task(store, task_id), parsed)
+    except (RuntimeError, json.JSONDecodeError) as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: investigation report ready for decision")
+
+
+@app.command("investigation-take", rich_help_panel=PANEL_DECIDE)
+def investigation_take(task_id: str):
+    """Claim an operator-owned investigation while implementation remains paused."""
+    store = _store()
+    try:
+        _scheduler(store).take_investigation(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: operator investigation active")
+
+
+@app.command("investigation-retry", rich_help_panel=PANEL_DECIDE)
+def investigation_retry(task_id: str):
+    """Retry one failed bounded investigation while retaining its evidence and cost."""
+    store = _store()
+    try:
+        _scheduler(store).retry_investigation(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: investigation agent retry queued")
+
+
+@app.command("troubled-change-approach", rich_help_panel=PANEL_DECIDE)
+def troubled_change_approach(task_id: str, approach: str = typer.Argument(...)):
+    """Queue one bounded preserved revision with an explicit new approach."""
+    store = _store()
+    try:
+        _scheduler(store).change_troubled_approach(_task(store, task_id), approach)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: changed approach queued")
+
+
+@app.command("troubled-defer", rich_help_panel=PANEL_DECIDE)
+def troubled_defer(task_id: str, reason: str = typer.Argument(...)):
+    """Keep troubled work preserved and paused with an owner reason."""
+    store = _store()
+    try:
+        _scheduler(store).defer_troubled(_task(store, task_id), reason)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: deferred with work preserved")
+
+
+@app.command("troubled-cancel", rich_help_panel=PANEL_DECIDE)
+def troubled_cancel(task_id: str, reason: str = typer.Argument(...)):
+    """Cancel a drained troubled task with a durable reason, retaining its work."""
+    store = _store()
+    try:
+        _scheduler(store).cancel_troubled(_task(store, task_id), reason)
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: cancelled with branch and artifacts preserved")
 
 
 @app.command("recover", rich_help_panel=PANEL_DECIDE)
