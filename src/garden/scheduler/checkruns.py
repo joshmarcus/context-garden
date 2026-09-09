@@ -28,6 +28,7 @@ from ..review import validation_plan, visual_source_digest
 from ..runs import Run
 from ..validation import validation_timeout_result
 from .report import TickReport
+from .state import State
 
 # Which stages report their results under which `check` event stage: the base probe and the CI
 # analyser keep their own labels; every pre-PR-style re-check (a fresh push, a stale-base rebase,
@@ -161,13 +162,41 @@ class CheckRunMixin:
         return run
 
     def recover_waiting_check(self, task: Task, rep: TickReport | None = None) -> str:
-        """Repair a waiting/check mismatch without cancelling check work or its continuation."""
+        """Atomically recover a stale check stop without disturbing a live continuation."""
+        with self.tick_lock():
+            # Actions and tests can have just changed their scheduler-local State.  Its
+            # dirty-key merge preserves concurrent keys before this recovery reloads the
+            # durable view under the same lock used by tick.
+            self.state.save()
+            self.store.invalidate_tasks()
+            self.state = State(self.state.path)
+            return self._recover_waiting_check_locked(self.store.task(task.id), rep)
+
+    def _recover_waiting_check_locked(self, task: Task, rep: TickReport | None = None) -> str:
+        """Recover under ``tick_lock`` after reloading the task and side-store state."""
         rep = rep or TickReport()
         st = self.state.get(task.id)
         info = dict(st.get("check_run") or {})
         run_id = str(info.get("run_id") or "")
         run = self._run_by_id(task, run_id) if run_id else None
-        if run is not None and run.status == "running":
+        stop = st.get("needs_human")
+        stop_info = stop if isinstance(stop, dict) else {}
+        recovery = dict(st.get("recovery_check") or {})
+        stopped_run_id = str(stop_info.get("run") or recovery.get("run") or "")
+        if stop_info.get("kind") == "check_did_not_run" and stopped_run_id and run_id != stopped_run_id:
+            if run_id:
+                return (f"current check {run_id} does not match stopped check {stopped_run_id}; "
+                        "left both continuations untouched")
+            # Parking an exhausted check deliberately removes its redundant active pointer.
+            # Its terminal run id remains in both halves of the stop, so use that durable
+            # identity to recover the stop unless a newer pointer has taken ownership.
+            run = self._run_by_id(task, stopped_run_id)
+        if run is not None and run.lifecycle_state != "finished":
+            # A recovery launch reserves its run before setup and process start.  Those
+            # requested/preparing records are just as active as a running process, but have
+            # no check result to reap or task status to restore yet.
+            if run.status != "running":
+                return f"live check {run.run_id} retained; still {run.lifecycle_state}"
             runner = self.runner_for(task, run.runner, run.harness)
             if self._finished_or_timed_out(run, runner):
                 self.reap_check(task, rep)
@@ -182,6 +211,48 @@ class CheckRunMixin:
                 self._transition(task, status, f"recovered waiting state for live check {run_id}")
             self.state.save()
             return f"live check {run_id} retained; restored {status.value}"
+
+        if stop_info.get("kind") == "check_did_not_run" and stopped_run_id:
+            # Only dispose of the pointer that names this exact stopped check.  A later
+            # check may already own the task, and its continuation must win this race.
+            if run is None or run.lifecycle_state != "finished":
+                return f"check {stopped_run_id} is not proven terminal; left its continuation untouched"
+            recovery_run_id = str(recovery.get("run") or "")
+            if recovery_run_id and recovery_run_id != stopped_run_id:
+                return (f"recovery check {recovery_run_id} does not match stopped check {stopped_run_id}; "
+                        "left both continuations untouched")
+
+            st.pop("check_run", None)
+            st.pop("needs_human", None)
+            st.pop("recovery_check", None)
+            failed_checks = [str(name) for name in st.get("failed_checks") or [] if str(name)]
+            ci_failed = str(st.get("checks") or "").upper() == "FAILURE"
+            feedback = str(st.get("pending_feedback") or "").strip()
+            if feedback or ci_failed or failed_checks:
+                if not feedback:
+                    names = ", ".join(failed_checks) or "unknown"
+                    st["pending_feedback"] = (
+                        f"- **CI** is failing on this branch (failed checks: {names}). "
+                        "Investigate the failing checks and fix them."
+                    )
+                self._transition(task, Status.CHANGES_REQUESTED,
+                                 "recovered terminal check stop; retained actionable feedback for revision")
+                outcome = "terminal check pointer cleared; existing revision will continue"
+            else:
+                target = self._pr_status(task) if task.pr else Status.READY
+                if task.status != target:
+                    self._transition(task, target,
+                                     "recovered terminal check stop; resumed pipeline progression")
+                else:
+                    task.log("recovered terminal check stop; resumed pipeline progression")
+                    self.store.save(task)
+                outcome = "terminal check pointer cleared; pipeline progression resumed"
+            self.events.emit("check_recovered", task.id, run=stopped_run_id, action=outcome)
+            self.state.save()
+            return outcome
+
+        if not run_id and task.status != Status.WAITING_HUMAN:
+            return "no check recovery is needed"
 
         st.pop("check_run", None)
         if st.get("question") or st.get("decision"):

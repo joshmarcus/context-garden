@@ -615,11 +615,17 @@ class Scheduler(
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
         """Run one controller-owned pass, serialised across processes for this garden."""
+        with self.tick_lock():
+            return self._tick_locked(dispatch)
+
+    @contextmanager
+    def tick_lock(self) -> Iterator[None]:
+        """Serialize a state-changing operator action with scheduler passes."""
         lock_path = self.cfg.garden_dir / "tick.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with _tick_thread_lock(lock_path), open(lock_path, "a") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
-            return self._tick_locked(dispatch)
+            yield
 
     def _tick_locked(self, dispatch: bool | None = None) -> TickReport:
         rep = TickReport()

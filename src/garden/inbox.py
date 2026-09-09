@@ -282,10 +282,22 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     actions: list[dict[str, str]] = []
     delegated = bool(info.get("delegated_recovery"))
     reviewer_owned = info["kind"] == "review_clarification"
+    check_recovery = info["kind"] == "check_did_not_run"
+    if check_recovery:
+        actionable = bool(str(st.get("pending_feedback") or "").strip()) or (
+            str(st.get("checks") or "").upper() == "FAILURE"
+        ) or bool(st.get("failed_checks"))
+        actions.append({
+            "label": "Recover check and continue revision" if actionable else "Recover check and resume pipeline",
+            "kind": "recover-check", "command": f"garden recover-check {t.id}",
+            "detail": ("clears this terminal check pointer and retains the current feedback/check failure for "
+                       "an existing-branch revision" if actionable else
+                       "clears this terminal check pointer and resumes pipeline progression without an implementation run"),
+        })
     if delegated:
         actions.append({"label": "Run delegated recovery", "kind": "recover", "command": f"garden recover {t.id}",
                         "detail": "queues one bounded continuation with the existing feedback and PR; repeated unchanged failures stop for an owner"})
-    if can_resume and not reviewer_owned:
+    if can_resume and not reviewer_owned and not check_recovery:
         label = "Deployment completed, resume" if info["kind"] == "deployment" else "Nothing to fix, resume"
         actions.append({"label": label, "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
@@ -298,7 +310,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         actions.append({"label": "One more automated review", "kind": "review-again",
                         "command": f"garden review {t.id}",
                         "detail": "clears this reviewer-owned stop and requests another review; no author revision is queued"})
-    if not reviewer_owned:
+    if not reviewer_owned and not check_recovery:
         actions.append({"label": "Continue the loop", "kind": "retry", "command": f"garden retry {t.id}",
                         "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",

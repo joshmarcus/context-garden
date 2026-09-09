@@ -271,7 +271,7 @@ def evidence(task_id: str, text: str = typer.Argument(..., help="What the operat
 
 @app.command("recover-check", rich_help_panel=PANEL_DECIDE)
 def recover_check(task_id: str):
-    """Repair an inconsistent waiting/check state without cancelling live check work."""
+    """Atomically clear a terminal check stop or retain a live check continuation."""
     store = _store()
     try:
         outcome = _scheduler(store).recover_waiting_check(_task(store, task_id))

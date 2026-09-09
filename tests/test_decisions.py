@@ -1,6 +1,7 @@
 """A worker's wont_do / no_change is a decision for the person, not a failure (CG-100)."""
 
 import os
+import threading
 import time
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from garden.github import Feedback
 from garden.inbox import build_inbox
 from garden.model import Status
+from garden.scheduler.report import TickReport
 from garden.scheduler.state import State
 from tests.conftest import FakeGitHub
 
@@ -214,6 +216,32 @@ def test_waiting_state_recovery_retains_a_live_check_and_its_continuation(sched,
     assert sched.state.get(task.id)["check_run"]["cont"]["task_status"] == "in_review"
 
 
+@pytest.mark.parametrize("run_status", ["requested", "preparing"])
+def test_terminal_check_recovery_retains_a_preparing_check_and_its_stop(sched, run_status):
+    """A reserved check launch has no terminal result for recovery to reconcile yet."""
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local", mode="check", initial_status=run_status)
+    run.save()
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": run.run_id, "stage": "ci", "cont": {"task_status": "in_review"}}
+    st["recovery_check"] = {"run": run.run_id, "stage": "ci", "cont": {}, "specs": []}
+    st["needs_human"] = {"kind": "check_did_not_run", "run": run.run_id,
+                         "reason": "check did not run"}
+    sched.state.save()
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert outcome == f"live check {run.run_id} retained; still {run_status}"
+    state = sched.state.get(task.id)
+    assert state["check_run"]["run_id"] == run.run_id
+    assert state["needs_human"]["run"] == run.run_id
+    assert state["recovery_check"]["run"] == run.run_id
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+
+
 def test_waiting_state_recovery_reaps_a_finished_check_normally(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.status = Status.WAITING_HUMAN
@@ -247,6 +275,175 @@ def test_waiting_state_recovery_clears_only_missing_check_metadata(sched):
     assert not sched.state.get(task.id).get("check_run")
     assert sched.state.get(task.id)["pending_feedback"] == "still actionable"
     assert sched.store.task(task.id).status == Status.CHANGES_REQUESTED
+
+
+def _terminal_check_stop(sched, task, *, checks="SUCCESS", feedback=""):
+    """Record the stale-pointer shape left by a terminal check recovery interruption."""
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.error = "original check diagnostic"
+    run.save()
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": run.run_id, "stage": "ci", "cont": {}}
+    st["recovery_check"] = {"run": run.run_id, "stage": "ci", "cont": {}, "specs": []}
+    st["needs_human"] = {"kind": "check_did_not_run", "run": run.run_id,
+                          "reason": "check did not run"}
+    st["checks"] = checks
+    if feedback:
+        st["pending_feedback"] = feedback
+    sched.state.save()
+    return run
+
+
+def _parked_terminal_check_stop(sched, task, *, checks="SUCCESS", feedback=""):
+    """Create the ordinary exhausted-check stop through its production parking path."""
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.error = "original check diagnostic"
+    run.save()
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": run.run_id, "stage": "ci", "cont": {}}
+    st["checks"] = checks
+    if feedback:
+        st["pending_feedback"] = feedback
+    sched.state.save()
+    sched._retry_or_park_check(task, run, "ci", {}, [], 1, TickReport())
+    assert not sched.state.get(task.id).get("check_run")
+    return run
+
+
+def test_terminal_check_recovery_resumes_green_pr_without_a_revision(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    run = _terminal_check_stop(sched, task)
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert outcome == "terminal check pointer cleared; pipeline progression resumed"
+    st = sched.state.get(task.id)
+    assert not st.get("check_run") and not st.get("needs_human") and not st.get("recovery_check")
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    preserved = sched._run_by_id(task, run.run_id)
+    assert preserved.error == "original check diagnostic" and preserved.result == {"checks": []}
+    assert [item.run_id for item in sched.runs.runs_for(task.id)] == [run.run_id]
+    assert sched.recover_waiting_check(task) == "no check recovery is needed"
+    sched.tick(dispatch=False)
+    assert not sched.state.get(task.id).get("needs_human")
+
+
+def test_terminal_check_recovery_clears_an_ordinary_parked_stop(sched):
+    """The normal exhausted-check path removes check_run before presenting recovery."""
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    run = _parked_terminal_check_stop(sched, task)
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert outcome == "terminal check pointer cleared; pipeline progression resumed"
+    st = sched.state.get(task.id)
+    assert not st.get("check_run") and not st.get("needs_human") and not st.get("recovery_check")
+    assert sched._run_by_id(task, run.run_id).error == "original check diagnostic"
+    sched.tick(dispatch=False)
+    assert not sched.state.get(task.id).get("needs_human")
+
+
+def test_terminal_check_recovery_retains_current_failure_for_existing_revision(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    _parked_terminal_check_stop(sched, task, checks="FAILURE", feedback="- substantive review finding")
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert outcome == "terminal check pointer cleared; existing revision will continue"
+    st = sched.state.get(task.id)
+    assert st["pending_feedback"] == "- substantive review finding"
+    assert not st.get("check_run") and not st.get("needs_human") and not st.get("recovery_check")
+    assert sched.store.task(task.id).status == Status.CHANGES_REQUESTED
+
+
+def test_plain_resume_refuses_a_terminal_check_stop(sched):
+    task = sched.store.task("DM-001")
+    _terminal_check_stop(sched, task)
+
+    with pytest.raises(RuntimeError, match="use garden recover-check DM-001"):
+        sched.resume_task(task)
+
+
+def test_terminal_check_recovery_does_not_touch_a_newer_live_pointer(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    stopped = _terminal_check_stop(sched, task)
+    newer = sched.runs.new_run(task.id, "local", mode="check")
+    newer.status = "running"
+    newer.save()
+    st = sched.state.get(task.id)
+    st["check_run"] = {"run_id": newer.run_id, "stage": "ci", "cont": {"task_status": "in_review"}}
+    sched.state.save()
+    monkeypatch.setattr(newer, "kill", lambda: (_ for _ in ()).throw(AssertionError("live check killed")))
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert f"current check {newer.run_id} does not match stopped check {stopped.run_id}" in outcome
+    assert sched.state.get(task.id)["check_run"]["run_id"] == newer.run_id
+    assert sched.state.get(task.id)["needs_human"]["run"] == stopped.run_id
+
+
+def test_terminal_check_recovery_does_not_touch_a_newer_parked_pointer(sched):
+    """A newer parked continuation owns recovery_check even without check_run."""
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    stopped = _terminal_check_stop(sched, task)
+    newer = sched.runs.new_run(task.id, "local", mode="check")
+    newer.status = "done"
+    newer.save()
+    st = sched.state.get(task.id)
+    st.pop("check_run")
+    st["recovery_check"] = {"run": newer.run_id, "stage": "ci", "cont": {}, "specs": []}
+    sched.state.save()
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert f"recovery check {newer.run_id} does not match stopped check {stopped.run_id}" in outcome
+    state = sched.state.get(task.id)
+    assert not state.get("check_run")
+    assert state["needs_human"]["run"] == stopped.run_id
+    assert state["recovery_check"]["run"] == newer.run_id
+
+
+def test_terminal_check_recovery_waits_for_tick_lock(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    _terminal_check_stop(sched, task)
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def recover() -> None:
+        entered.set()
+        sched.recover_waiting_check(task)
+        finished.set()
+
+    with sched.tick_lock():
+        thread = threading.Thread(target=recover)
+        thread.start()
+        assert entered.wait(timeout=1)
+        assert not finished.wait(timeout=0.05)
+    thread.join(timeout=1)
+    assert finished.is_set()
+    assert not sched.state.get(task.id).get("check_run")
 
 
 # ---- CLI and web agree -------------------------------------------------------
