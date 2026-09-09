@@ -337,12 +337,16 @@ class HumanMixin:
             report = investigation["report"]
             st["investigation_handoff"] = {
                 "request_id": investigation.get("request_id") or f"{task.id}-{now_iso()}",
+                "origin_task_id": task.id,
+                "origin_pr": task.pr or "",
+                "fallback_feedback": str(investigation.get("feedback_markdown") or ""),
                 "diagnosis": "\n\n".join([
                     f"Root cause: {report.get('likely_cause') or 'not established'}",
                     "Evidence:\n" + "\n".join(f"- {item}" for item in report.get("evidence") or []),
                     f"Required outcome: {report.get('corrective_action') or report.get('recommendation')}",
                     f"Report: /investigations/{task.id}/{investigation.get('run_id')}/report.html",
                 ]),
+                "report": f"/investigations/{task.id}/{investigation.get('run_id')}/report.html",
             }
         st.pop("needs_human", None)
         st.pop("troubled", None)

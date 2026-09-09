@@ -497,15 +497,36 @@ class DispatchMixin:
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
-        if mode == "revise" and st.get("investigation_handoff"):
-            handoff = st.pop("investigation_handoff")
+        handoff_feedback = ""
+        if mode in ("work", "revise", "resume") and st.get("investigation_handoff"):
+            handoff = st["investigation_handoff"]
             inv_for_refresh = dict(handoff)
-            self._refresh_investigation_feedback(task, inv_for_refresh)
+            origin_id = str(handoff.get("origin_task_id") or task.id)
+            try:
+                origin_task = self.store.task(origin_id)
+            except KeyError:
+                inv_for_refresh["feedback_markdown"] = (
+                    f"Feedback refresh failed: originating task {origin_id} is unavailable. "
+                    f"Recorded PR: {handoff.get('origin_pr') or 'none'}."
+                )
+                inv_for_refresh["feedback_snapshot"] = {"complete": False}
+            else:
+                self._refresh_investigation_feedback(origin_task, inv_for_refresh)
             diagnosis = str(handoff.get("diagnosis") or "")
             live = str(inv_for_refresh.get("feedback_markdown") or "")
-            st["pending_feedback"] = "\n\n".join(filter(None, [str(st.get("pending_feedback") or ""),
+            if not bool((inv_for_refresh.get("feedback_snapshot") or {}).get("complete")):
+                fallback = str(handoff.get("fallback_feedback") or "").strip()
+                if fallback:
+                    live = "\n\n".join(filter(None, [
+                        live,
+                        "### Preserved investigation-time feedback (refresh incomplete)\n\n" + fallback,
+                    ]))
+            handoff_feedback = "\n\n".join(filter(None, [
                 "## Deep dive diagnosis and required outcome\n\n" + diagnosis,
                 "## Refreshed complete PR feedback\n\n" + live])).strip()
+            if mode == "revise":
+                st["pending_feedback"] = "\n\n".join(filter(None, [
+                    str(st.get("pending_feedback") or ""), handoff_feedback])).strip()
         if mode in ("work", "revise", "resume") and st.get("investigation"):
             investigation = st["investigation"]
             if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
@@ -562,7 +583,7 @@ class DispatchMixin:
         run.save()
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
-        feedback = str(st.get("pending_feedback") or "") if mode == "revise" else ""
+        feedback = str(st.get("pending_feedback") or "") if mode == "revise" else handoff_feedback
         if mode == "revise" and not feedback.strip() and st.get("pending_feedback_rebase"):
             feedback = (
                 "## Concrete blocker\n\n"
@@ -725,6 +746,8 @@ class DispatchMixin:
                 run.status = "running"
                 run.save()
             raise
+        if handoff_feedback:
+            st.pop("investigation_handoff", None)
         if not branch_override:
             task.branch = branch
         task.attempts += 1 if mode == "work" else 0
