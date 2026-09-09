@@ -2399,6 +2399,8 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     assert 'data-profile-slider' in home
     assert 'type="range"' in home
     assert 'action="/config/operating-profile"' in home
+    assert '<output for="operating-profile-slider">Plain config</output>' in home
+    assert 'aria-valuetext="No operating profile; plain garden.yaml values"' in home
     assert "Profile changes do not resume dispatch or raise resource caps." in home
     for name in ("economy", "balanced", "fast"):
         assert f">{name.capitalize()}</span>" in home
@@ -2412,7 +2414,7 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     config_page = c.get("/config").text
     assert "live override: <strong>fast</strong>" in config_page
     home = c.get("/").text
-    assert '<output for="operating-profile-slider">fast</output>' in home
+    assert '<output for="operating-profile-slider">Fast</output>' in home
     assert "live override requests 7 workers" in home
 
     # the Parallelism and observe-profile panels say the *stop*, not garden.yaml, answers
@@ -2447,7 +2449,7 @@ def test_operating_profile_slider_supports_extra_stops_and_json_errors(garden):
     c = client(garden)
     home = c.get("/").text
     assert ">Turbo</span>" in home
-    assert 'max="3"' in home
+    assert 'max="4"' in home
     assert c.post("/config/operating-profile", data={"value": "invalid"},
                   headers={"Accept": "application/json"}).status_code == 400
 
@@ -2477,22 +2479,43 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page = browser.new_page(viewport={"width": 1280, "height": 900})
             page.goto(url, wait_until="networkidle")
             slider = page.locator("#operating-profile-slider")
-            slider.click(position={"x": 4, "y": 22})
-            page.get_by_text("saved ✓").wait_for()
             slider.focus()
+            slider.press("ArrowRight")
+            page.get_by_text("saved ✓").wait_for()
             slider.press("End")
             page.get_by_text("saved ✓").wait_for()
             assert slider.get_attribute("aria-valuetext") == "Fast operating profile"
             assert "fast" in page.locator(".profile-current").inner_text().lower()
             page.screenshot(path=str(tmp_path / "profile-slider-1280-light.png"), full_page=True)
-            page.route("**/config/operating-profile", lambda route: route.fulfill(
-                status=400, content_type="application/json", body='{"detail":"profile locked by policy"}'))
+            # Keep the first request unresolved while choosing a second stop.  Its failure
+            # must not leave the old saved stop visible after the queued save succeeds.
+            page.evaluate("""
+                () => {
+                  window.profileSaveCalls = [];
+                  window.originalProfileFetch = window.fetch;
+                  window.fetch = (url, options) => new Promise(resolve => {
+                    window.profileSaveCalls.push({url, options, resolve});
+                  });
+                }
+            """)
             slider.press("Home")
-            page.get_by_text("profile locked by policy").wait_for()
-            assert slider.get_attribute("aria-valuetext") == "Fast operating profile"
-            page.unroute("**/config/operating-profile")
+            page.wait_for_function("window.profileSaveCalls.length === 1")
+            slider.press("ArrowRight")
+            page.evaluate("""
+                () => {
+                  window.fetch = window.originalProfileFetch;
+                  window.profileSaveCalls[0].resolve(
+                    new Response(JSON.stringify({detail: "profile locked by policy"}), {
+                      status: 400, headers: {"Content-Type": "application/json"},
+                    })
+                  );
+                }
+            """)
+            assert slider.get_attribute("aria-valuetext") == "Economy operating profile"
+            page.get_by_text("saved ✓").wait_for()
+            assert slider.get_attribute("aria-valuetext") == "Economy operating profile"
             page.reload(wait_until="networkidle")
-            assert "fast" in page.locator(".profile-current").inner_text().lower()
+            assert "economy" in page.locator(".profile-current").inner_text().lower()
             assert "dispatch paused" in page.locator(".rail .foot").inner_text().lower()
             page.set_viewport_size({"width": 390, "height": 844})
             page.screenshot(path=str(tmp_path / "profile-slider-390-light.png"), full_page=True)

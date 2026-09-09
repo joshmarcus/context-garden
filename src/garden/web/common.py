@@ -289,6 +289,14 @@ class Site:
             "flash": request.query_params.get("flash", ""),
             "flash_note": request.query_params.get("flash_note", ""),
             "operating_profile_names": list(stops),
+            # The empty value is a real, supported setting: it clears the live profile
+            # override and leaves the garden's ordinary configuration in effect.  Include
+            # it in the rail picker so its selected state is never represented as an
+            # arbitrary named profile.
+            "operating_profile_options": [
+                {"value": "", "label": "Plain config"},
+                *[{"value": name, "label": name.capitalize()} for name in stops],
+            ],
             "operating_profile": active,
             "operating_profile_source": (
                 "live override" if "operating_profile" in profile_overrides
