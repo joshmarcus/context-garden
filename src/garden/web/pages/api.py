@@ -219,7 +219,7 @@ def register(app: FastAPI, site: Site) -> None:
             from ...runner.base import pass_env_patterns
             from ...runs import RunStore
 
-            runs = RunStore(hub.store.config.garden_dir).all_runs()
+            runs = RunStore(hub.store.config.garden_dir).active()
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))
                      and not r.process_finished()]
