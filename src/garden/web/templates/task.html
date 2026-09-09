@@ -98,7 +98,7 @@
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% if not task.status.terminal and not state.investigation %}<button class="quiet" data-toggle="deep-dive-form">Deep dive…</button>{% endif %}
   {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
-  {% if (task.status.value in ('ready','draft','failed') and not task.pr) or trial_again %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
+  {% if not phase_hold and ((task.status.value in ('ready','draft','failed') and not task.pr) or trial_again) %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
@@ -119,6 +119,7 @@
 </div>
 {% endif %}
 {% if not phase_hold %}<div id="persona-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/persona" class="actions"><span class="muted">Personas:</span><input type="text" name="note" placeholder="security, user" style="width:260px"><button class="primary">Run persona review</button><span class="faint">available: {{ personas|join(', ') }}</span></form></div>{% endif %}
+{% if not phase_hold %}
 <div id="trial-form" class="panel" hidden>
   <div class="eyebrow">{{ 'Run this trial again' if trial_again else 'Start a model trial' }}</div>
   {% if trial_again %}<p class="muted" style="margin:4px 0 8px">This closes the previous trial's contender PR(s) and branches, and starts fresh contenders from <span class="mono">{{ task.default_branch() }}</span>.</p>{% endif %}
@@ -129,6 +130,7 @@
     <div class="actions" style="margin-top:8px"><button type="button" class="quiet trial-add">+ Add contender</button><button class="primary">{{ 'Start trial again' if trial_again else 'Start trial' }}</button></div>
   </form>
 </div>
+{% endif %}
 <div id="suggest-form" class="panel" hidden>
   <div class="eyebrow">Suggest a change to this task</div>
   <p class="muted" style="margin:4px 0 8px">A person's wording is rarely the final wording. Write what the task should say; an agent folds it into the task file for you.</p>
