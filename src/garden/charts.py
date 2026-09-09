@@ -245,6 +245,63 @@ def cost_stack_svg(series: dict[str, Any], width: int = 640, height: int = 220, 
     return "\n".join(out)
 
 
+def cost_per_task_svg(series: dict[str, Any], width: int = 640, height: int = 220, max_groups: int = 7) -> str:
+    """Grouped, rather than stacked, average-cost bars.
+
+    Category averages must not be added: categories can contain different task cohorts.
+    A grouped bar keeps each category's denominator visible in its hover text.
+    """
+    buckets = series.get("buckets") or []
+    totals = series.get("totals") or {}
+    groups = [g for g in series.get("groups") or [] if totals[g]["cost_per_task_usd"] is not None][:max_groups]
+    if not buckets or not groups:
+        return '<div class="empty">No complete per-task average recorded yet.</div>'
+    values = [
+        float(row["cost_per_task_usd"])
+        for bucket in buckets for row in bucket["groups"].values()
+        if row["cost_per_task_usd"] is not None
+    ]
+    if not values:
+        return '<div class="empty">No complete per-task average recorded yet.</div>'
+    palette = ["var(--viz-1)", "var(--viz-2)", "var(--viz-cat-3)", "var(--viz-cat-4)",
+               "var(--viz-cat-5)", "var(--viz-cat-6)", "var(--viz-cat-7)"]
+    colors = {group: palette[i] for i, group in enumerate(groups)}
+    ymax = max(values) or 1.0
+    ml, mr, mt, mb = 40, 16, 38, 30
+    pw, ph = width - ml - mr, height - mt - mb
+    bucket_width = pw / len(buckets)
+    bar_width = max(bucket_width * 0.68 / len(groups), 2)
+
+    def y(value: float) -> float:
+        return mt + ph * (1 - value / ymax)
+
+    out = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="100%" role="img" '
+           f'aria-label="Average cost per participating task by {_esc(series.get("group_by", ""))} over time">']
+    for value in sorted({0, ymax / 2, ymax}):
+        out.append(f'<line x1="{ml}" x2="{width - mr}" y1="{y(value):.1f}" y2="{y(value):.1f}" stroke="var(--line)" stroke-width="1"/>')
+        out.append(f'<text x="{ml - 6}" y="{y(value) + 4:.1f}" text-anchor="end" fill="var(--muted)" font-size="11">${value:.0f}</text>')
+    for i, bucket in enumerate(buckets):
+        left = ml + i * bucket_width + (bucket_width - bar_width * len(groups)) / 2
+        for j, group in enumerate(groups):
+            row = bucket["groups"].get(group)
+            value = row["cost_per_task_usd"] if row else None
+            if value is None:
+                continue
+            top = y(float(value))
+            title = (f'{bucket["bucket"]} · {group}: ${float(value):.2f} per participating task '
+                     f'({row["task_count"]} tasks, {row["runs"]} runs)')
+            out.append(f'<rect x="{left + j * bar_width:.1f}" y="{top:.1f}" width="{bar_width:.1f}" '
+                       f'height="{max(y(0) - top, 0.5):.1f}" fill="{colors[group]}"><title>{_esc(title)}</title></rect>')
+    out.append(f'<text x="{ml}" y="{height - 8}" fill="var(--muted)" font-size="11">{_esc(buckets[0]["bucket"])}</text>')
+    out.append(f'<text x="{width - mr}" y="{height - 8}" text-anchor="end" fill="var(--muted)" font-size="11">{_esc(buckets[-1]["bucket"])}</text>')
+    out.append('<g font-size="11" fill="var(--muted)">')
+    for i, group in enumerate(groups):
+        x = ml + i * 100
+        out.append(f'<rect x="{x}" y="10" width="10" height="10" fill="{colors[group]}"/><text x="{x + 14}" y="19">{_esc(group)}</text>')
+    out.append("</g></svg>")
+    return "\n".join(out)
+
+
 def sparkline_svg(values: list[float], width: int = 120, height: int = 28) -> str:
     if len(values) < 2:
         return ""

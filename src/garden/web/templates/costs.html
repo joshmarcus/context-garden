@@ -17,6 +17,11 @@
     <select id="c-by" name="by" onchange="this.form.submit()">
       {% for v in ("activity", "difficulty", "model", "harness", "phase", "task", "session") %}<option value="{{ v }}"{% if by == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
     </select>
+    <label class="muted" for="c-metric">show</label>
+    <select id="c-metric" name="metric" onchange="this.form.submit()">
+      <option value="total"{% if metric == 'total' %} selected{% endif %}>total cost</option>
+      <option value="per_task"{% if metric == 'per_task' %} selected{% endif %}>average cost per task</option>
+    </select>
     <label class="muted" for="c-diff">difficulty</label>
     <select id="c-diff" name="difficulty" onchange="this.form.submit()">
       <option value=""{% if not difficulty %} selected{% endif %}>any</option>
@@ -48,27 +53,30 @@
       {% for v in session_ids %}<option value="{{ v }}"{% if session == v %} selected{% endif %}>{{ v[:12] }}</option>{% endfor %}
     </select>
     <noscript><button class="quiet">Filter</button></noscript>
-    {% if since or bucket != 'day' or by != 'activity' or difficulty or model or harness or phase or task or session %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
+    {% if since or bucket != 'day' or by != 'activity' or metric != 'total' or difficulty or model or harness or phase or task or session %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
   </form>
 </div>
 <div class="panel" style="margin-top:14px">
-  <div class="eyebrow">Spend over time, by {{ by }}</div>
+  <div class="eyebrow">{% if metric == 'per_task' %}Average cost per participating task{% else %}Total cost{% endif %} over time, by {{ by }}</div>
   {{ chart|safe }}
 </div>
 <div class="panel" style="margin-top:14px">
   <div class="eyebrow">Breakdown</div>
   {% if series.groups %}
   <table style="margin-top:8px">
-    <tr><th>{{ by }}</th><th>runs</th><th>cost</th><th>mean/run</th><th>share</th><th>cache reads</th><th>cache writes</th></tr>
+    <tr><th>{{ by }}</th><th>runs</th><th>participating tasks</th><th>total cost</th><th>taskless spend</th><th>average/task</th><th>share</th><th>cache reads</th><th>cache writes</th></tr>
     {% for g in series.groups %}{% set row = series.totals[g] %}
-    <tr><td class="mono">{{ g }}</td><td>{{ row.runs }}</td><td>${{ '%.2f' % row.cost_usd }}</td>
-      <td>{% if row.mean_cost_usd is not none %}${{ '%.2f' % row.mean_cost_usd }}{% endif %}</td>
+    <tr><td class="mono">{{ g }}</td><td>{{ row.runs }}</td><td>{{ row.task_count }}</td><td>{% if not row.cost_complete %}<span title="{{ row.unpriced_runs }} run(s) have no recorded price">partial </span>{% endif %}${{ '%.2f' % row.cost_usd }}</td>
+      <td>{% if row.taskless_runs %}{% if row.taskless_unpriced_runs %}<span title="{{ row.taskless_unpriced_runs }} taskless run(s) have no recorded price">partial </span>{% endif %}${{ '%.2f' % row.taskless_cost_usd }}{% else %}&mdash;{% endif %}</td>
+      <td>{% if row.cost_per_task_usd is not none %}${{ '%.2f' % row.cost_per_task_usd }}{% else %}<span title="{% if row.tasked_unpriced_runs %}{{ row.tasked_unpriced_runs }} tasked run(s) have no recorded price{% else %}no participating tasks{% endif %}">unavailable</span>{% endif %}</td>
       <td>{% if row.share is not none %}{{ (row.share * 100)|round|int }}%{% endif %}</td>
       <td class="mono">{{ '{:,}'.format(row.cache_read_tokens) }}</td>
       <td class="mono">{{ '{:,}'.format(row.cache_write_tokens) }}</td></tr>
     {% endfor %}
   </table>
-  <p class="muted" style="margin:10px 0 0;font-size:12.5px">grand total: ${{ '%.2f' % series.grand_total.cost_usd }} over {{ series.grand_total.runs }} run{{ 's' if series.grand_total.runs != 1 else '' }}</p>
+  <p class="muted" style="margin:10px 0 0;font-size:12.5px">grand total: {% if not series.grand_total.cost_complete %}partial {% endif %}${{ '%.2f' % series.grand_total.cost_usd }} over {{ series.grand_total.runs }} run{{ 's' if series.grand_total.runs != 1 else '' }} and {{ series.grand_total.task_count }} participating task{{ 's' if series.grand_total.task_count != 1 else '' }}. Overall average: {% if series.grand_total.cost_per_task_usd is not none %}${{ '%.2f' % series.grand_total.cost_per_task_usd }} per participating task{% else %}unavailable{% endif %}.</p>
+  {% if series.grand_total.taskless_runs %}<p class="muted" style="margin:6px 0 0;font-size:12.5px">{{ series.grand_total.taskless_runs }} taskless run{{ 's' if series.grand_total.taskless_runs != 1 else '' }}{% if series.grand_total.taskless_cost_usd %} (${{ '%.2f' % series.grand_total.taskless_cost_usd }}){% endif %} is included in total cost and shown in the taskless-spend column, but excluded from per-task averages.</p>{% endif %}
+  <p class="muted" style="margin:6px 0 0;font-size:12.5px">The denominator is distinct task IDs with activity in this window and filter, not runs or lifetime completed tasks. Work and revise can have different task cohorts, so their cost ratio does not by itself measure rework.</p>
   {% else %}<div class="empty">No cost recorded yet for this filter.</div>{% endif %}
 </div>
 <div class="panel" style="margin-top:14px">
