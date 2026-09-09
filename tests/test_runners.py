@@ -67,6 +67,17 @@ def _stop_and_reap_local_run(run: Run) -> None:
         pass
 
 
+def _standalone_supervisor_env(**updates: str) -> dict[str, str]:
+    """Build fixture env without inheriting the containing run's execution lease."""
+    inherited_execution = {
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
+        "GARDEN_OWNER_SCOPED",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
+    env.update(updates)
+    return env
+
+
 @contextmanager
 def _launched_local_run(
     runner: LocalRunner,
@@ -561,8 +572,9 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
     release = tmp_path / "release"
     with _launched_local_run(
         runner, run, tmp_path, brief,
-        {**os.environ, "ORPHAN_SCRIPT": str(orphan), "ORPHAN_PIDS": str(pids),
-         "LEADER_RELEASE": str(release)},
+        _standalone_supervisor_env(
+            ORPHAN_SCRIPT=str(orphan), ORPHAN_PIDS=str(pids), LEADER_RELEASE=str(release)
+        ),
         cleanup=release.touch,
     ):
         deadline = time.monotonic() + 3
@@ -578,6 +590,22 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
         release.touch()
         _wait_for_local_run(run)
         assert run.read_exit_code() == 0
+
+
+def test_local_supervisor_preserves_nonzero_status_until_descendants_exit(tmp_path):
+    """The leader's real status is retained while completion waits for live work."""
+    run_dir = tmp_path / "nonzero"
+    run_dir.mkdir()
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), "sleep 0.25 & exit 7"],
+        check=False,
+        env=_standalone_supervisor_env(),
+    )
+
+    assert result.returncode == 7
+    assert (run_dir / "exit_code").read_text() == "7"
+    assert time.monotonic() - started >= 0.2
 
 
 def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
