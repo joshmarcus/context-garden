@@ -420,8 +420,8 @@ class GitHub:
         """Return open pull requests with whatever review/check state is available.
 
         REST's list endpoint omits those details, so enrich its rows independently. A
-        missing permission for one PR's review or check must not make the repository
-        appear empty.
+        missing permission for one PR's review or check is represented by ``get_pr``;
+        failure to fetch the PR itself propagates so callers can retain stale facts.
         """
         if self.gh:
             out = self._gh(
@@ -454,11 +454,7 @@ class GitHub:
         result: list[PRInfo] = []
         for item in listed:
             basic = self._pr_from_rest(item)
-            try:
-                result.append(self.get_pr(slug, basic.number))
-            except GitHubError as exc:
-                basic.checks = _check_error_state(exc)
-                result.append(basic)
+            result.append(self.get_pr(slug, basic.number))
         return result
 
     def get_pr(self, slug: str, number: int) -> PRInfo:

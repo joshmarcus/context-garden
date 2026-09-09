@@ -349,6 +349,24 @@ def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expect
     assert github.get_pr("team/repo", 7).checks == expected
 
 
+def test_rest_open_pr_list_propagates_pr_detail_failure(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    listed = [{
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "head": {"ref": "feature"}, "base": {"ref": "main"},
+    }]
+
+    def rest(method, path, **kwargs):
+        if path == "/repos/team/repo/pulls":
+            return listed
+        raise GitHubError(f"GET {path}: 503 synthetic detail failure")
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    with pytest.raises(GitHubError, match="synthetic detail failure"):
+        github.list_open_prs("team/repo")
+
+
 @pytest.mark.parametrize("repo", [
     "acct-1234@forge-one.test:team/repo.git",
     "forge-one.test:team/repo.git",
