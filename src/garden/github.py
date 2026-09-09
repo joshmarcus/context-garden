@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
@@ -288,6 +289,10 @@ class GitHub:
         self.trusted_authors = {str(a).strip() for a in (trusted_authors or []) if str(a).strip()}
         self.trusted_bots = {str(b).strip() for b in (trusted_bots or []) if str(b).strip()}
         self._me: str | None = None
+        # Status is immutable for a completed SHA but pending checks can advance.  Keep a
+        # short controller-local cache so many task polls share one authenticated read.
+        self._check_cache: dict[tuple[str, str, str], tuple[float, str, list[str]]] = {}
+        self._rate_limit_until = 0.0
 
     @property
     def available(self) -> bool:
@@ -327,8 +332,52 @@ class GitHub:
             base = base.removesuffix("/v3")
         r = httpx.request(method, base + path, headers=headers, timeout=30, **kw)
         if r.status_code >= 400:
-            raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
+            reset = r.headers.get("x-ratelimit-reset", "")
+            suffix = f"; rate_limit_reset={reset}" if reset else ""
+            raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}{suffix}")
         return r.json() if r.content else None
+
+    def _checks_for_sha(self, slug: str, sha: str) -> tuple[str, list[str]]:
+        """Return a coalesced exact-SHA rollup, failing visibly during rate limits."""
+        if not sha:
+            return "", []
+        now = time.time()
+        key = (self.host, slug.lower(), sha)
+        cached = self._check_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1], list(cached[2])
+        if self._rate_limit_until > now:
+            wait = max(1, int(self._rate_limit_until - now))
+            return "PENDING", [f"GitHub status unavailable; rate limit resets in {wait}s"]
+        try:
+            if self.gh:
+                payload = json.loads(self._gh(
+                    "api", f"repos/{slug}/commits/{sha}/check-runs", "-X", "GET",
+                    "-f", "per_page=100",
+                ) or "{}")
+            else:
+                payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/check-runs",
+                                     params={"per_page": 100}) or {}
+            runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+            rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"),
+                       "state": c.get("status")} for c in runs]
+            state, failures = _rollup_state(rollup), _rollup_failed(rollup)
+            self._check_cache[key] = (now + 10.0, state, failures)
+            return state, failures
+        except (GitHubError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            message = str(exc)
+            reset = re.search(r"rate_limit_reset=(\d+)", message)
+            limited = "rate limit" in message.lower() or reset is not None
+            if limited:
+                self._rate_limit_until = max(now + 10.0, float(reset.group(1)) if reset else now + 60.0)
+                detail = "GitHub status unavailable; rate limited"
+            else:
+                detail = "GitHub status unavailable"
+            # Unavailability is pending, never equivalent to absent or green, and a short
+            # cache prevents one outage from multiplying requests across tasks.
+            unavailable_until = self._rate_limit_until if self._rate_limit_until > now else now + 10.0
+            self._check_cache[key] = (min(unavailable_until, now + 60.0), "PENDING", [detail])
+            return "PENDING", [detail]
 
     def me(self) -> str:
         if self._me is None:
@@ -446,15 +495,15 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup,isDraft,id",
+                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,isDraft,id",
             )
             p = json.loads(out)
-            rollup = p.get("statusCheckRollup") or []
+            checks, failed_checks = self._checks_for_sha(slug, p.get("headRefOid") or "")
             return PRInfo(
                 number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
                 head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                 review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
-                checks=_rollup_state(rollup), failed_checks=_rollup_failed(rollup), updated_at=p.get("updatedAt", ""),
+                checks=checks, failed_checks=failed_checks, updated_at=p.get("updatedAt", ""),
                 body=p.get("body") or "", head_sha=p.get("headRefOid") or "", is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
@@ -462,14 +511,7 @@ class GitHub:
         info.body = p.get("body") or ""
         info.head_sha = (p.get("head") or {}).get("sha", "")
         if info.head_sha:
-            try:
-                runs = self._rest("GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs", params={"per_page": 100}) or {}
-                rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"), "state": c.get("status")}
-                          for c in runs.get("check_runs", [])]
-                info.checks = _rollup_state(rollup)
-                info.failed_checks = _rollup_failed(rollup)
-            except GitHubError:
-                pass
+            info.checks, info.failed_checks = self._checks_for_sha(slug, info.head_sha)
         try:
             reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
             latest: dict[str, str] = {}
