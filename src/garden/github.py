@@ -351,16 +351,26 @@ class GitHub:
             return "PENDING", [f"GitHub status unavailable; rate limit resets in {wait}s"]
         try:
             if self.gh:
-                payload = json.loads(self._gh(
+                checks_payload = json.loads(self._gh(
                     "api", f"repos/{slug}/commits/{sha}/check-runs", "-X", "GET",
                     "-f", "per_page=100",
                 ) or "{}")
+                statuses_payload = json.loads(self._gh(
+                    "api", f"repos/{slug}/commits/{sha}/status", "-X", "GET",
+                    "-f", "per_page=100",
+                ) or "{}")
             else:
-                payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/check-runs",
-                                     params={"per_page": 100}) or {}
-            runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+                checks_payload = self._rest(
+                    "GET", f"/repos/{slug}/commits/{sha}/check-runs", params={"per_page": 100}
+                ) or {}
+                statuses_payload = self._rest(
+                    "GET", f"/repos/{slug}/commits/{sha}/status", params={"per_page": 100}
+                ) or {}
+            runs = checks_payload.get("check_runs", []) if isinstance(checks_payload, dict) else []
             rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"),
                        "state": c.get("status")} for c in runs]
+            statuses = statuses_payload.get("statuses", []) if isinstance(statuses_payload, dict) else []
+            rollup.extend({"context": s.get("context"), "state": s.get("state")} for s in statuses)
             state, failures = _rollup_state(rollup), _rollup_failed(rollup)
             self._check_cache[key] = (now + 10.0, state, failures)
             return state, failures
