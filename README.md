@@ -2,36 +2,84 @@
 
 **Drive autonomous agent development by tending a context garden.** You maintain principles, product overviews, phase goals, and specs as Markdown; context-garden turns that context into plans, working code, and reviewed pull requests. As your project grows, you refine the documents that guide the agents, and the agents carry the work through implementation, checks, review, and revision. Your job is to shape the goals, make decisions, and choose what ships.
 
-Use Claude Code, Codex, or a custom CLI harness with your project's own setup, test, and lint commands. Run the loop locally, on prepared remote hosts, or alongside an interactive coding session.
+You can change the direction of the project in the same place you define it. Each worker gets a focused brief built from the shared context, and each phase leaves evidence you can use to improve the next one: what shipped, where agents got stuck, how reviewers responded, and what the work cost.
 
-![Inbox showing a worker question, draft work to approve, and phase progress](docs/screenshots/inbox-light.png)
+[Features](#what-you-can-do) · [See it in action](#feature-tour) · [Install](#install) · [First project](#your-first-project) · [Operating guide](docs/operations.md)
 
-*The Inbox collects decisions that need you. Screenshots throughout this page show the current app with a fictional example project; tasks and costs are illustrative.*
-
-[Features](#what-you-can-do) · [Install](#install) · [First project](#your-first-project) · [Feature tour](#feature-tour) · [Operating guide](docs/operations.md)
+![The development loop: maintain principles, product context, goals, and specs; plan and approve; build and check; review and merge. Feedback drives revisions, and retrospectives inform the next phase.](docs/development-loop.svg)
 
 ## What you can do
 
-- **Start from an existing repository.** Onboarding reads project docs, metadata, and backlog, then drafts product context, setup commands, and a first phase for you to inspect.
-- **Plan work with enough context to finish it.** Each task carries acceptance criteria, a reading list, dependencies, and a difficulty tier. Shared principles and phase goals become part of its worker brief; you can inspect that brief before approving.
-- **Run several tasks at once.** Workers get dedicated git worktrees. Dependencies control ordering, and stacked PRs let related work start before its parent merges. Set work and review capacity separately.
-- **Get checked changes and review evidence.** Tests and lint gate PR creation. Automated reviewers check the task's criteria; feedback and failed checks feed a bounded revision loop. Add persona reviews for another perspective.
-- **Make decisions where the work is.** Answer a worker's question, approve a draft, send a PR back, or recover a stopped task from the Inbox and task pages. Runs preserve prompts, output, results, and usage.
-- **See what the work costs.** Break spend down by task, phase, activity, model, or harness. Set phase budgets, inspect brief size, and compare models with trials. Record delegated operator spend alongside worker costs.
-- **Carry lessons into the next phase.** Retrospectives bring together outcomes, friction, costs, and persona reviews, with follow-up work or blockers when a phase is not ready to close.
-- **Choose how much to automate.** Merge PRs yourself, or enable the merge queue's review and CI gates. Use local, SSH, remote lease-based, or manual workers; operate through the CLI, web UI, or TUI.
+- **Keep context useful as the project changes.** Maintain principles, product overviews, goals, and specs in Git. Each worker's brief includes the shared context and its task's reading list, so the direction you set reaches the work being done.
+- **Turn goals into coordinated work.** Plan a phase as tasks with acceptance criteria and dependencies. Run agents in parallel worktrees; stack related PRs and advance dependent tasks as changes merge.
+- **Close the review loop.** Configured tests and lint gate PR creation. Automated reviewers check the task's criteria, and failed checks or review feedback drive bounded revisions. Add persona reviews for another perspective.
+- **Handle decisions without losing the thread.** Answer a worker's question, approve scope, send a PR back, or recover a stopped task. The task keeps its brief, run output, review evidence, and history together.
+- **Watch autonomous work as it happens.** Now shows runs in flight, progress excerpts, what is queued next, and where the phase stands. The Board gives you columns, a task list, and a backlog you can reorder across phases.
+- **Compare models by the work they get accepted.** Inspect cost per accepted task, first-pass approval, revision rounds, and lead time by model and difficulty. Compare per-run costs, run model trials, set budgets, and account for delegated operator spend.
+- **Use each phase to improve the next.** Retrospectives bring together outcomes, friction, costs, and persona reviews. They can propose follow-up work or identify blockers before a phase closes; you refine the context for what comes next.
+- **Bring your existing project and tools.** Onboarding drafts context and a first phase from your repository. Use Claude Code, Codex, or a custom CLI harness with your project's setup, test, and lint commands; choose local, SSH, remote lease-based, or manual workers.
 
-The scheduler itself uses **no model tokens**: it polls, orders tasks, collects results, and advances state in Python. Planning, implementation, reviews, agent-assisted revisions, and retrospectives use models. A delegated operator session also uses tokens. Waiting for CI does not require an agent to sit in a chat polling it.
+The scheduler itself uses **no model tokens**: it polls, orders tasks, collects results, and advances state in Python. Models do the planning, implementation, reviews, agent-assisted revisions, and retrospectives. A delegated operator session also uses tokens. Waiting for CI does not require an agent to sit in a chat polling it.
 
-## How the work moves
+## Feature tour
 
-```text
-Goals + specs → draft tasks → approval → work + checks → draft PR
-                                             ↑             ↓
-                                         revision ← review feedback
-                                                           ↓
-                                                     merge → next task
-```
+### Watch the work move
+
+**Now** is the live view of the loop: workers and reviewers in flight, progress from their output, the next tasks, and phase progress. Open a run to inspect its evidence. Below is the garden developing context-garden itself.
+
+![Now showing parallel agent runs, progress excerpts, review work, and the last 24 hours of activity in the real development garden](docs/screenshots/now-light.png)
+
+### Shape the plan across phases
+
+The **Board** backlog puts upcoming work in phase order, with controls to change priority and move tasks between phases. Switch to columns for state or to the list for a compact view of tasks and PRs.
+
+![Live Board backlog showing tasks grouped by phase with priorities, state, and reorder controls](docs/screenshots/board-backlog-light.png)
+
+<details>
+<summary>See the Board's columns and list views</summary>
+
+**Columns:** scan the work by state, from draft and blocked through running and review. The board scrolls horizontally to show the remaining states.
+
+![Live Board columns showing draft, blocked, ready, running, and review work](docs/screenshots/board-columns-light.png)
+
+**List:** read task titles, state, priority, difficulty, and PR links together.
+
+![Live Board list showing tasks by state in a single phase](docs/screenshots/board-list-light.png)
+
+</details>
+
+### See which models work well for your tasks
+
+The comparison charts lower down **Now** connect model choices to outcomes. Cost per accepted task, first-pass approval, revision rounds, and lead time are broken out by difficulty. Cells include sample counts; sparse results are marked so a small sample does not look like a reliable winner.
+
+![Now comparison charts showing cost per accepted task, first-pass approval, work-run cost, revision rounds, and median lead time by model and difficulty](docs/screenshots/now-outcomes-light.png)
+
+The per-run comparison separates work, revision, review, and other activities by harness and model. Use it alongside the outcome charts when tuning model assignments and the amount of review a task needs. The **Costs** page provides spending history and additional filters.
+
+![Now heatmap comparing mean cost per run across activities, harnesses, and models, with totals and sample counts](docs/screenshots/now-run-costs-light.png)
+
+*These are snapshots of this project's development history over the selected 24-hour window, not controlled model benchmarks or estimates for your project.*
+
+### Keep the context and decisions within reach
+
+The **Trellis** makes dependencies visible. Task pages keep the brief, acceptance criteria, worker questions, and recorded usage together. The **Inbox** gathers the decisions that need you. Phase pages connect the work to goals and specs; closed phases remain available in the **Herbarium**.
+
+<details>
+<summary>Explore the Trellis, task page, Inbox, and phase page</summary>
+
+These four captures use a small fictional Fieldnotes project to make the individual features easy to read.
+
+![Trellis showing dependencies across an example project's tasks](docs/screenshots/trellis-light.png)
+
+![Dark task page with a worker question, acceptance criteria, and recorded usage](docs/screenshots/task-dark.png)
+
+![Example Inbox with a worker question and draft tasks to approve](docs/screenshots/inbox-light.png)
+
+![Example phase page with progress, task status, and its specification](docs/screenshots/phase-light.png)
+
+</details>
+
+## What you maintain
 
 Your **garden** is a git repository of Markdown files. It holds the context and task history; each product points to its code repository. The garden driving this tool lives at [joshmarcus/garden](https://github.com/joshmarcus/garden).
 
@@ -48,7 +96,7 @@ my-garden/
   .garden/                       # local run records and working state (gitignored)
 ```
 
-You can version and edit the context in your usual editor. Use garden commands or the UI for task status changes.
+Edit and version the context in your usual editor. Use garden commands or the UI for task status changes.
 
 ## Install
 
@@ -154,32 +202,6 @@ Use `garden approve ID` instead of `--all` to start with a single task. Open **h
 Follow the task's runs and evidence, answer any questions in the **Inbox**, and inspect the resulting draft PR and automated review. Mark it ready with the UI or `garden triage ID --ready`; send it back with `garden triage ID --changes "feedback"`. Once review and CI are satisfactory, merge on GitHub. The next poll records the merge and advances dependent work.
 
 From another terminal with the same environment active, run `garden status`, `garden inbox`, or `garden observe --profile quiet`. `garden watch` runs the scheduler without the web UI; `garden tui` opens the terminal interface.
-
-## Feature tour
-
-### Follow the plan and its dependencies
-
-The **Board** groups tasks by state. The **Trellis** shows which tasks depend on each other, so you can inspect the plan before approving it and see what is holding up the next piece of work.
-
-![Trellis showing dependencies across the example project's tasks](docs/screenshots/trellis-light.png)
-
-### Read the brief, answer questions, inspect the result
-
-A task page keeps its acceptance criteria, worker question, run history, and usage together. Review and triage actions appear when the task reaches those stages. Light and dark themes are available throughout the app.
-
-![Task page in dark theme with a worker question, acceptance criteria, and run history](docs/screenshots/task-dark.png)
-
-### Track a phase from scope to completion
-
-Phase pages put goals, specs, progress, and tasks in one place. Kickoff reviews help examine the plan; retrospectives assess the outcome and propose the next work. Closed phases remain available in the **Herbarium**.
-
-![Phase page showing goals, progress, and task status](docs/screenshots/phase-light.png)
-
-### Compare spending across the work
-
-**Costs** groups recorded spend by activity, difficulty, model, harness, phase, task, or operator session. Use it to understand where revisions and reviews add cost, then inspect the underlying runs. The figures below are sample data, not a price estimate.
-
-![Costs page with illustrative spending by activity](docs/screenshots/costs-light.png)
 
 ## Keep the loop running
 

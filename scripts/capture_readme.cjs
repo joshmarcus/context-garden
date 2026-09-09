@@ -10,7 +10,6 @@ const pages = [
   ['trellis-light', '/trellis', 'light'],
   ['task-dark', '/tasks/DM-002', 'dark'],
   ['phase-light', '/phases/demo/p1', 'light'],
-  ['costs-light', '/costs', 'light'],
 ];
 (async () => {
   await fs.mkdir(output, { recursive: true });

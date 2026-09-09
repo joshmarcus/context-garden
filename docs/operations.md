@@ -2,6 +2,12 @@
 
 For installation and your first project, start with the [README](../README.md).
 
+## Phase retrospectives
+
+A phase retrospective brings together persona reviews, friction, outcomes, and costs. It can close the phase, propose follow-ups, or identify blockers to reopen. Use those findings to revise the goals and specifications for the next phase.
+
+Publishing retrospective documents as a PR requires the garden itself to be registered as a `self: true` product. See [the architecture guide](architecture.md#git-and-the-pull-request) for the repository and publication flow.
+
 ## Checks, merging and capacity
 
 Workers commit in their assigned worktrees. The scheduler publishes branches and owns

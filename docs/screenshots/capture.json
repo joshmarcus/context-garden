@@ -56,20 +56,6 @@
         "scroll": 1280
       },
       "errors": []
-    },
-    {
-      "name": "costs-light",
-      "route": "/costs",
-      "colorScheme": "light",
-      "viewport": {
-        "width": 1280,
-        "height": 1200
-      },
-      "widths": {
-        "client": 1280,
-        "scroll": 1280
-      },
-      "errors": []
     }
   ]
 }
