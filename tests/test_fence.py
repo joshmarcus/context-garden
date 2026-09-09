@@ -879,3 +879,26 @@ def test_fence_migration_preserves_interleaved_state_writer(sched):
     saved = State(sched.state.path).get(task.id)
     assert saved["operator_note"] == "keep concurrent update"
     assert saved["fence_guard_manifest"]["run"] == run.run_id
+
+
+def test_notification_recipient_is_held_across_restart_until_operator_accepts(sched, garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["notify"] = {"recipient": "operator@example.invalid"}
+    path.write_text(yaml.safe_dump(config))
+    sched.tick()
+    assert sched.store.task("DM-001").status.value == "running"
+
+    config["notify"]["recipient"] = "redirected@example.invalid"
+    path.write_text(yaml.safe_dump(config))
+    fresh = Scheduler(Store(garden))
+    assert fresh.cfg.get("notify.recipient") == "operator@example.invalid"
+    assert "notify.recipient" in fresh.config_hold()["keys"]
+
+    fresh.accept_config_reload(by="test")
+    fresh.tick()
+    accepted = Scheduler(Store(garden))
+    assert accepted.cfg.get("notify.recipient") == "redirected@example.invalid"
