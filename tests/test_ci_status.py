@@ -24,6 +24,10 @@ def write_receipt(path, *, source_sha="new", selection=None, exit_code=0):
                                 "log_location": str(path.parent)}))
 
 
+def set_started_at(path, value):
+    (path.parent / "execution.json").write_text(json.dumps({"execution_started_at": value}))
+
+
 def test_github_status_fails_closed_for_missing_unknown_and_failure():
     pr = PRInfo(1, "https://example.test/pr/1", "OPEN", head_sha="abc")
     assert github_status(pr, required=True).state == "missing"
@@ -65,6 +69,37 @@ def test_worker_check_rejects_missing_selection_or_durable_log(tmp_path):
     write_receipt(result)
     (result.parent / "stderr.log").unlink()
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+
+def test_worker_check_uses_execution_time_not_attempt_directory_name(tmp_path):
+    validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
+    older = validations / "999" / "result.json"
+    newer = validations / "1000" / "result.json"
+    write_receipt(older)
+    set_started_at(older, "2026-09-09T10:00:00+00:00")
+    write_receipt(newer, exit_code=1)
+    set_started_at(newer, "2026-09-09T11:00:00+00:00")
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.state == "failure"
+    assert status.evidence_url == "/runs/CG-1/run"
+
+
+def test_worker_check_does_not_fall_back_after_malformed_latest_attempt(tmp_path):
+    validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
+    older = validations / "1" / "result.json"
+    newer = validations / "2" / "result.json"
+    write_receipt(older)
+    set_started_at(older, "2026-09-09T10:00:00+00:00")
+    write_receipt(newer)
+    set_started_at(newer, "2026-09-09T11:00:00+00:00")
+    (newer.parent / "stderr.log").unlink()
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.state == "malformed"
+    assert status.exists_for_sha and not status.green
 
 
 def test_pluggable_provider_timeout_and_mismatched_response_fail_closed(tmp_path):
