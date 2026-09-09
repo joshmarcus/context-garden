@@ -260,16 +260,21 @@ def register(app: FastAPI, site: Site) -> None:
                 run.claim_history.append({"claimed_at": claim_time, "host": run.host,
                                           "lease_token_sha256": hashlib.sha256(run.lease_token.encode()).hexdigest(),
                                           "pushed_ref": run.pushed_ref})
-                try:
-                    source = str(configured_repo)
-                    scheduler_repo = gitops.ensure_repo(
-                        source if is_git_remote_url(source) else repo_path,
-                        hub.store.config.repos_dir,
-                    )
-                    gitops.fetch(scheduler_repo)
-                    run.start_head = gitops.remote_head(scheduler_repo, run.branch)
-                except (AttributeError, gitops.GitError):
-                    run.start_head = ""
+                if run.source_head:
+                    # The scheduler recorded this immutable base-probe source before the
+                    # lease. Do not replace it with the task branch's moving head.
+                    run.start_head = run.source_head
+                else:
+                    try:
+                        source = str(configured_repo)
+                        scheduler_repo = gitops.ensure_repo(
+                            source if is_git_remote_url(source) else repo_path,
+                            hub.store.config.repos_dir,
+                        )
+                        gitops.fetch(scheduler_repo)
+                        run.start_head = gitops.remote_head(scheduler_repo, run.branch)
+                    except (AttributeError, gitops.GitError):
+                        run.start_head = ""
                 persist_host_facts(run, body.get("host_facts"))
                 run.save()
                 setup = hub.store.config.product_setup(product) or {}
@@ -285,7 +290,7 @@ def register(app: FastAPI, site: Site) -> None:
                         + int(hub.store.config.get("workers.recovery_seconds", 300))
                     ),
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
-                    "branch": run.branch, "base": run.base,
+                    "branch": run.branch, "base": run.base, "source_head": run.source_head,
                     "push_ref": run.pushed_ref,
                     "repo": repo_value,
                     # The product command is trusted executable configuration. Values from
