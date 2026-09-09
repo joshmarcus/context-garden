@@ -2388,9 +2388,7 @@ def test_observe_profile_override_from_config_page(garden):
 
 
 def test_operating_profile_switch_from_the_rail_and_config_page(garden):
-    """CG-221: the rail slider and the Config page both post to the same live override, no
-    Set button, a plain select and form post — and the switch is visible everywhere within
-    a tick: dispatch's worker count, the review tier and the observe feed."""
+    """The rail's discrete slider and Config page use the same live profile override."""
     from garden.observe import resolve
     from garden.scheduler import Scheduler
     from garden.store import Store
@@ -2398,10 +2396,15 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     c = client(garden)
     home = c.get("/").text
     assert "Operating profile" in home
-    assert "plain garden.yaml values" in home
+    assert 'data-profile-slider' in home
+    assert 'type="range"' in home
+    assert 'action="/config/operating-profile"' in home
+    assert '<output for="operating-profile-slider">Plain config</output>' in home
+    assert 'aria-valuetext="No operating profile; plain garden.yaml values"' in home
+    assert "completion time and total cost depend on those settings" in home
+    assert "Profile changes do not resume dispatch or raise resource caps." in home
     for name in ("economy", "balanced", "fast"):
-        assert f'value="{name}"' in home and f'>{name}</option>' in home
-    assert "<button>Set</button>" not in home and ">Set<" not in home
+        assert f">{name.capitalize()}</span>" in home
 
     config_page = c.get("/config").text
     assert "no live override" in config_page
@@ -2412,7 +2415,9 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     config_page = c.get("/config").text
     assert "live override: <strong>fast</strong>" in config_page
     home = c.get("/").text
-    assert 'value="fast" selected' in home or 'selected>fast<' in home
+    assert '<output for="operating-profile-slider">Fast</output>' in home
+    assert "does not guarantee faster completion" in home
+    assert "live override requests 7 workers" in home
 
     # the Parallelism and observe-profile panels say the *stop*, not garden.yaml, answers
     # max_parallel and observe.profile now — the "which values come from the stop" criterion
@@ -2433,6 +2438,224 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     r = c.post("/config/operating-profile", data={"value": ""}, follow_redirects=False)
     assert r.status_code == 303
     assert "no live override" in c.get("/config").text
+
+
+def test_operating_profile_clear_reports_configured_profile(garden):
+    """Clearing a live override reports the garden.yaml profile that becomes active."""
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["operating_profile"] = "balanced"
+    config_path.write_text(yaml.safe_dump(config))
+
+    c = client(garden)
+    assert c.post(
+        "/config/operating-profile",
+        data={"value": "fast"},
+        headers={"Accept": "application/json"},
+    ).json()["value"] == "fast"
+    response = c.post(
+        "/config/operating-profile",
+        data={"value": ""},
+        headers={"Accept": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": "balanced", "source": "garden.yaml", "status": "saved"}
+    assert '<output for="operating-profile-slider">Balanced</output>' in c.get("/").text
+
+
+def test_operating_profile_slider_supports_extra_stops_and_json_errors(garden):
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["profiles"] = {"turbo": {"workers": 9, "reviews": 4}}
+    config_path.write_text(yaml.safe_dump(config))
+
+    c = client(garden)
+    home = c.get("/").text
+    assert ">Turbo</span>" in home
+    assert 'max="4"' in home
+    assert c.post("/config/operating-profile", data={"value": "invalid"},
+                  headers={"Accept": "application/json"}).status_code == 400
+
+
+def test_operating_profile_slider_renders_a_removed_selected_stop(garden):
+    """A stale custom override remains honestly selectable after its stop is removed."""
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["profiles"] = {"turbo": {"workers": 9, "reviews": 4}}
+    config_path.write_text(yaml.safe_dump(config))
+    c = client(garden)
+    assert c.post("/config/operating-profile", data={"value": "turbo"}).status_code == 200
+
+    config.pop("profiles")
+    config_path.write_text(yaml.safe_dump(config))
+
+    # A fresh app reads the updated stop list while retaining the live override.
+    c = client(garden)
+    home = c.get("/")
+    assert home.status_code == 200
+    assert 'value="turbo"' in home.text
+    assert "Unavailable: turbo" in home.text
+    assert '<output for="operating-profile-slider">Unavailable: turbo</output>' in home.text
+    assert 'aria-valuetext="Unavailable: turbo operating profile"' in home.text
+    assert "names an unavailable profile; using plain garden.yaml values." in home.text
+
+
+def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_path):
+    """The rail control changes a real isolated app, retains its pause state, and reloads."""
+    import socket
+    import threading
+
+    import uvicorn
+    from playwright.sync_api import sync_playwright
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    store = Store(garden)
+    Scheduler(store).pause(by="test")
+    app = create_app(store, watch=False, host="127.0.0.1", port=port)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{port}/"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(url, wait_until="networkidle")
+            slider = page.locator("#operating-profile-slider")
+            slider.focus()
+            slider.press("ArrowRight")
+            page.get_by_text("saved ✓").wait_for()
+            slider.press("End")
+            page.get_by_text("saved ✓").wait_for()
+            assert slider.get_attribute("aria-valuetext") == "Fast operating profile"
+            assert "fast" in page.locator(".profile-current").inner_text().lower()
+            assert "does not guarantee faster completion" in page.locator(
+                "[data-profile-tradeoff]"
+            ).inner_text()
+            assert "live override requests 7 workers" in page.locator(
+                "[data-profile-meaning]"
+            ).inner_text()
+            page.screenshot(path=str(tmp_path / "profile-slider-1280-light.png"), full_page=True)
+            # Keep the first request unresolved while choosing a second stop.  Its failure
+            # must not leave the old saved stop visible after the queued save succeeds.
+            page.evaluate("""
+                () => {
+                  window.profileSaveCalls = [];
+                  window.originalProfileFetch = window.fetch;
+                  window.fetch = (url, options) => new Promise(resolve => {
+                    window.profileSaveCalls.push({url, options, resolve});
+                  });
+                }
+            """)
+            slider.press("Home")
+            page.wait_for_function("window.profileSaveCalls.length === 1")
+            slider.press("ArrowRight")
+            page.evaluate("""
+                () => {
+                  window.fetch = window.originalProfileFetch;
+                  window.profileSaveCalls[0].resolve(
+                    new Response(JSON.stringify({detail: "profile locked by policy"}), {
+                      status: 400, headers: {"Content-Type": "application/json"},
+                    })
+                  );
+                }
+            """)
+            assert slider.get_attribute("aria-valuetext") == "Economy operating profile"
+            page.get_by_text("saved ✓").wait_for()
+            assert slider.get_attribute("aria-valuetext") == "Economy operating profile"
+            page.reload(wait_until="networkidle")
+            assert "economy" in page.locator(".profile-current").inner_text().lower()
+            assert "dispatch paused" in page.locator(".rail .foot").inner_text().lower()
+            # Return to the saved stop while a different request is pending.  The
+            # successful first request must be followed by a request restoring
+            # the newest selection, rather than leaving the range thumb ahead
+            # of the hidden and persisted values.
+            page.evaluate("""
+                () => {
+                  window.profileSaveCalls = [];
+                  window.originalProfileFetch = window.fetch;
+                  window.fetch = (url, options) => {
+                    const value = new URLSearchParams(options.body).get("value");
+                    window.profileSaveCalls.push({url, value});
+                    if (window.profileSaveCalls.length === 1) {
+                      return new Promise(resolve => { window.resolveProfileSave = resolve; });
+                    }
+                    return window.originalProfileFetch(url, options);
+                  };
+                }
+            """)
+            slider.press("End")
+            page.wait_for_function("window.profileSaveCalls.length === 1")
+            page.evaluate("""
+                () => {
+                  const input = document.querySelector("#operating-profile-slider");
+                  input.value = "1";  // Economy, the value saved before the pending request.
+                  input.dispatchEvent(new Event("change", {bubbles: true}));
+                  window.resolveProfileSave(new Response(JSON.stringify({value: "fast", source: "live override", status: "saved"}), {
+                    status: 200, headers: {"Content-Type": "application/json"},
+                  }));
+                }
+            """)
+            page.wait_for_function("window.profileSaveCalls.length === 2")
+            assert page.evaluate("window.profileSaveCalls.map(call => call.value)") == ["fast", "economy"]
+            page.get_by_text("saved ✓").wait_for()
+            page.reload(wait_until="networkidle")
+            assert "economy" in page.locator(".profile-current").inner_text().lower()
+            # Clearing with no garden.yaml profile returns to plain values and
+            # must not prefix that explanation as though plain config were a profile.
+            slider.press("Home")
+            page.wait_for_function("""
+                () => document.querySelector("[data-profile-meaning]").textContent ===
+                  "No profile requested; using plain garden.yaml values."
+            """)
+            assert slider.get_attribute("aria-valuetext") == (
+                "No operating profile; plain garden.yaml values"
+            )
+            assert page.locator("[data-profile-meaning]").inner_text() == (
+                "No profile requested; using plain garden.yaml values."
+            )
+            # Clearing the live override reveals a profile named by garden.yaml.
+            # The successful response must immediately reconcile the control and
+            # its explanation to that effective value, before any reload.
+            page.evaluate("""
+                () => {
+                  window.fetch = () => Promise.resolve(new Response(JSON.stringify({
+                    value: "balanced", source: "garden.yaml", status: "saved",
+                  }), {status: 200, headers: {"Content-Type": "application/json"}}));
+                }
+            """)
+            slider.press("End")
+            page.wait_for_function("""
+                () => document.querySelector("#operating-profile-slider")
+                  .getAttribute("aria-valuetext") === "Balanced operating profile"
+            """)
+            assert slider.get_attribute("aria-valuetext") == "Balanced operating profile"
+            assert "Balanced mixes concurrency" in page.locator(
+                "[data-profile-tradeoff]"
+            ).inner_text()
+            assert "garden.yaml requests 5 workers" in page.locator(
+                "[data-profile-meaning]"
+            ).inner_text()
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.screenshot(path=str(tmp_path / "profile-slider-390-light.png"), full_page=True)
+            page.emulate_media(color_scheme="dark")
+            page.screenshot(path=str(tmp_path / "profile-slider-390-dark.png"), full_page=True)
+            page.set_viewport_size({"width": 1280, "height": 900})
+            page.screenshot(path=str(tmp_path / "profile-slider-1280-dark.png"), full_page=True)
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
 
 
 def test_operating_profile_spend_rate_shown_on_the_rail(garden):
@@ -2495,7 +2718,7 @@ def test_editable_values_apply_on_change_with_a_saved_mark(garden):
     an autosave-mark slot for the JS-driven saved/undo behaviour."""
     import re
 
-    autosave_form_re = re.compile(r"<form\b[^>]*\bdata-autosave\b")
+    autosave_form_re = re.compile(r"<form\b[^>]*\bdata-(?:autosave|profile-slider)\b")
     for url in ("/config", "/tasks/DM-001", "/phases/demo/p1"):
         page = client(garden).get(url).text
         forms = autosave_form_re.findall(page)

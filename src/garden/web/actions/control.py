@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from ...github import GitHubError
 from ...gitops import GitError
@@ -126,8 +126,14 @@ def register(app: FastAPI, site: Site) -> None:
             try:
                 sched.set_operating_profile(value, by="web")
             except ValueError as e:
+                if "application/json" in request.headers.get("accept", ""):
+                    return JSONResponse({"detail": str(e)}, status_code=400)
                 return RedirectResponse(_flash_url(back, str(e)), status_code=303)
             hub._log(f"operating profile set to {value or '(none)'} via web")
+            active = sched.operating_profile_name()
+            source = "live override" if value else ("garden.yaml" if active else "plain garden.yaml values")
+        if "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({"value": active, "source": source, "status": "saved"})
         return RedirectResponse(back, status_code=303)
 
     @app.post("/config/accept-reload")
