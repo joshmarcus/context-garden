@@ -91,7 +91,7 @@ def test_move_ready_task_into_a_frozen_phase_preserves_status_and_refuses_dispat
         Scheduler(Store(garden)).dispatch(t)
 
 
-def test_move_web_keeps_a_pr_task_history_and_shows_frozen_hold(garden):
+def test_move_pr_task_keeps_history_and_frozen_review_hold(garden):
     assert run(garden, "new-phase", "demo", "p2").exit_code == 0
     assert run(garden, "freeze", "demo/p2").exit_code == 0
     store = Store(garden)
@@ -102,7 +102,13 @@ def test_move_web_keeps_a_pr_task_history_and_shows_frozen_hold(garden):
     store.save(t)
     state = State(garden / ".garden" / "state.json")
     st = state.get(t.id)
-    st.update({"pr_number": 42, "revisions": 2, "last_review": {"verdict": "approve"}})
+    st.update({
+        "pr_number": 42,
+        "revisions": 2,
+        "last_review": {"verdict": "approve"},
+        "review_rounds": 2,
+        "needs_human": {"kind": "review_cap", "reason": "review cap reached"},
+    })
     state.save()
     runs = RunStore(garden / ".garden")
     completed = runs.new_run(t.id, "local", mode="review")
@@ -125,6 +131,17 @@ def test_move_web_keeps_a_pr_task_history_and_shows_frozen_hold(garden):
     page = c.get("/tasks/DM-002").text
     assert "Held by frozen phase" in page and "in review" in page and "will not start, revise, review, rebase, or merge" in page
     assert "Persona review" not in page
+
+    # CLI and web use review_again(), whose frozen gate must run before the cap bypass
+    # changes either of these preserved review-lifecycle fields.
+    refused = run(garden, "review", "DM-002")
+    assert refused.exit_code == 1 and "frozen" in refused.output
+    refused = c.post("/tasks/DM-002/review", follow_redirects=True)
+    assert "frozen" in refused.text
+    retained_state = State(garden / ".garden" / "state.json").get("DM-002")
+    assert retained_state["review_rounds"] == 2
+    assert retained_state["needs_human"] == {"kind": "review_cap", "reason": "review cap reached"}
+
     refused = c.post("/tasks/DM-002/persona", data={"note": "security"}, follow_redirects=True)
     assert "frozen" in refused.text
 

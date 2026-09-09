@@ -849,6 +849,7 @@ class ReviewMixin:
         ensure_open(task)
         if not task.pr:
             raise RuntimeError(f"{task.id} has no PR to review")
+        self._refuse_if_closed_or_frozen(task)
         st = self.state.get(task.id)
         self._grant_one_more_review_round(st)
         st.pop("needs_human", None)
