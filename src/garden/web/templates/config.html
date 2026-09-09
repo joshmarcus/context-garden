@@ -26,7 +26,7 @@
   {% for row in editor_rows %}
     <section class="config-setting" id="setting-{{ row.field.key|replace('.', '-') }}">
       <div class="config-setting-head">
-        <div><h3><code>{{ row.field.key }}</code></h3><p class="muted">{{ row.field.help }}</p></div>
+        <div><h3><code>{{ row.field.key }}</code></h3><p class="muted" id="config-help-{{ loop.index }}">{{ row.field.help }}</p></div>
         <span class="pill">{{ row.field.apply.value|replace('_', ' ') }}</span>
       </div>
       <p class="metadata">
@@ -43,15 +43,15 @@
         <input type="hidden" name="key" value="{{ row.field.key }}">
         <input type="hidden" name="product" value="{{ selected_product }}">
         <input type="hidden" name="revision" value="{{ config_revision }}">
-        <label class="sr-only" for="config-value-{{ loop.index }}">Value for {{ row.field.key }}</label>
+        <label for="config-value-{{ loop.index }}">Value for {{ row.field.key }}</label>
         {% if row.field.value_type == "boolean" %}
-        <select id="config-value-{{ loop.index }}" name="value"><option value="true" {% if row.rendered == 'true' %}selected{% endif %}>true</option><option value="false" {% if row.rendered == 'false' %}selected{% endif %}>false</option></select>
+        <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}"><option value="true" {% if row.rendered == 'true' %}selected{% endif %}>true</option><option value="false" {% if row.rendered == 'false' %}selected{% endif %}>false</option></select>
         {% elif row.choices %}
-        <select id="config-value-{{ loop.index }}" name="value">{% for choice in row.choices %}<option value="{{ choice }}" {% if row.rendered == choice|string %}selected{% endif %}>{{ choice if choice != '' else '(empty)' }}</option>{% endfor %}</select>
+        <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}">{% for choice in row.choices %}<option value="{{ choice }}" {% if row.rendered == choice|string %}selected{% endif %}>{{ choice if choice != '' else '(empty)' }}</option>{% endfor %}</select>
         {% elif row.structured %}
-        <textarea id="config-value-{{ loop.index }}" name="value" rows="{% if row.field.value_type == 'mapping' %}4{% else %}2{% endif %}" spellcheck="false">{{ row.rendered }}</textarea>
+        <textarea id="config-value-{{ loop.index }}" name="value" rows="{% if row.field.value_type == 'mapping' %}4{% else %}2{% endif %}" spellcheck="false" aria-describedby="config-help-{{ loop.index }}">{{ row.rendered }}</textarea>
         {% else %}
-        <input id="config-value-{{ loop.index }}" name="value" type="{{ 'password' if row.field.secret else ('number' if 'integer' in row.field.value_type or row.field.value_type == 'number' else 'text') }}" value="{{ row.rendered }}" {% if row.field.minimum is not none %}min="{{ row.field.minimum }}"{% endif %} {% if row.field.secret %}autocomplete="new-password" placeholder="Enter a replacement; saved value is hidden"{% endif %}>
+        <input id="config-value-{{ loop.index }}" name="value" type="{{ 'password' if row.field.secret else ('number' if 'integer' in row.field.value_type or row.field.value_type == 'number' else 'text') }}" value="{{ row.rendered }}" aria-describedby="config-help-{{ loop.index }}" {% if row.field.minimum is not none %}min="{{ row.field.minimum }}"{% endif %} {% if row.field.secret %}autocomplete="new-password" placeholder="Enter a replacement; saved value is hidden"{% endif %}>
         {% endif %}
         <button class="primary">Save</button>
         {% if selected_product and row.overridden %}<button name="reset" value="true">Reset to inherited</button>{% endif %}

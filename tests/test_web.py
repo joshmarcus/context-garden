@@ -2447,7 +2447,16 @@ def test_config_editor_covers_metadata_and_saves_global_and_project_values(garde
     )
     assert response.status_code == 303
     assert Config.load(garden).setting("max_parallel", "demo").value == 3
-    assert "Reset to inherited" in c.get("/config?product=demo").text
+    project_page = c.get("/config?product=demo").text
+    assert "Reset to inherited" in project_page
+    token = re.search(r'name="revision" value="([^"]+)"', project_page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "3", "product": "demo", "revision": token, "reset": "true"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).setting("max_parallel", "demo").source == "global"
 
 
 def test_config_editor_rejects_stale_invalid_and_locked_edits_without_partial_save(garden):
