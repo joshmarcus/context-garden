@@ -4,14 +4,18 @@
 {% set viewq = ('&view=' ~ view) if view != 'columns' else '' %}
 {% set base = '/board?product=' ~ (product or '') ~ '&phase=' ~ (phase or '') ~ ('&closed=1' if closed else '') %}
 <div class="page-head">
-  <div><h1>Board</h1><p>Every task by state. The backlog stacks a product's open phases as sections you can reorder and drag between.</p></div>
+  <div><h1>Board</h1><p>{% if view == 'prs' %}Open pull requests for the selected repository.{% else %}Every task by state. The backlog stacks a product's open phases as sections you can reorder and drag between.{% endif %}</p></div>
   <div class="tools viewswitch">
     <a href="{{ base }}&view=columns" class="{{ 'on' if view == 'columns' else '' }}">columns</a>
     <a href="{{ base }}&view=list" class="{{ 'on' if view == 'list' else '' }}">list</a>
     <a href="{{ base }}&view=backlog" class="{{ 'on' if view == 'backlog' else '' }}">backlog</a>
+    <a href="{{ base }}&view=prs" class="{{ 'on' if view == 'prs' else '' }}">PRs</a>
   </div>
 </div>
 <div class="filters">
+  {% if view == 'prs' %}
+    {% for p in products %}<a href="/board?product={{ p.name }}&view=prs" class="{{ 'on' if pr_product == p.name else '' }}">{{ p.name }}</a>{% endfor %}
+  {% else %}
   <a href="/board?{{ 'closed=1&' if closed else '' }}view={{ view }}" class="{{ 'on' if not product else '' }}">all</a>
   {% if view == 'backlog' %}
     {% for p in products %}
@@ -23,10 +27,13 @@
     {% endfor %}{% endfor %}
   {% endif %}
   {% if closed_count %}<a href="/board?{% if product %}product={{ product }}&phase={{ phase or '' }}&{% endif %}{{ '' if closed else 'closed=1' }}{{ viewq }}" class="{{ 'on' if closed else '' }}" title="Closed phases stay off the board by default">include closed</a>{% endif %}
+  {% endif %}
 </div>
 {% if problems %}<div class="warn">{% for p in problems %}{{ p }}<br>{% endfor %}</div>{% endif %}
-<div id="board" data-poll="/partials/board?product={{ product or '' }}&phase={{ phase or '' }}{{ '&closed=1' if closed else '' }}&view={{ view }}" data-every="5000">
+<div id="board"{% if view == 'prs' %} role="status" aria-live="polite"{% endif %} data-poll="/partials/board?product={{ pr_product if view == 'prs' else product or '' }}&phase={{ phase or '' }}{{ '&closed=1' if closed else '' }}&view={{ view }}" data-every="5000">
+  {% if view == 'prs' %}<p class="empty">Loading pull requests…</p>{% else %}
   {% include "_board.html" %}
+  {% endif %}
 </div>
 <script>
 // Remember the columns/list/backlog choice across navigation. A view in the query string is

@@ -449,10 +449,18 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 })();
 document.querySelectorAll("[data-poll]").forEach(el => {
   const every = parseInt(el.dataset.every || "5000", 10);
-  setInterval(async () => {
+  const update = async () => {
     if (document.hidden) return;
-    try { const r = await fetch(el.dataset.poll, {cache: "no-store"}); if (r.ok) el.innerHTML = await r.text(); } catch (e) {}
-  }, every);
+    try {
+      const r = await fetch(el.dataset.poll, {cache: "no-store"});
+      if (r.ok) el.innerHTML = await r.text();
+      else if (el.getAttribute("role") === "status") el.innerHTML = '<div class="warn" role="alert">Could not refresh pull requests.</div>';
+    } catch (e) {
+      if (el.getAttribute("role") === "status") el.innerHTML = '<div class="warn" role="alert">Could not refresh pull requests.</div>';
+    }
+  };
+  update();
+  setInterval(update, every);
 });
 // ---- product select drives a dependent phase select (e.g. the friction-report form) so the
 // pair can never name a phase under the wrong product.

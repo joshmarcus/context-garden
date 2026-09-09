@@ -289,6 +289,9 @@ class FakeGitHub:
     def find_pr(self, slug, head_branch):
         return self.prs.get(head_branch)
 
+    def list_open_prs(self, slug):
+        return [pr for pr in self.prs.values() if pr.state == "OPEN"]
+
     def set_checks(self, branch, state, latency=None):
         """Arm a PR's checks rollup the way a push does on real GitHub: report PENDING for
         `latency` polls (default `check_latency`), then settle to `state` (SUCCESS/FAILURE).

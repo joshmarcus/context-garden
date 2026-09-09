@@ -1,0 +1,19 @@
+{% if pr_error %}
+<div class="warn" role="alert">{{ pr_error }}</div>
+{% elif not pr_rows %}
+<p class="empty">No open pull requests in {{ pr_product }}.</p>
+{% else %}
+<div class="panel scroll">
+  <table>
+    <thead><tr><th scope="col">PR</th><th scope="col">Review</th><th scope="col">Checks</th><th scope="col">Garden task</th></tr></thead>
+    <tbody>{% for row in pr_rows %}
+      <tr>
+        <td class="title"><span class="id">#{{ row.pr.number }}</span> {% if row.safe_url %}<a href="{{ row.safe_url }}" target="_blank" rel="noopener noreferrer">{{ row.pr.title }}</a>{% else %}{{ row.pr.title }} <span class="muted">(link unavailable)</span>{% endif %}</td>
+        <td class="mono">{{ row.review }}</td>
+        <td class="mono">{{ row.checks }}{% if row.pr.failed_checks %}: {{ row.pr.failed_checks|join(', ') }}{% endif %}</td>
+        <td>{% if row.task %}<a class="id" href="/tasks/{{ row.task.id }}">{{ row.task.id }}</a> <span class="muted">{{ row.task.title }}</span>{% else %}<span class="muted">unlinked</span>{% endif %}</td>
+      </tr>
+    {% endfor %}</tbody>
+  </table>
+</div>
+{% endif %}
