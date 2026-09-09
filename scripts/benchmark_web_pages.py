@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import tempfile
 import threading
@@ -49,6 +50,7 @@ def _fixture(root: Path, tasks: int, runs: int, events: int) -> None:
         task_id = f"BM-{number % tasks:04d}"
         run = run_store.new_run(task_id, "local", run_id=f"seed-{number:04d}")
         run.status = "running" if number == 0 else "done"
+        run.pid = os.getpid() if number == 0 else None
         run.cost_usd = 0.01
         run.save()
     event_path = root / ".garden" / "events.jsonl"

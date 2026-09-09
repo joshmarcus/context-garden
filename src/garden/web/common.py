@@ -80,6 +80,8 @@ class Hub:
         # template share one stable discovery snapshot.  The scheduler/watch thread keeps using
         # ``self.store`` and continues to invalidate it at the start of a pass.
         self._request_store: ContextVar[Store | None] = ContextVar("garden_web_request_store", default=None)
+        self._discovery_lock = threading.Lock()
+        self._page_store = Store(store.root, config=store.config)
         self.github = github
         self.lock = threading.Lock()  # held only by tick(): one scheduler pass at a time
         # A short lock around an action so two POSTs don't clobber one task, held *only* for
@@ -104,14 +106,16 @@ class Hub:
         # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
         # every action's scheduler() call, so a button press between ticks can't hand a held
         # reload's executable fields (notify.command, checks, ...) a route around the gate.
-        store = self.fresh()
-        if self._request_store.get() is None:
+        store = self._request_store.get()
+        if store is None:
+            store = self.store
             store.invalidate_tasks()
         return Scheduler(store, github=self.github, log=self._log)
 
     def reader(self) -> Scheduler:
         """A scheduler-shaped read facade for pages; it never runs startup migrations."""
-        return Scheduler(self.fresh(), github=self.github, log=lambda m: None, read_only=True)
+        store = self._request_store.get() or self.store
+        return Scheduler(store, github=self.github, log=lambda m: None, read_only=True)
 
     def begin_request(self) -> Token[Store | None]:
         """Install a fresh, request-local Store and return its context token.
@@ -184,6 +188,15 @@ class Hub:
         """
         store = self._request_store.get()
         if store is not None:
+            if store._products is None:
+                with self._discovery_lock:
+                    if self._page_store.config is not self.store.config:
+                        self._page_store.config = self.store.config
+                        self._page_store.invalidate_tasks()
+                    products, tasks, duplicate_ids = self._page_store.discovery_snapshot()
+                store._products = products
+                store._tasks = tasks
+                store._duplicate_ids = duplicate_ids
             return store
         self.store.invalidate_tasks()
         return self.store
