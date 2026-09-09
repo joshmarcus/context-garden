@@ -296,6 +296,38 @@ def test_rest_pr_preserves_explicit_merge_conflict(monkeypatch):
     assert github.get_pr("team/repo", 7).mergeable == "CONFLICTING"
 
 
+def test_rest_pr_paginates_check_runs_before_computing_rollup(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    pull = {
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "mergeable": True,
+        "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
+    }
+    pages = []
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/check-runs"):
+            page = kwargs["params"]["page"]
+            pages.append(page)
+            if page == 1:
+                return {"total_count": 101, "check_runs": [
+                    {"name": f"pass-{i}", "status": "completed", "conclusion": "success"}
+                    for i in range(100)
+                ]}
+            return {"total_count": 101, "check_runs": [
+                {"name": "late-failure", "status": "completed", "conclusion": "failure"}
+            ]}
+        if path.endswith("/reviews"):
+            return []
+        return pull
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    pr = github.get_pr("team/repo", 7)
+    assert pages == [1, 2]
+    assert pr.checks == "FAILURE" and pr.failed_checks == ["late-failure"]
+
+
 @pytest.mark.parametrize("status, expected", [(403, "PERMISSION"), (503, "UNAVAILABLE")])
 def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expected):
     github = GitHub(use_gh=False, token="scoped-token")

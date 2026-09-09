@@ -52,7 +52,9 @@ class PollMixin:
         ignored = [item for item in feedback.ignored if self._feedback_key(item) not in seen]
         return Feedback(items=items, ignored=ignored)
 
-    def _remember_feedback(self, record: dict[str, Any], feedback: Feedback) -> None:
+    def _remember_feedback(
+        self, record: dict[str, Any], feedback: Feedback, *, count_items: bool = True
+    ) -> None:
         seen_order = list(record.get("feedback_seen") or [])
         seen = set(seen_order)
         added = 0
@@ -61,7 +63,7 @@ class PollMixin:
             if key not in seen:
                 seen.add(key)
                 seen_order.append(key)
-                if item in feedback.items:
+                if count_items and item in feedback.items:
                     added += 1
         record["feedback_seen"] = seen_order
         record["feedback_count"] = int(record.get("feedback_count") or 0) + added
@@ -85,7 +87,11 @@ class PollMixin:
         result: dict[tuple[str, int], tuple[PRInfo, Feedback]] = {}
         root = self.state.get(self._PR_OBSERVATIONS)
         products = {str(product) for product in (self.cfg.data.get("products") or {})}
-        linked = {(task.product, self._pr_number(task)) for task in tasks.values() if task.pr}
+        linked = {
+            (task.product, self._pr_number(task)): task
+            for task in tasks.values()
+            if task.pr
+        }
         for product in sorted(products):
             route = self.cfg.product_github(product)
             if not route:
@@ -104,6 +110,19 @@ class PollMixin:
                     # timestamp cursor alone can skip a comment sharing the cursor timestamp.
                     # This makes equal timestamps, repeated pages, and restarts safe.
                     fb = self.github.feedback_since(slug, pr.number, "")
+                    linked_task = linked.get((product, pr.number))
+                    if linked_task is not None and "feedback_seen" not in old and linked_task.last_dispatched_at:
+                        # Existing tasks used last_dispatched_at as their feedback cursor before
+                        # repository observations persisted identities. Seed those historical
+                        # identities during the first upgraded poll so handled comments cannot
+                        # consume another revision attempt. Newer feedback remains actionable,
+                        # and every later poll uses identity deduplication exclusively.
+                        cursor = linked_task.last_dispatched_at
+                        historical = Feedback(
+                            items=[item for item in fb.items if str(item.get("created") or "") <= cursor],
+                            ignored=[item for item in fb.ignored if str(item.get("created") or "") <= cursor],
+                        )
+                        self._remember_feedback(old, historical, count_items=False)
                     fresh = self._new_feedback(old, fb)
                     if (product, pr.number) not in linked:
                         self._remember_feedback(old, fresh)
