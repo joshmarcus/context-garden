@@ -4,9 +4,19 @@
 {% block head %}
 <style>
 /* ---- the Now page (docs/design/now-1.md) ------------------------------------------- */
-.now-five { margin:6px 0 26px; font:400 19px/1.45 var(--display); max-width:92ch; text-wrap:pretty; color:var(--ink); }
-.now-five a { text-decoration-color:var(--line-strong); }
-.now-five .pause { color:var(--stamp); }
+.now-summary { margin:8px 0 30px; padding:15px 0 17px; border-block:1px solid var(--line-strong); }
+.summary-lead { display:flex; align-items:baseline; gap:12px; margin-bottom:15px; }
+.summary-kicker { margin:0; font:11px/1.3 var(--mono); letter-spacing:.09em; text-transform:uppercase; color:var(--muted); }
+.summary-condition { margin:0; font:italic 17px/1.35 var(--display); color:var(--ink); }
+.summary-condition strong { font-style:normal; font-weight:600; }
+.summary-measures { display:grid; grid-template-columns:.72fr .72fr minmax(220px, 1.7fr) 1fr 1fr; gap:0; margin:0; }
+.summary-measures > div { min-width:0; padding:2px 16px; border-left:1px solid var(--line); }
+.summary-measures > div:first-child { padding-left:0; border-left:0; }
+.summary-measures dt { font:11px/1.35 var(--mono); color:var(--muted); }
+.summary-measures dd { margin:3px 0 0; font:500 27px/1.05 var(--display); color:var(--ink); }
+.summary-measures dd small { display:block; margin-top:5px; font:11px/1.3 var(--mono); color:var(--muted); }
+.summary-measures .summary-next dd { font-size:16px; line-height:1.2; }
+.summary-measures .summary-next dd span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .region { margin-top:42px; padding-top:17px; border-top:1px solid var(--line-strong); scroll-margin-top:16px; }
 .region-head { display:flex; align-items:baseline; gap:14px; margin-bottom:16px; flex-wrap:wrap; }
 /* A section is a line in the herbarium catalogue: its title has enough ink to be found from
@@ -180,7 +190,14 @@ body.page-now .rail-running { display:none; }
   body.page-now .nav a { min-height:32px; padding:0 8px; border-left:none; border-bottom:2px solid transparent; }
   body.page-now .nav a.on { border-bottom-color:var(--ink); background:transparent; }
   body.page-now main { padding:18px 14px 48px; }
-  .now-five { font-size:17px; }
+  .now-summary { margin-top:5px; padding:13px 0; }
+  .summary-lead { display:block; margin-bottom:12px; }
+  .summary-condition { margin-top:4px; font-size:16px; }
+  .summary-measures { grid-template-columns:1fr 1fr; row-gap:15px; }
+  .summary-measures > div { padding:0 12px; }
+  .summary-measures > div:nth-child(odd) { padding-left:0; border-left:0; }
+  .summary-measures .summary-next { grid-column:1 / -1; padding:0 0 13px; border-left:0; border-bottom:1px solid var(--line); order:-1; }
+  .summary-measures dd { font-size:24px; }
   .region { margin-top:34px; padding-top:14px; }
   .region-head { gap:7px 12px; margin-bottom:14px; }
   .region-head .section-title { font-size:27px; }
@@ -213,11 +230,11 @@ body.page-now .rail-running { display:none; }
 </style>
 {% endblock %}
 {% block body %}
-{% from "_now1_macros.html" import five, slots with context %}
+{% from "_now1_macros.html" import summary, slots with context %}
 {% set g = snap.garden %}
 <div id="now1" data-window="{{ snap.window }}" data-next-tick="{{ g.next_tick_at }}" data-tick-interval="{{ g.tick_interval }}">
 <div class="page-head"><div><h1>Now</h1></div></div>
-{{ five(snap) }}
+{{ summary(snap) }}
 <div class="now-live" aria-live="polite" id="now-live"></div>
 
 <section class="region" id="now">
@@ -254,9 +271,9 @@ body.page-now .rail-running { display:none; }
   var regions = {
     head: async function () {
       var frag = parse(await fetchText("/partials/now/head?window=" + win));
-      var five = frag.getElementById("now-five"), slots = frag.getElementById("now-slots");
+      var summary = frag.getElementById("now-summary"), slots = frag.getElementById("now-slots");
       var lost = document.querySelector("[data-lost]");
-      if (five) document.getElementById("now-five").replaceWith(five);
+      if (summary) document.getElementById("now-summary").replaceWith(summary);
       if (slots) {
         if (lost && !lost.hidden) slots.querySelector("[data-lost]").hidden = false;
         document.getElementById("now-slots").replaceWith(slots);

@@ -18,22 +18,19 @@ period. Nothing on it is a card of equal weight; the order of prominence is the 
 
 ## The five-second answer
 
-Under the title, one sentence in the page's serif states what the page is for, filled from the
-same data as the regions, each clause a link to its region:
+The retained sentence has been replaced by a compact “workbench” of direct measurements.
+It reports worker-slot occupancy, review-slot occupancy, the next dispatch, primary-phase
+merged tasks, and the selected period's merged tasks and cost. Each number is taken from the
+same snapshot field as its detailed region and links there; no values are combined, weighted,
+or interpreted as health, readiness, or quality. The leading line gives precedence only to
+explicit Garden conditions: dispatch pause, cards requiring a person, active work, ready work,
+then quiet. Ordinary changes in occupancy are deliberately not warnings.
 
-> 6 runs in flight on 5 of 5 worker slots and 1 of 3 review slots. Next: Build the Now
-> page from the retained design: live view of…, then A dispatch that fails before its process
-> starts closes…. phase-05: 13 of 49 merged. Last hour: 4 merged, $65.72.
-
-A visitor who reads nothing else has the four answers. What comes next is said by title,
-whole words up to about fifty-six characters then an ellipsis, never by id: a first-time
-visitor knows no ids, and the sentence is for them. The sentence rewrites itself from the
-same live updates that move the regions (see Live updates), so it never disagrees with them.
-When dispatch is paused or a harness is paused the sentence says so first ("Dispatch paused by
-cli since 00:31."), because that is the one fact that changes what the rest means. When the
-busy count exceeds the slot count because run records without a process are holding slots
-(see States), the sentence says so in the same breath: "6 of 5 worker slots (2 without a
-process)". It never rounds the truth down to make the numbers tidy.
+A visitor who reads nothing else gets the current condition and five facts. The next task is
+named by title, whole words up to about fifty-six characters then an ellipsis, never by id.
+The whole workbench rewrites from the same live updates that move the regions (see Live
+updates). A run record without a process is called out beneath worker occupancy because it
+holds a real slot; counts are never rounded down to make the display tidy.
 
 ## Layout
 
@@ -42,7 +39,8 @@ At 1280 wide (a projector), inside the app's shell with the rail on the left:
 ```
 ┌ rail ┐ ┌──────────────────────────────────────────────────────────────────────┐
 │ Inbox│ │ Now                                                                  │
-│ Now  │ │ 6 runs in flight … Next: <title>, then <title>. phase-05: … Last hour: … │
+│ Now  │ │ THE WORKBENCH  6 runs in flight · the garden is working              │
+│ …    │ │ workers 5/5 · reviews 1/3 · next <title> · phase 13/49 · hour 4  │
 │ …    │ │                                                                      │
 │ …    │ │ NOW                                    5 of 5 slots · 3 of 3 reviews │
 │      │ │ ┌ strip: glyph id title · mode · harness model                   ┐   │

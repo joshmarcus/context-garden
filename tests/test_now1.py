@@ -7,9 +7,14 @@ import datetime as dt
 import json
 import os
 import re
+import socket
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -239,9 +244,14 @@ def test_now_page_renders_the_four_regions_and_the_nav(garden):
     assert 'class="page-now"' in page and re.search(r'data-server-now="\d{4}-\d\d-\d\dT', page)
     assert "The garden is quiet." not in page  # two ready tasks are queued
     assert "Nothing running." in page and 'it will dispatch <a href="/tasks/DM-001">First task</a> into' in page
-    # the five-second sentence says what comes next by title, never by id
-    five = re.search(r'<p class="now-five".*?</p>', page, re.S).group(0)
-    assert "Next</a>: First task." in five and "DM-" not in five
+    # The workbench says what comes next by title, never by id, and gives every measurement
+    # its source region, denominator or selected time window.
+    summary = re.search(r'<section class="now-summary".*?</section>', page, re.S).group(0)
+    assert "Between runs" in summary and "First task" in summary and "DM-" not in summary
+    assert '<dt><a href="#now">Worker slots</a></dt><dd>0 <small>of 2 occupied' in summary
+    assert '<dt><a href="#now">Review slots</a></dt><dd>0 <small>of 2 occupied' in summary
+    assert '<dt><a href="#where">p1 phase</a></dt><dd>0 <small>of 2 merged' in summary
+    assert '<dt><a href="#period">Last hour</a></dt><dd>0 <small>merged · $0.00' in summary
     # in the Next list the title is the link and the id opens the mono line under it
     assert '<a class="lt" href="/tasks/DM-001">First task</a>' in page
     assert '<span class="why"><span class="id">DM-001</span> · priority 1 · work · medium →' in page
@@ -271,7 +281,7 @@ def test_running_card_carries_the_start_time_the_clock_reads(garden):
     # the title leads and links to the task; the id follows; `open run` links to this exact run
     assert '<a class="t" href="/tasks/DM-001">First task</a><span class="id">DM-001</span>' in strip
     assert f'work · claude sonnet · <a class="open-run" href="/runs/DM-001/{run.run_id}">open run</a>' in strip
-    assert "1 run in flight" in page and "1 of 2 worker slots" in page
+    assert "1 run in flight" in page and "1 <small>of 2 occupied" in page
     # the same attributes on the Board's running card and the task page's run row, and the clock script once
     assert 'data-started="' in c.get("/board").text
     assert 'data-started="' in c.get("/tasks/DM-001").text
@@ -306,11 +316,13 @@ def test_no_process_record_and_hands_are_visible(garden):
     t.status = now1.Status.WAITING_HUMAN
     store.save(t)
     page = _client(garden).get("/now").text
-    assert "no process recorded" in page and "(1 without a process)" in page
+    assert "no process recorded" in page and "1 without a process" in page
     assert 'class="stamp">needs you</span>' in page and "Which fixture: Go or Node?" in page
     assert 'class="stamp">paused</span>' in page and "codex harness paused" in page and "usage limit reached" in page
-    assert "Dispatch paused by cli since" in page and "quota on both accounts" in page
-    assert "2 cards waiting on you" in page  # the question and the paused harness
+    assert "Dispatch paused</strong> by cli since" in page and "quota on both accounts" in page
+    summary = re.search(r'<section class="now-summary".*?</section>', page, re.S).group(0)
+    assert "Dispatch paused" in summary and "quota on both accounts" in summary
+    assert "1 without a process" in summary
 
 
 def test_next_region_is_the_schedulers_dispatch_order_with_reasons(garden):
@@ -583,6 +595,81 @@ def test_stream_drives_a_dispatch_event_to_the_strip_fragment(garden):
     run.save()
     frag = c.get(f"/partials/now/strip/DM-001/{run.run_id}").text
     assert 'data-stopped="' in frag and '<span class="verdict">done · $1.42</span>' in frag
+
+
+def test_served_summary_refreshes_after_a_failed_partial_and_stream_recovery(garden):
+    """Exercise the real page, stream and browser. A failed summary fetch leaves the truthful
+    old reading in place; the next event retries it and recovers without a reload."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    app_ = create_app(Store(garden), watch=False, host="127.0.0.1")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app_, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert server.started
+
+    capture_dir = os.environ.get("NOW_CAPTURE_DIR")
+    try:
+        with playwright.sync_playwright() as p:
+            try:
+                browser = p.chromium.launch()
+            except Exception as exc:  # noqa: BLE001 - browser availability is environment-owned
+                pytest.skip(f"Chromium unavailable in this environment: {exc}")
+            page = browser.new_page(viewport={"width": 1280, "height": 1200})
+            page.goto(f"http://127.0.0.1:{port}/now")
+            page.locator("#now-summary").wait_for()
+            assert "Between runs" in page.locator("#now-summary").inner_text()
+
+            if capture_dir:
+                out = Path(capture_dir)
+                out.mkdir(parents=True, exist_ok=True)
+
+                def capture(state: str) -> None:
+                    for width in (1280, 390):
+                        page.set_viewport_size({"width": width, "height": 1200})
+                        for theme in ("light", "dark"):
+                            page.evaluate("theme => document.documentElement.dataset.theme = theme", theme)
+                            page.screenshot(path=out / f"now-summary-{state}-{width}-{theme}.png", full_page=True)
+
+                capture("sparse")
+
+            run = _record_running(garden, started_minutes_ago=0)
+            EventLog(Store(garden).config.garden_dir / "events.jsonl").emit(
+                "dispatch", "DM-001", run=run.run_id, mode="work", model="sonnet", harness="claude")
+            page.locator("#now-summary").get_by_text("1 run in flight").wait_for(timeout=5000)
+            if capture_dir:
+                capture("populated")
+
+            failed = {"once": False}
+
+            def fail_one(route) -> None:
+                if not failed["once"]:
+                    failed["once"] = True
+                    route.fulfill(status=503, body="temporary failure")
+                else:
+                    route.continue_()
+
+            page.route("**/partials/now/head?*", fail_one)
+            Scheduler(Store(garden), github=FakeGitHub()).pause("cli", "quota on both accounts")
+            log = EventLog(Store(garden).config.garden_dir / "events.jsonl")
+            log.emit("dispatch_paused", "", by="cli", reason="quota on both accounts")
+            page.wait_for_timeout(300)
+            assert "Dispatch paused" not in page.locator("#now-summary").inner_text()
+            log.emit("dispatch_paused", "", by="cli", reason="quota on both accounts")
+            page.locator("#now-summary").get_by_text("Dispatch paused").wait_for(timeout=5000)
+            assert "quota on both accounts" in page.locator("#now-summary").inner_text()
+            assert page.locator("#now-summary").evaluate("el => el.scrollWidth <= el.clientWidth")
+            if capture_dir:
+                capture("paused")
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
 
 
 def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garden):

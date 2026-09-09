@@ -1,18 +1,28 @@
 {#- Now 1's pieces (docs/design/now-1.md): a run strip, a phase sheet, a queue line, a
     difficulty-by-model table. Imported `with context` so `f` (the formatters) is in scope. -#}
-{%- macro five(snap) -%}
-{#- The five-second sentence: the four answers in one line, each clause a link to its region. -#}
+{%- macro summary(snap) -%}
+{#- The workbench: direct measurements from the four regions, never a composite score. -#}
 {%- set g = snap.garden -%}
 {%- set runs = snap.now | selectattr("kind", "equalto", "run") | list -%}
 {%- set hands = snap.now | rejectattr("kind", "equalto", "run") | list -%}
 {%- set p = snap.where.primary -%}
-<p class="now-five" id="now-five">
-  {%- if g.dispatch_paused %}<span class="pause">Dispatch paused by {{ g.dispatch_paused.by }} since {{ g.dispatch_paused.at[11:16] }}Z{% if g.dispatch_paused.reason %}: {{ g.dispatch_paused.reason }}{% endif %}.</span> {% endif -%}
-  <a href="#now">{{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</a> on {{ g.worker_busy }} of {{ g.max_parallel }} worker slots{% if g.worker_without_process %} ({{ g.worker_without_process }} without a process){% endif %} and {{ g.review_busy }} of {{ g.review_parallel }} review slots{% if hands %}, {{ hands | length }} card{{ 's' if hands | length != 1 }} waiting on you{% endif %}.
-  {%- if snap.next.dispatch %} <a href="#next">Next</a>: {{ f.short(snap.next.dispatch[0].title) }}{% if snap.next.dispatch | length > 1 %}, then {{ f.short(snap.next.dispatch[1].title) }}{% endif %}.{% else %} <a href="#next">Nothing queued</a>.{% endif %}
-  {%- if p %} <a href="#where">{{ p.name }}</a>: {{ p.done }} of {{ p.total }} merged.{% endif %}
-  <a href="#period">{{ dict(snap.windows).get(snap.window, snap.window) | capitalize }}</a>: {{ snap.period.merged }} merged, ${{ '%.2f' % snap.period.cost }}.
-</p>
+<section class="now-summary" id="now-summary" aria-labelledby="now-summary-title">
+  <div class="summary-lead">
+    <p class="summary-kicker" id="now-summary-title">The workbench</p>
+    {% if g.dispatch_paused %}<p class="summary-condition"><strong>Dispatch paused</strong> by {{ g.dispatch_paused.by }} since {{ g.dispatch_paused.at[11:16] }}Z{% if g.dispatch_paused.reason %} · {{ g.dispatch_paused.reason }}{% endif %}</p>
+    {% elif hands %}<p class="summary-condition"><a href="#now"><strong>{{ hands | length }} item{{ 's' if hands | length != 1 }} need{{ '' if hands | length != 1 else 's' }} your attention</strong></a></p>
+    {% elif runs %}<p class="summary-condition"><strong>{{ runs | length }} run{{ 's' if runs | length != 1 }} in flight</strong> · the garden is working</p>
+    {% elif snap.next.dispatch %}<p class="summary-condition"><strong>Between runs</strong> · work is ready for the next tick</p>
+    {% else %}<p class="summary-condition"><strong>Quiet</strong> · no work is ready to dispatch</p>{% endif %}
+  </div>
+  <dl class="summary-measures">
+    <div><dt><a href="#now">Worker slots</a></dt><dd>{{ g.worker_busy }} <small>of {{ g.max_parallel }} occupied{% if g.worker_without_process %} · {{ g.worker_without_process }} without a process{% endif %}</small></dd></div>
+    <div><dt><a href="#now">Review slots</a></dt><dd>{{ g.review_busy }} <small>of {{ g.review_parallel }} occupied</small></dd></div>
+    <div class="summary-next"><dt><a href="#next">Next dispatch</a></dt><dd>{% if snap.next.dispatch %}<span>{{ f.short(snap.next.dispatch[0].title) }}</span><small>{{ snap.next.dispatch | length }} queued</small>{% else %}<span>Nothing queued</span><small>no task is ready</small>{% endif %}</dd></div>
+    {% if p %}<div><dt><a href="#where">{{ p.name }} phase</a></dt><dd>{{ p.done }} <small>of {{ p.total }} merged</small></dd></div>{% endif %}
+    <div><dt><a href="#period">{{ dict(snap.windows).get(snap.window, snap.window) | capitalize }}</a></dt><dd>{{ snap.period.merged }} <small>merged · ${{ '%.2f' % snap.period.cost }}</small></dd></div>
+  </dl>
+</section>
 {%- endmacro -%}
 
 {%- macro slots(snap) -%}
