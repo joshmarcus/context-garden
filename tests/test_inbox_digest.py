@@ -394,3 +394,55 @@ def test_web_inbox_count_excludes_retrying(garden: Path):
     assert '<div class="v">1</div>' in page  # "need you" KPI counts the one decision only
     assert "Auto-retrying" in page and "no action needed" in page
     assert "DM-002" in page and "DM-001" in page
+
+
+def test_inbox_pr_count_links_to_the_configured_garden_pr_search(garden: Path):
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.web.app import create_app
+
+    store = Store(garden)
+    tracked = store.task("DM-001")
+    tracked.status = Status.IN_REVIEW
+    tracked.branch = "garden/dm-001-first-task"
+    tracked.pr = "https://github.com/test/demo/pull/71"
+    store.save(tracked)
+    closed = store.task("DM-002")
+    closed.status = Status.DONE
+    closed.branch = "garden/dm-002-second-task"
+    closed.pr = "https://github.com/test/demo/pull/72"
+    store.save(closed)
+
+    page = TestClient(create_app(Store(garden), watch=False)).get("/inbox").text
+
+    assert 'aria-label="Open 1 tracked garden pull request on GitHub"' in page
+    assert 'href="https://github.com/test/demo/pulls?q=is%3Aopen%20is%3Apr%20%28head%3A%22garden%2Fdm-001-first-task%22%29"' in page
+    assert "dm-002-second-task" not in page
+
+
+def test_inbox_pr_destinations_separate_enterprise_hosts(garden: Path):
+    from dataclasses import replace
+
+    from garden.model import Status
+    from garden.web.pages.inbox import open_pr_destinations
+
+    store = Store(garden)
+    store.config.data["products"]["enterprise"] = {
+        "github": {"slug": "team/work", "host": "github.example.test"},
+    }
+    public = replace(
+        store.task("DM-001"), status=Status.IN_REVIEW, branch="garden/dm-001",
+        pr="https://github.com/test/demo/pull/71",
+    )
+    enterprise = replace(
+        public, product="enterprise", branch="garden/ent-001",
+        pr="https://github.example.test/team/work/pull/4",
+    )
+
+    destinations = open_pr_destinations([public, enterprise], store)
+
+    assert [destination["label"] for destination in destinations] == [
+        "github.com/test/demo", "github.example.test/team/work",
+    ]
+    assert all("token" not in str(destination["url"]).lower() for destination in destinations)
