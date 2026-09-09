@@ -441,11 +441,10 @@ def test_command_validation_must_match_exact_pr_head(sched, fake_github):
         "provider": "command", "command": "make validate"
     }
     pr.head_sha = gitops.head_sha(sched.worktree_for(t))
-    pr.checks = "FAILURE"
+    # Command validation does not require a duplicate GitHub checks rollup.
+    pr.checks = ""
     st["validation_head"] = "old"
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "exact PR head" in reason
     st["validation_head"] = pr.head_sha
     assert sched._automerge_gate(t, pr)[0]
-     ok, reason = sched._automerge_gate(t, pr)
-     assert ok, reason

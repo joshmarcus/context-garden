@@ -10,8 +10,8 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
-from ..github import Feedback, GitHubError, PRInfo
 from ..ci_status import CIStatus, resolve_status, status_reason
+from ..github import Feedback, GitHubError, PRInfo
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..runs import Run
