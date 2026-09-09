@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .models import HostDeclaration, HostFacts, ProviderCapabilities
+from .models import (
+    HostAdmission,
+    HostDeclaration,
+    HostFacts,
+    HostReadiness,
+    HostRequirements,
+    ProviderCapabilities,
+)
 
 
 class ProviderError(RuntimeError):
@@ -32,6 +39,22 @@ class HostProvider(Protocol):
     def stop(self, provider_id: str) -> HostFacts: ...
     def start(self, provider_id: str) -> HostFacts: ...
     def destroy(self, provider_id: str, *, delete_storage: bool) -> HostFacts: ...
+
+
+class AcquisitionProvider(HostProvider, Protocol):
+    """Optional extension used by providers that can verify reusable workspaces."""
+
+    def readiness(
+        self, provider_id: str, *, workspace: str, revision: str, harness: str
+    ) -> HostReadiness: ...
+
+    def admit(
+        self, provider_id: str, *, requirements: HostRequirements, acquisition_id: str
+    ) -> HostAdmission: ...
+
+    def renew_admission(self, provider_id: str, *, lease_id: str) -> HostAdmission: ...
+
+    def release_admission(self, provider_id: str, *, lease_id: str) -> None: ...
 
 
 class PolicyResolver(Protocol):
