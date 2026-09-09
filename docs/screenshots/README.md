@@ -4,7 +4,7 @@ The main feature tour combines a real development garden with smaller examples. 
 
 ## Live development garden
 
-`now-light.png`, the three `board-*-light.png` images, `now-run-costs-light.png`, and `now-outcomes-light.png` were captured from the locally running context-garden development garden on 2026-09-09. The server reported build `8072091aea73` during inspection. They show real task and run state, which continues changing after capture.
+The live images were captured from the locally running context-garden development garden on 2026-09-09. `now-light.png` was refreshed later that day from serving build `a0f69c6bfd98`; the three `board-*-light.png` images and the two Now comparison charts retain their earlier captures from build `8072091aea73`. Each image shows real task and run state at its capture time, which continues changing afterward. The refreshed Now image preserves the 1440 × 1000 light-mode viewport and last-24-hours filter.
 
 Now uses its **last 24 hours** filter. The two comparison images are direct element screenshots of the “Runs by harness and model” and “By difficulty and model” sections lower down that page. They preserve the table labels, sample counts, missing values, and sparse-sample styling. These observations are not controlled model benchmarks or estimates for another project.
 
