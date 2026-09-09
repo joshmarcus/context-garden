@@ -3,8 +3,6 @@
 import subprocess
 import sys
 
-import subprocess
-
 import pytest
 
 from garden import gitops
