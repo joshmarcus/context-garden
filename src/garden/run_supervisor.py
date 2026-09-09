@@ -358,6 +358,21 @@ def _execution_timeout_seconds() -> float | None:
     return seconds
 
 
+def _preserved_child_fds() -> tuple[int, ...]:
+    """Return worker-owned lock descriptors that must follow the author process tree."""
+    descriptors = []
+    for raw in os.environ.get("GARDEN_PRESERVE_FDS", "").split(","):
+        if not raw.strip():
+            continue
+        try:
+            descriptor = int(raw)
+            os.fstat(descriptor)
+        except (ValueError, OSError):
+            continue
+        descriptors.append(descriptor)
+    return tuple(dict.fromkeys(descriptors))
+
+
 def _mark_execution_started(run_dir: Path, timeout_seconds: float | None) -> tuple[float, str]:
     """Publish one fixed execution-clock origin after admission has completed."""
     started_monotonic = time.monotonic()
@@ -479,7 +494,7 @@ def main() -> int:
         return 2
     execution_started, execution_started_at = _mark_execution_started(run_dir, timeout_seconds)
     execution_deadline = execution_started + timeout_seconds if timeout_seconds is not None else None
-    child = subprocess.Popen(["sh", "-c", script])
+    child = subprocess.Popen(["sh", "-c", script], pass_fds=_preserved_child_fds())
     kill_deadline = None
     timed_out = False
 
