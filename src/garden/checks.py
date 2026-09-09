@@ -79,6 +79,20 @@ from .runner.base import scrubbed_env
 MAX_DETAILS = 100_000
 
 
+_PUBLISHING_CI_HELPER = re.compile(
+    r"(?:^|\s)(?:[^\s`]+/)?python(?:3)?\s+(?:[^\s`]+/)?scripts/check_ci\.py(?:\s|$)"
+)
+
+
+def is_publishing_ci_helper(command: str) -> bool:
+    """Whether a documented command is the branch-publishing CI helper.
+
+    This deliberately identifies the helper by its stable command contract, rather than
+    inspecting a repository script that an untrusted branch could later replace.
+    """
+    return bool(_PUBLISHING_CI_HELPER.search(command))
+
+
 @contextlib.contextmanager
 def _guarded_process_env(cwd: Path | None):
     """Force GARDEN_ROOT to a non-existent sentinel in the process environment for the
@@ -99,6 +113,14 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
               config: dict[str, Any] | None = None) -> dict[str, Any]:
     name = str(spec.get("name") or spec.get("command") or spec.get("python") or "check")
     try:
+        if spec.get("requires_worker_push"):
+            return {
+                "name": name,
+                "status": "fail",
+                "summary": "CI helper requires explicit worker push permission",
+                "details": "Set products.<name>.setup.worker_push: true and configure the "
+                           "worker's Git/GitHub credentials before running this publishing helper.",
+            }
         if spec.get("python"):
             mod, _, fn = str(spec["python"]).partition(":")
             func = getattr(importlib.import_module(mod), fn or "check")
