@@ -487,7 +487,10 @@ class DispatchMixin:
                   external_pr: str = "", external_pr_number: int | None = None) -> Run:
         self.require_maintenance_running()
         ensure_open(task)
-        self._refuse_if_closed_or_frozen(task)
+        # A read-only local diagnosis may explain work in a held phase. The hold still
+        # applies to every corrective work/revise dispatch that can change product source.
+        if mode != "investigation":
+            self._refuse_if_closed_or_frozen(task)
         if not self.operator_scope_ready(task):
             raise RuntimeError("operator evidence is required before checkout work can dispatch")
         runner = runner or self.runner_for(task)
