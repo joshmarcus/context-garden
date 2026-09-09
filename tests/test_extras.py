@@ -120,8 +120,6 @@ def test_check_failure_card_keeps_full_diagnostic(garden):
     assert view is not None
     assert "Traceback (most recent call last):" in "\n".join(view["evidence"])
     assert "RuntimeError: contention" in "\n".join(view["evidence"])
-
-
 def test_command_check_retry_command_comes_only_from_config(tmp_path):
     """CG-194: a `command` check's output is written by code the branch wrote, so a
     `retry_command` in it must be ignored — it comes only from the operator's config."""

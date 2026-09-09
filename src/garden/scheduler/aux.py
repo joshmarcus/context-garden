@@ -16,7 +16,8 @@ class AuxMixin:
         return self.state.get("_aux").setdefault("runs", [])
 
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
-                     harness_name: str = "", difficulty: str = "", prepared_run: Run | None = None) -> Run:
+                     harness_name: str = "", difficulty: str = "", prepared_run: Run | None = None,
+                     model_override: str | None = None, pool_member: str = "") -> Run:
         self.require_maintenance_running()
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
@@ -44,7 +45,11 @@ class AuxMixin:
             override = self.retro_model_for(runner)
             if override:
                 run.model = override
+        if model_override is not None:
+            run.model = model_override
         run.difficulty = difficulty or "hard"
+        run.harness = runner.harness.name if runner.harness else ""
+        run.pool_member = pool_member
         run.brief_tokens = max(1, len(brief_text) // 4)
         canonical = self.prepare_canonical_run(probe, run, runner, run.branch, run.base)
         if canonical is not None:
@@ -53,7 +58,9 @@ class AuxMixin:
         run.save()
         runner.start(run, worktree, brief_text)
         self._aux_list().append({"run_id": run.run_id, "task": run.task_id, "kind": kind, **meta})
-        self.events.emit("dispatch", run.task_id, run=run.run_id, mode=kind, model=run.model, harness=run.harness, **{k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))})
+        self.events.emit("dispatch", run.task_id, run=run.run_id, mode=kind, model=run.model,
+                         harness=run.harness, pool_member=run.pool_member,
+                         **{k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))})
         self.state.save()
         return run
 
@@ -94,10 +101,14 @@ class AuxMixin:
                 # back where it can try again once it resumes, instead of a broken verdict.
                 self._pause_for_env_error(run, collected)
                 self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
-                                 usage=run.usage, status="env_error")
+                                 usage=run.usage, status="env_error", harness=run.harness,
+                                 model=run.model, pool_member=run.pool_member)
                 self._requeue_aux_env_error(entry, run, rep)
                 continue
-            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd, usage=run.usage, status=run.status)
+            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
+                             cost_usd=run.cost_usd, usage=run.usage, status=run.status,
+                             harness=run.harness, model=run.model,
+                             pool_member=run.pool_member)
             try:
                 if entry["kind"] == "compare":
                     self._finish_trial(entry, run, final, rep)

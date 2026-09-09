@@ -191,20 +191,26 @@ class ReviewMixin:
             if runner_name == "local" and self.local_slots_free() <= 0:
                 deferred.append(item)
                 continue
-            if self.is_harness_paused(harness_name):
+            tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+            member = self.select_pool_member(task, tier, review=True)
+            review_harness = (member or {}).get("harness") or harness_name
+            if self.pool_members(tier, review=True) and member is None:
+                deferred.append(item)
+                continue
+            if self.is_harness_paused(review_harness):
                 deferred.append(item)
                 continue
             kind = item["kind"]
             try:
                 if kind == "review":
-                    run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)))
+                    run = self.dispatch_review(task, work_run, count_round=bool(item.get("count_round", True)), member=member)
                     if run.mode == "review":
                         rep.dispatched.append(f"{task.id}(review)")
                         self.log(f"{task.id}: review run {run.run_id} started")
                     else:
                         rep.dispatched.append(f"{task.id}(check:interaction_replay)")
                 else:
-                    self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")))
+                    self.dispatch_persona_pr(task, item["name"], required_evidence=bool(item.get("required")), member=member)
                     if item.get("required"):
                         evidence[f"persona:{item['name']}"] = "running"
                     rep.dispatched.append(f"{task.id}(persona:{item['name']})")
@@ -547,14 +553,16 @@ class ReviewMixin:
         note = "superseded by a newer review dispatch for the same task"
         run.error = f"{run.error} ({note})" if run.error else note
         run.save()
-        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, status="superseded",
+        self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness,
+                         model=run.model, pool_member=run.pool_member, status="superseded",
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
                         reask_missing_fixes: bool = False,
                         clarify_unverified: list[str] | None = None,
-                        clarifies_review_run: str = "") -> Run:
+                        clarifies_review_run: str = "",
+                        member: dict[str, Any] | None = None) -> Run:
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
@@ -564,6 +572,13 @@ class ReviewMixin:
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         self._refuse_if_closed_or_frozen(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
+        review_tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        member = member if member is not None else self.select_pool_member(task, review_tier, review=True)
+        if self.pool_members(review_tier, review=True) and member is None:
+            raise RuntimeError("every review pool member is paused")
+        if member is not None:
+            harness_name = str(member.get("harness") or "")
+            ladder_model = None
         runner_name = "remote" if self.runner_for(task).name == "remote" else "local"
         runner = self.runner_for(task, runner_name, harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
@@ -804,11 +819,15 @@ class ReviewMixin:
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
+        run.harness = runner.harness.name if runner.harness else ""
         run.model = self.model_for(task, runner, review_difficulty)
         if ladder_model:
             run.model = ladder_model
+        elif member is not None:
+            run.model = str(member.get("model") or "")
         elif runner.harness and runner.harness.cfg.get("review_model"):
             run.model = str(runner.harness.cfg["review_model"])
+        run.pool_member = str((member or {}).get("label") or "")
         if ladder_model and writer:
             run.env_snapshot.update({"writer_harness": writer.harness, "writer_model": writer.model,
                                      "review_rung": f"{runner.harness.name if runner.harness else harness_name}:{run.model}"})
@@ -830,7 +849,8 @@ class ReviewMixin:
         if ladder_model and writer:
             task.log(f"reviewed by {run.model}, one above {writer.model}")
             self.store.save(task)
-        self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness)
+        self.events.emit("dispatch", task.id, run=run.run_id, mode="review", model=run.model, harness=run.harness,
+                         pool_member=run.pool_member)
         self.state.save()
         return run
 
@@ -1005,7 +1025,8 @@ class ReviewMixin:
             self._pause_for_env_error(run, collected)
             run.status = "env_error"
             run.save()
-            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", status="env_error",
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", harness=run.harness,
+                             model=run.model, pool_member=run.pool_member, status="env_error",
                              cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
             note = (f"automated review paused ({collected.get('env_kind') or 'quota'} limit hit on "
                    f"{run.harness or 'the harness'}); will retry once it resumes")
@@ -1199,7 +1220,8 @@ class ReviewMixin:
         pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
         if not emitted:
-            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", cost_usd=run.cost_usd, usage=run.usage,
+            self.events.emit("run_finished", task.id, run=run.run_id, mode="review", harness=run.harness,
+                             model=run.model, pool_member=run.pool_member, cost_usd=run.cost_usd, usage=run.usage,
                              status=str(review.get("verdict") or run.status))
         if not review:
             task.log(f"automated review produced no verdict ({run.error[:120] or run.status}){cost}")
@@ -1440,7 +1462,8 @@ class ReviewMixin:
             note = "closed by orphan sweep: task moved on before this run's verdict was read"
             run.error = f"{run.error} ({note})" if run.error else note
             run.save()
-            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, cost_usd=run.cost_usd,
+            self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, harness=run.harness,
+                             model=run.model, pool_member=run.pool_member, cost_usd=run.cost_usd,
                              usage=run.usage, status=run.status, orphaned=True)
             self.log(f"{run.task_id}: {run.mode} run {run.run_id} closed ({run.status}); {note}")
             rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} closed (orphaned)")
