@@ -77,11 +77,20 @@ def verify_paired_refresh(base: str) -> dict[str, object]:
                 page.expect_response("**/partials/now/where?**", timeout=1000):
             page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "phase_closed"})})""")
         page.locator("#now-summary").get_by_text("phase refreshed", exact=True).wait_for(timeout=1000)
+
+        page.unroute("**/partials/now/head?**")
+        page.route("**/partials/now/head?**", lambda route: route.fulfill(
+            body='<section id="now-summary">attention refreshed</section><span id="now-slots"></span>'))
+        with page.expect_response("**/partials/now/head?**", timeout=1000), \
+                page.expect_response("**/partials/now/now?**", timeout=1000):
+            page.evaluate("""window.__nowEvents.event({data: JSON.stringify({kind: "needs_human"})})""")
+        page.locator("#now-summary").get_by_text("attention refreshed", exact=True).wait_for(timeout=1000)
         browser.close()
     return {"state": "shared-event-refresh", "method": "browser event replay", "url": base + "/now",
             "status": 200, "observed": "Production scheduling issued both requests within one second; "
             "a partial failure replaced neither region, a later shared event replaced both, and "
-            "Next-only and phase-only events refreshed their detail together with the summary."}
+            "Next-only, phase-only, and needs-human-only events refreshed their detail "
+            "together with the summary."}
 
 
 def replay(out: Path) -> None:

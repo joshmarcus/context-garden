@@ -626,10 +626,11 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     head_events = re.search(r"var HEAD = \{([^}]+)\}", page).group(1)
     for event in ("profile_changed", "config_reloaded", "config_override", "config_override_cleared"):
         assert f"{event}: 1" in head_events
-    # The summary duplicates the next dispatch and current phase readings, so every event
-    # scoped to either detailed region also refreshes the head. These representative events
-    # do not otherwise belong to HEAD or PERIOD.
-    assert 'var refreshesHead = HEAD[k] || NEXT[k] || WHERE[k];' in page
+    # The summary duplicates owner attention, next dispatch and current phase readings, so
+    # every event scoped to those detailed regions also refreshes the head. These
+    # representative events do not otherwise belong to HEAD or PERIOD.
+    assert 'var refreshesHead = HEAD[k] || NOW_HANDS[k] || NEXT[k] || WHERE[k];' in page
+    assert "needs_human: 1" in re.search(r"var NOW_HANDS = \{([^}]+)\}", page).group(1)
     assert "check: 1" in re.search(r"var NEXT = \{([^}]+)\}", page).group(1)
     assert "phase_closed: 1" in re.search(r"var WHERE = \{([^}]+)\}", page).group(1)
     assert 'if (refreshesHead && !refreshesPeriod) regions.head()' in page
