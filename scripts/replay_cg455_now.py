@@ -97,7 +97,10 @@ def replay(out: Path) -> None:
                 viewport_evidence.extend(evidence)
         finally:
             server.should_exit = True
-            thread.join(timeout=10)
+            thread.join(timeout=3)
+            if thread.is_alive():
+                server.force_exit = True
+                thread.join(timeout=7)
             sock.close()
         assert not thread.is_alive()
     artifacts = [str(path) for path in sorted(out.glob("*.png"))]
