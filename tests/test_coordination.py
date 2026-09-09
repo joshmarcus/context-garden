@@ -636,6 +636,37 @@ def test_merge_keeps_parent_branch_for_external_child_to_retarget(sched, fake_gi
     assert "external stack owner must retarget" in recovery["reason"]
 
 
+def test_automerge_keeps_parent_branch_for_frozen_child(sched, fake_github):
+    """A frozen stacked child is not retargeted when the garden merges its parent."""
+    sched.cfg.data["github"]["automerge"] = True
+    parent = sched.store.task("DM-001")
+    child = sched.store.task("DM-002")
+    write(sched.store.root / "demo" / "p2" / "goals.md", "# Second phase\n")
+    sched.store.invalidate()
+    sched.move(child, "demo", "p2")
+    child = sched.store.task("DM-002")
+    child.status = Status.IN_REVIEW
+    sched.store.save(child)
+    sched.store.set_phase_frozen(sched.store.phase(child.product, child.phase), "held")
+
+    parent_pr = fake_github.create_pr("test/demo", parent.default_branch(), "main", "parent", "")
+    child_pr = fake_github.create_pr("test/demo", child.default_branch(), parent.default_branch(), "child", "")
+    parent.pr, child.pr = parent_pr.url, child_pr.url
+    parent.status = Status.IN_REVIEW
+    sched.store.save(parent)
+    sched.store.save(child)
+    sched.state.get(parent.id)["pr_number"] = parent_pr.number
+    sched.state.get(child.id).update({"pr_number": child_pr.number, "stack_parent": parent.id})
+
+    sched._do_merge(parent, parent_pr, TickReport())
+
+    assert fake_github.merged == [{"number": parent_pr.number, "method": "squash", "delete_branch": False}]
+    assert child_pr.base == parent.default_branch()
+    assert not fake_github.updated
+    child_state = sched.state.get(child.id)
+    assert child_state["stack_parent"] == parent.id
+
+
 def test_child_run_finishing_after_parent_merged_opens_pr_on_final_base(sched, fake_github, tmp_path):
     """A child whose stack parent became terminal while its work run was in flight opens its PR
     against the final base and rebases onto it, never against the parent's (deleted) branch."""
