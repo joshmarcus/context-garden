@@ -104,6 +104,47 @@ def test_reviewed_merge_head_skips_before_a_conflicting_history_flatten(
     assert not (sched.cfg.garden_dir / "rebase-conflicts" / task.id).exists()
 
 
+def test_rebase_push_lease_rejects_an_author_move_after_the_recorded_head(
+        sched, fake_github, tmp_path, monkeypatch):
+    """The approval lineage's pre-head remains the push lease across the rebase's second fetch."""
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    branch = task.branch
+    wt = sched.worktree_for(task)
+    remote = tmp_path / "remote.git"
+    recorded_head = gitc("rev-parse", "HEAD", cwd=wt).strip()
+
+    attacker = tmp_path / "author-clone"
+    gitc("clone", "-q", str(remote), str(attacker), cwd=tmp_path)
+    gitc("config", "user.email", "author@example.test", cwd=attacker)
+    gitc("config", "user.name", "author", cwd=attacker)
+    gitc("checkout", "-q", "-b", branch, f"origin/{branch}", cwd=attacker)
+    original_sync = gitops.sync_and_rebase
+    author_head = ""
+
+    def move_remote_after_sync(*args, **kwargs):
+        nonlocal author_head
+        outcome = original_sync(*args, **kwargs)
+        # An empty author commit keeps the PR's patch-id identical: without the explicit old-head
+        # lease, the scheduler's second fetch would accept this exact approval-laundering shape.
+        gitc("commit", "-q", "--allow-empty", "-m", "author rewrites equivalent PR history",
+             cwd=attacker)
+        gitc("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=attacker)
+        author_head = gitc("rev-parse", "HEAD", cwd=attacker).strip()
+        return outcome
+
+    monkeypatch.setattr(gitops, "sync_and_rebase", move_remote_after_sync)
+    outcome = sched._rebase_and_record(task, "main", wt=wt)
+
+    assert outcome.status == "error"
+    assert outcome.run is not None and outcome.run.status == "failed"
+    assert outcome.run.env_snapshot["rebase_head_before"] == recorded_head
+    assert "lease" in outcome.run.error.lower()
+    remote_head = gitc("ls-remote", str(remote), f"refs/heads/{branch}", cwd=tmp_path).split()[0]
+    assert remote_head == author_head
+
+
 @pytest.mark.parametrize("change", [
     "missing_snapshot", "review_base_name", "local_head", "remote_head",
     "base_head", "base_not_ancestor", "diff_hash",

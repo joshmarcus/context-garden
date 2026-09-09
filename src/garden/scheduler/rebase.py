@@ -60,6 +60,93 @@ class RebaseOutcome:
 
 
 class RebaseMixin:
+    def _review_approval_is_proven(self, task: Task, st: dict[str, object]) -> bool:
+        """Whether the stored approval is backed by its immutable review run and head."""
+        review_head = str(st.get("last_review_head") or "")
+        review_run_id = str(st.get("last_review_run") or "")
+        if (not review_head or not review_run_id
+                or str((st.get("last_review") or {}).get("verdict") or "") != "approve"):
+            return False
+        review_run = next((candidate for candidate in reversed(self.runs.runs_for(task.id))
+                           if candidate.run_id == review_run_id and candidate.mode == "review"), None)
+        if review_run is None or review_run.status != "done":
+            return False
+        snapshot_head = str((review_run.env_snapshot or {}).get("review_head") or "")
+        result_verdict = str((review_run.result or {}).get("verdict") or "")
+        return snapshot_head == review_head and result_verdict == "approve"
+
+    def _derived_approved_head(self, task: Task, st: dict[str, object]) -> str:
+        """Validate and return the last mechanically derived approved head, if any.
+
+        The original review head/run remain immutable.  Every hop must name a durable rebase
+        run whose recorded before/after heads form one chain and whose patch ids match.
+        """
+        lineage = st.get("derived_review_approval")
+        if not isinstance(lineage, dict) or not self._review_approval_is_proven(task, st):
+            return ""
+        review_head = str(st.get("last_review_head") or "")
+        review_run_id = str(st.get("last_review_run") or "")
+        if (str(lineage.get("review_head") or "") != review_head
+                or str(lineage.get("review_run") or "") != review_run_id):
+            return ""
+        hops = lineage.get("rebases")
+        if not isinstance(hops, list) or not hops:
+            return ""
+        runs = {candidate.run_id: candidate for candidate in self.runs.runs_for(task.id)}
+        current = review_head
+        for hop in hops:
+            if not isinstance(hop, dict):
+                return ""
+            before = str(hop.get("from_head") or "")
+            after = str(hop.get("head") or "")
+            run_id = str(hop.get("run") or "")
+            candidate = runs.get(run_id)
+            snapshot = (candidate.env_snapshot or {}) if candidate else {}
+            if (not before or not after or before != current or candidate is None
+                    or candidate.mode != "rebase" or candidate.status != "done"
+                    or not candidate.patch_id_before
+                    or candidate.patch_id_before != candidate.patch_id_after
+                    or str(snapshot.get("rebase_head_before") or "") != before
+                    or str(snapshot.get("rebase_local_head_before") or "") != before
+                    or str(snapshot.get("rebase_head_after") or "") != after):
+                return ""
+            current = after
+        return current if current == str(lineage.get("head") or "") else ""
+
+    def _effective_approved_head(self, task: Task, st: dict[str, object]) -> str:
+        """The reviewed head, advanced only through a fully proven mechanical lineage."""
+        return self._derived_approved_head(task, st) or str(st.get("last_review_head") or "")
+
+    def _extend_approved_head_lineage(self, task: Task, run: Run) -> bool:
+        """Bind an unchanged-patch rebase head to the existing approval without rewriting it."""
+        st = self.state.get(task.id)
+        snapshot = run.env_snapshot or {}
+        before = str(snapshot.get("rebase_head_before") or "")
+        local_before = str(snapshot.get("rebase_local_head_before") or "")
+        after = str(snapshot.get("rebase_head_after") or "")
+        if (not before or local_before != before or not after or not run.patch_id_before
+                or run.patch_id_before != run.patch_id_after
+                or not self._review_approval_is_proven(task, st)):
+            return False
+        existing = st.get("derived_review_approval")
+        if existing is None:
+            if before != str(st.get("last_review_head") or ""):
+                return False
+            hops: list[dict[str, str]] = []
+        else:
+            if not isinstance(existing, dict) or self._derived_approved_head(task, st) != before:
+                return False
+            hops = [dict(hop) for hop in existing.get("rebases", [])]
+        hops.append({"run": run.run_id, "from_head": before, "head": after,
+                     "patch_id": run.patch_id_after})
+        st["derived_review_approval"] = {
+            "review_run": str(st.get("last_review_run") or ""),
+            "review_head": str(st.get("last_review_head") or ""),
+            "head": after,
+            "rebases": hops,
+        }
+        return True
+
     def _reviewed_branch_is_current(self, task: Task, wt: Path, branch: str, base: str) -> bool:
         """Prove a reviewed remote head already contains the latest base without rewriting it."""
         st = self.state.get(task.id)
@@ -108,6 +195,8 @@ class RebaseMixin:
             return RebaseOutcome("error", wt, branch)
         repo = self.repo_for(task)
         patch_before = ""
+        rebase_head_before = ""
+        rebase_local_head_before = ""
         artifact_dir: Path | None = None
         try:
             if not wt.exists():
@@ -120,8 +209,16 @@ class RebaseMixin:
             # The patch id of the branch's own diff before anything moves — compared against the
             # same id computed after the rebase, this is how rule 2 tells a mechanical shift of
             # line numbers and context (CG-210) apart from a genuine change to the PR's own patch.
+            # Approval lineage is allowed only when the local patch being measured starts at
+            # the exact remote PR head. A stale worktree may still be rebased safely, but it
+            # cannot use that patch comparison to derive approval for the pushed head.
+            fetched = gitops.fetch(wt)
+            rebase_local_head_before = gitops.rev_parse(wt, "HEAD")
+            rebase_head_before = gitops.remote_head(wt, branch) if fetched else ""
             patch_before = gitops.patch_id(wt, base)
-            identity = hashlib.sha256(f"{branch}\0{base}\0{gitops.rev_parse(wt, 'HEAD')}".encode()).hexdigest()[:16]
+            identity = hashlib.sha256(
+                f"{branch}\0{base}\0{rebase_local_head_before}".encode()
+            ).hexdigest()[:16]
             artifact_dir = self.cfg.garden_dir / "rebase-conflicts" / task.id / identity
             ok, files, hunks = gitops.sync_and_rebase(wt, branch, base, artifact_dir=artifact_dir)
         except gitops.GitError as e:
@@ -138,8 +235,17 @@ class RebaseMixin:
             return RebaseOutcome("conflict", wt, branch, files=files, hunks=hunks, artifacts=artifacts)
         run = self.runs.new_run(task.id, "local", mode="rebase")
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+        run.env_snapshot = {
+            "rebase_head_before": rebase_head_before,
+            "rebase_local_head_before": rebase_local_head_before,
+            "rebase_head_after": gitops.rev_parse(wt, "HEAD"),
+        }
         try:
-            note = gitops.push(wt, branch, force=True)
+            # Bind the rewrite to the PR head captured before any rebase work. sync_and_rebase
+            # fetches again, so an implicit lease would otherwise accept an author push that
+            # landed between those fetches and silently carry it through this approval lineage.
+            note = (gitops.push(wt, branch, lease=rebase_head_before)
+                    if rebase_head_before else gitops.push(wt, branch, force=True))
             if note:
                 self.log(f"{task.id}: {note}")
         except gitops.GitError as e:
@@ -230,6 +336,28 @@ class RebaseMixin:
         fixes); patch-id is blind to it because it hashes only the +/- content, not context."""
         st = self.state.get(task.id)
         verdict_kept = bool(run.patch_id_before) and run.patch_id_before == run.patch_id_after
+        require_current_base = bool(
+            self._github_cfg("automerge_require_current_base", task.product, True)
+        )
+        if verdict_kept and not require_current_base and not self._extend_approved_head_lineage(task, run):
+            # The patch is unchanged, but the rebase did not start at the approved head (or at
+            # the end of a previously proven chain).  A new author push must never inherit an
+            # older approval. Queue one exact-head review; pending/review pointers make this
+            # idempotent if the continuation is replayed after a restart.
+            st.pop("derived_review_approval", None)
+            self.events.emit("rebase", task.id, run=run.run_id,
+                             patch_id_before=run.patch_id_before,
+                             patch_id_after=run.patch_id_after, verdict_kept=False,
+                             approval_lineage=False)
+            task.log(f"rebased; patch id unchanged but approval lineage was not proven; exact-head review queued{cost}")
+            self.store.save(task)
+            pending = list(st.get("pending_reviews") or [])
+            if not st.get("review_run") and not any(item.get("kind") == "review" for item in pending):
+                self._dispatch_or_defer_reviews(
+                    task, [{"kind": "review", "count_round": False}], rep, work_run=run
+                )
+            rep.transitions.append(f"{task.id} rebased; exact-head review queued")
+            return
         if verdict_kept:
             self.events.emit("rebase", task.id, run=run.run_id, patch_id_before=run.patch_id_before,
                              patch_id_after=run.patch_id_after, verdict_kept=True)
@@ -241,6 +369,7 @@ class RebaseMixin:
             return
         # The patch actually changed: keep `last_diff_hash` (used elsewhere for stall detection
         # and the scratch-merge marker) in sync with the diff this rebase produced.
+        st.pop("derived_review_approval", None)
         wt = self.worktree_for(task)
         diff_h = gitops.diff_hash(wt, base) if wt.exists() else ""
         if diff_h:
