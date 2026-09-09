@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from garden.preflight import PREFLIGHT_ITEMS, mechanical_results, missing_preflight
+from garden.preflight import (
+    PREFLIGHT_ITEMS,
+    capture_infrastructure_reason,
+    mechanical_results,
+    missing_preflight,
+    preflight_section,
+)
 from garden.review import review_brief
 from garden.store import Store
 
@@ -139,6 +145,55 @@ def test_mechanical_preflight_uses_the_validation_plan_not_the_web_path(garden, 
                                 ui_changed=False, captures=[], required_ui=False)
 
     assert next(row for row in results if row["name"] == "UI captures")["status"] == "pass"
+
+
+def test_capture_infrastructure_policy_defaults_required_and_validates(sched):
+    assert sched.cfg.capture_infrastructure_policy() == "require"
+    sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"
+    assert sched.cfg.capture_infrastructure_policy() == "advisory"
+    sched.cfg.data["review"]["capture_infrastructure_policy"] = "ignore-all-ui"
+    with __import__("pytest").raises(ValueError, match="capture_infrastructure_policy"):
+        sched.cfg.capture_infrastructure_policy()
+
+
+def test_mechanical_preflight_records_missing_png_as_advisory_only_with_trusted_reason(garden, monkeypatch):
+    worktree = garden / "capture-advisory"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs:
+                        "+visible change\n" if "--name-only" not in args else "src/garden/web/pages/task.py\n")
+    results = mechanical_results(
+        worktree, "main", "Description", require_description=True, ui_changed=False,
+        captures=[], required_ui=True, capture_infrastructure_advisory="Chromium launch failed",
+    )
+    capture = next(row for row in results if row["name"] == "UI captures")
+    assert capture == {
+        "name": "UI captures", "status": "advisory",
+        "summary": "planned visual behavior has no PNG captures because capture infrastructure was unavailable",
+        "details": "Chromium launch failed",
+    }
+    assert "Never mark a missing screenshot as a pass" in preflight_section("advisory")
+
+
+def test_worker_controlled_infrastructure_label_is_not_an_advisory():
+    claimed = {"name": "ui", "status": "fail", "failure_kind": "infrastructure",
+               "summary": "worker says browser failed"}
+    assert capture_infrastructure_reason(
+        claimed, policy="advisory", trusted_generated_check=True
+    ) == ""
+
+    claimed["capture_infrastructure"] = {
+        "source": "garden.walkthrough:ui_check", "kind": "browser_unavailable",
+        "diagnostic": "trusted wrapper diagnostic",
+    }
+    assert capture_infrastructure_reason(
+        claimed, policy="advisory", trusted_generated_check=False
+    ) == ""
+    assert capture_infrastructure_reason(
+        claimed, policy="advisory", trusted_generated_check=True
+    ) == "trusted wrapper diagnostic"
 
 
 def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):

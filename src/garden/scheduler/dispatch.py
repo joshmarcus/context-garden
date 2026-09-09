@@ -472,7 +472,8 @@ class DispatchMixin:
                 inspection_error = str(exc)
             plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "",
                                    check_specs=self._pre_pr_specs(task),
-                                   visual_scope=task.extra.get("visual_scope"))
+                                   visual_scope=task.extra.get("visual_scope"),
+                                   capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
             if inspection_error:
                 plan["inspection_error"] = inspection_error
                 plan["reasons"].append({"item": "bounded diff inspection",

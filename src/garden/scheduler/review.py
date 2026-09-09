@@ -17,6 +17,7 @@ from ..harness import DIFFICULTIES
 from ..model import Status, Task, dispatch_sort_key, ensure_open, now_iso
 from ..notify import notify
 from ..review import (
+    ambiguous_unverified,
     enforce_criteria_verdict,
     feedback_from_review,
     interaction_evidence_gaps,
@@ -392,7 +393,9 @@ class ReviewMixin:
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
-                        reask_missing_fixes: bool = False) -> Run:
+                        reask_missing_fixes: bool = False,
+                        clarify_unverified: list[str] | None = None,
+                        clarifies_review_run: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
@@ -440,7 +443,8 @@ class ReviewMixin:
             except GitHubError:
                 pass
         plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head,
-                               check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"))
+                               check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"),
+                               capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
         plan["visual_source"] = visual_source_digest(wt, plan)
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
@@ -448,6 +452,7 @@ class ReviewMixin:
                                    if row["item"] == "served interaction"), "non-UI change")
         capture_paths: list[str] = []
         capture_pages: list[str] = []
+        capture_advisories: list[dict[str, Any]] = []
         check_results: list[dict[str, Any]] = []
         current_check = None
         reusable_capture_check = None
@@ -470,11 +475,29 @@ class ReviewMixin:
             check_results = list((current_check.result or {}).get("checks", []))
         capture_check = current_check or reusable_capture_check
         if capture_check is not None:
-            ui_results = [result for result in (capture_check.result or {}).get("checks", [])
-                          if result.get("name") == "ui" and result.get("status") == "pass"]
+            indexed_ui_results = [
+                (index, result)
+                for index, result in enumerate((capture_check.result or {}).get("checks", []))
+                if result.get("name") == "ui"
+            ]
+            ui_results = [
+                result for index, result in indexed_ui_results
+                if result.get("status") == "pass"
+                and self._trusted_generated_ui_result(capture_check, index)
+            ]
             capture_paths = [str(p) for result in ui_results for p in result.get("captures", [])
                              if str(p).endswith(".png")]
             capture_pages = [str(page) for result in ui_results for page in result.get("pages", [])]
+            policy = str(plan.get("capture_infrastructure_policy") or "require")
+            for index, result in indexed_ui_results:
+                reason = self._capture_infrastructure_advisory(
+                    capture_check, result, index, policy=policy)
+                if reason:
+                    capture_advisories.append({
+                        "diagnostic": reason,
+                        "artifacts": [str(path) for path in result.get("captures", [])
+                                      if not str(path).endswith(".png")],
+                    })
         needs_interaction = bool(plan["interaction"])
         needs_scalability = bool(plan["scalability"])
         interaction_reason = next((row["reason"] for row in plan["reasons"]
@@ -486,6 +509,7 @@ class ReviewMixin:
         author_gaps = interaction_evidence_gaps(
             {"interaction": author_interaction}, required=True, scalability=needs_scalability,
             expected_head=review_head, affected_flow=affected_flow,
+            expected_criteria=criteria_snapshot,
         ) if needs_interaction and author_interaction is not None else ["not reported"]
         reusable_author_interaction = needs_interaction and not author_gaps
         replay_matches = (replay.get("head") == review_head
@@ -530,18 +554,22 @@ class ReviewMixin:
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
-                            checks=check_results, reask_missing_fixes=reask_missing_fixes,
+                            checks=check_results, capture_advisories=capture_advisories,
+                            reask_missing_fixes=reask_missing_fixes,
                             interaction_required=needs_interaction, scalability_required=needs_scalability,
                             review_head=review_head, interaction_reason=interaction_reason,
                             interaction_manifest=(str(replay_manifest) if needs_interaction
                                                   and not reusable_author_interaction else ""),
                             criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan,
-                            author_interaction=author_interaction)
+                            author_interaction=author_interaction,
+                            clarify_unverified=clarify_unverified)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
         # review.max_rounds and must not be charged for having been retried.
         required_pages = set(plan["pages"])
+        if capture_advisories:
+            required_pages.clear()
         if "*" in required_pages:
             required_pages = set(capture_pages)
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
@@ -554,7 +582,10 @@ class ReviewMixin:
                             "affected_flow": affected_flow,
                             "author_interaction_reused": reusable_author_interaction,
                             "reask_missing_fixes": reask_missing_fixes,
+                            "clarify_unverified": bool(clarify_unverified),
                             "criteria": criteria_snapshot, "validation_plan": plan}
+        if clarifies_review_run:
+            run.env_snapshot["clarifies_review_run"] = clarifies_review_run
         review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
@@ -609,6 +640,27 @@ class ReviewMixin:
         st.pop("needs_human", None)
         return self.dispatch_review(task)
 
+    def _resume_review_clarification(self, task: Task, source: Run, entries: list[str],
+                                     rep: TickReport) -> bool:
+        """Restore or create the one reviewer-only clarification for a terminal result."""
+        st = self.state.get(task.id)
+        existing = next((candidate for candidate in reversed(self.runs.runs_for(task.id))
+                         if candidate.mode == "review"
+                         and str((candidate.env_snapshot or {}).get("clarifies_review_run") or "")
+                         == source.run_id
+                         and candidate.status != "superseded"), None)
+        if existing is not None:
+            st["review_run"] = existing.run_id
+            self.state.save()
+            rep.transitions.append(f"{task.id} review clarification continuation restored")
+            return True
+        self.dispatch_review(
+            task, count_round=False, clarify_unverified=entries,
+            clarifies_review_run=source.run_id,
+        )
+        rep.transitions.append(f"{task.id} review re-asked to classify unverified observations")
+        return True
+
     def reap_review(self, task: Task, rep: TickReport) -> bool:
         st = self.state.get(task.id)
         run_id = st.get("review_run")
@@ -632,6 +684,10 @@ class ReviewMixin:
             if st.get("last_review_run") == run_id or not run.result:
                 st["review_run"] = ""
                 return False
+            pending_clarification = (run.env_snapshot or {}).get("clarification_pending")
+            if isinstance(pending_clarification, list) and pending_clarification:
+                return self._resume_review_clarification(
+                    task, run, [str(entry) for entry in pending_clarification], rep)
             return self._apply_review(task, run, run.result, rep, emitted=True)
         runner = self.runner_for(task, run.runner, run.harness)
         if not self._finished_or_timed_out(run, runner):
@@ -709,6 +765,41 @@ class ReviewMixin:
                                                           "summary": "Bounded UI inspection incomplete for: " + ", ".join(unresolved),
                                                           "fix": "Map each path to affected consumers in ui_scope, or log a justified scope_expansions entry."})
             metadata_warnings: list[str] = []
+            frozen_criteria = (list((run.env_snapshot or {})["criteria"])
+                               if "criteria" in (run.env_snapshot or {}) else None)
+            affected_flow = str((run.env_snapshot or {}).get("affected_flow") or "")
+            ambiguous = ambiguous_unverified(
+                review, expected_criteria=frozen_criteria, affected_flow=affected_flow)
+            if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
+                # Preserve the original report, but spend one reviewer continuation to
+                # classify legacy prose. Persist the continuation on this result first so a
+                # restart cannot apply the malformed verdict or launch two clarifications.
+                run.result = review
+                run.status = "done"
+                run.env_snapshot["clarification_pending"] = ambiguous
+                run.save()
+                task.log("automated review clarification requested for ambiguous unverified observations")
+                self.store.save(task)
+                return self._resume_review_clarification(task, run, ambiguous, rep)
+            if ambiguous:
+                reason = ("reviewer clarification remained malformed or targeted requirements "
+                          "outside the frozen criteria and declared affected flow")
+                run.result = review
+                run.status = "failed"
+                run.error = reason
+                run.save()
+                st["review_run"] = ""
+                self._set_needs_human(task, "review_clarification", reason,
+                                      run=run.run_id, entries=ambiguous, owner="reviewer")
+                task.log(reason + "; operator review is required and no author revision was queued")
+                self.store.save(task)
+                self.events.emit("run_finished", task.id, run=run.run_id, mode="review",
+                                 cost_usd=run.cost_usd, usage=run.usage, status="failed")
+                self.events.emit("needs_human", task.id, stop_kind="review_clarification",
+                                 reason=reason, run=run.run_id)
+                rep.transitions.append(f"{task.id} reviewer clarification needs operator attention")
+                self.state.save()
+                return True
             gaps = interaction_evidence_gaps(
                 review, required=bool((run.env_snapshot or {}).get("interaction_required")),
                 scalability=bool((run.env_snapshot or {}).get("scalability_required")),
@@ -716,7 +807,8 @@ class ReviewMixin:
                 replay_manifest=Path(str((run.env_snapshot or {}).get("interaction_replay_manifest") or "")),
                 replay_nonce=str((run.env_snapshot or {}).get("interaction_replay_nonce") or ""),
                 replay_digest=str((run.env_snapshot or {}).get("interaction_replay_digest") or ""),
-                affected_flow=str((run.env_snapshot or {}).get("affected_flow") or ""),
+                affected_flow=affected_flow,
+                expected_criteria=frozen_criteria,
                 metadata_warnings=metadata_warnings,
             ) if review else []
             if metadata_warnings:

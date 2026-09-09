@@ -93,6 +93,7 @@ ATTENTION_KINDS = {
     "worker_failed": ("A worker run failed", "The last run ended without a usable result and automatic retries are used up."),
     "env_error": ("The garden hit an environment error", "Dispatch, push or git failed on the garden's side; the worker never got a fair run."),
     "check_did_not_run": ("A check could not run", "The check continuation and its PR identity are preserved. A delegated operator may retry it once without changing the task's outcome."),
+    "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
 }
 
 
@@ -236,10 +237,11 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                     else "resets attempts and starts a fresh work run from the task brief")
     actions: list[dict[str, str]] = []
     delegated = bool(info.get("delegated_recovery"))
+    reviewer_owned = info["kind"] == "review_clarification"
     if delegated:
         actions.append({"label": "Run delegated recovery", "kind": "recover", "command": f"garden recover {t.id}",
                         "detail": "queues one bounded continuation with the existing feedback and PR; repeated unchanged failures stop for an owner"})
-    if can_resume:
+    if can_resume and not reviewer_owned:
         actions.append({"label": "Nothing to fix, resume", "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
     if info["kind"] == "review_cap" and t.pr:
@@ -247,8 +249,13 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                         "detail": "raises this task's review cap by one round and dispatches an automated review now"})
         actions.append({"label": "Send back with a note", "kind": "triage-changes", "command": f'garden triage {t.id} --changes "..."',
                         "detail": "queues a revise run against your note instead of an automated review"})
-    actions.append({"label": "Continue the loop", "kind": "retry", "command": f"garden retry {t.id}",
-                    "detail": retry_detail})
+    if reviewer_owned and t.pr:
+        actions.append({"label": "One more automated review", "kind": "review-again",
+                        "command": f"garden review {t.id}",
+                        "detail": "clears this reviewer-owned stop and requests another review; no author revision is queued"})
+    if not reviewer_owned:
+        actions.append({"label": "Continue the loop", "kind": "retry", "command": f"garden retry {t.id}",
+                        "detail": retry_detail})
     actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
                     "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
     actions.append({"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}",

@@ -128,7 +128,8 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
 
 def validation_plan(changed: list[str], *review_context: str, head: str = "",
                     check_specs: list[dict[str, Any]] | None = None,
-                    visual_scope: Any = None) -> dict[str, Any]:
+                    visual_scope: Any = None,
+                    capture_infrastructure_policy: str = "require") -> dict[str, Any]:
     """Return the head-bound functional and visual evidence decision for a change.
 
     A screenshot is evidence for a named visible behaviour, never a side effect of touching
@@ -196,13 +197,17 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
         reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
     return {"head": head, "pages": sorted(pages), "interaction": interaction,
             "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons,
-            "visual_paths": sorted(visual_paths)}
+            "visual_paths": sorted(visual_paths),
+            "capture_infrastructure_policy": (
+                "advisory" if capture_infrastructure_policy == "advisory" else "require"
+            )}
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
                               expected_head: str, replay_manifest: Path | None = None,
                               replay_nonce: str = "", replay_digest: str = "",
                               affected_flow: str = "",
+                              expected_criteria: list[str] | None = None,
                               metadata_warnings: list[str] | None = None) -> list[str]:
     """Return substantive blockers; report missing packaging separately as advisories."""
     if not required and not scalability:
@@ -267,8 +272,36 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         warnings.append("automated checks were not separately recorded")
     if not isinstance(row.get("unverified"), list):
         warnings.append("unverified requirements were not explicitly recorded")
-    elif row.get("unverified"):
-        gaps.append("interaction requirements remain unverified")
+    else:
+        frozen_criteria = ({str(criterion).strip() for criterion in expected_criteria}
+                           if expected_criteria is not None else {
+                               str(entry.get("criterion") or "").strip()
+                               for entry in review.get("criteria") or [] if isinstance(entry, dict)
+                           })
+        for item in row["unverified"]:
+            if not isinstance(item, dict):
+                continue  # Legacy strings are resolved by the scheduler's bounded re-ask.
+            scope = str(item.get("scope") or "").strip()
+            # A limitation is out of scope only when it is just an observation.  Required
+            # targeting fields are authoritative even if the reviewer chose the wrong label.
+            # Unknown/malformed structured entries also remain conservative blockers.
+            has_required_fields = any(item.get(name) for name in
+                                      ("criterion", "affected_flow", "outcome", "reason"))
+            if scope == "limitation" and not has_required_fields:
+                continue
+            criterion = str(item.get("criterion") or "").strip()
+            flow = str(item.get("affected_flow") or "").strip()
+            outcome = str(item.get("outcome") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            target = f"criterion: {criterion}" if criterion else f"affected flow: {flow}" if flow else ""
+            if not target or not outcome or not reason:
+                gaps.append("required unverified outcome must name its criterion or affected flow and explain the missing outcome")
+            elif criterion and criterion not in frozen_criteria:
+                gaps.append(f"required unverified outcome names no frozen criterion: {criterion}")
+            elif flow and (not affected_flow or flow != affected_flow):
+                gaps.append(f"required unverified outcome names no justified affected flow: {flow}")
+            else:
+                gaps.append(f"required outcome remains unverified ({target}; {outcome}): {reason}")
     if scalability:
         load = row.get("scalability") if isinstance(row.get("scalability"), dict) else {}
         if not isinstance(load.get("served_app"), str) or not load["served_app"].startswith(("http://", "https://")):
@@ -294,6 +327,41 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         if load.get("load_kind") not in SCALABILITY_LOAD_KINDS:
             gaps.append("scalability load_kind must be controlled or real_model_harnesses")
     return gaps
+
+
+def ambiguous_unverified(review: dict[str, Any], *, expected_criteria: list[str] | None = None,
+                         affected_flow: str = "") -> list[str]:
+    """Entries whose target/classification needs reviewer clarification, not author work."""
+    interaction = review.get("interaction")
+    values = interaction.get("unverified") if isinstance(interaction, dict) else None
+    if not isinstance(values, list):
+        return []
+    frozen_criteria = ({str(criterion).strip() for criterion in expected_criteria}
+                       if expected_criteria is not None else {
+                           str(entry.get("criterion") or "").strip()
+                           for entry in review.get("criteria") or [] if isinstance(entry, dict)
+                       })
+    ambiguous: list[str] = []
+    for value in values:
+        if not isinstance(value, dict):
+            if str(value).strip():
+                ambiguous.append(str(value).strip())
+            continue
+        scope = str(value.get("scope") or "").strip()
+        has_required_fields = any(value.get(name) for name in
+                                  ("criterion", "affected_flow", "outcome", "reason"))
+        if scope == "limitation" and not has_required_fields:
+            continue
+        criterion = str(value.get("criterion") or "").strip()
+        flow = str(value.get("affected_flow") or "").strip()
+        outcome = str(value.get("outcome") or "").strip()
+        reason = str(value.get("reason") or "").strip()
+        invalid_target = (bool(criterion) == bool(flow)
+                          or bool(criterion and criterion not in frozen_criteria)
+                          or bool(flow and (not affected_flow or flow != affected_flow)))
+        if scope not in {"required", "limitation"} or invalid_target or not outcome or not reason:
+            ambiguous.append(json.dumps(value, sort_keys=True))
+    return ambiguous
 
 
 def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str,
@@ -455,7 +523,13 @@ by recovery. Record actions and their observed consequences; screenshots and tes
 assertions are supporting artifacts, not performed interaction. Treat no_change reconciliation
 and attention prompts as user outcomes when they are affected. Never use the live operator
 garden. Report the exact command, artifact paths, separately named automated checks, and every
-unverified requirement. Use the reviewed full SHA supplied below as `interaction.head`.
+unverified outcome. Each `interaction.unverified` entry is an object. Use `scope: required`
+only for a failed or missing frozen acceptance outcome, naming either its exact `criterion`
+or a justified `affected_flow`, plus the missing `outcome` and `reason`. Use
+`scope: limitation` with an `observation` for honest out-of-scope uncertainty or follow-up;
+limitations remain visible but cannot request changes. Never hide an actual failed state,
+unmet criterion, affected-flow gap, or contradictory provenance by calling it a limitation.
+Use the reviewed full SHA supplied below as `interaction.head`.
 
 For a scalability claim, additionally use a served disposable app with representative and larger
 histories, repeated cache-expiry intervals, actual executing bounded workload processes, empirical
@@ -488,7 +562,7 @@ empty when a blocking finding means the change is going back anyway.
 
 End your final message with exactly one line:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<required page slug>"], "ui_scope": [{{"path": "<unknown UI path from plan>", "consumers": ["<affected page slug>"]}}], "scope_expansions": [{{"item": "<new evidence demand or unknown UI path>", "reason": "<changed claim or discovered risk>"}}], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "events": [{{"kind": "http_request", "state": "affected|empty|failure|recovery", "outcome": "success|empty|failure", "method": "<method>", "url": "<served URL>", "status_code": 200, "observed": "<actual consequence>"}}], "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<required page slug>"], "ui_scope": [{{"path": "<unknown UI path from plan>", "consumers": ["<affected page slug>"]}}], "scope_expansions": [{{"item": "<new evidence demand or unknown UI path>", "reason": "<changed claim or discovered risk>"}}], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "events": [{{"kind": "http_request", "state": "affected|empty|failure|recovery", "outcome": "success|empty|failure", "method": "<method>", "url": "<served URL>", "status_code": 200, "observed": "<actual consequence>"}}], "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": [{{"scope": "required", "criterion": "<exact frozen criterion>", "outcome": "<failed or missing outcome>", "reason": "<why>"}}, {{"scope": "limitation", "observation": "<out-of-scope uncertainty or follow-up>"}}], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
 
 The JSON must be on one line.
 """
@@ -514,11 +588,12 @@ def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
+                 capture_advisories: list[dict[str, Any]] | None = None,
                  reask_missing_fixes: bool = False, interaction_required: bool = False,
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
                  pre_flight: Any = None, plan: dict[str, Any] | None = None,
-                 author_interaction: Any = None) -> str:
+                 author_interaction: Any = None, clarify_unverified: list[str] | None = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
@@ -535,10 +610,19 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
         EVIDENCE_GUIDANCE,
-        preflight_section(),
+        preflight_section(str((plan or {}).get("capture_infrastructure_policy") or "require")),
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
+    if clarify_unverified:
+        parts.append(
+            "## Clarification required\n\nThe prior review used ambiguous or malformed entries in "
+            "`interaction.unverified`. Preserve each observation, classify it under the "
+            "structured contract, and target required gaps only to an exact frozen criterion "
+            "or the declared affected flow. Do not ask the author to revise unless a required "
+            "outcome actually failed. Prior entries:\n\n"
+            + "\n".join(f"- {item}" for item in clarify_unverified) + "\n"
+        )
     if criteria_note:
         parts.append(criteria_note)
     verification = _verification_brief(task, verified, frozen)
@@ -556,6 +640,22 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
+    if capture_advisories:
+        advisory_lines = []
+        for advisory in capture_advisories:
+            diagnostic = str(advisory.get("diagnostic") or "capture infrastructure unavailable")
+            artifacts = [str(path) for path in advisory.get("artifacts", [])]
+            advisory_lines.append(f"- Failed capture attempt: {diagnostic}")
+            advisory_lines.extend(f"  - focused fallback artifact: `{path}`" for path in artifacts)
+        parts.append(
+            "## UI capture infrastructure advisory\n\n"
+            "The screenshot attempt remains recorded as failed; do not call it a pass. The "
+            "owner-selected policy permits review of this head with the focused HTML/text and "
+            "functional evidence below. Judge what that evidence proves. Observed UI defects, "
+            "application or renderer errors, incomplete interactions, failed functional checks, "
+            "and contradictory source or artifacts remain blocking.\n\n"
+            + "\n".join(advisory_lines) + "\n"
+        )
     if plan:
         parts.append("## Validation plan\n\n```json\n" + json.dumps(plan, indent=2, sort_keys=True) + "\n```\n")
     if interaction_required or scalability_required:
@@ -635,6 +735,14 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
         for c in criteria:
             mark = "✅" if c.get("met") is True else "❌"
             out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
+    interaction = rev.get("interaction")
+    unverified = interaction.get("unverified") if isinstance(interaction, dict) else []
+    limitations = [str(item.get("observation") or "").strip() for item in unverified
+                   if isinstance(item, dict) and item.get("scope") == "limitation"
+                   and str(item.get("observation") or "").strip()]
+    if limitations:
+        out.append("\n**Limitations and follow-ups**")
+        out += [f"- {item}" for item in limitations]
     findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
     blocking = [f for f in findings if f.get("severity") == "blocking"]
     high = [f for f in findings if f.get("severity") == "high"]

@@ -5,6 +5,15 @@ responsibility; `python3 scripts/check_ci.py` remains the full ordinary-suite re
 for the final committed branch. Stress/load experiments are excluded from both ordinary
 pytest commands and routine CI.
 
+Ordinary pytest tests have a 120-second per-test deadline from pinned `pytest-timeout`.
+The cooperative 900-second pytest session deadline improves diagnostics between tests.
+Detached local and remote check batches, plus validation commands issued through
+`garden.validation`, independently enforce the configured budget with a hard 900-second
+ceiling. Admission waiting is recorded separately and does not consume that clock. A hard
+timeout writes `validation_timeout.json`, exits nonzero, terminates only the validation's
+owned descendants, and releases the shared validation slot without stopping the parent model
+session.
+
 ```bash
 .venv/bin/python -m pytest tests/test_retro_documents.py -q
 .venv/bin/python -m pytest tests/test_retro.py -q

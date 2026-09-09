@@ -20,6 +20,7 @@ from typing import Any
 from .brief import parse_result
 from .harness import Harness
 from .runner.base import install_config_files, scrubbed_env
+from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 
 
 def doctor_worker(token: str, repo: str, harnesses: list[str],
@@ -112,6 +113,10 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
     env.setdefault("HOME", str(home))
     env.update(GARDEN_TASK_ID=run["task_id"], GARDEN_RUN_ID=run["id"],
                GARDEN_ROOT=str(worktree / ".garden-no-live-garden"))
+    env.pop("GARDEN_EXECUTION_TIMEOUT_SECONDS", None)
+    env["GARDEN_VALIDATION_TIMEOUT_SECONDS"] = str(
+        int(run.get("validation_timeout_seconds") or 900)
+    )
     env.pop("CLAUDECODE", None)
     return env
 
@@ -135,16 +140,50 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             subprocess.run(setup_command, shell=True, cwd=repo, env=env,
                            timeout=int(setup.get("timeout_seconds") or 600), check=True)
         if run.get("mode") == "check":
-            from .checkrun import run_check_job
-
             check_data = dict(run.get("checks") or {})
             ctx = {**dict(check_data.get("ctx") or {}), "exec_root": str(repo), "worktree": str(repo)}
             # A managed consumer passes the product command above so admission covers it.
             # Do not repeat it inside the check job. A standalone worker may instead
             # supply its own setup override; without one the check job prepares the product.
             check_setup = {**setup, "command": ""} if setup_command else setup
-            results = run_check_job({**check_data, "ctx": ctx, "cwd": str(repo), "setup": check_setup})
-            final, parsed, usage, cost, error, rc = "", {"checks": results}, {}, 0.0, "", 0
+            runs_dir = root / "runs"
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            execution_dir = Path(tempfile.mkdtemp(prefix="check-", dir=runs_dir))
+            (execution_dir / "checks_input.json").write_text(json.dumps({
+                **check_data, "ctx": ctx, "cwd": str(repo), "setup": check_setup,
+            }))
+            execution_env = dict(env)
+            for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
+                        "GARDEN_VALIDATION_RUNNER", "GARDEN_OWNER_SCOPED"):
+                execution_env.pop(key, None)
+            execution_env["GARDEN_HEAVY_EXECUTION"] = "1"
+            execution_timeout = bounded_validation_timeout_seconds(run.get("validation_timeout_seconds"))
+            execution_env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{execution_timeout:g}"
+            check_command = (
+                f"{shlex.quote(sys.executable)} -m garden.checkrun {shlex.quote(str(execution_dir))} "
+                f"> {shlex.quote(str(execution_dir / 'stdout.json'))} "
+                f"2> {shlex.quote(str(execution_dir / 'stderr.log'))}"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
+                cwd=repo, env=execution_env, check=False,
+            )
+            result_path = execution_dir / "checks.json"
+            if result_path.exists():
+                results = json.loads(result_path.read_text())
+                error = ""
+            else:
+                timeout_result = validation_timeout_result(execution_dir, proc.returncode)
+                if timeout_result is not None:
+                    results = [timeout_result]
+                    error = timeout_result["details"]
+                else:
+                    error = f"remote check supervisor exited {proc.returncode} without results"
+                    results = [{
+                        "name": "checks", "status": "error",
+                        "summary": "check execution did not complete", "details": error,
+                    }]
+            final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, proc.returncode
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             final_path = repo.parent / f"{run['id']}-final.md"
