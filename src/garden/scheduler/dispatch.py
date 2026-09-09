@@ -88,11 +88,17 @@ class DispatchMixin:
     def dispatch_ready(self, rep: TickReport) -> None:
         tasks = self.store.tasks()
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
+        queue = self.dispatch_queue()
+        local_queue = any((runner := self.runner_for(task)).detached and runner.name == "local"
+                          for task, _mode, _why in queue)
+        pending_reviews = any(self.state.get(task.id).get("pending_reviews") for task in tasks.values())
+        if local_queue or pending_reviews:
+            self._try_reclaim_for_pending_local_launch()
         # A review uses the same local admission capacity as a worker or a detached
         # check.  Give queued validation its priority-ordered turn before this ready
         # queue can fill a slot again.
         self._drain_pending_reviews(tasks, rep)
-        for task, mode, _why in self.dispatch_queue():
+        for task, mode, _why in queue:
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)

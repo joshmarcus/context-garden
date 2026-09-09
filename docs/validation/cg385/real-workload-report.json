@@ -1,0 +1,114 @@
+{
+  "after": {
+    "cgroup.procs": [
+      323707,
+      323745,
+      323746,
+      323747,
+      323748,
+      323749
+    ],
+    "cpu.stat": {
+      "burst_usec": "0",
+      "nr_bursts": "0",
+      "nr_periods": "11",
+      "nr_throttled": "0",
+      "system_usec": "148739",
+      "throttled_usec": "0",
+      "usage_usec": "1218055",
+      "user_usec": "1069315"
+    },
+    "descendants": {
+      "323707": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest tests/test_web.py::test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest -q -s -p no:cacheprovider ",
+      "323745": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m garden.run_supervisor /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1 cd /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0 && timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q < /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1/brief.md > /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1/stdout.json 2> /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1/stderr.log ",
+      "323746": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m garden.run_supervisor /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2 cd /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0 && timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q < /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/brief.md > /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stdout.json 2> /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stderr.log ",
+      "323747": "sh -c cd /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0 && timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q < /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/brief.md > /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stdout.json 2> /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stderr.log ",
+      "323748": "timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q ",
+      "323749": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q "
+    },
+    "events": {
+      "high": 0,
+      "oom": 0,
+      "oom_kill": 0
+    },
+    "memory.current": 155172864,
+    "memory.peak": 155176960,
+    "memory.stat": {
+      "anon": 150315008,
+      "file": 2154496,
+      "inactive_file": 1331200,
+      "shmem": 802816
+    },
+    "pressure": {
+      "cpu": [
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=182",
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=182"
+      ],
+      "memory": [
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0"
+      ]
+    },
+    "temp_free": 1941434368
+  },
+  "before": {
+    "cgroup.procs": [
+      323707,
+      323745,
+      323746,
+      323747,
+      323748,
+      323749
+    ],
+    "cpu.stat": {
+      "burst_usec": "0",
+      "nr_bursts": "0",
+      "nr_periods": "9",
+      "nr_throttled": "0",
+      "system_usec": "120543",
+      "throttled_usec": "0",
+      "usage_usec": "831749",
+      "user_usec": "711206"
+    },
+    "descendants": {
+      "323707": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest tests/test_web.py::test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest -q -s -p no:cacheprovider ",
+      "323745": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m garden.run_supervisor /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1 cd /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0 && timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q < /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1/brief.md > /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1/stdout.json 2> /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-1/stderr.log ",
+      "323746": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m garden.run_supervisor /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2 cd /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0 && timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q < /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/brief.md > /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stdout.json 2> /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stderr.log ",
+      "323747": "sh -c cd /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0 && timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q < /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/brief.md > /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stdout.json 2> /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/journey-run-2/stderr.log ",
+      "323748": "timeout 60 /home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q ",
+      "323749": "/home/joshua/work/worktrees/CG-385/.venv/bin/python -m pytest /tmp/pytest-of-joshua/pytest-2/test_retained_history_journey_0/test_control_capacity.py -q "
+    },
+    "events": {
+      "high": 0,
+      "oom": 0,
+      "oom_kill": 0
+    },
+    "memory.current": 130813952,
+    "memory.peak": 130813952,
+    "memory.stat": {
+      "anon": 125919232,
+      "file": 2146304,
+      "inactive_file": 1331200,
+      "shmem": 794624
+    },
+    "pressure": {
+      "cpu": [
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=91",
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=91"
+      ],
+      "memory": [
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+        "full avg10=0.00 avg60=0.00 avg300=0.00 total=0"
+      ]
+    },
+    "temp_free": 1941442560
+  },
+  "route_timings_seconds": {
+    "inbox": 0.054706253999029286,
+    "now": 0.072082941987901,
+    "pause": 0.0025568010023562238,
+    "task-control": 0.006244477001018822
+  },
+  "synthetic": false,
+  "workload": "real supervised focused-pytest processes"
+}

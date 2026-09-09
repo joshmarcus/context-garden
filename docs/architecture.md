@@ -111,6 +111,7 @@ of the loop touch different files.
 | `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py` | harness definitions and output parsing |
+| `resource_reclaim.py` | the bounded cgroup v2 cache-reclaim helper: verifies the opened cgroup identity, writes one timed `memory.reclaim` request, and publishes measured before/after headroom without granting admission itself |
 | `runner/base.py` | shared runner lifecycle helpers |
 | `runner/local.py` | the local worker runner backend |
 | `runner/ssh.py` | the remote-over-SSH worker runner backend |

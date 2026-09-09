@@ -2247,6 +2247,12 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             parsed = dict(line.split() for line in (cgroup / "memory.events").read_text().splitlines())
             events = {name: int(parsed.get(name, 0)) for name in event_names}
         memory = int((cgroup / "memory.current").read_text()) if cgroup and (cgroup / "memory.current").exists() else None
+        memory_peak = int((cgroup / "memory.peak").read_text()) if cgroup and (cgroup / "memory.peak").exists() else None
+        memory_stat = {}
+        if cgroup and (cgroup / "memory.stat").exists():
+            parsed_stat = dict(line.split() for line in (cgroup / "memory.stat").read_text().splitlines())
+            memory_stat = {name: int(parsed_stat.get(name, 0))
+                           for name in ("anon", "file", "shmem", "inactive_file")}
         temp = os.statvfs(tmp_path)
         pids = (cgroup / "cgroup.procs").read_text().split() if cgroup and (cgroup / "cgroup.procs").exists() else []
         descendants = {
@@ -2259,7 +2265,8 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             name: (cgroup / f"{name}.pressure").read_text().splitlines()
             for name in ("cpu", "memory") if cgroup and (cgroup / f"{name}.pressure").exists()
         }
-        return {"events": events, "memory.current": memory, "temp_free": temp.f_bavail * temp.f_frsize,
+        return {"events": events, "memory.current": memory, "memory.peak": memory_peak,
+                "memory.stat": memory_stat, "temp_free": temp.f_bavail * temp.f_frsize,
                 "cgroup.procs": sorted(descendants), "descendants": descendants,
                 "cpu.stat": cpu_stat, "pressure": psi}
 
@@ -2281,7 +2288,11 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
         timings[name] = time.monotonic() - started
         assert response.status_code in (200, 303)
     after = pressure()
-    print("retained-history capacity journey", {"timings": timings, "before": before, "after": after})
+    evidence = {"workload": "real supervised focused-pytest processes", "synthetic": False,
+                "route_timings_seconds": timings, "before": before, "after": after}
+    print("retained-history capacity journey", evidence)
+    if report_path := os.environ.get("CG385_REPORT"):
+        Path(report_path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
     assert max(timings.values()) < 2.0
     assert app.state.hub.scheduler().is_dispatch_paused()
