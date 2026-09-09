@@ -12,7 +12,7 @@ from .. import gitops
 from ..brief import build_brief
 from ..canonical import configured_root
 from ..criteria import parse_criteria
-from ..github import is_safe_pr_url
+from ..github import GitHubError, is_safe_pr_url
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -375,6 +375,7 @@ class DispatchMixin:
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        claimed_pr = None
         # An external claim names an operator-owned branch (and sometimes a PR) before
         # there is anything to finish. Keep that identity on the task as well as the
         # run, so a restart and every task-facing surface describe the claimed work
@@ -393,6 +394,23 @@ class DispatchMixin:
                 if external_pr_number is None:
                     match = re.search(r"/pull/(\d+)/?$", external_pr)
                     external_pr_number = int(match.group(1)) if match else None
+                if completion_mode == "external":
+                    slug = self.slug_for(task)
+                    if not slug or not self.github.available:
+                        raise RuntimeError("external claim needs an accessible configured repository")
+                    if external_pr_number is None:
+                        raise RuntimeError("external claim needs an identifiable PR number")
+                    try:
+                        claimed_pr = self.github.get_pr(slug, external_pr_number)
+                    except (GitHubError, KeyError) as exc:
+                        detail = exc.args[0] if exc.args else exc
+                        raise RuntimeError(f"could not read external PR: {detail}") from exc
+                    if claimed_pr.head != branch:
+                        raise RuntimeError(
+                            f"external PR head {claimed_pr.head!r} does not match claimed branch {branch!r}"
+                        )
+                    if not claimed_pr.head_sha or not claimed_pr.base:
+                        raise RuntimeError("external PR is missing immutable head or base metadata")
             task.branch = branch
             if external_pr:
                 task.pr = external_pr
@@ -543,6 +561,12 @@ class DispatchMixin:
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.completion_mode = completion_mode
         run.external_pr = external_pr
+        if claimed_pr is not None:
+            run.env_snapshot.update({
+                "external_repository": self.slug_for(task),
+                "external_base": claimed_pr.base,
+                "external_head_sha": claimed_pr.head_sha,
+            })
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
         run.difficulty = "easy" if easy_tier else task.difficulty
