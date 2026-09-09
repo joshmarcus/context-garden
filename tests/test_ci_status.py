@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from garden.ci_status import (
     CIStatus,
@@ -48,6 +49,23 @@ def test_worker_check_is_exact_head_and_authoritative(tmp_path):
     result.write_text(json.dumps(receipt()))
     status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
     assert status.green and status.exists_for_sha and status.evidence_url == "/runs/CG-1/run"
+
+
+def test_worker_check_uses_newest_completion_not_receipt_name(tmp_path):
+    validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
+    older = validations / "remote-9" / "result.json"
+    newer = validations / "remote-10" / "result.json"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    older.write_text(json.dumps(receipt()))
+    newer.write_text(json.dumps(receipt(exit_code=1)))
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.state == "failure"
+    assert status.failures == ["validation exited 1"]
 
 
 def test_worker_check_rejects_malformed_or_wrong_command(tmp_path):
