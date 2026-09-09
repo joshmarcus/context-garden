@@ -13,7 +13,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
 from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
-from ..model import Status, Task, now_iso
+from ..model import Status, Task, now_iso, phase_refusal
 from ..notify import notify
 from ..runs import Run
 from .feedback import merge_pending_feedback
@@ -444,6 +444,12 @@ class PollMixin:
         The task must be `in_review` before this is called (a draft, a stall or a pending
         revise round have already taken it elsewhere)."""
         st = self.state.get(task.id)
+        try:
+            phase_hold = phase_refusal(self.store.phase(task.product, task.phase), task)
+        except KeyError:
+            phase_hold = ""
+        if phase_hold:
+            return False, phase_hold
         if st.get("needs_human"):
             # A rebase right before this merge can trigger a fresh review (rule 2 in
             # rebase.py) that hits the review cap: that sets this stop instead of a verdict,

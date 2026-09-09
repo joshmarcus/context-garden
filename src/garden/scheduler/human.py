@@ -729,8 +729,9 @@ class HumanMixin:
     def move(self, task: Task, product: str, phase: str) -> None:
         """Move a task to another phase of the same product, keeping its id, run history,
         state.json entry and dependencies: only the file location and `phase:` field change.
-        Refuses a task with a run in flight and a closed phase; a frozen phase takes drafts
-        only. Emits a `moved` event and logs the move on both phases' task history."""
+        Refuses a task with a run in flight and a closed phase. A frozen destination retains
+        the task unchanged, and its ordinary phase gates prevent later work. Emits a `moved`
+        event and logs the move on both phases' task history."""
         if product != task.product:
             raise RuntimeError(f"{task.id} is in {task.product}; a task can only move between phases of its own product")
         try:
@@ -743,8 +744,6 @@ class HumanMixin:
             raise RuntimeError(f"{task.id} has a run in flight; cancel or let it finish before moving")
         if ph.closed:
             raise RuntimeError(f"{ph.key} is closed ({ph.closed}); reopen it first (`garden reopen-phase {ph.key}`)")
-        if ph.frozen and task.status != Status.DRAFT:
-            raise RuntimeError(f"{ph.key} is frozen ({ph.frozen}); only a draft can move into a frozen phase")
         old_key, old_path = task.key, task.path
         task.phase = phase
         task.path = ph.path / "tasks" / old_path.name
