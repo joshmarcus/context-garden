@@ -1177,6 +1177,44 @@ def test_take_pr_refuses_identity_replacement_while_a_review_run_is_active(garde
     assert state["pr_number"] == 11 and state["head_sha"] == "current-head"
 
 
+def test_take_pr_uses_one_provider_snapshot_for_dispatch(garden, fake_github, monkeypatch):
+    """Movement after the attachment lookup cannot leave a rejected stale identity behind."""
+    import garden.cli.loop as loop
+    from garden.github import PRInfo
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    lookups = 0
+
+    def get_pr(_slug, number):
+        nonlocal lookups
+        lookups += 1
+        if lookups > 1:
+            raise AssertionError("PR attachment performed more than one provider lookup")
+        return PRInfo(
+            number=number,
+            url="https://github.com/test/demo/pull/12",
+            state="OPEN",
+            head="operator/verified",
+            head_sha="verified-head",
+            base="main",
+            head_repo="test/demo",
+        )
+
+    monkeypatch.setattr(fake_github, "get_pr", get_pr)
+
+    result = run(garden, "take", "DM-001", "--pr", "https://github.com/test/demo/pull/12", "-q")
+
+    assert result.exit_code == 0, result.output
+    assert lookups == 1
+    task = Store(garden).task("DM-001")
+    assert task.branch == "operator/verified" and task.pr.endswith("/12")
+    state = sched.state.get(task.id)
+    assert state["pr_number"] == 12 and state["head_sha"] == "verified-head"
+
+
 @pytest.mark.parametrize("url", [
     "https://gitlab.com/test/demo/pull/1",
     "https://github.com/other/demo/pull/1",

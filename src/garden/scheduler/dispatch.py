@@ -13,7 +13,7 @@ from .. import gitops
 from ..brief import build_brief
 from ..canonical import configured_root
 from ..criteria import parse_criteria
-from ..github import GitHubError, is_safe_pr_url
+from ..github import is_safe_pr_url
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -537,7 +537,6 @@ class DispatchMixin:
                 raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         if mode == "revise" and not st.get("pending_feedback_easy") and not st.get("pending_feedback_rebase"):
             self._apply_revision_policy(task, st)
-        claimed_pr = None
         attached_pr = None
         if completion_mode == "external" and external_pr:
             attached_pr = self.resolve_pr_attachment(task, external_pr)
@@ -545,6 +544,10 @@ class DispatchMixin:
                 raise RuntimeError(
                     f"external branch {branch_override!r} does not match PR head {attached_pr.head!r}"
                 )
+            if external_pr_number is not None and external_pr_number != attached_pr.number:
+                raise RuntimeError("external PR number does not match resolved PR")
+            branch = attached_pr.head
+            external_pr_number = attached_pr.number
             task.branch, task.pr = attached_pr.head, attached_pr.url
             st.update({"pr_number": attached_pr.number, "head_sha": attached_pr.head_sha,
                        "pr_state": attached_pr.state, "pr_base": attached_pr.base,
@@ -572,22 +575,8 @@ class DispatchMixin:
                     match = re.search(r"/pull/(\d+)/?$", external_pr)
                     external_pr_number = int(match.group(1)) if match else None
                 if completion_mode == "external":
-                    slug = self.slug_for(task)
-                    if not slug or not self.github.available:
-                        raise RuntimeError("external claim needs an accessible configured repository")
                     if external_pr_number is None:
                         raise RuntimeError("external claim needs an identifiable PR number")
-                    try:
-                        claimed_pr = self.github.get_pr(slug, external_pr_number)
-                    except (GitHubError, KeyError) as exc:
-                        detail = exc.args[0] if exc.args else exc
-                        raise RuntimeError(f"could not read external PR: {detail}") from exc
-                    if claimed_pr.head != branch:
-                        raise RuntimeError(
-                            f"external PR head {claimed_pr.head!r} does not match claimed branch {branch!r}"
-                        )
-                    if not claimed_pr.head_sha or not claimed_pr.base:
-                        raise RuntimeError("external PR is missing immutable head or base metadata")
             task.branch = branch
             if attached_pr is not None:
                 task.pr = attached_pr.url
@@ -748,11 +737,11 @@ class DispatchMixin:
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.completion_mode = completion_mode
         run.external_pr = external_pr
-        if claimed_pr is not None:
+        if attached_pr is not None:
             run.env_snapshot.update({
                 "external_repository": self.slug_for(task),
-                "external_base": claimed_pr.base,
-                "external_head_sha": claimed_pr.head_sha,
+                "external_base": attached_pr.base,
+                "external_head_sha": attached_pr.head_sha,
             })
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
