@@ -23,7 +23,7 @@ from garden.runs import RunStore
 from garden.store import Store
 from garden.web.app import create_app
 
-ROUTES = ("/now", "/inbox", "/board", "/tasks/BM-0001", "/runs/BM-0001/seed-0000", "/config")
+ROUTES = ("/now", "/inbox", "/board", "/tasks/BM-0001", "/runs/BM-0001/seed-0001", "/config")
 
 
 def _fixture(root: Path, tasks: int, runs: int, events: int) -> None:
