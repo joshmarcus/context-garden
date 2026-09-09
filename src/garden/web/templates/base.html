@@ -111,6 +111,7 @@ svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw);
 .notify { font:12px/1.4 var(--mono); color:var(--muted); display:flex; flex-direction:column; gap:4px; }
 .notify .notify-state { font-size:11px; }
 .rail .foot { margin-top:auto; font:11.5px/1.5 var(--mono); color:var(--faint); display:flex; flex-direction:column; gap:8px; }
+.rail .build-detail { color:var(--faint); font-size:10.5px; letter-spacing:.02em; }
 main { padding:26px 32px 60px; max-width:1320px; min-width:0; }  /* min-width:0 so wide content (the board, tables) scrolls inside its container instead of widening the page */
 .page-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:18px; }
 .page-head > div:first-child { flex:1; min-width:0; }
@@ -387,6 +388,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <span>{% if watch %}scheduler loop on{% else %}scheduler loop off{% endif %}{% if last_tick %} · tick <span data-tick-at>{{ last_tick[11:19] }}Z</span>{% endif %}{% set td = rail_metrics.tick_duration %}{% if td.count %} · {{ '%.2f'|format(td.mean_s) }}s mean / {{ '%.2f'|format(td.max_s) }}s max{% endif %}{% if rail_metrics.merges %} · {{ rail_metrics.hand_merges }} hand merge{{ 's' if rail_metrics.hand_merges != 1 else '' }} · rebase/merge {{ '%.2f'|format(rail_metrics.rebase.mechanical / rail_metrics.rebase.merges) }} mechanical / {{ '%.2f'|format(rail_metrics.rebase.agent / rail_metrics.rebase.merges) }} agent{% endif %}{% if rail_metrics.operator.share is not none %} · operator {{ '%.0f'|format(rail_metrics.operator.share * 100) }}%{% endif %}{% if env %} · env {{ env }}{% endif %}</span>
     {% endif %}
     <form method="post" action="/tick"><button class="quiet" title="Reap finished workers, poll PRs, dispatch ready tasks">↻ Tick now</button></form>
+    <span class="build-detail" title="Active serving build">build · {{ tool_build.get('active', '')[:12] if tool_build.get('active') else 'unversioned' }}</span>
   </div>
 </aside>
 <main>

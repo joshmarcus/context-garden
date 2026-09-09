@@ -275,6 +275,9 @@ class Site:
             "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
             "operating_profile_spend_rate": run_store.spend_since(parse_since("1h")),
             "rail_metrics": rail_metrics,
+            # The installed revision is useful when diagnosing a served garden, but it is
+            # secondary to the operational controls and warnings in the rail and Inbox.
+            "tool_build": sched.upgrade_status(),
             **kw,
         }
 
