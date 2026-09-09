@@ -151,7 +151,7 @@ garden serve
 
 Use `garden approve ID` instead of `--all` to start with a single task. Open **http://127.0.0.1:8765**. `serve` starts the web UI **and the scheduler**: approved, unblocked work can now dispatch. For a look around before launching work, use `garden serve --no-watch` instead.
 
-Follow the task's runs and evidence, answer any questions in the Inbox, and inspect the resulting draft PR and automated review. Mark it ready with the UI or `garden triage ID --ready`; send it back with `garden triage ID --changes "feedback"`. Once review and CI are satisfactory, merge on GitHub. The next poll records the merge and advances dependent work.
+Follow the task's runs and evidence, answer any questions in the **Inbox**, and inspect the resulting draft PR and automated review. Mark it ready with the UI or `garden triage ID --ready`; send it back with `garden triage ID --changes "feedback"`. Once review and CI are satisfactory, merge on GitHub. The next poll records the merge and advances dependent work.
 
 From another terminal with the same environment active, run `garden status`, `garden inbox`, or `garden observe --profile quiet`. `garden watch` runs the scheduler without the web UI; `garden tui` opens the terminal interface.
 
@@ -159,7 +159,7 @@ From another terminal with the same environment active, run `garden status`, `ga
 
 ### Follow the plan and its dependencies
 
-The Board groups tasks by state. The Trellis shows which tasks depend on each other, so you can inspect the plan before approving it and see what is holding up the next piece of work.
+The **Board** groups tasks by state. The **Trellis** shows which tasks depend on each other, so you can inspect the plan before approving it and see what is holding up the next piece of work.
 
 ![Trellis showing dependencies across the example project's tasks](docs/screenshots/trellis-light.png)
 
@@ -171,13 +171,13 @@ A task page keeps its acceptance criteria, worker question, run history, and usa
 
 ### Track a phase from scope to completion
 
-Phase pages put goals, specs, progress, and tasks in one place. Kickoff reviews help examine the plan; retrospectives assess the outcome and propose the next work. Closed phases remain available in the Herbarium.
+Phase pages put goals, specs, progress, and tasks in one place. Kickoff reviews help examine the plan; retrospectives assess the outcome and propose the next work. Closed phases remain available in the **Herbarium**.
 
 ![Phase page showing goals, progress, and task status](docs/screenshots/phase-light.png)
 
 ### Compare spending across the work
 
-Costs groups recorded spend by activity, difficulty, model, harness, phase, task, or operator session. Use it to understand where revisions and reviews add cost, then inspect the underlying runs. The figures below are sample data, not a price estimate.
+**Costs** groups recorded spend by activity, difficulty, model, harness, phase, task, or operator session. Use it to understand where revisions and reviews add cost, then inspect the underlying runs. The figures below are sample data, not a price estimate.
 
 ![Costs page with illustrative spending by activity](docs/screenshots/costs-light.png)
 
@@ -194,6 +194,8 @@ Costs groups recorded spend by activity, difficulty, model, harness, phase, task
 | Work on a task interactively | `garden take --help`, `garden finish --help` |
 
 A dispatch pause still allows collection, checks, reviews, and merges. Installation maintenance uses a separate drain-and-resume protocol. Run one long-lived controller per garden and keep its UI on loopback or behind authenticated access.
+
+The **Config** page shows effective settings and pending configuration changes.
 
 The [operating guide](docs/operations.md) covers merge policy, capacity, remote workers, recovery, maintenance, configuration reloads, GitHub Enterprise, and operator handoffs. The [architecture guide](docs/architecture.md) explains the full behavior and configuration boundaries.
 
