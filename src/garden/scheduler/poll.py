@@ -11,8 +11,8 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
-from ..github import Feedback, GitHubError, PRInfo
 from ..ci_status import CIStatus, resolve_status, status_reason
+from ..github import Feedback, GitHubError, PRInfo
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..runs import Run
@@ -130,11 +130,9 @@ class PollMixin:
         ci_note = ""
         failure_key = (pr.updated_at if ci_status.provider == "github"
                        else f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}")
-        if (provider in ("actions", "status", "legacy") and pr.checks == "FAILURE"
-                and st.get("ci_failed_at") != pr.updated_at):
-            st["ci_failed_at"] = pr.updated_at
-            names = ", ".join(pr.failed_checks) or "unknown"
-        elif ci_status.state == "failure" and st.get("ci_failed_at") != failure_key:
+        legacy_failure = provider in ("actions", "status", "legacy") and pr.checks == "FAILURE"
+        if ((legacy_failure or ci_status.state == "failure")
+                and st.get("ci_failed_at") != failure_key):
             st["ci_failed_at"] = failure_key
             names = ", ".join(ci_status.failures or pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
