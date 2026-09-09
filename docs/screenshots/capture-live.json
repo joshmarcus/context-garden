@@ -6,7 +6,7 @@
     {
       "name": "now-light",
       "route": "/now?window=24h",
-      "capturedAt": "2026-09-09T14:14:32.883Z",
+      "capturedAt": "2026-09-09T15:47:17.395Z",
       "viewport": {
         "width": 1440,
         "height": 1000
@@ -15,7 +15,10 @@
         "client": 1440,
         "scroll": 1440
       },
-      "errors": []
+      "errors": [],
+      "servingBuild": "a0f69c6bfd98",
+      "browser": "152.0.4191.66",
+      "brokenImages": []
     },
     {
       "name": "now-run-costs-light",
