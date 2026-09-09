@@ -18,6 +18,14 @@ period. Nothing on it is a card of equal weight; the order of prominence is the 
 
 ## The five-second answer
 
+The retained sentence was replaced by a compact field reading. It is deliberately not a
+health or readiness score: every figure is a literal measurement from the same snapshot as
+the detailed region it links to. Capacity is occupied worker and review slots; Next is the
+scheduler's dispatch queue; phase growth is merged non-cancelled tasks; and the selected
+period reports accepted merges, recorded run/operator cost, and finished runs. An explicit
+dispatch pause or an existing needs-attention card moves above the readings. Ordinary slot
+or throughput variation remains neutral.
+
 Under the title, one sentence in the page's serif states what the page is for, filled from the
 same data as the regions, each clause a link to its region:
 

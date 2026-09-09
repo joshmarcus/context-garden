@@ -240,9 +240,13 @@ def test_now_page_renders_the_four_regions_and_the_nav(garden):
     assert 'class="page-now"' in page and re.search(r'data-server-now="\d{4}-\d\d-\d\dT', page)
     assert "The garden is quiet." not in page  # two ready tasks are queued
     assert "Nothing running." in page and 'it will dispatch <a href="/tasks/DM-001">First task</a> into' in page
-    # the five-second sentence says what comes next by title, never by id
-    five = re.search(r'<p class="now-five".*?</p>', page, re.S).group(0)
-    assert "Next</a>: First task." in five and "DM-" not in five
+    # The summary is a semantic set of literal readings; what comes next is a title, never an id.
+    summary = re.search(r'<section class="now-summary.*?</section>', page, re.S).group(0)
+    assert '<h2 id="now-summary-title">Garden at a glance</h2>' in summary
+    assert "Capacity now" in summary and "0 / 2" in summary and "worker slots used" in summary
+    assert "Next dispatch" in summary and "First task" in summary and "DM-" not in summary
+    assert "Current phase" in summary and "0 / 2" in summary and "p1 tasks merged" in summary
+    assert "Last hour" in summary and "$0.00 recorded cost" in summary
     # in the Next list the title is the link and the id opens the mono line under it
     assert '<a class="lt" href="/tasks/DM-001">First task</a>' in page
     assert '<span class="why"><span class="id">DM-001</span> · priority 1 · work · medium →' in page
@@ -272,7 +276,7 @@ def test_running_card_carries_the_start_time_the_clock_reads(garden):
     # the title leads and links to the task; the id follows; `open run` links to this exact run
     assert '<a class="t" href="/tasks/DM-001">First task</a><span class="id">DM-001</span>' in strip
     assert f'work · claude sonnet · <a class="open-run" href="/runs/DM-001/{run.run_id}">open run</a>' in strip
-    assert "1 run in flight" in page and "1 of 2 worker slots" in page
+    assert "1 run in flight" in page and "1 / 2" in page and "worker slots used" in page
     # the same attributes on the Board's running card and the task page's run row, and the clock script once
     assert 'data-started="' in c.get("/board").text
     assert 'data-started="' in c.get("/tasks/DM-001").text
@@ -307,11 +311,11 @@ def test_no_process_record_and_hands_are_visible(garden):
     t.status = now1.Status.WAITING_HUMAN
     store.save(t)
     page = _client(garden).get("/now").text
-    assert "no process recorded" in page and "(1 without a process)" in page
+    assert "no process recorded" in page and "1 without a process" in page
     assert 'class="stamp">needs you</span>' in page and "Which fixture: Go or Node?" in page
     assert 'class="stamp">paused</span>' in page and "codex harness paused" in page and "usage limit reached" in page
-    assert "Dispatch paused by cli since" in page and "quota on both accounts" in page
-    assert "2 cards waiting on you" in page  # the question and the paused harness
+    assert "Dispatch paused" in page and "by cli since" in page and "quota on both accounts" in page
+    assert "Dispatch paused" in page and "2 items need you" in page  # the question and paused harness
 
 
 def test_served_now_and_inbox_agree_on_review_ownership_and_owner_decisions(garden):
