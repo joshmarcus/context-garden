@@ -168,12 +168,24 @@ def test_terminal_task_collects_accepted_remote_result_once(
 
 
 @pytest.mark.parametrize(
-    "partial", ["missing_exit", "stale_generation", "owned", "malformed_result"]
+    "partial",
+    [
+        "missing_exit",
+        "empty_exit",
+        "malformed_exit",
+        "stale_generation",
+        "owned",
+        "malformed_result",
+    ],
 )
 def test_terminal_remote_sweep_rejects_partial_stale_or_owned_result(sched, partial):
     task, run = _finished_remote_run(sched)
     if partial == "missing_exit":
         (run.path / "exit_code").unlink()
+    elif partial == "empty_exit":
+        (run.path / "exit_code").write_text("")
+    elif partial == "malformed_exit":
+        (run.path / "exit_code").write_text("not-an-exit-code")
     elif partial == "stale_generation":
         run.lease_token = "replacement-generation"
         run.save()

@@ -1144,7 +1144,12 @@ class ReapMixin:
         """
         if run.runner != "remote" or not (run.path / "remote_result.json").exists():
             return False
-        if not (run.path / "exit_code").exists():
+        try:
+            exit_code_text = (run.path / "exit_code").read_text().strip()
+            if not exit_code_text:
+                return False
+            int(exit_code_text)
+        except (OSError, UnicodeError, ValueError):
             return False
         if not (run.host and run.lease_token and run.pushed_ref):
             return False
