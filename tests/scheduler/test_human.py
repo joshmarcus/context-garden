@@ -124,6 +124,42 @@ def test_manual_reservation_parks_finished_review_verdict_until_return(sched, mo
     assert sched.state.get(task.id).get("pending_feedback")
 
 
+def test_manual_reservation_parks_finished_review_recovery_until_return(sched):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {
+        "enabled": True,
+        "max_rounds": 2,
+        "max_diff_chars": 60000,
+        "recovery_attempts": 2,
+        "recovery_backoff_seconds": 0,
+    }
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    run.result = None
+    run.status = "failed"
+    run.error = "review process failed"
+    run.save()
+    reservation = sched.reserve_manual(task)
+
+    assert not sched.reap_review(task, TickReport())
+    assert st["review_run"] == run.run_id
+    assert not st.get("review_recovery")
+
+    sched.return_to_automation(
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
+    )
+    assert sched.reap_review(task, TickReport())
+    st = sched.state.get(task.id)
+    assert st["review_run"] == ""
+    assert st["review_recovery"]["last_run"] == run.run_id
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+
+
 def test_manual_reservation_parks_finished_persona_until_return(sched):
     sched.cfg.data["stack"] = False
     sched.cfg.data["review"] = {"enabled": False}
