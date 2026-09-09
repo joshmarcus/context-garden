@@ -15,6 +15,7 @@ HTML and text.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -27,7 +28,7 @@ from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .browser import browser_failure, classify_browser_failure
+from .browser import _probe_child, browser_failure, classify_browser_failure
 from .model import Phase
 from .runs import RunStore
 from .scheduler import State
@@ -221,10 +222,85 @@ class _TextParser(HTMLParser):
     _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link",
                              "meta", "param", "source", "track", "wbr"})
 
+    @staticmethod
+    @functools.lru_cache(maxsize=1024)
+    def _parse_simple_selector(selector: str) -> tuple[
+        str, str, tuple[str, ...], tuple[tuple[str, str | None], ...], tuple[object, ...]
+    ] | None:
+        """Parse the supported selector subset once instead of once per HTML element."""
+        index = 0
+        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector, re.I)
+        tag = tag_name.group(0).lower() if tag_name else ""
+        if tag_name:
+            index = len(tag_name.group(0))
+        element_id = ""
+        classes: list[str] = []
+        attributes: list[tuple[str, str | None]] = []
+        negations: list[object] = []
+        while index < len(selector):
+            marker = selector[index]
+            if marker == "#":
+                match = re.match(r"#[\w-]+", selector[index:])
+                if not match:
+                    return None
+                element_id = match.group(0)[1:]
+                index += len(match.group(0))
+            elif marker == ".":
+                match = re.match(r"\.[\w-]+", selector[index:])
+                if not match:
+                    return None
+                classes.append(match.group(0)[1:])
+                index += len(match.group(0))
+            elif marker == "[":
+                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
+                if not match:
+                    return None
+                expected = next((value for value in match.groups()[1:] if value is not None), None)
+                attributes.append((match.group(1).lower(), expected))
+                index += len(match.group(0))
+            elif selector.startswith(":not(", index):
+                end = selector.find(")", index + 5)
+                if end < 0:
+                    return None
+                parsed = _TextParser._parse_simple_selector(selector[index + 5:end])
+                if parsed is None:
+                    return None
+                negations.append(parsed)
+                index = end + 1
+            else:
+                return None
+        return tag, element_id, tuple(classes), tuple(attributes), tuple(negations)
+
     def __init__(self, hidden_selectors: list[tuple[str, bool, bool]] | None = None) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self._hidden_selectors = hidden_selectors or []
+        self._hidden_rules: list[tuple[tuple, bool, bool, int]] = []
+        self._rules_by_id: dict[str, list[tuple]] = {}
+        self._rules_by_class: dict[str, list[tuple]] = {}
+        self._rules_by_tag: dict[str, list[tuple]] = {}
+        self._generic_rules: list[tuple] = []
+        for rule_index, (selector, is_none, important) in enumerate(hidden_selectors or []):
+            components = self._selector_components(selector.strip())
+            if not components:
+                continue
+            parsed = tuple(
+                (self._parse_simple_selector(component), relation)
+                for component, relation in components
+            )
+            if any(component is None for component, _relation in parsed):
+                continue
+            rule = (parsed, is_none, important, rule_index)
+            self._hidden_rules.append(rule)
+            final = parsed[-1][0]
+            final_tag, element_id, classes, _attributes, _negations = final
+            if element_id:
+                self._rules_by_id.setdefault(element_id, []).append(rule)
+            elif classes:
+                self._rules_by_class.setdefault(classes[0], []).append(rule)
+            elif final_tag not in ("", "*"):
+                self._rules_by_tag.setdefault(final_tag, []).append(rule)
+            else:
+                self._generic_rules.append(rule)
         self._elements: list[tuple[str, list[tuple[str, str | None]]]] = []
         self._hidden_depth = 0
         self._ignored_depth = 0
@@ -239,48 +315,34 @@ class _TextParser(HTMLParser):
         conservative visibility filter, not a CSS engine.  A false negative leaves text
         in a capture for review; a false positive can erase unrelated visible content.
         """
-        values = {name.lower(): value or "" for name, value in attrs}
-        classes = set(values.get("class", "").split())
-        index = 0
-        tag_name = re.match(r"(?:[a-z][\w-]*|\*)", selector[index:], re.I)
-        if tag_name:
-            if tag_name.group(0).lower() not in ("*", tag.lower()):
-                return False
-            index += len(tag_name.group(0))
-        while index < len(selector):
-            marker = selector[index]
-            if marker == "#":
-                match = re.match(r"#[\w-]+", selector[index:])
-                if not match or values.get("id") != match.group(0)[1:]:
-                    return False
-                index += len(match.group(0))
-            elif marker == ".":
-                match = re.match(r"\.[\w-]+", selector[index:])
-                if not match or match.group(0)[1:] not in classes:
-                    return False
-                index += len(match.group(0))
-            elif marker == "[":
-                match = re.match(r"\[([\w-]+)(?:\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|([^\]\s]+)))?\]", selector[index:])
-                if not match:
-                    return False
-                name = match.group(1).lower()
-                expected = next((value for value in match.groups()[1:] if value is not None), None)
-                if name not in values or (expected is not None and values[name] != expected):
-                    return False
-                index += len(match.group(0))
-            elif selector.startswith(":not(", index):
-                end = selector.find(")", index + 5)
-                if end < 0:
-                    return False
-                if _TextParser._matches_simple_selector(tag, attrs, selector[index + 5:end]):
-                    return False
-                index = end + 1
-            else:
-                return False
-        return True
+        parsed = _TextParser._parse_simple_selector(selector)
+        if parsed is None:
+            return False
+        return _TextParser._matches_parsed_selector(tag, attrs, parsed)
 
     @staticmethod
-    def _selector_components(selector: str) -> list[tuple[str, str | None]] | None:
+    def _matches_parsed_selector(
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+        parsed: tuple[str, str, tuple[str, ...], tuple[tuple[str, str | None], ...], tuple[object, ...]],
+    ) -> bool:
+        selector_tag, element_id, required_classes, required_attrs, negations = parsed
+        if selector_tag not in ("", "*", tag.lower()):
+            return False
+        values = {name.lower(): value or "" for name, value in attrs}
+        if element_id and values.get("id") != element_id:
+            return False
+        classes = set(values.get("class", "").split())
+        if any(required not in classes for required in required_classes):
+            return False
+        if any(name not in values or (expected is not None and values[name] != expected)
+               for name, expected in required_attrs):
+            return False
+        return not any(_TextParser._matches_parsed_selector(tag, attrs, negation) for negation in negations)
+
+    @staticmethod
+    @functools.lru_cache(maxsize=512)
+    def _selector_components(selector: str) -> tuple[tuple[str, str | None], ...] | None:
         """Split selectors, retaining whether each component requires a direct parent."""
         components: list[tuple[str, str | None]] = []
         buffer: list[str] = []
@@ -332,21 +394,24 @@ class _TextParser(HTMLParser):
                 whitespace = False
         if brackets or parentheses or not add_component() or pending:
             return None
-        return components
+        return tuple(components)
 
     def _stylesheet_hidden(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
-        if not self._hidden_selectors:
+        if not self._hidden_rules:
             return False
         # A selector's final component identifies the element; checking its ancestors
         # as well handles the descendant selectors used by the web templates without
         # needing a CSS dependency in the walkthrough tool.
         hidden: bool | None = None
         winning_rule: tuple[bool, int] | None = None
-        for rule_index, (selector, is_none, important) in enumerate(self._hidden_selectors):
-            components = self._selector_components(selector.strip())
-            if not components:
-                continue
-            if not self._matches_simple_selector(tag, attrs, components[-1][0]):
+        values = {name.lower(): value or "" for name, value in attrs}
+        candidates = list(self._generic_rules)
+        candidates.extend(self._rules_by_tag.get(tag.lower(), ()))
+        candidates.extend(self._rules_by_id.get(values.get("id", ""), ()))
+        for class_name in values.get("class", "").split():
+            candidates.extend(self._rules_by_class.get(class_name, ()))
+        for components, is_none, important, rule_index in sorted(candidates, key=lambda rule: rule[3]):
+            if not self._matches_parsed_selector(tag, attrs, components[-1][0]):
                 continue
             ancestors = self._elements
             index = len(ancestors) - 1
@@ -355,11 +420,11 @@ class _TextParser(HTMLParser):
                 relation = components[component_index][1]
                 component = components[component_index - 1][0]
                 if relation == ">":
-                    if index < 0 or not self._matches_simple_selector(*ancestors[index], component):
+                    if index < 0 or not self._matches_parsed_selector(*ancestors[index], component):
                         matched = False
                         break
                 else:
-                    while index >= 0 and not self._matches_simple_selector(*ancestors[index], component):
+                    while index >= 0 and not self._matches_parsed_selector(*ancestors[index], component):
                         index -= 1
                     if index < 0:
                         matched = False
@@ -801,7 +866,8 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
                          log=logs.append, pages=pages)
     decision = next((page for page in result.pages if page.spec.slug == "task-decision"), None)
     decision_html = (out_dir / "task-decision.html").read_text() if decision else ""
-    if decision is None or "class=\"panel decision-card\"" not in decision_html:
+    require_decision = pages is None or "*" in pages or "task-decision" in pages
+    if require_decision and (decision is None or "class=\"panel decision-card\"" not in decision_html):
         return {"status": "fail", "summary": "decision-card walkthrough page is missing",
                 "failure_kind": "product", "details": "task-decision.html must contain .decision-card",
                 "captures": [], "interaction_evidence": [], "pages": [p.spec.slug for p in result.pages]}
@@ -818,18 +884,27 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
     pngs = [path for path in captures if path.endswith(".png")]
     complete_pngs = result.screenshots and len(pngs) == expected
     evidence_complete = len(result.interaction_evidence) == expected
+    page_failures = [page for page in result.pages
+                     if not (200 <= page.status < 300) or page.note]
     summary = f"captured {len(result.pages)} pages at 1280/390 in light/dark"
     details = "\n".join(filter(None, [result.browser_note, *logs]))
-    if not complete_pngs or missing:
+    product_failure = bool(page_failures)
+    if page_failures:
+        failed_pages = ", ".join(f"{page.spec.slug} (HTTP {page.status})" for page in page_failures)
+        summary = "UI application render failed for: " + failed_pages
+        details = "\n".join(filter(None, [details, "unsuccessful or empty rendered pages: " + failed_pages]))
+    elif not complete_pngs or missing:
         summary = f"UI check did not produce all PNGs ({len(pngs)}/{expected})"
         if missing:
             details = "\n".join(filter(None, [details, "missing PNGs: " + ", ".join(missing)]))
     elif not evidence_complete:
         summary = f"PNGs exist but executed interaction/viewport evidence is incomplete ({len(result.interaction_evidence)}/{expected})"
-    passed = complete_pngs and not missing and evidence_complete
+        product_failure = True
+    passed = complete_pngs and not missing and evidence_complete and not page_failures
     return {"status": "pass" if passed else "fail", "summary": summary,
-            "failure_kind": "infrastructure" if result.browser_failure_kind else
-                            ("product" if not passed else ""),
+            "failure_kind": ("product" if product_failure else
+                             "infrastructure" if result.browser_failure_kind else
+                             "product" if not passed else ""),
             "browser_failure_kind": result.browser_failure_kind,
             "details": details or ("missing screenshot files or interaction evidence" if not passed else ""),
             "captures": captures, "interaction_evidence": result.interaction_evidence,
@@ -844,26 +919,155 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     rendering its own templates, while the disposable QA garden makes page data deterministic.
     """
     out_dir = Path(str(spec["out_dir"]))
-    worktree = Path(str(spec.get("worktree") or ctx.get("worktree") or ""))
+    # The shared context is rewritten by pull-based workers to identify their host-local
+    # clone.  Prefer it over a legacy per-check value, which may still name the controller's
+    # checkout when a check payload crosses hosts.
+    worktree = Path(str(ctx.get("worktree") or spec.get("worktree") or ""))
     source = worktree / "src"
     if not source.is_dir():
-        return {"status": "error", "summary": "UI check worktree source is missing", "details": str(source)}
+        # This is the source under review, not screenshot transport.  A missing source tree
+        # is contradictory provenance and must stay blocking under every capture policy.
+        return {"status": "error", "summary": "UI check worktree source is missing",
+                "details": str(source)}
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix=".garden-capture-probe-", dir=out_dir,
+                                         delete=False) as probe:
+            probe_path = Path(probe.name)
+        probe_path.unlink()
+    except OSError as exc:
+        try:
+            captures = [str(path) for path in sorted(out_dir.iterdir())
+                        if path.is_file() and path.suffix in {".html", ".txt", ".md"}]
+        except OSError:
+            captures = []
+        return {
+            "status": "error",
+            "summary": "UI capture output path is unavailable",
+            "details": f"{out_dir}: {exc}",
+            "captures": captures,
+            "capture_infrastructure": _trusted_capture_infrastructure(
+                "capture_path_unavailable", f"UI capture output path is unavailable: {out_dir}: {exc}"
+            ),
+        }
+    # This runs in the controller-owned wrapper and in the check's already scrubbed process
+    # environment. The worktree renderer cannot manufacture this classification: its returned
+    # dict is stripped below before trusted metadata is attached.
+    browser_probe = ({"ready": True} if spec.get("capture_infrastructure_policy") != "advisory"
+                     else _probe_child())
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(source) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    proc = subprocess.run(
-        [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir),
-         json.dumps(spec.get("pages") or [])],
-        cwd=worktree, env=env, capture_output=True, text=True, timeout=600, check=False,
-    )
+    # This renderer is deliberately sourced wholly from the checkout under review.  In
+    # particular, a pull-based worker may have been launched with a controller-local
+    # PYTHONPATH that does not exist (or is not traversable) on the independent host.
+    # Retaining that path can make Python fail while resolving modules even though the
+    # checkout's source is first.
+    env["PYTHONPATH"] = str(source)
+    page_selection = json.dumps(spec.get("pages") or [])
+    proc = _run_ui_renderer(worktree, env, out_dir, page_selection)
+    protocol_note = ""
+    # v0.2.0rc1 added page selection as a fourth argv entry.  Older pinned worktrees
+    # deliberately reject it with argparse's quiet exit 2.  Retry only that exact
+    # protocol signature: a traceback, stderr, stdout, or any other exit code can be a
+    # genuine renderer failure and must remain visible to the check/review path.
+    if _quiet_usage_exit(proc):
+        protocol_note = (
+            "renderer rejected the page-selecting entry point "
+            f"({_renderer_attempt(proc, page_selection)}); retried the legacy entry point"
+        )
+        proc = _run_ui_renderer(worktree, env, out_dir)
     try:
         result = json.loads(proc.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
-        return {"status": "error", "summary": "UI renderer did not return a result",
-                "details": (proc.stderr or proc.stdout)[-2000:]}
+        diagnostic = _renderer_diagnostic(proc, None if protocol_note else page_selection, protocol_note)
+        failed: dict[str, object] = {
+            "status": "error", "summary": "UI renderer did not return a result",
+            "details": diagnostic,
+            "captures": _capture_paths(out_dir),
+        }
+        # A traceback/non-zero child is an application or renderer failure and remains blocking.
+        # A clean child whose structured return was lost is capture-return infrastructure.
+        if proc.returncode == 0 and "traceback" not in str(proc.stderr or "").lower():
+            failed["capture_infrastructure"] = _trusted_capture_infrastructure(
+                "capture_result_unavailable", "UI renderer exited cleanly without a structured result"
+            )
+        elif _quiet_usage_exit(proc):
+            failed["summary"] = "UI renderer protocol mismatch"
+            failed["capture_infrastructure"] = _trusted_capture_infrastructure(
+                "capture_protocol_mismatch", diagnostic
+            )
+        return failed
+    if not isinstance(result, dict):
+        return {"status": "error", "summary": "UI renderer returned a non-object result",
+                "details": str(result)[:2000]}
+    # Never trust a classification emitted by the worktree process itself.
+    result.pop("capture_infrastructure", None)
+    if protocol_note:
+        result["renderer_protocol"] = "legacy"
+        result["details"] = "\n".join(filter(None, [protocol_note, str(result.get("details") or "")]))
     if proc.returncode:
         result["status"] = "error"
-        result["details"] = (str(result.get("details") or "") + "\n" + proc.stderr).strip()[-2000:]
+        result["details"] = _renderer_diagnostic(
+            proc, None if protocol_note else page_selection, str(result.get("details") or "")
+        )
+    elif (result.get("status") in ("fail", "error") and not browser_probe.get("ready")
+          and result.get("failure_kind") != "product"):
+        result["capture_infrastructure"] = _trusted_capture_infrastructure(
+            "browser_unavailable", str(browser_probe.get("diagnostic") or "browser runtime unavailable"),
+            browser_kind=str(browser_probe.get("kind") or "launch_failure"),
+        )
     return result
+
+
+def _run_ui_renderer(worktree: Path, env: dict[str, str], out_dir: Path,
+                     page_selection: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run one supported renderer entry point from the proposed worktree."""
+    argv = [sys.executable, "-m", "garden.walkthrough", "--ui-check", str(out_dir)]
+    if page_selection is not None:
+        argv.append(page_selection)
+    return subprocess.run(argv, cwd=worktree, env=env, capture_output=True, text=True,
+                          timeout=600, check=False)
+
+
+def _quiet_usage_exit(proc: subprocess.CompletedProcess[str]) -> bool:
+    """Whether the child used the legacy renderer's silent argv-rejection convention."""
+    return proc.returncode == 2 and not (proc.stdout or "").strip() and not (proc.stderr or "").strip()
+
+
+def _renderer_attempt(proc: subprocess.CompletedProcess[str], page_selection: str | None) -> str:
+    """Describe an invocation without leaking an operator path or arbitrary page payload."""
+    invocation = "python -m garden.walkthrough --ui-check <capture-dir>"
+    if page_selection is not None:
+        invocation += " <page-selection>"
+    output = "empty stdout/stderr" if not (proc.stdout or proc.stderr) else "output retained below"
+    return f"exit {proc.returncode}; {invocation}; {output}"
+
+
+def _renderer_diagnostic(proc: subprocess.CompletedProcess[str], page_selection: str | None,
+                         prefix: str = "") -> str:
+    """Retain bounded child output beside its sanitized invocation for operator recovery."""
+    output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+    lines = [prefix, _renderer_attempt(proc, page_selection)]
+    if output:
+        lines.append(output[-2000:])
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _capture_paths(out_dir: Path) -> list[str]:
+    """Keep already-written capture evidence visible when the renderer exits early."""
+    try:
+        return [str(path) for path in sorted(out_dir.iterdir())
+                if path.is_file() and path.suffix in {".png", ".html", ".txt", ".md"}]
+    except OSError:
+        return []
+
+
+def _trusted_capture_infrastructure(kind: str, diagnostic: str, *,
+                                    browser_kind: str = "") -> dict[str, str]:
+    """Metadata written only by the installed UI-check wrapper, never accepted from its child."""
+    row = {"source": "garden.walkthrough:ui_check", "kind": kind, "diagnostic": diagnostic}
+    if browser_kind:
+        row["browser_kind"] = browser_kind
+    return row
 
 
 def _main() -> int:

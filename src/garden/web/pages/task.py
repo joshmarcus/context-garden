@@ -18,6 +18,7 @@ from ...criteria import (
 from ...events import EventLog
 from ...graph import blockers, dependency_after, dependents, deps_in_later_phase, effective_status
 from ...inbox import approve_phase_options, decision_card_view, split_log
+from ...model import phase_refusal
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
@@ -87,6 +88,21 @@ def register(app: FastAPI, site: Site) -> None:
         trial_log = TrialLog(s.config.garden_dir / "trials.jsonl")
         prior_trials = [(tr, ranking_markdown(tr)) for tr in reversed(trial_log.read()) if tr.get("task") == t.id]
         trial_view = _trial_view(st.get("trial"), runs)
+        manual_runner = (t.runner or s.config.product_runner(t.product)) == "manual"
+        manual_take_reason = ""
+        if manual_runner and t.status.value in ("ready", "changes_requested"):
+            if any(run.task_id == t.id for run in rs.active()):
+                manual_take_reason = "This task is already claimed by an active manual session."
+            elif t.status.value == "ready" and blockers(t, tasks, stack):
+                manual_take_reason = "This task is waiting for its dependencies to finish."
+            elif refusal := phase_refusal(s.phase(t.product, t.phase), t):
+                manual_take_reason = f"This task cannot be claimed while {refusal}."
+            elif st.get("needs_human") or st.get("decision"):
+                manual_take_reason = "This task is paused for an Inbox decision."
+            elif t.status.value == "changes_requested" and not str(st.get("pending_feedback") or "").strip():
+                manual_take_reason = "This task needs revision feedback before it can resume."
+            elif t.status.value == "changes_requested" and int(st.get("revisions", 0)) >= int(s.config.get("max_revisions", 3)):
+                manual_take_reason = "This task reached its revision limit and needs an Inbox decision."
 
         decision_card = decision_card_view(t, st, rs)
         if decision_card is None and request.query_params.get("walkthrough") == "decision":
@@ -120,6 +136,7 @@ def register(app: FastAPI, site: Site) -> None:
             decision_card=decision_card,
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
+            manual_runner=manual_runner, manual_take_reason=manual_take_reason,
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
             prior_trials=prior_trials,
             trial_view=trial_view,
@@ -148,6 +165,20 @@ def register(app: FastAPI, site: Site) -> None:
         fb = str(State(s.config.garden_dir / "state.json").get(t.id).get("pending_feedback") or "") if revise else ""
         b = build_brief(s, t, review_feedback=fb)
         return f"# ~{b.tokens:,} tokens\n\n" + b.text
+
+    @app.get("/tasks/{task_id}/packet", response_class=PlainTextResponse)
+    def task_packet(task_id: str):
+        """Return the immutable packet assigned to the current manual session."""
+        s = hub.fresh()
+        try:
+            s.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        run = RunStore(s.config.garden_dir).latest(task_id)
+        packet = run.path / "brief.md" if run and run.runner == "manual" else None
+        if packet is None or not packet.exists():
+            raise HTTPException(404, "no assigned manual packet")
+        return packet.read_text()
 
     @app.get("/tasks/{task_id}/log", response_class=PlainTextResponse)
     def task_log(task_id: str, run_id: str | None = None):

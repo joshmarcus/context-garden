@@ -1,4 +1,45 @@
-# Worker tests on GitHub CI
+# Repository validation policies
+
+Validation is selected per product and is independent of where its Git repository is
+hosted. New configurations set `products.<name>.validation` to one of these policies:
+
+- `actions` requires the exact-head GitHub checks rollup and may use this repository's
+  branch-publishing Actions helper when `setup.worker_push: true` is also explicit.
+- `status` requires the exact-head GitHub checks rollup populated by another installed CI
+  or check provider. Garden reads the provider-neutral rollup and never starts Actions.
+- `command` runs a configured command as a scheduler-owned pre-PR check and records its
+  pass against the exact commit. It is rerun after a scheduler rebase.
+- `none` explicitly declares that there is no external CI service. Configured pre-PR
+  tests, lint, review rejection, conflict detection, and atomic merge guards still apply;
+  an absent external status is neither polled nor treated as evidence.
+
+The omitted setting retains the historical behavior for existing gardens. Prefer an
+explicit policy for new products. Examples:
+
+```yaml
+products:
+  actions-app:
+    validation: actions
+    setup:
+      worker_push: true
+      test: python3 scripts/check_ci.py
+  enterprise-app:
+    validation: status
+  appliance:
+    validation:
+      provider: command
+      command: ./ci/validate-exact-head
+  documentation:
+    validation: none
+```
+
+For `actions` and `status`, an absent result remains unknown and blocks automatic merge.
+The Inbox distinguishes a missing Actions run from a missing alternate-provider status;
+provider access errors remain permission/API errors, a pending rollup remains pending,
+and a failed required rollup enters the normal failure/revision path. Enterprise API
+routing and credentials come only from the product's explicit GitHub host configuration.
+
+## This repository's GitHub Actions helper
 
 For this repository, `python scripts/check_ci.py` runs the full suite on GitHub before
 finishing a worker session. Run focused tests and lint locally, self-review, commit all
@@ -39,6 +80,7 @@ Push permission is opt-in for each product; other products keep the no-push rule
 ```yaml
 products:
   context-garden:
+    validation: actions
     setup:
       worker_push: true
       test: python3 scripts/check_ci.py

@@ -143,6 +143,86 @@ def private_config_dir_env(config: dict[str, Any] | None, scratch_home: Path | s
     return destinations
 
 
+def config_file_mappings(config: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Return validated, explicitly named host-file capabilities.
+
+    Sources are host-local files. Destinations are relative to the isolated worker HOME;
+    absolute paths, traversal, and aliases for HOME itself fail closed before a worker runs.
+    """
+    raw = ((config or {}).get("worker_env") or {}).get("config_files") or {}
+    if not isinstance(raw, dict):
+        raise RunnerError("worker_env.config_files must be a mapping of names to file mappings")
+    mappings: dict[str, dict[str, Any]] = {}
+    for name, value in raw.items():
+        label = str(name)
+        if not label or not isinstance(value, dict):
+            raise RunnerError("each worker_env.config_files entry must have a name and mapping")
+        unknown = set(value) - {"source", "destination", "required"}
+        if unknown:
+            raise RunnerError(f"config file {label!r} has unsupported fields")
+        source = str(value.get("source") or "")
+        destination = Path(str(value.get("destination") or ""))
+        if not source:
+            raise RunnerError(f"config file {label!r} has no source")
+        if destination.is_absolute() or not destination.parts \
+                or any(part in {"", ".", ".."} for part in destination.parts):
+            raise RunnerError(f"config file {label!r} destination must be a path below worker HOME")
+        mappings[label] = {"source": source, "destination": destination.as_posix(),
+                           "required": bool(value.get("required", False))}
+    return mappings
+
+
+def install_config_files(config: dict[str, Any] | None, scratch_home: Path | str) -> None:
+    """Refresh approved files in a worker HOME without following destination symlinks."""
+    mappings = config_file_mappings(config)
+    if not mappings:
+        return
+    home = Path(scratch_home)
+    if home.is_symlink():
+        raise RunnerError("worker HOME for config files is a symlink")
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    home.chmod(0o700)
+    for name, mapping in mappings.items():
+        source = Path(mapping["source"])
+        destination = home / mapping["destination"]
+        current = home
+        for part in Path(mapping["destination"]).parts[:-1]:
+            current /= part
+            if current.is_symlink():
+                raise RunnerError(f"config file {name!r} destination crosses a symlink")
+            current.mkdir(mode=0o700, exist_ok=True)
+            current.chmod(0o700)
+        if destination.is_symlink():
+            raise RunnerError(f"config file {name!r} destination is a symlink")
+        if not source.is_file():
+            destination.unlink(missing_ok=True)
+            if mapping["required"]:
+                raise RunnerError(f"required config file {name!r} is unavailable")
+            continue
+        temporary = destination.with_name(f".{destination.name}.garden-new")
+        if temporary.is_symlink():
+            raise RunnerError(f"config file {name!r} temporary destination is a symlink")
+        temporary.unlink(missing_ok=True)
+        shutil.copyfile(source, temporary)
+        temporary.chmod(0o600)
+        temporary.replace(destination)
+        destination.chmod(0o600)
+
+
+def config_file_shell(config: dict[str, Any] | None) -> str:
+    """Render SSH-side calls to the guarded copier embedded in ``REMOTE_SCRIPT``."""
+    lines = []
+    for mapping in config_file_mappings(config).values():
+        lines.append(
+            "  garden_copy_config "
+            + " ".join(shlex.quote(str(value)) for value in (
+                mapping["source"], mapping["destination"],
+                "1" if mapping["required"] else "0",
+            ))
+        )
+    return "\n".join(lines)
+
+
 def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None, *,
                  worktree: Path | str | None = None) -> dict[str, str]:
     """The scrubbed environment a worker (and its setup command) runs in: `PASS_ENV` plus
@@ -168,6 +248,7 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     # those source paths with fresh, credential-only directories for this dispatch.
     scratch_home = worker_home(worktree)
     env.update(private_config_dir_env(config, scratch_home))
+    install_config_files(config, scratch_home)
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     from ..validation import enforce_validation_policy_env
@@ -236,6 +317,11 @@ class Runner(ABC):
     name: str = "base"
     detached: bool = True  # False = a human drives the session; completion comes via `garden finish`
     remote: bool = False  # True = the worker pushes the branch itself; no local worktree during the run
+    # Third-party adapters declare this stable contract before the scheduler will use them.
+    # The declarations make their scheduling-relevant behavior inspectable without granting
+    # adapters a path around the normal dispatch, fence, reap, or review flows.
+    adapter_version: int = 1
+    capabilities: dict[str, bool] = {"detached": True, "remote": False}
 
     def __init__(self, config: dict[str, Any], harness: Harness | None = None):
         self.config = config
@@ -243,6 +329,10 @@ class Runner(ABC):
 
     def assign(self, run: Run, active: list[Run]) -> None:  # noqa: B027
         """Optional: pick a host / slot before start (ssh runner)."""
+
+    def canonical_checkout_identity(self, run: Run) -> str | None:
+        """Identify a remotely provisioned checkout when the transport can do so."""
+        return None
 
     @abstractmethod
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:

@@ -124,6 +124,9 @@ resources:
   min_memory_available_mb: 1536 # defer new processes below this headroom
   min_temp_free_mb: 1024        # measured on work_dir/tmp, not the system /tmp
   execution_cgroup: /sys/fs/cgroup/user.slice/user-1000.slice/garden-execution.slice
+  reclaim_max_mb: 512           # bounded best-effort reclaim when cgroup memory is the only gate
+  reclaim_timeout_seconds: 5    # detached helper; kernel reclaim never holds tick/web work
+  reclaim_cooldown_seconds: 300 # suppress duplicate attempts and repetitive diagnostics
 ```
 
 All scheduler launch paths consult the same run records and limits, so
@@ -134,6 +137,14 @@ local launches wait, and admission resumes when a run finishes or headroom retur
 web rail and `garden observe` show the effective local limit, the measured pressure and
 the recovery action. `garden pause --reason "resource pressure"` is available when an
 operator also wants to hold ordinary dispatch while the current work drains.
+
+When finite controller or execution-cgroup headroom is the only failed gate, the garden
+may ask that limiting cgroup to reclaim a bounded amount of inactive file cache. The kernel
+operation runs in a detached, timed helper and is rate-limited; its requested bytes and
+file-memory estimates never count as capacity. Workers, reviews and checks remain deferred
+until a later admission takes the shared lock and freshly passes the same slot, host memory,
+cgroup reserve, OOM-event and temporary-storage checks. The rail, config page and
+`garden observe` show the attempt's actual before/after headroom or its error.
 
 Supported local setup, checks, probes, and worker-issued validations take a kernel-backed,
 per-user heavy-execution lease shared by every garden using the same runtime directory. The

@@ -1,9 +1,13 @@
-"""Push this repository's worker branch and await its exact-commit GitHub CI.
+"""Push this repository's worker branch and await its exact-commit GitHub Actions run.
 
 Uses authenticated ``gh`` where it is available.  Public github.com repositories can
 read Actions metadata through the bounded unauthenticated REST API when workers only
 have their repository deploy key.  This is repository tooling, not a provider
 dependency of the garden package. Keep full PR CI as the merge gate.
+
+Use this helper only for a product whose validation provider is explicitly ``actions``.
+Products using another status provider, a validation command, or no external CI must use
+their selected policy and must not invoke this branch-publishing helper.
 """
 from __future__ import annotations
 

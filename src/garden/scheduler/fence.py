@@ -34,7 +34,9 @@ class FenceMixin:
             clone = Path(self.repo_for(task))
         except Exception:  # noqa: BLE001 - a missing/URL repo just means nothing to guard here
             return out
-        if gitops.is_repo(clone) and clone.resolve() != root.resolve():
+        own_checkout = self.worktree_for(task)
+        if (gitops.is_repo(clone) and clone.resolve() != root.resolve()
+                and clone.resolve() != own_checkout.resolve()):
             out.append(("the product clone", clone))
         return out
 
@@ -152,6 +154,8 @@ class FenceMixin:
             manifest_copy = manifest_store / f"{manifest_sha}.json"
             if not manifest_copy.exists():
                 manifest_copy.write_text(manifest_text)
+            run.fence_manifest_sha256 = manifest_sha
+            run.save()
             self.state.get(run.task_id)["fence_guard_manifest"] = {
                 "run": run.run_id, "sha256": manifest_sha,
             }
@@ -223,7 +227,24 @@ class FenceMixin:
         if saved is None and not manifest_path.exists():
             return []  # Older/unfenced runs have neither a reference nor an audit copy.
         try:
-            if isinstance(saved, str):  # pre-CG-344 state, retained for an in-flight run
+            if run.fence_manifest_sha256:
+                manifest_sha = run.fence_manifest_sha256
+                if len(manifest_sha) != 64 or any(c not in "0123456789abcdef" for c in manifest_sha):
+                    raise ValueError("invalid trusted manifest digest")
+                if isinstance(saved, dict):
+                    saved_run = str(saved.get("run") or "")
+                    saved_sha = str(saved.get("sha256") or "")
+                    if saved_run == run.run_id and saved_sha != manifest_sha:
+                        raise ValueError("task and run manifest references contradict")
+                    if saved_run != run.run_id and not any(
+                        candidate.run_id == saved_run for candidate in self.runs.runs_for(task.id)
+                    ):
+                        raise ValueError("task manifest reference names an unknown run")
+                copy_path = self.cfg.garden_dir / "fence-guard-manifests" / f"{manifest_sha}.json"
+                manifest_text = copy_path.read_text()
+                if hashlib.sha256(manifest_text.encode()).hexdigest() != manifest_sha:
+                    raise ValueError("trusted manifest digest mismatch")
+            elif isinstance(saved, str):  # pre-CG-344 state, retained for an in-flight run
                 manifest_text = saved
                 manifest_sha = hashlib.sha256(saved.encode()).hexdigest()
             elif isinstance(saved, dict) and saved.get("run") == run.run_id:
@@ -336,6 +357,8 @@ class FenceMixin:
                 if not copy_path.exists():
                     copy_path.write_text(saved)
                 task_state["fence_guard_manifest"] = {"run": matching.run_id, "sha256": sha}
+                matching.fence_manifest_sha256 = sha
+                matching.save()
         legacy_cache = self.state.data.get("_fence_guard_cache")
         if isinstance(legacy_cache, dict):
             for key in list(legacy_cache):

@@ -108,27 +108,21 @@ def _numbers(value: Any, *, minimum_items: int) -> list[int | float] | None:
 
 
 def interaction_requirement(changed: list[str], *review_context: str) -> tuple[bool, bool, str]:
-    """Classify reviews that need a running-app journey, and performance claims that need load evidence."""
-    affected = [path for path in changed if path.startswith(INTERACTION_PATHS)]
-    context = "\n".join(review_context)
-    explicitly_required = bool(re.search(r"\binteraction[-_ ]evidence\s*:\s*required\b", context, re.I))
-    required = bool(affected) or explicitly_required
-    scalability = bool(re.search(
-        r"\b(scalab(?:ility|le)|performance|latency|p95|cache.expir|history (?:size|scan)|read/scan)\b",
-        context, re.I,
-    ))
-    if affected:
-        reason = "affected UI/lifecycle paths: " + ", ".join(affected[:6])
-    elif explicitly_required:
-        reason = "change metadata requires interaction evidence"
-    else:
-        reason = "non-UI change"
-    return required, scalability, reason
+    """Return the mechanical evidence requirements for a review.
+
+    File paths, keywords, and legacy ``interaction_evidence: required`` prose do not know
+    what behavior changed. The reviewing agent chooses an appropriate verification method
+    from the task, diff, and existing evidence, so the scheduler never imposes a generic
+    served replay or load schema here.
+    """
+    del changed, review_context
+    return False, False, "reviewer chooses proportionate verification for the actual change"
 
 
 def validation_plan(changed: list[str], *review_context: str, head: str = "",
                     check_specs: list[dict[str, Any]] | None = None,
-                    visual_scope: Any = None) -> dict[str, Any]:
+                    visual_scope: Any = None,
+                    capture_infrastructure_policy: str = "require") -> dict[str, Any]:
     """Return the head-bound functional and visual evidence decision for a change.
 
     A screenshot is evidence for a named visible behaviour, never a side effect of touching
@@ -196,20 +190,22 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
         reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
     return {"head": head, "pages": sorted(pages), "interaction": interaction,
             "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons,
-            "visual_paths": sorted(visual_paths)}
+            "visual_paths": sorted(visual_paths),
+            "capture_infrastructure_policy": (
+                "advisory" if capture_infrastructure_policy == "advisory" else "require"
+            )}
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
                               expected_head: str, replay_manifest: Path | None = None,
                               replay_nonce: str = "", replay_digest: str = "",
                               affected_flow: str = "",
+                              expected_criteria: list[str] | None = None,
                               metadata_warnings: list[str] | None = None) -> list[str]:
     """Return substantive blockers; report missing packaging separately as advisories."""
-    if not required and not scalability:
-        return []
     row = review.get("interaction")
     if not isinstance(row, dict):
-        return ["running-application interaction evidence was not reported"]
+        return []
     gaps: list[str] = []
     warnings = metadata_warnings if metadata_warnings is not None else []
     if required and (replay_manifest is not None or replay_nonce):
@@ -223,26 +219,32 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
     if not row.get("environment"):
         warnings.append("interaction environment was not recorded")
     elif row.get("environment") != "disposable":
-        gaps.append("interaction was not performed in a disposable garden")
-    if affected_flow and row.get("affected_flow") != affected_flow:
-        gaps.append(f"interaction evidence does not cover the declared affected flow: {affected_flow}")
+        warnings.append("interaction was not performed in a disposable garden")
+    if affected_flow:
+        recorded_flow = str(row.get("affected_flow") or "").strip()
+        if recorded_flow and recorded_flow != affected_flow:
+            gaps.append(f"interaction evidence contradicts the declared affected flow: {affected_flow}")
+        elif not recorded_flow:
+            warnings.append("interaction affected flow was not recorded")
     command = row.get("command")
     if not isinstance(command, str) or not command.strip():
         warnings.append("interaction command was not reported")
     elif command.strip() in {"true", ":"}:
-        gaps.append("interaction command does not perform a served application")
+        warnings.append("interaction command is only an attestation placeholder")
     states = row.get("states") if isinstance(row.get("states"), dict) else {}
     for state in ("affected", "empty", "failure_recovery"):
         evidence = states.get(state) if isinstance(states.get(state), dict) else {}
         actions = evidence.get("actions")
         observed = evidence.get("observed")
-        if (evidence.get("status") != "pass"
-                or not isinstance(actions, list) or not actions
+        status = str(evidence.get("status") or "").strip().lower()
+        if status and status != "pass":
+            gaps.append(f"{state.replace('_', '/')} interaction explicitly failed")
+        elif (status != "pass" or not isinstance(actions, list) or not actions
                 or any(not isinstance(action, str) or not action.strip() for action in actions)
                 or not isinstance(observed, str) or not observed.strip()):
-            gaps.append(f"{state.replace('_', '/')} interaction is missing or failed")
+            warnings.append(f"{state.replace('_', '/')} interaction detail was not reported")
     events = row.get("events")
-    gaps.extend(_interaction_event_gaps(events))
+    warnings.extend(_interaction_event_gaps(events))
     artifacts = row.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts or any(not isinstance(path, str) for path in artifacts):
         warnings.append("interaction artifact paths were not reported")
@@ -267,33 +269,68 @@ def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalabi
         warnings.append("automated checks were not separately recorded")
     if not isinstance(row.get("unverified"), list):
         warnings.append("unverified requirements were not explicitly recorded")
-    elif row.get("unverified"):
-        gaps.append("interaction requirements remain unverified")
+    else:
+        frozen_criteria = ({str(criterion).strip() for criterion in expected_criteria}
+                           if expected_criteria is not None else {
+                               str(entry.get("criterion") or "").strip()
+                               for entry in review.get("criteria") or [] if isinstance(entry, dict)
+                           })
+        for item in row["unverified"]:
+            if not isinstance(item, dict):
+                continue  # Legacy strings are resolved by the scheduler's bounded re-ask.
+            scope = str(item.get("scope") or "").strip()
+            # A limitation is out of scope only when it is just an observation.  Required
+            # targeting fields are authoritative even if the reviewer chose the wrong label.
+            # Unknown/malformed structured entries also remain conservative blockers.
+            has_required_fields = any(item.get(name) for name in
+                                      ("criterion", "affected_flow", "outcome", "reason"))
+            if scope == "limitation" and not has_required_fields:
+                continue
+            criterion = str(item.get("criterion") or "").strip()
+            flow = str(item.get("affected_flow") or "").strip()
+            outcome = str(item.get("outcome") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            target = f"criterion: {criterion}" if criterion else f"affected flow: {flow}" if flow else ""
+            if not target or not outcome or not reason:
+                warnings.append("unverified outcome metadata did not name a criterion or affected flow")
+            elif criterion and criterion not in frozen_criteria:
+                warnings.append(f"unverified outcome names no frozen criterion: {criterion}")
+            elif flow and (not affected_flow or flow != affected_flow):
+                warnings.append(f"unverified outcome names no declared affected flow: {flow}")
+            else:
+                gaps.append(f"required outcome remains unverified ({target}; {outcome}): {reason}")
     if scalability:
         load = row.get("scalability") if isinstance(row.get("scalability"), dict) else {}
         if not isinstance(load.get("served_app"), str) or not load["served_app"].startswith(("http://", "https://")):
-            gaps.append("scalability served_app must be a served HTTP URL")
+            warnings.append("scalability served_app was not recorded as a served HTTP URL")
         sizes = _numbers(load.get("history_sizes"), minimum_items=2)
         if sizes is None or any(size < 0 for size in sizes) or sizes != sorted(set(sizes)):
-            gaps.append("scalability history_sizes must contain at least two distinct increasing numeric sizes")
+            warnings.append("scalability history sizes were not reported in the legacy shape")
         intervals = load.get("cache_expiry_intervals")
         if isinstance(intervals, bool) or not isinstance(intervals, int) or intervals < 2:
-            gaps.append("scalability cache_expiry_intervals must be an integer of at least two")
+            warnings.append("scalability cache-expiry intervals were not reported in the legacy shape")
         processes = load.get("executing_processes")
         if isinstance(processes, bool) or not isinstance(processes, int) or processes < 1:
-            gaps.append("scalability executing_processes must be a positive integer")
+            warnings.append("scalability executing-process count was not reported")
         latencies = _numbers(load.get("latencies"), minimum_items=2)
         if latencies is None or any(latency < 0 for latency in latencies):
-            gaps.append("scalability latencies must contain at least two non-negative numeric samples")
+            warnings.append("scalability latency samples were not reported in the legacy shape")
         counts = load.get("read_scan_counts")
         if not isinstance(counts, dict) or any(
             isinstance(counts.get(name), bool) or not isinstance(counts.get(name), (int, float))
             or not math.isfinite(counts[name]) or counts[name] < 0 for name in ("reads", "scans")
         ):
-            gaps.append("scalability read_scan_counts must contain non-negative numeric reads and scans")
+            warnings.append("scalability read/scan counts were not reported in the legacy shape")
         if load.get("load_kind") not in SCALABILITY_LOAD_KINDS:
-            gaps.append("scalability load_kind must be controlled or real_model_harnesses")
+            warnings.append("scalability load kind was not reported in the legacy shape")
     return gaps
+
+
+def ambiguous_unverified(review: dict[str, Any], *, expected_criteria: list[str] | None = None,
+                         affected_flow: str = "") -> list[str]:
+    """Legacy hook retained for stored reviews; evidence shape never needs a re-ask."""
+    del review, expected_criteria, affected_flow
+    return []
 
 
 def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, digest: str,
@@ -316,10 +353,19 @@ def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, dig
         return ["scheduler-produced interaction replay provenance does not match this review"]
     if any(not record.get(key) or not value for key, value in identity.items()):
         metadata_warnings.append("scheduler-produced interaction replay identity metadata is incomplete")
-    if record.get("environment") != "disposable" or record.get("status") != "pass":
-        return ["scheduler-produced disposable interaction replay did not pass"]
-    if affected_flow and record.get("affected_flow") != affected_flow:
-        return [f"scheduler replay does not cover the declared affected flow: {affected_flow}"]
+    if record.get("environment") != "disposable":
+        metadata_warnings.append("scheduler-produced replay environment was not recorded as disposable")
+    replay_status = str(record.get("status") or "").strip().lower()
+    if replay_status and replay_status != "pass":
+        return ["scheduler-produced interaction replay explicitly failed"]
+    if not replay_status:
+        metadata_warnings.append("scheduler-produced interaction replay status was not recorded")
+    if affected_flow:
+        recorded_flow = str(record.get("affected_flow") or "").strip()
+        if recorded_flow and recorded_flow != affected_flow:
+            return [f"scheduler replay contradicts the declared affected flow: {affected_flow}"]
+        if not recorded_flow:
+            metadata_warnings.append("scheduler-produced replay affected flow was not recorded")
     if not all(isinstance(record.get(name), str) and record[name] for name in ("started_at", "finished_at")):
         metadata_warnings.append("scheduler-produced interaction replay timestamps are incomplete")
     flows = record.get("flows")
@@ -328,26 +374,27 @@ def _replay_manifest_gaps(path: Path | None, expected_head: str, nonce: str, dig
         or not isinstance(flow.get("requests"), list) or not flow["requests"]
         for flow in flows
     ):
-        return ["scheduler-produced interaction replay lacks successful request/response flows"]
+        metadata_warnings.append("scheduler-produced interaction replay has no successful request/response flows")
+        flows = []
     if any(not isinstance(event.get("at"), (int, float)) or not event.get("url")
            or not isinstance(event.get("status_code"), int)
            for flow in flows for event in flow["requests"] if isinstance(event, dict)) \
             or any(not isinstance(event, dict) for flow in flows for event in flow["requests"]):
-        return ["scheduler-produced interaction replay request/response transcript is incomplete"]
+        metadata_warnings.append("scheduler-produced interaction replay request/response transcript is incomplete")
     states = record.get("states")
     if not isinstance(states, dict) or any(
         not isinstance(states.get(state), dict) or states[state].get("status") != "pass"
         or not states[state].get("action") or not states[state].get("observed")
         for state in ("affected", "empty", "failure", "recovery")
     ):
-        return ["scheduler-produced replay does not prove affected, empty, failure, and recovery outcomes"]
+        metadata_warnings.append("scheduler-produced replay omits some legacy lifecycle outcomes")
     events = record.get("events")
     event_states = [event.get("state") for event in events if isinstance(event, dict)] if isinstance(events, list) else []
     event_times = [event.get("at") for event in events if isinstance(event, dict)] if isinstance(events, list) else []
     if (event_states != ["affected", "failure", "recovery", "empty"]
             or any(not isinstance(at, (int, float)) for at in event_times)
             or event_times != sorted(event_times)):
-        return ["scheduler-produced replay outcomes are not a complete chronological transcript"]
+        metadata_warnings.append("scheduler-produced replay is not a complete chronological transcript")
     return []
 
 
@@ -412,83 +459,30 @@ below when it fits, otherwise run `git diff {base}...HEAD`. You may run the proj
 checks if they are fast. Do NOT modify tracked worktree files and do NOT commit. Running-app
 evidence may write artifacts only into its disposable garden or a temporary directory.
 
-Check, in this order:
+Use your judgment to choose verification for the actual change. Focused tests, source
+inspection, a CLI command, CI, browser interaction, or another small exercise may each be
+sufficient. You may attest clearly to what you tested or inspected and what happened. Do
+not demand a served app, generic replay, screenshot matrix, empty/failure/recovery matrix,
+load measurement, artifact manifest, or checklist because a path or keyword matched.
 
-1. **Worker pre-flight.** Verify the applicable checks and the actual outcome. Missing
-   reporting metadata alone is advisory; a failed check or materially unverified outcome
-   is blocking. Inspect available evidence before requiring the author to repeat work.
-2. **Acceptance criteria.** Return one `criteria` entry per criterion in the task, in order:
-   quote the `criterion`, set `met` true or false, and give a one-line `reason` pointing at
-   the evidence (the diff, a test, a page). The author's own per-criterion evidence is under
-   "Author's verification" below; check each claim against the diff rather than taking it on
-   trust. A criterion with no evidence, or one the author marked not done without a reason you
-   accept, is `met: false` and a blocking finding. If the task has no criteria, judge its Goal
-   on the author's evidence and return `criteria: []`.
-   Every returned criterion needs its own non-empty `evidence`: the scheduler mechanically
-   changes the verdict to `request_changes` for an unmet or evidence-less criterion.
-3. **Correctness.** Bugs, unhandled cases, broken behaviour, security problems.
-4. **Scope.** Changes outside the task, or task work that is missing.
-5. **PR description.** It must give a reader without the task file the broader context:
-   what is being accomplished and why, how it fits the phase goals, what was verified, and
-   any follow-ups. It must have no scar tissue: no references to earlier review rounds or
-   abandoned approaches ("as requested", "reverted the previous attempt"), no narration of
-   the process, no leftover TODO/debug notes. The diff must be equally clean: no
-   commented-out code, no stray debug output, no "fixed review comment" commit messages
-   left in the final story of the change. Describe the change as if it were written right
-   the first time.
-7. **Principles.** Tests skipped or weakened, scope widened, history rewritten, new
-   dependencies without justification.
+Check correctness, the task's intended outcomes, scope, and applicable project principles.
+Treat actual defects, failed applicable checks, contradictory source/result claims, and
+outcomes you judge genuinely unmet as blocking. Missing optional evidence fields, capture
+files, checklist rows, mapping fields, or PR-description polish are advisory. Preserve
+useful existing evidence and do not request an unchanged source revision to repackage it.
 
-The Validation plan below is the required evidence for this reviewed head, not the available
-walkthrough inventory. Inspect each planned page and name it in `pages_seen`; do not demand an
-unrelated page merely because a capture exists. A plan names pages only for a declared visible
-behavior; shared styling uses representative consumers, expanding only for a distinct visual
-risk. For bounded UI inspection, inspect the named paths and either map consumers or
-report a `scope_expansions` entry with the changed claim or discovered risk that justifies it.
-New evidence demands likewise need that entry; frozen criteria and current valid evidence remain
-valid, but evidence for another head never does.
+For a material UI, CLI, or workflow change, choose a direct verification of the named
+affected behavior when needed. Say what you inspected in `attestation`, `summary`, criterion
+reasons, or any optional evidence fields you find useful. An explicitly unmet criterion
+must remain visible and blocking. Use `findings` with severity `blocking` for changes needed
+before merge and `nit` for optional improvements. A missing `fix` field does not invalidate
+an otherwise clear finding. Description feedback is always advisory and must not be the sole
+reason for `request_changes`.
 
-When "Running-application interaction required" is present, start the proposed head as a
-served application against a disposable garden and perform the affected journey through its
-HTTP/browser surface. Cover the user objective, an empty state, and a relevant failure followed
-by recovery. Record actions and their observed consequences; screenshots and test-client
-assertions are supporting artifacts, not performed interaction. Treat no_change reconciliation
-and attention prompts as user outcomes when they are affected. Never use the live operator
-garden. Report the exact command, artifact paths, separately named automated checks, and every
-unverified requirement. Use the reviewed full SHA supplied below as `interaction.head`.
+End your final message with exactly one line. Only `verdict` is mechanically required;
+the other fields are optional and may be omitted when they add no value:
 
-For a scalability claim, additionally use a served disposable app with representative and larger
-histories, repeated cache-expiry intervals, actual executing bounded workload processes, empirical
-latency samples/distribution, and read/scan counts. State whether load is controlled or uses real
-model harnesses; controlled load must not be described as a real harness run.
-
-Report `interaction.events` as a chronological sequence with explicit `state` phases: `affected`,
-`empty`, `failure`, and `recovery`. Each event includes `outcome`: `success` for affected/recovery,
-`empty` for empty, and `failure` for failure. A served HTTP event also contains `kind: http_request`,
-`method`, `url`, `status_code`, and `observed`; failure HTTP status is unsuccessful and recovery is
-successful. A browser event also contains `kind: browser_action`, `action`, `target`, and `observed`.
-Screenshot/image operations are not actions. Report the performed events; an existing artifact
-may use a different schema or wording. Do not demand a duplicate of your own paraphrase.
-
-Severity: `blocking` means the PR should not merge as is; `nit` is optional polish. Only
-request changes for blocking findings or a description that fails the standard above.
-
-Every finding carries a concrete `fix`: say what to change and where; include a short code
-sketch when it makes the change clearer. `fix` is required for `blocking` and `high` findings
-and encouraged for nits. Also return `improvements`: non-blocking suggestions beyond the
-acceptance criteria, such as a simpler design, clearer name, missing test, doc line, or cheaper
-implementation. They are optional work for the author, not reasons to request changes.
-
-If the *only* problem is the description (`description_ok` is false and there is no blocking
-finding), do not send the change back for another round: rewrite the description yourself and
-return the full corrected body in `description_rewrite`. The garden applies it directly. Write
-it to the same contract the author was given — the permanent description of the change, with
-no process narration, no review or rebase references, no scar tissue. Leave `description_rewrite`
-empty when a blocking finding means the change is going back anyway.
-
-End your final message with exactly one line:
-
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "pages_seen": ["<required page slug>"], "ui_scope": [{{"path": "<unknown UI path from plan>", "consumers": ["<affected page slug>"]}}], "scope_expansions": [{{"item": "<new evidence demand or unknown UI path>", "reason": "<changed claim or discovered risk>"}}], "interaction": {{"head": "<reviewed full SHA>", "environment": "disposable", "command": "<served-app command>", "states": {{"affected": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "empty": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<consequence>"}}, "failure_recovery": {{"status": "pass|fail", "actions": ["<action>"], "observed": "<failure and recovery consequence>"}}}}, "events": [{{"kind": "http_request", "state": "affected|empty|failure|recovery", "outcome": "success|empty|failure", "method": "<method>", "url": "<served URL>", "status_code": 200, "observed": "<actual consequence>"}}], "artifacts": ["<path>"], "automated_checks": ["<separate check>"], "unverified": ["<requirement or empty>"], "scalability": {{"served_app": "<URL>", "history_sizes": [100, 1000], "cache_expiry_intervals": 3, "executing_processes": 2, "latencies": [0.1, 0.2], "read_scan_counts": {{"reads": 3, "scans": 1}}, "load_kind": "controlled|real_model_harnesses"}}}}, "criteria": [{{"criterion": "<acceptance criterion, quoted>", "met": true | false, "evidence": "<diff, test, or performed interaction>", "reason": "<one line, with the evidence>"}}], "description_ok": true | false, "description_feedback": "<what to change in the PR description, or empty>", "description_rewrite": "<the full corrected PR body, or empty>", "findings": [{{"severity": "blocking" | "high" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<one sentence>", "fix": "<concrete change, location, and optional code sketch>"}}], "improvements": [{{"area": "<design, naming, tests, docs, cost>", "suggestion": "<non-blocking improvement>", "why": "<benefit>", "effort": "small" | "medium"}}]}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "attestation": "<what you tested or inspected and the result>", "criteria": [{{"criterion": "<criterion>", "met": true | false, "evidence": "<optional evidence>", "reason": "<optional reason>"}}], "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<concrete issue>", "fix": "<optional fix>"}}], "description_ok": true | false, "description_feedback": "<optional editorial advice>", "improvements": []}}
 
 The JSON must be on one line.
 """
@@ -514,11 +508,12 @@ def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = 
 def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
                  max_diff_chars: int, pr_comment: str = "", verified: Any = None,
                  captures: list[str] | None = None, checks: list[dict[str, Any]] | None = None,
+                 capture_advisories: list[dict[str, Any]] | None = None,
                  reask_missing_fixes: bool = False, interaction_required: bool = False,
                  scalability_required: bool = False, review_head: str = "", interaction_reason: str = "",
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
                  pre_flight: Any = None, plan: dict[str, Any] | None = None,
-                 author_interaction: Any = None) -> str:
+                 author_interaction: Any = None, clarify_unverified: list[str] | None = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
@@ -535,10 +530,19 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
         EVIDENCE_GUIDANCE,
-        preflight_section(),
+        preflight_section(str((plan or {}).get("capture_infrastructure_policy") or "require")),
         "## Task brief (what the author was given)\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
+    if clarify_unverified:
+        parts.append(
+            "## Clarification required\n\nThe prior review used ambiguous or malformed entries in "
+            "`interaction.unverified`. Preserve each observation, classify it under the "
+            "structured contract, and target required gaps only to an exact frozen criterion "
+            "or the declared affected flow. Do not ask the author to revise unless a required "
+            "outcome actually failed. Prior entries:\n\n"
+            + "\n".join(f"- {item}" for item in clarify_unverified) + "\n"
+        )
     if criteria_note:
         parts.append(criteria_note)
     verification = _verification_brief(task, verified, frozen)
@@ -556,6 +560,22 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
+    if capture_advisories:
+        advisory_lines = []
+        for advisory in capture_advisories:
+            diagnostic = str(advisory.get("diagnostic") or "capture infrastructure unavailable")
+            artifacts = [str(path) for path in advisory.get("artifacts", [])]
+            advisory_lines.append(f"- Failed capture attempt: {diagnostic}")
+            advisory_lines.extend(f"  - focused fallback artifact: `{path}`" for path in artifacts)
+        parts.append(
+            "## UI capture infrastructure advisory\n\n"
+            "The screenshot attempt remains recorded as failed; do not call it a pass. The "
+            "owner-selected policy permits review of this head with the focused HTML/text and "
+            "functional evidence below. Judge what that evidence proves. Observed UI defects, "
+            "application or renderer errors, failed observed interactions, failed functional checks, "
+            "and contradictory source or artifacts remain blocking.\n\n"
+            + "\n".join(advisory_lines) + "\n"
+        )
     if plan:
         parts.append("## Validation plan\n\n```json\n" + json.dumps(plan, indent=2, sort_keys=True) + "\n```\n")
     if interaction_required or scalability_required:
@@ -598,30 +618,34 @@ def parse_review(text: str) -> dict[str, Any]:
 
 
 def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
-    """Make unsupported or unmet criteria mechanically request changes.
-
-    A reviewer is advisory about its conclusion, but not about this gate: an approving
-    top-level verdict cannot override a criterion marked unmet or without evidence.
-    """
-    unsupported = [
+    """Honor reviewer judgment while keeping explicit defects and unmet outcomes blocking."""
+    unmet = [
         criterion for criterion in review.get("criteria") or []
         if isinstance(criterion, dict)
-        and (criterion.get("met") is not True or not str(criterion.get("evidence") or "").strip())
+        and criterion.get("met") is False
     ]
-    if not unsupported:
-        return review
-
-    review["verdict"] = "request_changes"
     findings = review.setdefault("findings", [])
     if not isinstance(findings, list):
         findings = review["findings"] = []
     existing = {str(finding.get("summary") or "") for finding in findings if isinstance(finding, dict)}
-    for criterion in unsupported:
+    for criterion in unmet:
         text = str(criterion.get("criterion") or "unnamed criterion")
-        summary = f"Acceptance criterion lacks a passing, evidenced assessment: {text}"
+        summary = f"Acceptance criterion is explicitly unmet: {text}"
         if summary not in existing:
             findings.append({"severity": "blocking", "file": "", "line": None, "summary": summary,
-                             "fix": "Make the criterion pass and cite concrete review evidence."})
+                             "fix": "Make the intended outcome pass or explain why the task should change."})
+    blocking = [finding for finding in findings
+                if isinstance(finding, dict) and finding.get("severity") == "blocking"]
+    if unmet or blocking:
+        review["verdict"] = "request_changes"
+    elif review.get("description_ok") is False:
+        # Editorial presentation is useful advice, but it cannot send correct source through
+        # an unchanged implementation round.
+        feedback = str(review.get("description_feedback") or "PR description could be clearer").strip()
+        findings.append({"severity": "nit", "file": "", "line": None,
+                         "summary": "PR description advisory: " + feedback, "fix": ""})
+        review["description_advisory"] = feedback
+        review["description_ok"] = True
     return review
 
 
@@ -629,12 +653,23 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
     verdict = str(rev.get("verdict", "?"))
     icon = "✅" if verdict == "approve" else "🔁"
     out = [f"{icon} **Automated review: {verdict.replace('_', ' ')}** — {rev.get('summary', '')}".rstrip(" —")]
+    attestation = str(rev.get("attestation") or "").strip()
+    if attestation:
+        out.append("\n**Reviewer verification**\n\n" + attestation)
     criteria = [c for c in (rev.get("criteria") or []) if isinstance(c, dict)]
     if criteria:
         out.append("\n**Acceptance criteria**")
         for c in criteria:
             mark = "✅" if c.get("met") is True else "❌"
             out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
+    interaction = rev.get("interaction")
+    unverified = interaction.get("unverified") if isinstance(interaction, dict) else []
+    limitations = [str(item.get("observation") or "").strip() for item in unverified
+                   if isinstance(item, dict) and item.get("scope") == "limitation"
+                   and str(item.get("observation") or "").strip()]
+    if limitations:
+        out.append("\n**Limitations and follow-ups**")
+        out += [f"- {item}" for item in limitations]
     findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
     blocking = [f for f in findings if f.get("severity") == "blocking"]
     high = [f for f in findings if f.get("severity") == "high"]
@@ -674,24 +709,89 @@ def review_is_description_only(rev: dict[str, Any]) -> bool:
     return not any(f.get("severity") == "blocking" for f in findings) and not rev.get("description_ok", True)
 
 
-def feedback_from_review(rev: dict[str, Any]) -> str:
-    """The revise-brief text for a request_changes verdict."""
-    items = []
+def review_item_id(kind: str, item: dict[str, Any]) -> str:
+    """Stable operator-facing identity for one criterion or finding."""
+    if kind == "criterion":
+        identity = {"criterion": str(item.get("criterion") or "")}
+    elif kind == "finding":
+        identity = {name: item.get(name) for name in ("file", "line", "summary")}
+    else:
+        raise ValueError(f"unknown review item kind: {kind}")
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:12]
+    return f"{kind}:{digest}"
+
+
+def review_item_ids(rev: dict[str, Any]) -> set[str]:
+    """Every selectable item in a review record."""
+    out = {review_item_id("criterion", item) for item in rev.get("criteria") or []
+           if isinstance(item, dict)}
+    out.update(review_item_id("finding", item) for item in rev.get("findings") or []
+               if isinstance(item, dict))
+    return out
+
+
+def feedback_from_review(rev: dict[str, Any], *, run_id: str = "", source_head: str = "",
+                         actionable: bool = True) -> str:
+    """Return the complete review record needed by the next revision author.
+
+    A short scheduler or operator note is useful for triage, but is not a substitute for
+    the review that made the author revise.  Keep the finding fixes and failed criterion
+    assessments verbatim so a criterion-only rejection remains actionable too.
+    """
+    items = ["### Applicable automated review\n" if actionable
+             else "### Automated review provenance\n"]
+    source = "automated review"
+    if run_id:
+        source += f" run `{run_id}`"
+    if source_head:
+        source += f" on head `{source_head}`"
+    items.append(f"- **Source:** {source}")
+    if rev.get("summary"):
+        items.append(f"- **Summary:** {str(rev['summary'])}")
+    criteria = [criterion for criterion in rev.get("criteria") or []
+                if isinstance(criterion, dict) and criterion.get("met") is not True]
+    if criteria:
+        items.append("\n### Failed acceptance criteria\n" if actionable
+                     else "\n### Recorded criterion assessments\n")
+        for criterion in criteria:
+            text = str(criterion.get("criterion") or "unnamed criterion")
+            reason = str(criterion.get("reason") or "reviewer did not provide a reason")
+            evidence = str(criterion.get("evidence") or "reviewer did not provide evidence")
+            item_id = review_item_id("criterion", criterion)
+            items.append(f"- **{text}** (`{item_id}`)\n  - **Reason:** {reason}\n  - **Evidence:** {evidence}")
+    if rev.get("findings"):
+        items.append("\n### Findings to address\n" if actionable
+                     else "\n### Recorded findings\n")
     for f in rev.get("findings") or []:
         if not isinstance(f, dict):
             continue
         severity = str(f.get("severity") or "nit")
         fix = str(f.get("fix") or "").strip()
-        line = "- **automated review** " + severity + _where(f) + ": " + str(f.get("summary", ""))
-        items.append(line + (f"\n  - **Fix:** {fix}" if fix else "\n  - **Fix:** reviewer did not provide one; determine the smallest correct change."))
+        item_id = review_item_id("finding", f)
+        line = ("- **automated review** " + severity + _where(f) + ": "
+                + str(f.get("summary", "")) + f" (`{item_id}`)")
+        missing_fix = ("reviewer did not provide one; determine the smallest correct change."
+                       if actionable else "reviewer did not provide one.")
+        items.append(line + (f"\n  - **Fix:** {fix}" if fix else f"\n  - **Fix:** {missing_fix}"))
     if not rev.get("description_ok", True):
-        items.append("- **automated review** PR description: " + str(rev.get("description_feedback") or "rewrite it to give broader context and remove scar tissue") +
-                     " (put the new description in `pr_body`; it replaces the current one)")
+        description = str(rev.get("description_feedback") or (
+            "rewrite it to give broader context and remove scar tissue" if actionable
+            else "reviewer did not provide details"))
+        items.append(("- **automated review** PR description: " + description +
+                      " (put the new description in `pr_body`; it replaces the current one)")
+                     if actionable else "- **Recorded PR description assessment:** " + description)
+    if actionable and rev.get("verdict") == "request_changes":
+        # The verdict is sufficient even when the reviewer used an attestation instead
+        # of the optional findings shape. Never reactivate a superseded provenance row.
+        detail = str(rev.get("summary") or rev.get("attestation") or "reviewer requested changes").strip()
+        if detail and not any(detail in item for item in items):
+            items.insert(0, "- **automated review summary**: " + detail)
     improvements = [i for i in (rev.get("improvements") or []) if isinstance(i, dict)]
     if improvements:
-        items.append("\n### Optional improvements\n\nTake or decline each item. In your result, set `improvements_taken` "
-                     "to the suggestions you took and `improvements_declined` to objects with `suggestion` and `reason`; "
-                     "declined items are kept for the retro.")
+        items.append(("\n### Optional improvements\n\nTake or decline each item. In your result, set `improvements_taken` "
+                      "to the suggestions you took and `improvements_declined` to objects with `suggestion` and `reason`; "
+                      "declined items are kept for the retro.") if actionable
+                     else "\n### Recorded optional improvements\n")
         for item in improvements:
             area = str(item.get("area") or "general")
             effort = str(item.get("effort") or "")
@@ -699,6 +799,48 @@ def feedback_from_review(rev: dict[str, Any]) -> str:
             why = str(item.get("why") or "")
             items.append(f"- **{area}{f' · {effort}' if effort else ''}**: {suggestion}" + (f" — {why}" if why else ""))
     return "\n".join(items)
+
+
+def feedback_with_operator_note(rev: dict[str, Any], note: str, *, kind: str,
+                                run_id: str = "", source_head: str = "",
+                                superseded: bool = False,
+                                resolved_items: list[str] | None = None) -> str:
+    """Add an operator handoff while preserving item-level applicability and provenance."""
+    label = "Operator triage note" if kind == "triage" else "Operator recovery note"
+    handoff = f"## {label}\n\n{note.strip()}"
+    resolved = set(resolved_items or [])
+    if superseded:
+        handoff += ("\n\nThe automated review record below is **superseded for this revision** "
+                    "by this handoff. Retain it for provenance; do not repeat its requests "
+                    "unless this note explicitly raises them again.")
+        record = feedback_from_review(
+            rev, run_id=run_id, source_head=source_head, actionable=False)
+        return f"{handoff}\n\n## Superseded automated review record\n\n{record}"
+    if not resolved:
+        handoff += "\n\nThe automated review record below remains applicable and this note supplements it."
+        record = feedback_from_review(rev, run_id=run_id, source_head=source_head)
+        return f"{handoff}\n\n## Applicable automated review record\n\n{record}"
+
+    applicable = dict(rev)
+    applicable["criteria"] = [item for item in rev.get("criteria") or []
+                              if not isinstance(item, dict)
+                              or review_item_id("criterion", item) not in resolved]
+    applicable["findings"] = [item for item in rev.get("findings") or []
+                              if not isinstance(item, dict)
+                              or review_item_id("finding", item) not in resolved]
+    selected = dict(rev)
+    selected["criteria"] = [item for item in rev.get("criteria") or []
+                            if isinstance(item, dict)
+                            and review_item_id("criterion", item) in resolved]
+    selected["findings"] = [item for item in rev.get("findings") or []
+                            if isinstance(item, dict)
+                            and review_item_id("finding", item) in resolved]
+    handoff += ("\n\nOnly the explicitly selected review items are resolved for this revision. "
+                "Unmatched items remain applicable.")
+    return (f"{handoff}\n\n## Resolved automated review items\n\n"
+            f"{feedback_from_review(selected, run_id=run_id, source_head=source_head, actionable=False)}\n\n"
+            "## Applicable automated review record\n\n"
+            f"{feedback_from_review(applicable, run_id=run_id, source_head=source_head)}")
 
 
 def _where(f: dict[str, Any]) -> str:

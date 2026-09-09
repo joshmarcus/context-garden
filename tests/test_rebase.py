@@ -7,6 +7,9 @@ from __future__ import annotations
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
+from garden import gitops
 from garden.events import EventLog
 from garden.events import metrics as _metrics
 from garden.model import Status
@@ -16,6 +19,124 @@ BRANCH = "garden/dm-001-first-task"
 
 def gitc(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def test_reviewed_merge_head_skips_before_a_conflicting_history_flatten(
+        sched, fake_github, tmp_path, monkeypatch):
+    """PR 342 shape: latest main is the merge's second parent, but flattening conflicts."""
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    branch = task.branch
+    wt = sched.worktree_for(task)
+    repo = tmp_path / "repo"
+
+    for name in ("remote_worker.py", "api.py"):
+        (repo / name).write_text("shared = 'original'\n")
+    gitc("add", "remote_worker.py", "api.py", cwd=repo)
+    gitc("commit", "-q", "-m", "add shared files", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    gitc("fetch", "-q", "origin", cwd=wt)
+    gitc("rebase", "-q", "origin/main", cwd=wt)
+
+    for name in ("remote_worker.py", "api.py"):
+        (wt / name).write_text("shared = 'branch'\n")
+    gitc("add", "remote_worker.py", "api.py", cwd=wt)
+    gitc("commit", "-q", "-m", "branch changes shared files", cwd=wt)
+
+    for name in ("remote_worker.py", "api.py"):
+        (repo / name).write_text("shared = 'main'\n")
+    gitc("add", "remote_worker.py", "api.py", cwd=repo)
+    gitc("commit", "-q", "-m", "main changes shared files", cwd=repo)
+    gitc("push", "-q", "origin", "main", cwd=repo)
+    base_head = gitc("rev-parse", "HEAD", cwd=repo).strip()
+
+    gitc("fetch", "-q", "origin", cwd=wt)
+    merged = subprocess.run(["git", "merge", "--no-ff", "origin/main"], cwd=wt,
+                            capture_output=True, text=True)
+    assert merged.returncode != 0
+    for name in ("remote_worker.py", "api.py"):
+        (wt / name).write_text("shared = 'main'\nshared_from_branch = True\n")
+    gitc("add", "remote_worker.py", "api.py", cwd=wt)
+    gitc("commit", "-q", "-m", "merge latest main without flattening", cwd=wt)
+    gitc("push", "-q", "--force", "origin", f"HEAD:refs/heads/{branch}", cwd=wt)
+    reviewed_head = gitc("rev-parse", "HEAD", cwd=wt).strip()
+    parents_before = gitc("rev-list", "--parents", "-n", "1", "HEAD", cwd=wt).strip()
+    assert parents_before.split()[2] == base_head
+    assert gitops.is_ancestor(wt, base_head, reviewed_head)
+
+    probe = tmp_path / "flatten-probe"
+    gitc("clone", "-q", str(tmp_path / "remote.git"), str(probe), cwd=tmp_path)
+    gitc("config", "user.email", "probe@example.test", cwd=probe)
+    gitc("config", "user.name", "probe", cwd=probe)
+    gitc("checkout", "-q", "-b", branch, f"origin/{branch}", cwd=probe)
+    ok, conflicts, _hunks = gitops.sync_and_rebase(probe, branch, "main")
+    assert not ok
+    assert conflicts == ["api.py", "remote_worker.py"]
+
+    review = sched.runs.new_run(task.id, "local", mode="review")
+    review.status = "done"
+    review.base = "main"
+    review.result = {"verdict": "approve"}
+    review.env_snapshot = {
+        "review_head": reviewed_head,
+        "review_base_head": base_head,
+        "review_diff_hash": gitops.diff_hash(wt, "main"),
+    }
+    review.save()
+    st = sched.state.get(task.id)
+    st.update(last_review={"verdict": "approve"}, last_review_run=review.run_id,
+              last_diff_hash="stale-manual-handoff-hash")
+    sched.state.save()
+    monkeypatch.setattr(gitops, "sync_and_rebase",
+                        lambda *_args, **_kwargs: pytest.fail("current reviewed head was rewritten"))
+    monkeypatch.setattr(gitops, "push",
+                        lambda *_args, **_kwargs: pytest.fail("current reviewed head was pushed"))
+
+    outcome = sched._rebase_and_record(
+        task, "main", wt=wt, skip_if_current=True, reason="rebasing before merge")
+
+    assert outcome.status == "current"
+    assert gitc("rev-parse", "HEAD", cwd=wt).strip() == reviewed_head
+    assert gitc("rev-list", "--parents", "-n", "1", "HEAD", cwd=wt).strip() == parents_before
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "rebase"]
+    assert not (sched.cfg.garden_dir / "rebase-conflicts" / task.id).exists()
+
+
+@pytest.mark.parametrize("change", [
+    "missing_snapshot", "review_base_name", "local_head", "remote_head",
+    "base_head", "base_not_ancestor", "diff_hash",
+])
+def test_reviewed_current_guard_fails_closed_on_identity_divergence(sched, monkeypatch, change):
+    task = sched.store.task("DM-001")
+    review = sched.runs.new_run(task.id, "local", mode="review")
+    review.status = "done"
+    review.base = "main"
+    review.env_snapshot = {
+        "review_head": "reviewed", "review_base_head": "base-head", "review_diff_hash": "diff",
+    }
+    if change == "missing_snapshot":
+        review.env_snapshot.pop("review_diff_hash")
+    if change == "review_base_name":
+        review.base = "other"
+    review.save()
+    sched.state.get(task.id)["last_review_run"] = review.run_id
+    refs = {"HEAD": "reviewed", f"origin/{task.default_branch()}": "reviewed",
+            "origin/main": "base-head"}
+    if change == "local_head":
+        refs["HEAD"] = "local-only"
+    if change == "remote_head":
+        refs[f"origin/{task.default_branch()}"] = "remote-only"
+    if change == "base_head":
+        refs["origin/main"] = "new-base"
+    monkeypatch.setattr(gitops, "fetch", lambda *_args: True)
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "origin/main")
+    monkeypatch.setattr(gitops, "rev_parse", lambda _wt, ref: refs[ref])
+    monkeypatch.setattr(gitops, "diff_hash", lambda *_args: "changed" if change == "diff_hash" else "diff")
+    monkeypatch.setattr(gitops, "is_ancestor", lambda *_args: change != "base_not_ancestor")
+
+    assert not sched._reviewed_branch_is_current(
+        task, sched.repo_for(task), task.default_branch(), "main")
 
 
 # ---- rule 2: a diff-unchanged rebase keeps the verdict, no review ------------
@@ -335,13 +456,19 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     _independent_tasks(sched, 1)
     sched.cfg.data["max_parallel"] = 1
     sched.cfg.data["github"]["automerge"] = True
+    sched.cfg.data["review"]["enabled"] = False
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
-    for _ in range(6):  # worker -> pre-PR check run -> PR (the check gates it, so an extra tick)
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "true",
+    }
+    for _ in range(10):  # worker -> command validation -> PR with an exact-head receipt
         sched.tick()
-        if sched.store.task("DM-001").status == Status.IN_REVIEW:
+        if (sched.store.task("DM-001").status == Status.IN_REVIEW
+                and sched.state.get("DM-001").get("validation_head")):
             break
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     b1 = sched.store.task("DM-001").branch
+    fake_github.prs[b1].head_sha = gitops.head_sha(sched.worktree_for(sched.store.task("DM-001")))
     _advance_main(tmp_path, "moved")  # the branch is behind: the merge needs a rebase first
     _approve(sched, fake_github, "DM-001", b1, "2026-09-05T03:00:00+00:00")
     sched.state.save()
@@ -349,6 +476,7 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     # merge queue: rebase + force-push, then start the pre-PR check as a detached check run.
     rep = sched.tick()
     assert "DM-001(check:merge_rebase)" in rep.dispatched
+    fake_github.prs[b1].head_sha = gitops.head_sha(sched.worktree_for(sched.store.task("DM-001")))
     assert any(r.mode == "check" for r in sched.runs.runs_for("DM-001"))
     assert fake_github.prs[b1].state != "MERGED"  # not merged: the check has not been reaped yet
     assert not sched.state.get("DM-001").get("merge_head")  # the head is not held until checks pass
@@ -358,6 +486,7 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
         if fake_github.prs[b1].state == "MERGED":
             break
     assert fake_github.prs[b1].state == "MERGED"
+    assert sched.state.get("DM-001")["validation_head"] == fake_github.prs[b1].head_sha
     assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
 
 

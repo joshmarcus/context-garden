@@ -145,7 +145,7 @@ def doctor():
     from ..github import GitHub
     from ..graph import validate as _validate
     from ..host_identity import tracked_connection_target_fields
-    from ..runner import get_runner
+    from ..runner import BUILTIN_NAMES, adapter_registration_problem, get_runner
     from ..runner.base import scrubbed_env
 
     store = _store()
@@ -207,6 +207,18 @@ def doctor():
     else:
         console.print(f"[red]{gh_line}[/red]")
         fail("github")
+    for product in (store.config.data.get("products") or {}):
+        route = store.config.product_github(str(product))
+        if not isinstance(store.config.product(str(product)).get("github"), dict):
+            continue
+        enterprise = GitHub(use_gh=bool(store.config.get("github.use_gh", True)), host=route["host"],
+                            api_base=route.get("api_base", ""), token_env=route.get("token_env", ""))
+        line = f"github ({product}): {enterprise.describe()}"
+        if enterprise.available and enterprise.is_authenticated():
+            console.print(line)
+        else:
+            console.print(f"[red]{line} [NOT LOGGED IN][/red]")
+            fail("github")
     harness_names = {str(store.config.get("harness") or "claude")} | {
         str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
     runner_names = {str(store.config.get("runner") or "local")} | {
@@ -219,12 +231,19 @@ def doctor():
             # scrubbed_env), not doctor's own shell: a harness reachable there is what
             # actually dispatches. A trivial one-line prompt, not an "auth status" probe, so
             # a custom harness with no such subcommand is checked the same way.
-            ok, detail = h.check_login(scrubbed_env(store.config.data))
+            try:
+                worker_environment = scrubbed_env(store.config.data)
+            except Exception as exc:  # policy errors are reported without source paths/content
+                console.print(f"harness {hn}: [red]worker configuration unavailable[/red] "
+                              f"({type(exc).__name__}: {exc})")
+                fail(f"harness {hn}")
+                continue
+            ok, detail = h.check_login(worker_environment)
             if ok:
                 console.print(f"harness {hn}: [green]{found}[/green]  models={h.cfg.get('models') or 'cli default'}")
             else:
-                fix = detail or f"run {h.bin}'s login command"
-                console.print(f"harness {hn}: [red][NOT LOGGED IN][/red]  (fix: {fix})  "
+                console.print(f"harness {hn}: [red][NOT LOGGED IN][/red]  "
+                              f"(fix: run {h.bin}'s login command)  "
                               f"models={h.cfg.get('models') or 'cli default'}  {found}")
                 fail(f"harness {hn}")
         else:
@@ -250,12 +269,30 @@ def doctor():
         fail("git identity")
     for name in sorted(runner_names):
         try:
-            cfg = dict(store.config.get("ssh", {}) or {}) if name == "ssh" else {}
-            r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
-            probs = r.doctor()
+            cfg = dict(store.config.get("ssh" if name == "ssh" else "workers", {}) or {}) \
+                if name in {"ssh", "remote"} else {}
+            cfg["worker_env"] = dict(store.config.get("worker_env") or {})
+            adapters = store.config.get("runner_adapters") or {}
+            registration = adapters.get(name) if isinstance(adapters, dict) else None
+            if registration is not None:
+                # Private modules can execute arbitrary code at import time.  Doctor is a
+                # read-only controller diagnostic, so it only checks the declarative
+                # registration; runner construction validates the runtime contract later.
+                problem = adapter_registration_problem(name, registration)
+                probs = [problem] if problem else []
+                deferred = name not in BUILTIN_NAMES
+            else:
+                cfg["_runner_adapters"] = dict(adapters) if isinstance(adapters, dict) else adapters
+                r = get_runner(name, cfg, store.config.harness(str(store.config.get("harness") or "claude")))
+                probs = r.doctor()
+                deferred = False
         except Exception as e:  # noqa: BLE001
             probs = [str(e)]
-        console.print(f"runner {name}: " + ("[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"))
+            deferred = False
+        status = "[yellow]registration syntax ok; runtime validation deferred until dispatch[/yellow]" if deferred else (
+            "[green]ok[/green]" if not probs else "[red]" + "; ".join(probs) + "[/red]"
+        )
+        console.print(f"runner {name}: {status}")
         if probs:
             fail(f"runner {name}")
     from ..scheduler import State

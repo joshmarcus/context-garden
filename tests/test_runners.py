@@ -21,6 +21,22 @@ from garden.runner.manual import ManualRunner
 from garden.runs import Run
 
 
+def _synthetic_child_env(
+    env: dict[str, str] | None = None, **updates: str,
+) -> dict[str, str]:
+    """Build a child fixture env without borrowing the enclosing validation identity."""
+    inherited_execution = {
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
+        "GARDEN_OWNER_SCOPED", "GARDEN_EXECUTION_TIMEOUT_SECONDS",
+        "GARDEN_VALIDATION_INHERITS_LEASE",
+    }
+    child = dict(os.environ if env is None else env)
+    for key in inherited_execution:
+        child.pop(key, None)
+    child.update(updates)
+    return child
+
+
 def _local_process_snapshot(pgid: int) -> list[dict[str, object]]:
     """Describe the owned local-run group for a bounded-test failure message."""
     processes: list[dict[str, object]] = []
@@ -52,6 +68,17 @@ def _stop_and_reap_local_run(run: Run) -> None:
         pass
 
 
+def _standalone_supervisor_env(**updates: str) -> dict[str, str]:
+    """Build fixture env without inheriting the containing run's execution lease."""
+    inherited_execution = {
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
+        "GARDEN_OWNER_SCOPED",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
+    env.update(updates)
+    return env
+
+
 @contextmanager
 def _launched_local_run(
     runner: LocalRunner,
@@ -63,7 +90,10 @@ def _launched_local_run(
     cleanup: Callable[[], None] | None = None,
 ) -> Iterator[Run]:
     """Launch one real supervisor and always return its process ownership to pytest."""
-    runner.launch(run, worktree, brief, env)
+    # These are disposable child-supervisor fixtures.  When pytest itself is running under
+    # garden.validation it owns a validation lease; inheriting that identity would make the
+    # synthetic child wait behind its own ancestor instead of exercising LocalRunner.
+    runner.launch(run, worktree, brief, _synthetic_child_env(env))
     try:
         yield run
     finally:
@@ -105,6 +135,118 @@ def _wait_for_local_stdin_owner(run, brief: Path, *, timeout: float = 1.0) -> No
         f"brief stdin was not owned by a live local-run child "
         f"(interpreter={sys.executable}, pid={run.pid}, group={_local_process_snapshot(run.pid)})"
     )
+
+
+def _private_adapter(tmp_path: Path, *, version: str = "1", capabilities: str = "{'detached': True, 'remote': False}") -> str:
+    """Package a synthetic adapter outside garden, as an operator would."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    package_name = f"private_adapter_{abs(hash(tmp_path))}"
+    package = tmp_path / package_name
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "runner.py").write_text(
+        "from garden.runner.base import Runner\n"
+        "class SyntheticRunner(Runner):\n"
+        f"    adapter_version = {version}\n"
+        f"    capabilities = {capabilities}\n"
+        "    def start(self, run, worktree, brief_text): pass\n"
+        "    def collect(self, run): return {}\n"
+    )
+    return f"{package_name}.runner.SyntheticRunner"
+
+
+def test_private_runner_adapter_resolves_from_operator_configuration(tmp_path, monkeypatch):
+    """A separately packaged adapter needs no change to the public garden package."""
+    from garden.harness import Harness
+    from garden.runner import get_runner
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    path = _private_adapter(tmp_path)
+    runner = get_runner("synthetic", {"_runner_adapters": {"synthetic": {"path": path}}}, Harness("claude", {}))
+
+    assert runner.name == "synthetic"
+    assert runner.capabilities == {"detached": True, "remote": False}
+
+
+def test_scheduler_routes_private_adapters_through_ordinary_runner_setup(sched, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sched.cfg.data["runner_adapters"] = {"synthetic": {"path": _private_adapter(tmp_path)}}
+    task = sched.store.task("DM-001")
+    task.runner = "synthetic"
+
+    runner = sched.runner_for(task)
+
+    assert runner.name == "synthetic"
+    assert runner.config["setup"] == sched.cfg.product_setup(task.product)
+    assert runner.config["resources"] == sched.cfg.get("resources")
+
+
+def test_private_local_adapter_obeys_selection_and_atomic_local_admission(sched, tmp_path, monkeypatch):
+    """A configured alias cannot bypass the controller host's local capacity."""
+    from garden.scheduler.report import TickReport
+    from garden.scheduler.resources import ResourcePressureError
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sched.cfg.data["runner_adapters"] = {"synthetic": {"path": _private_adapter(tmp_path)}}
+    sched.cfg.data["resources"] = {"max_parallel": 1}
+    task = sched.store.task("DM-001")
+    task.runner = "synthetic"
+    sched.store.save(task)
+    occupied = sched.runs.new_run("DM-002", "local", mode="check")
+    occupied.save()
+
+    rep = TickReport()
+    sched.dispatch_ready(rep)
+
+    assert rep.dispatched == []
+    assert sched.runs.runs_for(task.id) == []
+    with pytest.raises(ResourcePressureError, match="waits for a local execution slot"):
+        sched.dispatch(task)
+
+    occupied.status = "done"
+    occupied.save()
+    run = sched.dispatch(task)
+    assert run.runner == "synthetic"
+    assert run.is_local_execution
+    assert sched.local_slots_free() == 0
+
+
+def test_private_runner_adapter_rejects_bad_contract_and_builtin_replacement(tmp_path, monkeypatch):
+    from garden.runner import RunnerError, get_runner
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    path = _private_adapter(tmp_path, version="2")
+    with pytest.raises(RunnerError, match="interface version 2; expected 1"):
+        get_runner("synthetic", {"_runner_adapters": {"synthetic": {"path": path}}})
+    bad_capabilities = _private_adapter(tmp_path / "bad-capabilities", capabilities="{}")
+    monkeypatch.syspath_prepend(str(tmp_path / "bad-capabilities"))
+    with pytest.raises(RunnerError, match="must declare capabilities"):
+        get_runner("capability-test", {"_runner_adapters": {"capability-test": {"path": bad_capabilities}}})
+    with pytest.raises(RunnerError, match="cannot replace built-in"):
+        get_runner("local", {"_runner_adapters": {"local": {"path": path}}})
+
+
+def test_private_runner_adapter_reports_missing_import_without_config_load_importing(tmp_path):
+    from garden.config import Config
+    from garden.runner import RunnerError, get_runner
+
+    # An import can have arbitrary effects, so simply inspecting a garden must not resolve it.
+    (tmp_path / "garden.yaml").write_text(
+        "runner_adapters:\n  synthetic:\n    path: missing_adapter.Runner\n"
+    )
+    config = Config.load(tmp_path)
+    assert config.runner_adapter("synthetic") == {"path": "missing_adapter.Runner"}
+    with pytest.raises(RunnerError, match="could not import 'missing_adapter'"):
+        get_runner("synthetic", {"_runner_adapters": config.get("runner_adapters")})
+
+
+def test_runner_adapter_registrations_are_fenced_as_executable_configuration():
+    from garden.config import executable_diff
+
+    original = {"runner_adapters": {"synthetic": {"path": "private.adapter.Runner"}}}
+    changed = {"runner_adapters": {"synthetic": {"path": "replacement.adapter.Runner"}}}
+
+    assert executable_diff(original, changed) == ["runner_adapters"]
 
 
 def _wait_for_child(run) -> None:
@@ -239,6 +381,24 @@ def test_local_runner_doctor_windows():
         runner = LocalRunner({}, None)
         errors = runner.doctor()
     assert len(errors) == 1 and "WSL" in errors[0]
+
+
+def test_local_runner_preserves_fractional_timeout_minutes(tmp_path):
+    from garden.harness import Harness
+
+    runner = LocalRunner({"timeout_minutes": 0.5}, Harness("tiny", {"command": ["true"]}))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    brief.write_text("")
+    run = Run(task_id="T-1", run_id="fractional", dir=str(run_dir), runner="local")
+
+    runner.launch(run, tmp_path, brief, _synthetic_child_env(
+        GARDEN_HEAVY_TEST_PARALLEL="1", XDG_RUNTIME_DIR=str(tmp_path),
+    ))
+    os.waitpid(run.pid, 0)
+
+    assert "timeout 30 " in (run.path / "command.txt").read_text()
 
 
 def test_local_runner_harness_shell_resolves_bin(tmp_path):
@@ -431,8 +591,9 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
     release = tmp_path / "release"
     with _launched_local_run(
         runner, run, tmp_path, brief,
-        {**os.environ, "ORPHAN_SCRIPT": str(orphan), "ORPHAN_PIDS": str(pids),
-         "LEADER_RELEASE": str(release)},
+        _standalone_supervisor_env(
+            ORPHAN_SCRIPT=str(orphan), ORPHAN_PIDS=str(pids), LEADER_RELEASE=str(release)
+        ),
         cleanup=release.touch,
     ):
         deadline = time.monotonic() + 3
@@ -450,6 +611,22 @@ def test_local_supervisor_reaps_adopted_exits_while_leader_is_alive(tmp_path):
         assert run.read_exit_code() == 0
 
 
+def test_local_supervisor_preserves_nonzero_status_until_descendants_exit(tmp_path):
+    """The leader's real status is retained while completion waits for live work."""
+    run_dir = tmp_path / "nonzero"
+    run_dir.mkdir()
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), "sleep 0.25 & exit 7"],
+        check=False,
+        env=_standalone_supervisor_env(),
+    )
+
+    assert result.returncode == 7
+    assert (run_dir / "exit_code").read_text() == "7"
+    assert time.monotonic() - started >= 0.2
+
+
 def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
     """Independent launchers queue on the host lease; exit releases it without cleanup."""
     from garden.harness import Harness
@@ -464,8 +641,8 @@ def test_local_supervisors_share_heavy_budget_and_recover_after_exit(tmp_path):
         brief = d / "brief.md"
         brief.write_text("")
         run = Run(task_id=f"T-{number}", run_id=f"r{number}", dir=str(d), runner="local")
-        env = {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
-               "GARDEN_HEAVY_EXECUTION": "1"}
+        env = _synthetic_child_env(GARDEN_HEAVY_TEST_PARALLEL="1",
+                                   XDG_RUNTIME_DIR=str(tmp_path), GARDEN_HEAVY_EXECUTION="1")
         runner.launch(run, tmp_path, brief, env)
         runs.append(run)
 
@@ -487,7 +664,7 @@ def test_conflicting_garden_limits_keep_first_authoritative_capacity(tmp_path):
     from garden.harness import Harness
     from garden.runs import Run
 
-    runner = LocalRunner({"timeout_minutes": 0}, Harness("tiny", {"command": ["sh", "-c", "sleep 0.3"]}))
+    runner = LocalRunner({"timeout_minutes": 0}, Harness("tiny", {"command": ["sh", "-c", "sleep 0.8"]}))
     runs = []
     for number, limit in ((1, 1), (2, 2)):
         run_dir = tmp_path / f"mixed-{number}"
@@ -495,9 +672,10 @@ def test_conflicting_garden_limits_keep_first_authoritative_capacity(tmp_path):
         brief = run_dir / "brief.md"
         brief.write_text("")
         run = Run(task_id=f"T-{number}", run_id=f"mixed-{number}", dir=str(run_dir), runner="local")
-        runner.launch(run, tmp_path, brief, {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path),
-                                            "GARDEN_HEAVY_TEST_PARALLEL": str(limit),
-                                            "GARDEN_HEAVY_EXECUTION": "1"})
+        runner.launch(run, tmp_path, brief, _synthetic_child_env(
+            XDG_RUNTIME_DIR=str(tmp_path), GARDEN_HEAVY_TEST_PARALLEL=str(limit),
+            GARDEN_HEAVY_EXECUTION="1",
+        ))
         runs.append(run)
         if number == 1:
             deadline = time.monotonic() + 2
@@ -559,8 +737,9 @@ def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path
         brief = run_dir / "brief.md"
         brief.write_text("")
         run = Run(task_id=f"T-{number}", run_id=f"agent-{number}", dir=str(run_dir), runner="local")
-        runner.launch(run, tmp_path, brief, {**os.environ, "XDG_RUNTIME_DIR": str(tmp_path),
-                                            "GARDEN_HEAVY_TEST_PARALLEL": "1"})
+        runner.launch(run, tmp_path, brief, _synthetic_child_env(
+            XDG_RUNTIME_DIR=str(tmp_path), GARDEN_HEAVY_TEST_PARALLEL="1",
+        ))
         runs.append(run)
     for run in runs:
         os.waitpid(run.pid, 0)
@@ -585,10 +764,10 @@ def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
         brief = run_dir / "brief.md"
         brief.write_text("")
         run = Run(task_id=f"T-{number}", run_id=f"pytest-{number}", dir=str(run_dir), runner="local")
-        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
-                                            "XDG_RUNTIME_DIR": str(tmp_path),
-                                            "GARDEN_HEAVY_EXECUTION": "1",
-                                            "GARDEN_EXECUTION_CGROUP": ""})
+        runner.launch(run, tmp_path, brief, _synthetic_child_env(
+            GARDEN_HEAVY_TEST_PARALLEL="1", XDG_RUNTIME_DIR=str(tmp_path),
+            GARDEN_HEAVY_EXECUTION="1", GARDEN_EXECUTION_CGROUP="",
+        ))
         runs.append(run)
 
     deadline = time.monotonic() + 3
@@ -617,12 +796,154 @@ def test_local_worker_env_carries_execution_budget(tmp_path):
     from garden.runs import Run
 
     runner = LocalRunner({"resources": {"heavy_test_parallel": 3,
-                                        "execution_cgroup": "/sys/fs/cgroup/example"}},
+                                        "execution_cgroup": "/sys/fs/cgroup/example"},
+                          "checks": {"timeout_seconds": 731}},
                          Harness("tiny", {"command": ["true"]}))
     run = Run(task_id="T-1", run_id="r1", dir=str(tmp_path / "run"), runner="local")
     env = runner.worker_env(run, {}, tmp_path)
     assert env["GARDEN_HEAVY_TEST_PARALLEL"] == "3"
     assert env["GARDEN_EXECUTION_CGROUP"] == "/sys/fs/cgroup/example"
+    assert env["GARDEN_VALIDATION_TIMEOUT_SECONDS"] == "731"
+    assert "GARDEN_EXECUTION_TIMEOUT_SECONDS" not in env
+
+
+def test_ordinary_pytest_deadlines_are_configured(request):
+    assert float(request.config.getini("timeout")) == 120.0
+    assert request.config.getini("timeout_method") == "signal"
+    assert float(request.config.getini("session_timeout")) == 900.0
+
+
+def _supervisor_test_env(tmp_path: Path, *, timeout: float | None = None) -> dict[str, str]:
+    control = {
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_OWNER_SCOPED",
+        "GARDEN_EXECUTION_TIMEOUT_SECONDS",
+    }
+    env = {key: value for key, value in os.environ.items() if key not in control}
+    env.update({
+        "GARDEN_HEAVY_EXECUTION": "1",
+        "GARDEN_HEAVY_TEST_PARALLEL": "1",
+        "GARDEN_EXECUTION_CGROUP": "",
+        "XDG_RUNTIME_DIR": str(tmp_path),
+        "PYTHONPATH": str(Path(__file__).parents[1] / "src"),
+    })
+    if timeout is not None:
+        env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = str(timeout)
+    return env
+
+
+def _supervisor_command(run_dir: Path, command: list[str]) -> list[str]:
+    return [sys.executable, "-m", "garden.run_supervisor", str(run_dir), shlex.join(command)]
+
+
+def test_validation_execution_timeout_kills_adopted_child_and_releases_slot(tmp_path):
+    """The hard clock covers descendant drain and never terminates the calling process."""
+    child_pid = tmp_path / "child.pid"
+    progress = tmp_path / "progress.log"
+    spawner = tmp_path / "spawn_child.py"
+    spawner.write_text(
+        "import os, pathlib, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        " os.setsid()\n"
+        f" pathlib.Path({str(child_pid)!r}).write_text(str(os.getpid()))\n"
+        f" progress = pathlib.Path({str(progress)!r})\n"
+        " while True:\n"
+        "  with progress.open('a') as output: output.write('still running\\n')\n"
+        "  time.sleep(0.03)\n"
+        " os._exit(0)\n"
+        "os._exit(0)\n"
+    )
+    run_dir = tmp_path / "timed"
+    run_dir.mkdir()
+
+    started = time.monotonic()
+    result = subprocess.run(
+        _supervisor_command(run_dir, [sys.executable, str(spawner)]),
+        env=_supervisor_test_env(tmp_path, timeout=0.25),
+        capture_output=True, text=True, timeout=5,
+    )
+
+    assert result.returncode == 124
+    assert time.monotonic() - started < 2
+    assert (run_dir / "exit_code").read_text() == "124"
+    timeout = json.loads((run_dir / "validation_timeout.json").read_text())
+    execution = json.loads((run_dir / "execution.json").read_text())
+    assert timeout["kind"] == "validation_execution_timeout"
+    assert timeout["timeout_seconds"] == 0.25 and timeout["exit_code"] == 124
+    assert execution["state"] == "timeout" and execution["reason"] == timeout["reason"]
+    assert child_pid.exists() and not Path(f"/proc/{child_pid.read_text()}").exists()
+    assert progress.read_text().count("still running") >= 2  # output never resets the fixed clock
+
+    # The parent pytest/model process is still executing, and the kernel lock was released.
+    followup = tmp_path / "followup"
+    followup.mkdir()
+    released = subprocess.run(
+        _supervisor_command(followup, ["true"]), env=_supervisor_test_env(tmp_path, timeout=1),
+        capture_output=True, text=True, timeout=3,
+    )
+    assert released.returncode == 0
+    assert json.loads((followup / "execution.json").read_text())["state"] == "finished"
+
+
+def test_validation_execution_clock_starts_after_admission_wait(tmp_path):
+    """Waiting for the shared slot is observable time, not execution timeout consumption."""
+    release = tmp_path / "release"
+    holder_script = tmp_path / "holder.py"
+    holder_script.write_text(
+        "import pathlib, sys, time\n"
+        "release = pathlib.Path(sys.argv[1])\n"
+        "while not release.exists(): time.sleep(0.01)\n"
+    )
+    holder_dir = tmp_path / "holder"
+    waiting_dir = tmp_path / "waiting"
+    holder_dir.mkdir()
+    waiting_dir.mkdir()
+    holder = subprocess.Popen(
+        _supervisor_command(holder_dir, [sys.executable, str(holder_script), str(release)]),
+        env=_supervisor_test_env(tmp_path), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    waiting = None
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if (holder_dir / "execution.json").exists() and json.loads(
+                (holder_dir / "execution.json").read_text()
+            ).get("state") == "running":
+                break
+            time.sleep(0.01)
+        assert json.loads((holder_dir / "execution.json").read_text())["state"] == "running"
+
+        waiting = subprocess.Popen(
+            _supervisor_command(waiting_dir, ["sleep", "30"]),
+            env=_supervisor_test_env(tmp_path, timeout=0.2),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if (waiting_dir / "execution.json").exists() and json.loads(
+                (waiting_dir / "execution.json").read_text()
+            ).get("state") == "waiting":
+                break
+            time.sleep(0.01)
+        queued = json.loads((waiting_dir / "execution.json").read_text())
+        assert queued["state"] == "waiting" and queued["waiting_since"]
+        time.sleep(0.3)  # longer than the execution budget, while admission remains blocked
+        assert waiting.poll() is None
+        assert not (waiting_dir / "validation_timeout.json").exists()
+
+        release.touch()
+        assert holder.wait(timeout=2) == 0
+        assert waiting.wait(timeout=3) == 124
+        timed = json.loads((waiting_dir / "execution.json").read_text())
+        assert timed["state"] == "timeout"
+        assert timed["admission_wait_started_at"] == queued["waiting_since"]
+        assert timed["execution_started_at"] >= timed["admitted_at"]
+    finally:
+        release.touch()
+        for process in (holder, waiting):
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=2)
 
 
 def test_execution_cgroup_requires_finite_limits_and_verified_migration(tmp_path, monkeypatch):
@@ -655,12 +976,74 @@ def test_nested_supported_launch_takes_owner_scoped_lease(tmp_path, monkeypatch)
 
     run_dir = tmp_path / "nested"
     run_dir.mkdir()
+    # This directly acquires a synthetic host slot, so keep it out of an enclosing
+    # garden.validation supervisor's real per-user lock namespace.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "outer-run")
     monkeypatch.setenv("GARDEN_HEAVY_TEST_PARALLEL", "1")
     slot = supervisor._execution_slot(run_dir, lambda: False, owner_scoped=True)
     status = json.loads((run_dir / "execution.json").read_text())
     assert slot is not None
     assert status["state"] == "running" and status["owner_scoped"] is True
+
+
+def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monkeypatch):
+    import garden.validation as validation
+
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    monkeypatch.setenv("GARDEN_EXECUTION_RUN_DIR", str(outer))
+    monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "owned-run")
+    monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "731")
+    monkeypatch.delenv("GARDEN_HEAVY_EXECUTION", raising=False)
+    monkeypatch.delenv("GARDEN_OWNER_SCOPED", raising=False)
+    monkeypatch.delenv("GARDEN_VALIDATION_INHERITS_LEASE", raising=False)
+    monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "true"])
+    captured = {}
+
+    def execv(executable, argv):
+        captured.update(executable=executable, argv=argv, env=dict(os.environ))
+        raise RuntimeError("exec captured")
+
+    monkeypatch.setattr(os, "execv", execv)
+    with pytest.raises(RuntimeError, match="exec captured"):
+        validation.main()
+
+    assert captured["executable"] == sys.executable
+    assert captured["argv"][-1] == "true"
+    assert captured["env"]["GARDEN_OWNER_SCOPED"] == "1"
+    assert captured["env"]["GARDEN_EXECUTION_TIMEOUT_SECONDS"] == "731"
+
+    monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "9999")
+    assert validation.bounded_validation_timeout_seconds() == 900
+
+
+def test_nested_validation_inherits_an_enclosing_validation_lease(tmp_path):
+    """A full suite can run a supported validation without waiting on itself."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    inner_status = tmp_path / "inner-status.json"
+    child = (
+        "import json; from pathlib import Path; "
+        f"Path({str(inner_status)!r}).write_text(json.dumps({{'ok': True}}))"
+    )
+    nested = (
+        f"{shlex.quote(sys.executable)} -m garden.validation -- "
+        f"{shlex.quote(sys.executable)} -c "
+        f"{shlex.quote(child)}"
+    )
+    env = _supervisor_test_env(tmp_path)
+    env.pop("GARDEN_HEAVY_EXECUTION")
+    result = subprocess.run(
+        _supervisor_command(outer, [sys.executable, "-m", "garden.validation", "--", "sh", "-c", nested]),
+        env=env, capture_output=True, text=True, timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(inner_status.read_text()) == {"ok": True}
+    statuses = list((outer / "validations").glob("*/execution.json"))
+    assert len(statuses) == 2
+    assert any(json.loads(path.read_text()).get("inherited_lease") is True for path in statuses)
 
 
 def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, monkeypatch):
@@ -818,13 +1201,10 @@ def test_two_validations_from_one_worker_are_serialized(tmp_path):
     brief = run_dir / "brief.md"
     brief.write_text("")
     run = Run(task_id="T-1", run_id="outer", dir=str(run_dir), runner="local")
-    inherited_execution = {
-        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
-        "GARDEN_OWNER_SCOPED",
-    }
-    env = {key: value for key, value in os.environ.items() if key not in inherited_execution}
-    env.update({"GARDEN_HEAVY_TEST_PARALLEL": "1", "XDG_RUNTIME_DIR": str(tmp_path),
-                "GARDEN_EXECUTION_CGROUP": "", "GARDEN_VALIDATION_RUNNER": sys.executable})
+    env = _synthetic_child_env(
+        GARDEN_HEAVY_TEST_PARALLEL="1", XDG_RUNTIME_DIR=str(tmp_path),
+        GARDEN_EXECUTION_CGROUP="", GARDEN_VALIDATION_RUNNER=sys.executable,
+    )
     runner.launch(run, tmp_path, brief, env)
 
     os.waitpid(run.pid, 0)
@@ -848,9 +1228,10 @@ def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
         brief = d / "brief.md"
         brief.write_text("")
         run = Run(task_id=f"T-{number}", run_id=f"c{number}", dir=str(d), runner="local")
-        runner.launch(run, tmp_path, brief, {**os.environ, "GARDEN_HEAVY_TEST_PARALLEL": "1",
-                                            "XDG_RUNTIME_DIR": str(tmp_path),
-                                            "GARDEN_HEAVY_EXECUTION": "1"})
+        runner.launch(run, tmp_path, brief, _synthetic_child_env(
+            GARDEN_HEAVY_TEST_PARALLEL="1", XDG_RUNTIME_DIR=str(tmp_path),
+            GARDEN_HEAVY_EXECUTION="1",
+        ))
         runs.append(run)
     deadline = time.monotonic() + 2
     while not all((r.path / "execution.json").exists() for r in runs) and time.monotonic() < deadline:
@@ -910,6 +1291,18 @@ def test_ssh_runner_uses_bare_bin(sched, fake_github):
 
 
 @pytest.mark.needs_remote_clone
+def test_ssh_runner_preserves_fractional_timeout_minutes(sched, fake_github):
+    sched.cfg.data["products"]["demo"]["timeout_minutes"] = 0.5
+    task = sched.store.task("DM-001")
+    task.runner = "ssh"
+    sched.store.save(task)
+
+    sched.tick()
+
+    assert "timeout 30 " in (sched.runs.latest("DM-001").path / "command.txt").read_text()
+
+
+@pytest.mark.needs_remote_clone
 def test_ssh_runner_sets_garden_root(sched, fake_github):
     """The ssh remote script must export GARDEN_ROOT at a non-garden path, so a worker on a
     remote clone that is itself a garden cannot run garden commands against it."""
@@ -920,6 +1313,7 @@ def test_ssh_runner_sets_garden_root(sched, fake_github):
     run = sched.runs.latest("DM-001")
     remote_sh = (run.path / "remote.sh").read_text()
     assert 'GARDEN_ROOT="$WT/.garden-no-live-garden"' in remote_sh
+    assert "GARDEN_VALIDATION_TIMEOUT_SECONDS=900" in remote_sh
 
 
 @pytest.mark.needs_remote_clone
@@ -984,6 +1378,39 @@ def test_ssh_remote_worker_honours_config_dirs_override(sched, garden, fake_gith
     seen = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
     assert Path(seen["CLAUDE_CONFIG_DIR"]).parent == Path(seen["HOME"])
     assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
+
+
+@pytest.mark.needs_remote_clone
+def test_ssh_remote_worker_installs_only_named_config_file(sched, garden, fake_github, tmp_path, monkeypatch):
+    source = tmp_path / "synthetic-tool.json"
+    source.write_text("approved-tool-config")
+    unrelated = tmp_path / "unrelated-instructions.md"
+    unrelated.write_text("SECRET_SENTINEL_DENIED")
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg.setdefault("worker_env", {})["config_files"] = {
+        "synthetic-tool": {"source": str(source), "destination": ".config/synthetic/tool.json",
+                           "required": True},
+    }
+    cfg["products"]["demo"]["setup"] = {
+        "command": "test \"$(cat \"$HOME/.config/synthetic/tool.json\")\" = approved-tool-config "
+                   "&& test \"$(stat -c %a \"$HOME/.config/synthetic/tool.json\")\" = 600",
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sc = Scheduler(Store(garden), github=fake_github, log=print)
+    task = sc.store.task("DM-001")
+    task.runner = "ssh"
+    sc.store.save(task)
+    sc.tick()
+    run = sc.runs.latest("DM-001")
+    _wait_for_child(run)
+
+    assert run.read_exit_code() == 0
+    public_outputs = [run.path / "brief.md", run.path / "stdout.json", run.path / "stderr.log",
+                      garden / ".garden/events.jsonl", task.path]
+    assert all("SECRET_SENTINEL_DENIED" not in path.read_text() for path in public_outputs if path.exists())
 
 
 @pytest.mark.needs_remote_clone

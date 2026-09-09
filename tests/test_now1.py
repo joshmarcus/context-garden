@@ -18,6 +18,7 @@ from garden import operator_spend as ops
 from garden.cli import app
 from garden.events import EventLog, difficulty_by_model
 from garden.harness import Harness
+from garden.inbox import build_inbox, decisions
 from garden.runs import Run, RunStore
 from garden.scheduler import Scheduler
 from garden.store import Store
@@ -247,6 +248,10 @@ def test_now_page_renders_the_four_regions_and_the_nav(garden):
     assert '<span class="why"><span class="id">DM-001</span> · priority 1 · work · medium →' in page
     assert "p1, seed" in page and "0 of 2 merged" in page
     assert now1.QUIET_PERIOD in page
+    # Section names are real landmarks rather than quiet metadata: their supporting copy
+    # remains alongside them, so a screen reader and a scanning reader get the same hierarchy.
+    for title in ("Now", "Next", "Where we are", "The last period"):
+        assert f'<h2 class="section-title">{title}</h2>' in page
     for region in ("head", "now", "next", "where", "period"):
         assert _client(garden).get(f"/partials/now/{region}").status_code == 200
     assert _client(garden).get("/partials/now/nope").status_code == 404
@@ -307,6 +312,47 @@ def test_no_process_record_and_hands_are_visible(garden):
     assert 'class="stamp">paused</span>' in page and "codex harness paused" in page and "usage limit reached" in page
     assert "Dispatch paused by cli since" in page and "quota on both accounts" in page
     assert "2 cards waiting on you" in page  # the question and the paused harness
+
+
+def test_served_now_and_inbox_agree_on_review_ownership_and_owner_decisions(garden):
+    """A queued or running review owns the task despite a stale cap; a real stop remains a decision."""
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = now1.Status.IN_REVIEW
+    task.pr = "https://example.com/pull/1"
+    store.save(task)
+    state = Scheduler(store, github=FakeGitHub()).state
+    st = state.get(task.id)
+    st["needs_human"] = {"kind": "review_cap", "reason": "2 automated review round(s) used"}
+    st["pending_reviews"] = [{"kind": "review"}]
+    state.save()
+
+    client = _client(garden)
+    inbox = client.get("/").text
+    now = client.get("/now").text
+    assert '<div class="v">0</div><div class="l">need you</div>' in inbox
+    assert "Automated review" in inbox and "2 automated review round(s) used" not in now
+    assert "0 cards waiting on you" not in now
+
+    st.pop("pending_reviews")
+    st["review_run"] = "review-run"
+    state.save()
+    inbox = client.get("/").text
+    now = client.get("/now").text
+    assert '<div class="v">0</div><div class="l">need you</div>' in inbox
+    assert "automated review running" in inbox and "2 automated review round(s) used" not in now
+    assert "0 cards waiting on you" not in now
+
+    st.pop("review_run")
+    st["needs_human"] = {"kind": "stall", "reason": "the loop stopped for an owner decision"}
+    state.save()
+    inbox = client.get("/").text
+    now = client.get("/now").text
+    assert 'class="kpi hot"><div class="v">1</div><div class="l">need you</div>' in inbox
+    assert "the loop stopped for an owner decision" in inbox
+    assert "the loop stopped for an owner decision" in now
+    assert now.count('href="/tasks/DM-001"') >= 1
+    assert len(decisions(build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub())))) == 1
 
 
 def test_next_region_is_the_schedulers_dispatch_order_with_reasons(garden):

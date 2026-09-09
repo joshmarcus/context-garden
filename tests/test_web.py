@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from garden.github import GitHubError, PRInfo
 from garden.gitops import head_sha
 from garden.runs import Run, RunStore
 from garden.scheduler import Scheduler
@@ -47,6 +48,128 @@ def test_pages_render(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
+    """The served Inbox owns the manual take journey, including stale-card recovery."""
+    from garden.model import Status
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.runner = "manual"
+    store.save(task)
+    blocked = store.task("DM-002")
+    blocked.runner = "manual"
+    store.save(blocked)
+
+    c = client(garden)
+    inbox = c.get("/inbox").text
+    assert "Manual work ready" in inbox
+    assert "Take task" in inbox and "assignment: unclaimed manual session" in inbox
+    assert "Manual work waiting" in inbox
+    assert "dependencies must finish" in inbox
+    blocked_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in blocked_page
+    assert "waiting for its dependencies" in blocked_page
+
+    store.set_phase_frozen(store.phase("demo", "p1"), "release hold")
+    frozen_page = c.get("/tasks/DM-001").text
+    assert 'action="/tasks/DM-001/take"' not in frozen_page
+    assert "cannot be claimed while demo/p1 is frozen" in frozen_page
+    store.set_phase_frozen(store.phase("demo", "p1"), "")
+
+    # Manual claims are independent of full automated-worker capacity.
+    runs = RunStore(garden / ".garden")
+    full_runs = [runs.new_run("DM-002", "local", "work"), runs.new_run("DM-002", "local", "work")]
+    assert Scheduler(Store(garden)).slots_free() == 0
+    taken = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=True)
+    assert taken.status_code == 200
+    assert "DM-001 claimed" in taken.text
+    assert "claimed already; a manual session owns this task packet" in taken.text
+    assert Store(garden).task("DM-001").status == Status.RUNNING
+    run = RunStore(garden / ".garden").latest("DM-001")
+    assert run is not None and run.runner == "manual" and run.mode == "work"
+    packet = c.get("/tasks/DM-001/packet")
+    assert packet.status_code == 200 and "DM-001" in packet.text
+    task_page = c.get("/tasks/DM-001").text
+    assert "Manual session claimed" in task_page and "Finish manual session" in task_page
+    assert "Mark done without merging" not in task_page
+    assert 'action="/tasks/DM-001/take"' not in task_page
+
+    # Replaying a rendered-but-stale take form cannot create a second run.
+    stale = c.post("/tasks/DM-001/take", headers={"referer": "http://testserver/inbox"}, follow_redirects=False)
+    assert stale.status_code == 409
+    assert "already claimed" in stale.text
+    assert len(RunStore(garden / ".garden").runs_for("DM-001")) == 1
+
+    # A phase freeze and feedback pause are explicit waiting states, never a running claim.
+    store = Store(garden)
+    store.set_phase_frozen(store.phase("demo", "p1"), "release hold")
+    frozen = c.get("/inbox").text
+    assert "waiting: demo/p1 is frozen" in frozen
+    store.set_phase_frozen(store.phase("demo", "p1"), "")
+    for active_run in full_runs:
+        active_run.status = "finished"
+        active_run.save()
+    blocked = store.task("DM-002")
+    blocked.status = Status.CHANGES_REQUESTED
+    store.save(blocked)
+    sched = Scheduler(store)
+    sched.state.get("DM-002")["pending_feedback"] = "- revise the packet"
+    sched.state.save()
+    paused = c.get("/inbox").text
+    assert "paused for a person" in paused and "Resume task" in paused
+    # Revision feedback missing, an Inbox decision, and the revision cap are all waiting
+    # states on the task page too; none retains the second claim surface.
+    sched.state.get("DM-002")["pending_feedback"] = ""
+    sched.state.save()
+    paused_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in paused_page
+    assert "needs revision feedback" in paused_page
+
+    sched.state.get("DM-002")["pending_feedback"] = "- revise the packet"
+    sched.state.get("DM-002")["revisions"] = 999
+    sched.state.save()
+    capped_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/take"' not in capped_page
+    assert "reached its revision limit" in capped_page
+    capped_inbox = c.get("/inbox").text
+    assert "revision limit reached" in capped_inbox
+    assert "Resume task" not in capped_inbox
+
+    # A malformed completion stays recoverable; the valid result finalizes the assigned run.
+    unsafe_done = c.post("/tasks/DM-001/done", headers={"referer": "http://testserver/tasks/DM-001"},
+                         follow_redirects=True)
+    assert "finish the claimed manual session" in unsafe_done.text
+    assert Store(garden).task("DM-001").status == Status.RUNNING
+    invalid = c.post("/tasks/DM-001/finish-manual", data={"note": "not JSON"},
+                     headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=True)
+    assert "manual result must be valid JSON" in invalid.text
+    finished = c.post("/tasks/DM-001/finish-manual", data={"note": '{"status":"blocked","summary":"waiting on access"}'},
+                      headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=True)
+    assert finished.status_code == 200 and "DM-001 manual session finished" in finished.text
+    assert Store(garden).task("DM-001").status == Status.FAILED
+    assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
+
+
+def test_shared_rail_keeps_the_active_build_out_of_the_inbox(garden, monkeypatch):
+    """The routine serving revision is a quiet shell detail, not an Inbox panel."""
+    active = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr(Scheduler, "upgrade_status", lambda self: {"active": active})
+    monkeypatch.setattr(Scheduler, "upgrade_available", lambda self: {
+        "sha": "f" * 40, "status": "available", "product": "garden",
+    })
+
+    c = client(garden)
+    inbox = c.get("/inbox").text
+    board = c.get("/board").text
+
+    assert 'class="build-detail"' in inbox
+    assert f"build · {active[:12]}" in inbox
+    assert f"build · {active[:12]}" in board
+    assert "Serving build" not in inbox
+    assert "Garden tool update" in inbox
+    assert '<form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>' in inbox
 
 
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
@@ -229,6 +352,56 @@ def test_operator_owned_scope_is_recorded_from_the_inbox(garden):
     assert response.status_code == 303
     state = Scheduler(Store(garden)).state.get("DM-001")
     assert state["operator_evidence"]["text"] == "verified in disposable environment"
+def test_inbox_journey_separates_automated_deferred_and_operator_work(garden):
+    """A rendered Inbox keeps scheduler-owned notices out of the owner count while
+    retaining the deliberate deferred and recovery actions a person can inspect."""
+    from typer.testing import CliRunner
+
+    from garden.cli import app as cli_app
+    from garden.model import Status
+    from garden.scheduler import State
+
+    def command(*args: str):
+        cwd = os.getcwd()
+        os.chdir(garden)
+        try:
+            return CliRunner().invoke(cli_app, list(args))
+        finally:
+            os.chdir(cwd)
+
+    store = Store(garden)
+    review = store.task("DM-001")
+    review.status = Status.IN_REVIEW
+    review.pr = "https://github.com/test/demo/pull/71"
+    store.save(review)
+    recovery = store.task("DM-002")
+    recovery.status = Status.FAILED
+    store.save(recovery)
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001").update({
+        "head_sha": "head", "last_review_head": "head",
+        "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+        "pending_reviews": [{"kind": "review"}],
+    })
+    state.get("DM-002")["needs_human"] = {
+        "kind": "deployment", "reason": "deploy the verified build to the staging host",
+        "prior_status": "in_review", "at": "2026-09-07T00:00:00+00:00",
+    }
+    state.save()
+    assert command("new-phase", "demo", "p2").exit_code == 0
+    assert command("new-task", "demo/p1", "Deferred work").exit_code == 0
+    assert command("freeze", "demo/p1").exit_code == 0
+
+    page = client(garden).get("/inbox")
+    assert page.status_code == 200
+    assert '<div class="v">0</div><div class="l">need you</div>' in page.text
+    assert "automated review queued: queued: the next tick starts it" in page.text
+    assert "prior automated verdict: request changes" in page.text
+    assert "Deferred work" in page.text and "View freeze policy" in page.text
+    assert "Deployment prerequisite" in page.text
+    assert "Operator recovery: Deployment prerequisite" in page.text
+    assert "Deployment completed, resume" in page.text
+    assert "set-status DM-001 done" not in page.text
 
 
 @pytest.mark.parametrize("history_size", [1546, 6000])
@@ -426,6 +599,64 @@ def test_board_columns_and_list_views(garden):
     assert "view=list" in lst.text
 
 
+def test_board_prs_lists_open_linked_and_unlinked_prs(garden):
+    from garden.model import Status
+    from tests.conftest import FakeGitHub
+
+    github = FakeGitHub()
+    listed_slugs = []
+    original_list = github.list_open_prs
+
+    def list_open_prs(slug):
+        listed_slugs.append(str(slug))
+        return original_list(slug)
+
+    github.list_open_prs = list_open_prs
+    github.prs = {
+        "linked": PRInfo(1, "https://github.com/test/demo/pull/1", "OPEN", "Linked change", review_decision="APPROVED", checks="SUCCESS"),
+        "unlinked": PRInfo(2, "https://github.com/test/demo/pull/2", "OPEN", "Outside Garden", review_decision="", checks=""),
+        "closed-task": PRInfo(3, "https://github.com/test/demo/pull/3", "OPEN", "Already finished", checks="FAILURE"),
+    }
+    store = Store(garden)
+    linked = store.task("DM-001")
+    linked.pr = "https://github.com/test/demo/pull/1"
+    store.save(linked)
+    closed = store.task("DM-002")
+    closed.pr = "https://github.com/test/demo/pull/3"
+    closed.status = Status.DONE
+    store.save(closed)
+    c = TestClient(create_app(Store(garden), watch=False, github=github, host="testserver"))
+
+    page = c.get("/board?view=prs")
+    assert page.status_code == 200
+    assert ">PRs<" in page.text and "Loading pull requests" in page.text
+    partial = c.get("/partials/board?view=prs").text
+    assert listed_slugs == ["test/demo", "test/demo"]
+    assert "#1" in partial and "Linked change" in partial and "approved" in partial and "success" in partial
+    assert 'href="/tasks/DM-001"' in partial
+    assert "#2" in partial and "Outside Garden" in partial and "unlinked" in partial and "not reported" in partial
+    assert 'target="_blank" rel="noopener noreferrer"' in partial
+    assert "Already finished" not in partial
+
+
+def test_board_prs_handles_empty_and_github_errors(garden):
+    from tests.conftest import FakeGitHub
+
+    github = FakeGitHub()
+    store = Store(garden)
+    store.config.data["products"]["demo"]["validation"] = {"provider": "command", "command": "check"}
+    c = TestClient(create_app(store, watch=False, github=github, host="testserver"))
+    assert "No open pull requests in demo." in c.get("/partials/board?view=prs").text
+
+    def unavailable(slug):
+        raise GitHubError("authentication failed")
+
+    github.list_open_prs = unavailable
+    error = c.get("/partials/board?view=prs")
+    assert error.status_code == 200
+    assert "Could not fetch pull requests: authentication failed" in error.text
+
+
 def test_board_list_surfaces_a_waiting_question(garden, monkeypatch):
     from garden.scheduler import Scheduler
     from garden.store import Store
@@ -458,7 +689,7 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
-def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
+def test_review_requires_current_automated_approval_before_it_needs_a_person(garden):
     from garden.model import Status
     from garden.store import Store
 
@@ -467,17 +698,12 @@ def test_review_done_escape_hatch_is_confirmed_and_not_primary(garden):
     task.pr = "https://github.com/test/demo/pull/71"
     Store(garden).save(task)
     c = client(garden)
-    task_page = c.get("/tasks/DM-001").text
     inbox = c.get("/").text
 
-    assert "Mark done without merging" in task_page
-    assert "Mark this task done without merging its PR?" in task_page
-    assert 'action="/tasks/DM-001/done"' in inbox
-    assert "Mark done without merging" in inbox
-    assert "Mark this task done without merging its PR?" in inbox
-    primary_actions, escape_hatch = inbox.split('class="escape-hatch"')
-    assert 'action="/tasks/DM-001/done"' not in primary_actions
-    assert 'action="/tasks/DM-001/done"' in escape_hatch
+    assert "Automated review" in inbox
+    assert "automated review not recorded yet" in inbox
+    assert "Mark done without merging" not in inbox
+    assert 'action="/tasks/DM-001/done"' not in inbox
 
 
 def test_task_page_lists_stashed_changes(garden):
@@ -1313,7 +1539,7 @@ def test_inbox_triage_flow(garden, monkeypatch):
     assert "awaiting_triage" in next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"]
     c.post("/tasks/DM-001/triage-ready", follow_redirects=False)
     assert next(t for t in c.get("/api/tasks").json() if t["id"] == "DM-001")["status"] == "in_review"
-    assert "Review and merge" in c.get("/").text
+    assert "Automated review" in c.get("/").text
 
 
 def test_inbox_shows_a_paused_harness_notice(garden):
@@ -1521,6 +1747,76 @@ def test_run_page_running_tails_the_same_view(garden):
     assert f"data-poll=\"/partials/runs/DM-001/{run.run_id}/stdout\"" in body
     assert c.get(f"/partials/runs/DM-001/{run.run_id}/stdout").status_code == 200
     assert c.get("/runs/DM-001/nope").status_code == 404
+
+
+def test_run_page_renders_codex_transcript_and_escapes_item_content(garden):
+    """Saved Codex JSONL remains a readable transcript after the run has finished."""
+    import json
+
+    stdout = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": "I will inspect <script>alert(1)</script>."}}),
+        json.dumps({"type": "item.completed", "item": {
+            "id": "command-1", "type": "command_execution", "command": "rg Codex", "aggregated_output": "<result>found</result>"}}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "file_change", "changes": [{"path": "src/garden/web/pages/runs.py", "kind": "update"}]}}),
+        json.dumps({"type": "turn.completed", "usage": {}}),
+    ]) + "\n"
+    # Older records can lack the Codex harness configuration; their event envelopes still
+    # identify this as a streamed transcript.
+    run = _record_run(garden, harness="retired-codex", stdout=stdout)
+
+    c = client(garden)
+    body = c.get(f"/runs/DM-001/{run.run_id}").text
+    assert "I will inspect &lt;script&gt;alert(1)&lt;/script&gt;." in body
+    assert "<script>alert(1)</script>" not in body
+    assert "command" in body and "rg Codex" in body
+    assert "&lt;result&gt;found&lt;/result&gt;" in body
+    assert "file change" in body and "runs.py" in body
+    assert "/partials/runs/DM-001/" not in body
+
+
+def test_run_page_coalesces_codex_command_lifecycle_events(garden):
+    """A completed Codex command replaces its started envelope and adds its output once."""
+    import json
+
+    stdout = "\n".join([
+        json.dumps({"type": "item.started", "item": {
+            "id": "command-1", "type": "command_execution", "command": "pytest -q"}}),
+        json.dumps({"type": "item.completed", "item": {
+            "id": "command-1", "type": "command_execution", "command": "pytest -q",
+            "aggregated_output": "3 passed"}}),
+    ]) + "\n"
+    run = _record_run(garden, harness="codex", stdout=stdout)
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert body.count("pytest -q") == 1
+    assert body.count("3 passed") == 1
+
+
+def test_run_page_detects_codex_before_output_and_handles_bad_events(garden):
+    """Configured Codex runs tail immediately and recover after malformed JSONL."""
+    import json
+
+    run = _record_run(garden, status="running", harness="codex")
+    c = client(garden)
+    body = c.get(f"/runs/DM-001/{run.run_id}").text
+    assert "no output yet" in body
+    assert f"data-poll=\"/partials/runs/DM-001/{run.run_id}/stdout\"" in body
+
+    (run.path / "stdout.json").write_text("not json\n[]\n" + json.dumps({"type": "unknown"}) + "\n" +
+                                           json.dumps({"type": "item.completed", "item": []}) + "\n")
+    partial = c.get(f"/partials/runs/DM-001/{run.run_id}/stdout")
+    assert partial.status_code == 200
+    assert "unknown" in partial.text
+
+    with (run.path / "stdout.json").open("a") as output:
+        output.write(json.dumps({"type": "item.completed", "item": {
+            "id": "message-1", "type": "agent_message", "text": "recovered output"}}) + "\n")
+    recovered = c.get(f"/partials/runs/DM-001/{run.run_id}/stdout")
+    assert recovered.status_code == 200
+    assert "unknown" in recovered.text and "recovered output" in recovered.text
 
 
 def test_timeline_formats_the_new_event_kinds(garden):
@@ -2260,6 +2556,12 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             parsed = dict(line.split() for line in (cgroup / "memory.events").read_text().splitlines())
             events = {name: int(parsed.get(name, 0)) for name in event_names}
         memory = int((cgroup / "memory.current").read_text()) if cgroup and (cgroup / "memory.current").exists() else None
+        memory_peak = int((cgroup / "memory.peak").read_text()) if cgroup and (cgroup / "memory.peak").exists() else None
+        memory_stat = {}
+        if cgroup and (cgroup / "memory.stat").exists():
+            parsed_stat = dict(line.split() for line in (cgroup / "memory.stat").read_text().splitlines())
+            memory_stat = {name: int(parsed_stat.get(name, 0))
+                           for name in ("anon", "file", "shmem", "inactive_file")}
         temp = os.statvfs(tmp_path)
         pids = (cgroup / "cgroup.procs").read_text().split() if cgroup and (cgroup / "cgroup.procs").exists() else []
         descendants = {
@@ -2272,7 +2574,8 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
             name: (cgroup / f"{name}.pressure").read_text().splitlines()
             for name in ("cpu", "memory") if cgroup and (cgroup / f"{name}.pressure").exists()
         }
-        return {"events": events, "memory.current": memory, "temp_free": temp.f_bavail * temp.f_frsize,
+        return {"events": events, "memory.current": memory, "memory.peak": memory_peak,
+                "memory.stat": memory_stat, "temp_free": temp.f_bavail * temp.f_frsize,
                 "cgroup.procs": sorted(descendants), "descendants": descendants,
                 "cpu.stat": cpu_stat, "pressure": psi}
 
@@ -2294,7 +2597,11 @@ def test_retained_history_journey_stays_responsive_with_running_and_waiting_pyte
         timings[name] = time.monotonic() - started
         assert response.status_code in (200, 303)
     after = pressure()
-    print("retained-history capacity journey", {"timings": timings, "before": before, "after": after})
+    evidence = {"workload": "real supervised focused-pytest processes", "synthetic": False,
+                "route_timings_seconds": timings, "before": before, "after": after}
+    print("retained-history capacity journey", evidence)
+    if report_path := os.environ.get("CG385_REPORT"):
+        Path(report_path).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 
     assert max(timings.values()) < 2.0
     assert app.state.hub.scheduler().is_dispatch_paused()

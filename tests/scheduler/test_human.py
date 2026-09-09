@@ -1,7 +1,7 @@
 """What a person does to a task: retry past the cap, retry a capped pre-PR round."""
 
-
 import subprocess
+import sys
 
 import pytest
 
@@ -13,6 +13,19 @@ from garden.runner.manual import ManualRunner
 from garden.scheduler import Scheduler
 from garden.store import Store
 from tests.scheduler.conftest import statuses
+
+
+def test_take_manual_refuses_a_stale_ready_task_with_an_active_manual_claim(sched):
+    """A manual run owns its task even if an interrupted state write left it READY."""
+    task = sched.store.task("DM-001")
+    task.runner = "manual"
+    sched.store.save(task)
+    claimed = sched.runs.new_run(task.id, "manual", "work")
+
+    with pytest.raises(RuntimeError, match="already claimed"):
+        sched.take_manual(sched.store.task(task.id))
+
+    assert sched.runs.runs_for(task.id) == [claimed]
 
 
 def test_retry_grants_one_more_round_past_cap(sched, fake_github):
@@ -287,6 +300,37 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
     assert reloaded.branch == "operator/actual"
     assert reloaded.pr == pr.url
     assert sched.state.get(task.id)["pr_number"] == pr.number
+
+
+def test_external_claim_stores_a_safe_provider_identity_without_a_browser_url(sched):
+    """Provider identities are accepted after the CLI has verified their PR number."""
+    task = sched.store.task("DM-001")
+    provider_url = "https://provider.test/api/pull-requests/opaque-identity"
+
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override="operator/actual", completion_mode="external",
+                   external_pr=provider_url, external_pr_number=101)
+
+    assert sched.store.task(task.id).pr == provider_url
+    assert sched.state.get(task.id)["pr_number"] == 101
+
+
+@pytest.mark.parametrize("url", [
+    "https://operator:synthetic-password@provider.test/pull/101",
+    "https://operator@provider.test/pull/101",
+    "https://provider.test/pull/101?access=synthetic-token",
+    "https://provider.test/pull/101#synthetic-fragment",
+])
+def test_external_claim_rejects_unsafe_provider_identity_before_persistence(sched, url):
+    task = sched.store.task("DM-001")
+
+    with pytest.raises(RuntimeError, match="unsupported components"):
+        sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                       branch_override="operator/actual", completion_mode="external",
+                       external_pr=url, external_pr_number=101)
+
+    assert sched.store.task(task.id).pr == ""
+    assert not sched.runs.all_runs()
 
 
 def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sched, fake_github, tmp_path):
@@ -567,6 +611,96 @@ def test_tick_sweeps_stale_state_off_a_task_already_terminal(sched, fake_github)
     assert not st.get("needs_human")
     assert not st.get("pending_feedback")
     assert not st.get("automerge_blocked")
+
+
+@pytest.mark.parametrize("terminal", [Status.DONE, Status.CANCELLED, Status.WONT_DO])
+def test_terminal_task_retires_collected_check_without_losing_evidence(sched, terminal):
+    """CG-386: a stale collected continuation cannot reopen a merged or otherwise closed task."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.cost_usd = 1.25
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "collected": True,
+    }
+    sched.state.save()
+
+    sched._transition(task, terminal, "terminal lifecycle regression")
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.reap_check(sched.store.task(task.id), type("Report", (), {})()) is False
+    assert sched.store.task(task.id).status == terminal
+    preserved = sched._run_by_id(task, run.run_id)
+    assert preserved is not None
+    assert preserved.result == {"checks": []}
+    assert preserved.cost_usd == 1.25
+
+
+def test_check_collection_discards_legacy_continuation_for_terminal_task(sched):
+    """A task made terminal outside `_transition` is still protected at collection time."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "collected": True,
+    }
+    task.status = Status.DONE
+    sched.store.save(task)
+    sched.state.save()
+
+    assert sched.reap_check(sched.store.task(task.id), type("Report", (), {})()) is True
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.store.task(task.id).status == Status.DONE
+    assert not sched.state.get(task.id).get("needs_human")
+
+
+def test_terminal_task_keeps_check_ownership_when_run_record_is_missing(sched):
+    """Missing metadata cannot prove that the detached process behind it has stopped."""
+    task = sched.store.task("DM-001")
+    pointer = {"run_id": "missing-check-run", "stage": "base_probe", "collected": True}
+    sched.state.get(task.id)["check_run"] = pointer
+    sched.state.save()
+
+    sched._transition(task, Status.DONE, "terminal with incomplete run history")
+
+    assert sched.store.task(task.id).status == Status.DONE
+    assert sched.state.get(task.id)["check_run"] == pointer
+
+
+def test_terminal_task_stops_live_check_before_releasing_ownership(sched):
+    """A real detached child is confirmed dead before its continuation is retired."""
+    task = sched.store.task("DM-001")
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    try:
+        run = sched.runs.new_run(task.id, "local", mode="check")
+        run.pid = child.pid
+        run.save()
+        sched.state.get(task.id)["check_run"] = {
+            "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        }
+        sched.state.save()
+
+        sched._transition(task, Status.CANCELLED, "terminal while check is live")
+
+        child.wait(timeout=10)
+        assert child.poll() is not None
+        assert not sched.state.get(task.id).get("check_run")
+        retired = sched._run_by_id(task, run.run_id)
+        assert retired is not None
+        assert retired.status == "cancelled"
+        assert retired.error == "task reached terminal status"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
 
 
 def test_cancel_refuses_an_already_cancelled_task(sched):

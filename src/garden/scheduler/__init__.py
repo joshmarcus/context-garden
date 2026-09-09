@@ -25,9 +25,9 @@ from typing import Any
 
 from .. import gitops
 from ..events import EventLog
-from ..github import GitHub
+from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, repo_slug_from_remote
 from ..harness import DIFFICULTIES
-from ..model import Status, Task
+from ..model import Status, Task, now_iso
 from ..notify import notify, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
@@ -134,13 +134,26 @@ class Scheduler(
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
         trusted = [*(self.cfg.get("github.trusted_authors") or []), *(self.cfg.get("github.reviewers") or [])]
-        self.github = github if github is not None else GitHub(
-            use_gh=bool(self.cfg.get("github.use_gh", True)),
-            bot_logins=[str(b) for b in (self.cfg.get("github.bot_logins") or [])],
-            bot_notice_patterns=[str(p) for p in notice_patterns] if notice_patterns is not None else None,
-            trusted_authors=[str(a) for a in trusted],
-            trusted_bots=[str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
-        )
+        if github is not None:
+            self.github = github
+        else:
+            common = {
+                "use_gh": bool(self.cfg.get("github.use_gh", True)),
+                "bot_logins": [str(b) for b in (self.cfg.get("github.bot_logins") or [])],
+                "bot_notice_patterns": [str(p) for p in notice_patterns] if notice_patterns is not None else None,
+                "trusted_authors": [str(a) for a in trusted],
+                "trusted_bots": [str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
+            }
+            default = GitHub(**common)
+            routes = {}
+            for product in (self.cfg.data.get("products") or {}):
+                route = self.cfg.product_github(str(product))
+                if isinstance(self.cfg.product(str(product)).get("github"), dict):
+                    routes[(route["host"], route["slug"])] = GitHub(
+                        **common, host=route["host"], api_base=route.get("api_base", ""),
+                        token_env=route.get("token_env", ""),
+                    )
+            self.github = GitHubRouter(default, routes)
         self._runner_factory = runner_factory
         if upgrader is None:
             from ..upgrade import Upgrader
@@ -177,11 +190,15 @@ class Scheduler(
             cfg["_product"] = task.product
         else:
             cfg = {}
-        cfg.setdefault("timeout_minutes", self.cfg.get("timeout_minutes", 90))
+        cfg["timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
         cfg["work_dir"] = str(self.cfg.work_dir)
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
+        cfg["checkout"] = self.cfg.product_checkout(task.product)
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         cfg["resources"] = dict(self.cfg.get("resources") or {})  # supervisor lease and cgroup boundary
+        # A private class may be selected only from operator configuration.  Preserve the
+        # entire registration map so its configured alias continues to resolve at reap.
+        cfg["_runner_adapters"] = dict(self.cfg.get("runner_adapters") or {})
         return get_runner(name, cfg, harness)
 
     def resolved_harness_name(self, task: Task, harness_name: str = "") -> str:
@@ -246,15 +263,82 @@ class Scheduler(
     def repo_for(self, task: Task) -> Path:
         repo = task.repo or self.cfg.product_repo(task.product)
         git_name, git_email = self.git_identity()
-        if isinstance(repo, str) and ("://" in repo or repo.startswith("git@")):
+        if isinstance(repo, str) and is_git_remote_url(repo):
             return gitops.ensure_repo(repo, self.cfg.repos_dir, git_name, git_email)
         return gitops.ensure_repo(Path(repo), self.cfg.repos_dir, git_name, git_email)
 
     def worktree_for(self, task: Task) -> Path:
+        from ..canonical import configured_root
+
+        canonical = configured_root(self.cfg.product_checkout(task.product), self.store.root)
+        if canonical is not None:
+            return canonical
         override = self.state.get(task.id).get("worktree")
         if override:
             return Path(override)
         return self.cfg.worktree_path(task.id)
+
+    def prepare_canonical_run(self, task: Task, run: Run, runner: Runner, branch: str, base: str) -> Path | None:
+        """Claim and reconcile an in-place checkout for any execution mode."""
+        from ..canonical import claim, configured_root, preflight, reconcile
+        from ..runner.base import scrubbed_env
+
+        checkout = self.cfg.product_checkout(task.product)
+        if runner.remote and str(checkout.get("strategy") or "worktree") == "in_place":
+            # A process that exited is still an owner until its result has passed collection
+            # and fence/preservation processing.  ``active`` covers the former interval;
+            # ``unreaped`` covers a restart after finalize's terminal save but before the task
+            # transition completed.  The next remote claim may recover the durable lease only
+            # after neither source names its owner.
+            if runner.name == "ssh" and not run.host:
+                runner.assign(run, [item for item in self.active_runs() if item.run_id != run.run_id])
+                run.save()
+            protected_runs = {item.run_id: item for item in self.runs.active()}
+            unreaped_ids = self.unreaped_run_ids()
+            protected_runs.update(
+                (item.run_id, item) for item in self.runs.all_runs()
+                if item.run_id in unreaped_ids
+            )
+            identity = runner.canonical_checkout_identity(run)
+            if identity is not None:
+                run.env_snapshot["canonical_checkout_identity"] = identity
+                run.save()
+            run.env_snapshot["canonical_active_run_ids"] = sorted(
+                item.run_id for item in protected_runs.values()
+                if item.run_id != run.run_id
+                and (identity is None
+                     or item.env_snapshot.get("canonical_checkout_identity") == identity)
+            )
+            run.save()
+            return None
+        root = configured_root(checkout, self.store.root) if not runner.remote else None
+        if root is None:
+            return None
+        # Publish the concrete checkout identity before consulting the durable run store.
+        # Another scheduler may be preparing a run concurrently; without this save it sees
+        # an active owner with no path, mistakes the lease for stale, and reclaims it.
+        run.worktree = str(root)
+        run.save()
+        active_ids = {
+            item.run_id for item in self.runs.active()
+            if item.run_id != run.run_id and item.worktree
+            and Path(item.worktree).resolve() == root.resolve()
+        }
+        try:
+            claim(root, run.run_id, active_ids)
+            preflight(root, branch, base)
+            reconcile(root, checkout, scrubbed_env(runner.config, self.cfg.product_setup(task.product), worktree=root),
+                      run.path / "reconcile.log")
+            preflight(root, branch, base)
+        except Exception:
+            from ..canonical import release
+
+            release(root, run.run_id)
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.save()
+            raise
+        return root
 
     def check_ctx(self, task: Task, branch: str, base: str, worktree: Path | None = None) -> dict[str, Any]:
         """Context passed to check commands as GARDEN_* env vars. `exec_root` (GARDEN_EXEC_ROOT)
@@ -276,9 +360,18 @@ class Scheduler(
         return self.cfg.product_base_branch(task.product)
 
     def slug_for(self, task: Task) -> str | None:
-        override = self.cfg.product(task.product).get("github")
-        if override:
-            return str(override)
+        route = self.cfg.product_github(task.product)
+        if route:
+            configured = self.cfg.product(task.product).get("github")
+            if isinstance(configured, dict):
+                remote = gitops.remote_url(self.repo_for(task))
+                if remote and is_git_remote_url(remote):
+                    actual = repo_slug_from_remote(remote, route["host"])
+                    if actual is None or actual.casefold() != route["slug"].casefold():
+                        raise gitops.GitError(
+                            f"product {task.product} remote does not match configured GitHub host and repository"
+                        )
+            return RepositorySlug(route["slug"], route["host"])
         return gitops.slug(self.repo_for(task))
 
     def active_runs(self) -> list[Run]:
@@ -332,8 +425,13 @@ class Scheduler(
         return int(limit) if limit not in (None, "") else self.effective_max_parallel()
 
     def review_slots_free(self) -> int:
-        queue_free = self.review_parallel_limit() - len(self.review_runs_active())
-        return max(0, min(queue_free, self.local_slots_free()))
+        """Free slots in the global review/persona/comparison pool.
+
+        Physical capacity is backend-specific and is checked by each launch path.  Folding
+        local capacity into this global count prevents remote reviews from reaching their
+        independently admitted execution queue.
+        """
+        return max(0, self.review_parallel_limit() - len(self.review_runs_active()))
 
     @staticmethod
     def _is_unreaped(task: Task, run: Run | None) -> bool:
@@ -381,6 +479,8 @@ class Scheduler(
             # a decision on the Inbox, the Board or the task page.
             for k in ("needs_human", "pending_feedback"):
                 changed = st.pop(k, None) is not None or changed
+            changed = self._retire_terminal_review_recovery(task) or changed
+            changed = self._retire_terminal_check(task) or changed
             changed = self._queue_leave(task) or changed
         elif status != Status.IN_REVIEW:
             # A task that left in_review is no longer the merge queue's head.

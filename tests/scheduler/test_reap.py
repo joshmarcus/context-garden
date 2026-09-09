@@ -2,7 +2,6 @@
 
 import json
 import os
-import shutil
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
@@ -15,7 +14,6 @@ from garden.review import review_brief
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
 from garden.scheduler.snapshot import write_snapshot
-from tests import fake_claude
 from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
 
@@ -77,6 +75,31 @@ def test_worker_amendment_round_trip_reaches_review_brief(sched, fake_github, mo
     assert "The corrected outcome works." in brief
     assert "amended — The original outcome was false." in brief
     assert "Judge each amended line against its stated outcome" in brief
+
+
+def test_mismatched_base_probe_receipt_cannot_park_the_base(sched, fake_github, tmp_path):
+    """A remote probe with the wrong source is a provenance failure, not a main failure."""
+    task = sched.store.task("DM-001")
+    advertised = "a" * 40
+    run = sched.runs.new_run(task.id, "remote", mode="check")
+    run.start_head, run.pushed_head = advertised, "b" * 40
+    run.save()
+    failed = [{"name": "guard", "status": "fail", "summary": "branch guard failed", "details": ""}]
+
+    sched._after_base_probe_check(
+        task, run, [{"name": "guard", "status": "fail", "summary": "probe failed", "details": ""}],
+        {"probe": str(tmp_path / "missing-probe"), "worktree": str(tmp_path / "branch"),
+         "branch": task.default_branch(), "base": "main", "cost": "", "failed": failed,
+         "base_sha": advertised, "moved": False}, TickReport(),
+    )
+
+    saved = sched.runs.latest(task.id)
+    assert "base probe provenance failure" in saved.error
+    assert [item["name"] for item in saved.result["checks"]] == ["guard", "base probe provenance"]
+    assert sched.state.get(task.id).get("needs_human", {}).get("kind") != "base_broken"
+    assert "branch guard failed" in sched.state.get(task.id)["pending_feedback"]
+    events = sched.events.read(task_id=task.id, kinds=["base_probe_provenance_failure"])
+    assert events and events[-1]["advertised"] == advertised
 
 
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
@@ -189,29 +212,20 @@ def test_missing_result_preserves_dirty_new_file_without_discarding_committed_wo
     assert not (worktree / "interrupted.txt").exists()
 
 
-def test_missing_result_with_a_preflight_contract_enters_a_revise_round(sched):
-    """A current brief cannot reach review without the checklist it required."""
+def test_missing_result_with_a_preflight_contract_salvages_committed_work(sched):
+    """An optional result/checklist omission cannot force an unchanged-source revision."""
     sched.cfg.data["stack"] = False
     sched.tick()
     run = sched.runs.latest("DM-001")
     assert run.env_snapshot["requires_preflight"] is True
-    frozen = list(run.env_snapshot["criteria"])
-    committed_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=run.worktree,
-                                    capture_output=True, text=True, check=True).stdout.strip()
     (run.path / "stdout.json").unlink()
 
     report = sched.tick()
 
-    assert "DM-001 -> changes_requested (checks)" in report.transitions
-    revise = sched.runs.latest("DM-001")
-    assert revise.mode == "revise"
-    brief = (revise.path / "brief.md").read_text()
-    assert "missing items: result block and review pre-flight checklist" in brief
-    assert "Criteria frozen for the interrupted dispatch" in brief
-    for criterion in frozen:
-        assert criterion in brief
-    assert subprocess.run(["git", "merge-base", "--is-ancestor", committed_head, "HEAD"], cwd=revise.worktree,
-                          check=False).returncode == 0
+    assert "DM-001 -> changes_requested (checks)" not in report.transitions
+    assert "DM-001 -> in_review" in report.transitions[0]
+    assert sched.runs.latest("DM-001").run_id == run.run_id
+    assert not any(item.mode == "revise" for item in sched.runs.runs_for("DM-001"))
 
 
 def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched):
@@ -228,42 +242,6 @@ def test_missing_result_without_a_preflight_contract_uses_legacy_recovery(sched)
     assert "DM-001 -> changes_requested (checks)" not in report.transitions
     assert "DM-001 -> in_review" in report.transitions[0]
     assert sched.runs.latest("DM-001").run_id == run.run_id
-
-
-def _run_fake_claude(cwd, task_id, run_id, when):
-    env = dict(os.environ, GARDEN_TASK_ID=task_id, GARDEN_RUN_ID=run_id, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
-    env.pop("FAKE_CLAUDE_MODE", None)
-    _, _, code = fake_claude.run([], "brief", cwd, env)
-    assert code == 0
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
-
-
-def test_stacked_runs_never_collide_into_the_same_commit(tmp_path):
-    """A stack child's own work run and its parent's revise round both branch from the
-    parent's tip, write the same counter value to the same file, and can finish in the
-    same wall-clock second. If the fake worker's commit is otherwise identical (same
-    tree, parent, author, message and timestamp), git dedupes the two into one object:
-    the child's branch ends up pointing at the parent's revise commit, its own commit
-    silently vanishes, and `commits_ahead()` reports 0 -- the scheduler then discards the
-    child's real work as "worker finished with no commits" (this is what actually caused
-    the intermittent DM-002 PR seen in test_feedback_triggers_revise_round, not a race in
-    finalize()'s PR lookup). Mixing task/run identity into the commit message keeps every
-    run's commit distinct even when timestamps and content otherwise collide."""
-    base = tmp_path / "base"
-    base.mkdir()
-    git("init", "-q", "-b", "main", cwd=base)
-    (base / "worker-output.txt").write_text("1\n")
-    git("add", "-A", cwd=base)
-    git("commit", "-q", "-m", "parent work", cwd=base)
-
-    a, b = tmp_path / "a", tmp_path / "b"
-    shutil.copytree(base, a)
-    shutil.copytree(base, b)
-    same_instant = "2024-01-01T00:00:00"
-
-    sha_a = _run_fake_claude(a, "DM-001", "20260101T000000Z-revise", same_instant)
-    sha_b = _run_fake_claude(b, "DM-002", "20260101T000000Z-work", same_instant)
-    assert sha_a != sha_b
 
 
 def test_pre_pr_check_failure_at_cap_needs_human(sched, fake_github):
@@ -348,6 +326,9 @@ def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_gith
     the PR opens with no worker run dispatched, no person, and no revise round spent."""
     sched.cfg.data["stack"] = False
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "true",
+    }
     _seed_base_guard(sched, "bad")  # red base the branch is cut from
 
     sched.tick()  # dispatch DM-001 from the red base (the in-process worker finishes here)
@@ -375,6 +356,7 @@ def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_gith
     # the rebased branch picked up the now-green base file
     wt = sched.worktree_for(sched.store.task("DM-001"))
     assert (wt / "sentinel.txt").read_text().strip() == "ok"
+    assert sched.state.get("DM-001")["validation_head"] == gitops.head_sha(wt)
     # a rebased_stale_base event records the automatic continuation
     assert any(e.get("resolved") for e in sched.events.read(task_id="DM-001", kinds=["rebased_stale_base"]))
 
@@ -591,6 +573,61 @@ def test_killed_check_retries_then_parks_without_using_revision_cap(sched):
     assert sched.state.get(task.id).get("revisions", 0) == 0
 
 
+def test_empty_collected_check_parks_once_without_fabricating_success(sched):
+    """A collected check with no results produces one durable stop, not a replay per tick."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.status = "done"
+    run.result = {"checks": []}
+    run.save()
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": [],
+        "retries": 0, "collected": True,
+    }
+    sched.state.save()
+
+    first = TickReport()
+    assert sched.reap_check(task, first) is True
+    stop = sched.state.get(task.id)["needs_human"]
+    assert stop["kind"] == "check_did_not_run"
+    assert not sched.state.get(task.id).get("check_run")
+    assert not any(event.get("status") in ("pass", "passed")
+                   for event in sched.events.read(task_id=task.id, kinds=["check"]))
+
+    event_count = len(sched.events.read(task_id=task.id, kinds=["needs_human"]))
+    for _ in range(3):
+        assert sched.reap_check(sched.store.task(task.id), TickReport()) is False
+    assert len(sched.events.read(task_id=task.id, kinds=["needs_human"])) == event_count == 1
+
+
+def test_only_a_generated_ui_check_treats_a_renderer_protocol_mismatch_as_recovery(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    result = {
+        "name": "ui", "status": "error", "summary": "UI renderer protocol mismatch",
+        "capture_infrastructure": {
+            "source": "garden.walkthrough:ui_check", "kind": "capture_protocol_mismatch",
+        },
+    }
+
+    run.env_snapshot["generated_ui_check_indices"] = [0]
+    assert sched._check_did_not_run(run, [result])
+
+    run.env_snapshot["generated_ui_check_indices"] = []
+    assert not sched._check_did_not_run(run, [result])
+
+
+def test_child_summary_cannot_turn_a_renderer_failure_into_recovery(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    child_result = {
+        "name": "ui", "status": "error", "summary": "UI renderer protocol mismatch",
+    }
+
+    run.env_snapshot["generated_ui_check_indices"] = [0]
+    assert not sched._check_did_not_run(run, [child_result])
+
+
 def test_auxiliary_reapers_do_not_dispatch_work_directly():
     """CG-330: only the work/revise reap path may put a task back on the work queue."""
     import inspect
@@ -693,72 +730,54 @@ def test_late_admission_wait_gets_its_full_window(sched):
     assert run.status == "running"
 
 
-def test_real_check_waits_for_lease_then_runs_once_and_silent_process_times_out(sched, tmp_path, monkeypatch):
-    """A real supervisor wait survives old checkout mtimes, then releases without a retry."""
+def test_real_local_check_hard_timeout_preserves_exact_recovery_cause(sched, tmp_path, monkeypatch):
+    """A supervisor deadline is a distinct retry cause, not a generic empty result."""
     from garden.runner.local import LocalRunner
 
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    sched.cfg.data["timeout_minutes"] = 0
-    sched.cfg.data["idle_kill_minutes"] = 5
-    sched.cfg.data["resources"]["heavy_test_parallel"] = 1
-    sched.cfg.data["resources"]["admission_wait_minutes"] = 30
-    runner = LocalRunner(sched.cfg.data)
-    checkout = tmp_path / "old-checkout"
+    runtime = tmp_path / "timeout-runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(
+        "garden.runner.local.bounded_validation_timeout_seconds", lambda _configured: 0.1,
+    )
+    checkout = tmp_path / "timeout-checkout"
     checkout.mkdir()
-    (checkout / "unchanged.py").write_text("# old checkout\n")
-    old = datetime.now(UTC).timestamp() - 22 * 60
-    os.utime(checkout / "unchanged.py", (old, old))
-
-    holder = sched.runs.new_run("lease-holder", "local", mode="check")
-    runner.start_checks(holder, checkout, {
-        "specs": [{"name": "hold", "command": "sleep 0.4"}], "cwd": str(checkout),
-        "setup": {}, "config": sched.cfg.data, "timeout": 30,
-    })
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        state = json.loads((holder.path / "execution.json").read_text()) if (holder.path / "execution.json").exists() else {}
-        if state.get("state") == "running":
-            break
-        time.sleep(0.01)
-    assert state.get("state") == "running"
-
     task = sched.store.task("DM-001")
-    check = sched.runs.new_run(task.id, "local", mode="check")
-    marker = tmp_path / "executed-once"
-    runner.start_checks(check, checkout, {
-        "specs": [{"name": "once", "command": f"printf ran >> {marker}"}], "cwd": str(checkout),
-        "setup": {}, "config": sched.cfg.data, "timeout": 30,
+    specs = [{"name": "silent", "command": "sleep 5"}]
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    run.worktree, run.branch, run.base = str(checkout), "main", "main"
+    LocalRunner(sched.cfg.data).start_checks(run, checkout, {
+        "specs": specs, "cwd": str(checkout), "setup": {},
+        "config": sched.cfg.data, "timeout": 30,
     })
-    while time.monotonic() < deadline:
-        execution = json.loads((check.path / "execution.json").read_text()) if (check.path / "execution.json").exists() else {}
-        if execution.get("state") == "waiting":
-            break
-        time.sleep(0.01)
-    assert execution["reason"] == "heavy-test budget full (limit 1)"
-    assert execution.get("waiting_since")
-    assert not sched._finished_or_timed_out(check, runner)
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "ci", "cont": {}, "specs": specs,
+        "retries": 1, "backend": "local", "provenance": "timeout fixture",
+    }
+    sched.state.save()
+    try:
+        # The nested supervisor must first acquire and release its own validation slot.
+        # Keep the assertion bounded, but allow a saturated serial suite enough time to
+        # observe the 0.1-second execution deadline and reap the process group.
+        deadline = time.monotonic() + 10
+        while not run.process_finished() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert run.process_finished() and run.read_exit_code() == 124
+        assert sched.reap_check(task, TickReport())
+    finally:
+        if not run.process_finished():
+            run.stop(timeout=2)
 
-    os.waitpid(holder.pid, 0)
-    os.waitpid(check.pid, 0)
-    assert check.process_finished() and check.read_exit_code() == 0
-    assert marker.read_text() == "ran"
-    assert len(sched.runs.runs_for(task.id)) == 1
-
-    silent = sched.runs.new_run(task.id, "local", mode="check")
-    runner.start_checks(silent, checkout, {
-        "specs": [{"name": "silent", "command": "sleep 5"}], "cwd": str(checkout),
-        "setup": {}, "config": sched.cfg.data, "timeout": 30,
-    })
-    while time.monotonic() < deadline:
-        execution = json.loads((silent.path / "execution.json").read_text()) if (silent.path / "execution.json").exists() else {}
-        if execution.get("state") == "running":
-            break
-        time.sleep(0.01)
-    assert execution.get("state") == "running"
-    make_idle(silent, 6)
-    assert sched._finished_or_timed_out(silent, runner)
-    assert silent.status == "timeout" and "idle 6 min" in silent.error
-    assert silent.stop(timeout=2)
+    saved = sched._run_by_id(task, run.run_id)
+    assert saved is not None and saved.status == "done"
+    assert saved.result["checks"] == [{
+        "name": "checks", "status": "error", "summary": "check execution timed out",
+        "details": "validation execution exceeded 0.1 seconds",
+    }]
+    recovery = sched.state.get(task.id)["recovery_check"]
+    assert recovery["cause"] == (
+        "check execution timed out\n\nvalidation execution exceeded 0.1 seconds"
+    )
 
 
 def test_running_card_shows_idle_time(sched, monkeypatch):

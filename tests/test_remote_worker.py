@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -12,31 +15,50 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops
-from garden.remote_worker import doctor_worker, execute_claim
+from garden.remote_worker import (
+    WorkerRequestError,
+    _host_check_data,
+    _LeaseHeartbeat,
+    _wait_for_process,
+    doctor_worker,
+    execute_claim,
+)
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.web.app import create_app
+from tests.conftest import git, write
 
 
-def remote_client(garden, monkeypatch):
+def remote_client(garden, monkeypatch, *, validation_timeout=900, capacity=1, max_bypasses=3,
+                  in_place=False):
     path = garden / "garden.yaml"
     cfg = yaml.safe_load(path.read_text())
-    cfg["workers"] = {"lease_seconds": 60, "hosts": [{"name": "build-1", "token_env": "BUILD_TOKEN", "max_parallel": 1}]}
+    cfg["workers"] = {"lease_seconds": 60, "hosts": [{"name": "build-1", "token_env": "BUILD_TOKEN",
+                                                        "max_parallel": capacity,
+                                                        "in_place": in_place}]}
     cfg["max_parallel"] = 1
+    cfg.setdefault("resources", {})["max_bypasses"] = max_bypasses
     cfg["products"]["demo"]["runner"] = "remote"
     cfg["checks"] = {"pre_pr": [
         {"name": "remote-context", "command": "test \"$GARDEN_BRANCH\" = garden/dm-001-first-task"}
-    ], "ci": []}
+    ], "ci": [], "timeout_seconds": validation_timeout}
     cfg["review"] = {"enabled": True, "max_rounds": 1}
     path.write_text(yaml.safe_dump(cfg))
     monkeypatch.setenv("BUILD_TOKEN", "secret-token")
     return TestClient(create_app(Store(garden), watch=False, host="testserver")), Store(garden)
 
 
-def queued_run(store):
-    run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="work")
+def isolated_execution_runtime(tmp_path, monkeypatch):
+    """Keep synthetic worker supervisors out of an enclosing validation's host slot."""
+    runtime = tmp_path / "worker-runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+
+def queued_run(store, task_id="DM-001"):
+    run = RunStore(store.config.garden_dir).new_run(task_id, "remote", mode="work")
     run.branch, run.base, run.harness, run.model, run.difficulty = "garden/dm-001", "main", "claude", "small", "easy"
     RemoteRunner({"worker_env": store.config.get("worker_env")}, store.config.harness("claude")).start(run, store.root, "safe brief")
     return run
@@ -85,17 +107,135 @@ def test_claim_resolves_controller_repository_before_reading_branch_head(
         assert (store.config.repos_dir / "project/.git").is_dir()
 
 
+@pytest.mark.parametrize("task_override,reference", [
+    (False, "acct-1234@forge-one.test:team/repo.git"),
+    (False, "forge-one.test:team/repo.git"),
+    (True, "acct-1234@forge-one.test:team/repo.git"),
+    (True, "forge-one.test:team/repo.git"),
+])
+def test_claim_preserves_configured_scp_repository_reference(
+    garden, monkeypatch, task_override, reference,
+):
+    if task_override:
+        store = Store(garden)
+        task = store.tasks()["DM-001"]
+        task.repo = reference
+        store.save(task)
+    else:
+        path = garden / "garden.yaml"
+        cfg = yaml.safe_load(path.read_text())
+        cfg["products"]["demo"]["repo"] = reference
+        path.write_text(yaml.safe_dump(cfg))
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+    repo = garden.parent / "repo"
+    monkeypatch.setattr("garden.web.pages.api.gitops.ensure_repo", lambda *_args, **_kwargs: repo)
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["repo"] == reference
+
+
+@pytest.mark.parametrize("reference", [
+    "acct-1234@forge-one.test:team/repo.git",
+    "forge-one.test:team/repo.git",
+])
+def test_claim_preserves_scp_repository_over_served_http(garden, monkeypatch, reference):
+    """A real HTTP claim keeps each supported SCP spelling unchanged.
+
+    An unknown bearer must not consume the queued run; the valid bearer then recovers
+    the same claim.  Set ``GARDEN_SCP_CLAIM_INTERACTION_ARTIFACT`` to retain this
+    disposable interaction's structured transcript outside the pytest temporary tree.
+    """
+    import httpx
+    import uvicorn
+
+    path = garden / "garden.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["products"]["demo"]["repo"] = reference
+    path.write_text(yaml.safe_dump(cfg))
+    client, store = remote_client(garden, monkeypatch)
+    client.close()
+    queued_run(store)
+    repo = garden.parent / "repo"
+    monkeypatch.setattr("garden.web.pages.api.gitops.ensure_repo", lambda *_args, **_kwargs: repo)
+    application = create_app(store, watch=False, host="127.0.0.1")
+    server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    events = []
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert server.started
+        with httpx.Client(base_url=url, timeout=15) as served:
+            offer = {"host": "build-1", "harnesses": ["claude"]}
+            failed = served.post("/api/runs/claim", json=offer,
+                                 headers={"Authorization": "Bearer wrong-token"})
+            assert failed.status_code == 403
+            events.append({"kind": "http_request", "state": "failure", "outcome": "failure",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 403,
+                           "observed": "unknown bearer did not claim the queued run"})
+            claimed = served.post("/api/runs/claim", json=offer,
+                                  headers={"Authorization": "Bearer secret-token"})
+            assert claimed.status_code == 200
+            assert claimed.json()["repo"] == reference
+            events.append({"kind": "http_request", "state": "affected", "outcome": "success",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 200,
+                           "observed": f"claim returned the exact configured remote {reference}"})
+            events.append({"kind": "http_request", "state": "recovery", "outcome": "success",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 200,
+                           "observed": "valid bearer claimed the run rejected for the unknown bearer"})
+            empty = served.post("/api/runs/claim", json=offer,
+                                headers={"Authorization": "Bearer secret-token"})
+            assert empty.status_code == 204
+            events.append({"kind": "http_request", "state": "empty", "outcome": "empty",
+                           "method": "POST", "url": f"{url}/api/runs/claim", "status_code": 204,
+                           "observed": "no additional compatible queued run was available"})
+        if destination := os.environ.get("GARDEN_SCP_CLAIM_INTERACTION_ARTIFACT"):
+            artifact = Path(destination)
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            head = gitops.git("rev-parse", "HEAD", cwd=Path.cwd()).strip()
+            artifact.write_text(json.dumps({
+                "head": head,
+                "source_head": head,
+                "test": "tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
+                "transport": "real TCP HTTP", "environment": "disposable",
+                "command": "pytest tests/test_remote_worker.py::test_claim_preserves_scp_repository_over_served_http",
+                "reference": reference, "events": events,
+                "states": {
+                    "affected": "200 claim returns the configured remote unchanged",
+                    "empty": "204 after the queued run is claimed",
+                    "failure_recovery": "403 unknown bearer followed by a successful valid-bearer claim",
+                },
+            }, indent=2) + "\n")
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        sock.close()
+        assert not thread.is_alive()
+
+
 def test_worker_host_doctor_checks_token_git_access_and_harness(monkeypatch):
     monkeypatch.setattr("garden.remote_worker.shutil.which", lambda name: f"/bin/{name}")
 
     class Probe:
         returncode = 1
+        stdout = ""
+        stderr = "SECRET_SENTINEL_AUTH_REVOKED"
 
     monkeypatch.setattr("garden.remote_worker.subprocess.run", lambda *args, **kwargs: Probe())
 
     assert doctor_worker("", "https://example.test/team/repo.git", ["claude"]) == [
         "worker bearer token is missing",
         "git cannot read 'https://example.test/team/repo.git'",
+        "harness 'claude' authentication failed in scrubbed environment",
     ]
 
     monkeypatch.setattr(
@@ -105,6 +245,42 @@ def test_worker_host_doctor_checks_token_git_access_and_harness(monkeypatch):
     assert doctor_worker("token", "", ["claude"]) == [
         "harness 'claude' is not on PATH",
     ]
+
+
+def test_portable_worker_installs_claimed_config_mapping(tmp_path, monkeypatch):
+    from garden.remote_worker import _env
+
+    source = tmp_path / "host-tool.json"
+    source.write_text("portable-tool-config")
+    run = {"task_id": "T-1", "id": "run-1", "config_files": {
+        "synthetic-tool": {"source": str(source), "destination": ".config/synthetic/tool.json",
+                           "required": True},
+    }}
+    env = _env(["PATH"], tmp_path / "repo", run)
+    copied = Path(env["HOME"]) / ".config/synthetic/tool.json"
+    assert copied.read_text() == "portable-tool-config"
+    assert copied.stat().st_mode & 0o777 == 0o600
+
+
+def test_remote_claim_carries_mapping_but_not_config_contents(garden, tmp_path, monkeypatch):
+    source = tmp_path / "host-tool.json"
+    source.write_text("SECRET_SENTINEL_TOOL_CREDENTIAL")
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config.setdefault("worker_env", {})["config_files"] = {
+        "synthetic-tool": {"source": str(source), "destination": ".config/synthetic/tool.json",
+                           "required": True},
+    }
+    path.write_text(yaml.safe_dump(config))
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["config_files"]["synthetic-tool"]["destination"] == ".config/synthetic/tool.json"
+    assert "SECRET_SENTINEL_TOOL_CREDENTIAL" not in response.text
 
 
 @pytest.mark.parametrize("mode", ["work", "review", "persona"])
@@ -143,8 +319,195 @@ def test_worker_with_no_harnesses_can_claim_check_run(garden, monkeypatch):
     assert response.json()["harness"] == ""
 
 
-def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
+def test_remote_check_replaces_controller_only_spec_paths(tmp_path):
+    repo = tmp_path / "repos" / "DM-001"
+    run = {
+        "id": "check-1",
+        "checks": {
+            "ctx": {"worktree": "/controller/worktree", "branch": "garden/dm-001"},
+            "cwd": "/controller/worktree",
+            "specs": [{
+                "name": "ui",
+                "python": "garden.walkthrough:ui_check",
+                "worktree": "/controller/worktree",
+                "out_dir": "/controller/run/ui",
+            }],
+        },
+    }
+
+    check_data = _host_check_data(run, repo)
+
+    assert check_data["cwd"] == str(repo)
+    assert check_data["ctx"] == {
+        "worktree": str(repo), "exec_root": str(repo), "branch": "garden/dm-001",
+    }
+    assert check_data["specs"][0]["worktree"] == str(repo)
+    assert check_data["specs"][0]["out_dir"] == str(
+        repo.parent / "check-1-check-artifacts/0-ui"
+    )
+def test_remote_weighted_admission_first_fits_cheap_work_without_bypassing_cap(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch, capacity=4, max_bypasses=1)
+    runs = RunStore(store.config.garden_dir)
+
+    occupied = queued_run(store)
+    occupied.host = "build-1"
+    occupied.lease_token = "live"
+    occupied.lease_expires_at = (dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5)).isoformat()
+    occupied.env_snapshot = {"product": "demo", "resource_weight": 3}
+    occupied.save()
+    heavy = runs.new_run("HEAVY-001", "remote", mode="work")
+    heavy.harness, heavy.difficulty = "claude", "easy"
+    heavy.env_snapshot = {"product": "demo", "resource_weight": 2,
+                          "execution_timeout_minutes": 120}
+    RemoteRunner({}, store.config.harness("claude")).start(heavy, store.root, "heavy")
+    cheap = runs.new_run("CHEAP-001", "remote", mode="work")
+    cheap.harness, cheap.difficulty = "claude", "easy"
+    cheap.env_snapshot = {"product": "demo", "resource_weight": 1,
+                          "execution_timeout_minutes": 15}
+    RemoteRunner({}, store.config.harness("claude")).start(cheap, store.root, "cheap")
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                    "capacity": 4},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["id"] == cheap.run_id
+    assert response.json()["resource_weight"] == 1
+    assert response.json()["execution_timeout_minutes"] == 15
+    claimed_at = dt.datetime.fromisoformat(
+        RunStore(store.config.garden_dir).latest("CHEAP-001").execution_started_at
+    )
+    deadline = dt.datetime.fromisoformat(response.json()["execution_deadline_at"])
+    assert deadline == claimed_at + dt.timedelta(minutes=20)
+    assert not RunStore(store.config.garden_dir).latest("HEAVY-001").host
+
+    claimed_cheap = RunStore(store.config.garden_dir).latest("CHEAP-001")
+    claimed_cheap.status = "done"
+    claimed_cheap.finished_at = dt.datetime.now(dt.UTC).isoformat()
+    claimed_cheap.save()
+    another = runs.new_run("CHEAP-002", "remote", mode="work")
+    another.harness, another.difficulty = "claude", "easy"
+    another.env_snapshot = {"product": "demo", "resource_weight": 1}
+    RemoteRunner({}, store.config.harness("claude")).start(another, store.root, "another cheap")
+
+    protected = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                     "capacity": 4},
+                            headers={"Authorization": "Bearer secret-token"})
+    assert protected.status_code == 204
+    assert not RunStore(store.config.garden_dir).latest("CHEAP-002").host
+
+
+def test_remote_base_probe_materialises_its_advertised_source(garden, monkeypatch, tmp_path):
+    """A remote base check reads its detached base commit, never the task branch."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
     client, store = remote_client(garden, monkeypatch)
+    repo = garden.parent / "repo"
+    write(repo / "source-marker.txt", "base\n")
+    git("add", "source-marker.txt", cwd=repo)
+    git("commit", "-m", "base marker", cwd=repo)
+    git("push", "origin", "main", cwd=repo)
+    base_head = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    git("checkout", "-b", "garden/dm-001", cwd=repo)
+    write(repo / "source-marker.txt", "branch\n")
+    git("commit", "-am", "branch marker", cwd=repo)
+    git("push", "origin", "garden/dm-001", cwd=repo)
+    branch_head = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
+    git("checkout", "main", cwd=repo)
+
+    def base_check(source_head: str):
+        run = queued_run(store)
+        run.mode, run.harness, run.source_head = "check", "", source_head
+        (run.path / "checks_input.json").write_text(json.dumps({
+            "specs": [{"name": "base-marker", "command": "test \"$(cat source-marker.txt)\" = base"}],
+            "ctx": {}, "timeout": 30, "config": {},
+        }))
+        run.save()
+        return run
+
+    base_check(base_head)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth)
+    assert claim.status_code == 200
+    payload = claim.json()
+    assert payload["source_head"] == base_head
+    assert RunStore(store.config.garden_dir).latest("DM-001").start_head == base_head
+
+    class PostingClient:
+        def post(self, path, body):
+            response = client.post(path, json=body, headers=auth)
+            return response.status_code, response.json()
+
+    execute_claim(payload, tmp_path / "independent-host", PostingClient())
+    completed = RunStore(store.config.garden_dir).runs_for("DM-001")[-1]
+    assert completed.start_head == completed.pushed_head == base_head
+    assert json.loads((completed.path / "checks.json").read_text())[0]["status"] == "pass"
+    assert gitops.git("rev-parse", "origin/garden/dm-001", cwd=repo).strip() == branch_head
+
+    unavailable = base_check("0" * 40)
+    bad_claim = client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth)
+    assert bad_claim.status_code == 200
+    with pytest.raises(subprocess.CalledProcessError):
+        execute_claim(bad_claim.json(), tmp_path / "unavailable-source-host", PostingClient())
+    assert unavailable.source_head == "0" * 40
+    assert gitops.git("rev-parse", "origin/garden/dm-001", cwd=repo).strip() == branch_head
+
+def test_remote_check_has_no_worker_execution_deadline(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="check")
+    run.env_snapshot = {"product": "demo", "execution_timeout_minutes": 0}
+    RemoteRunner({}, None).start_checks(run, store.root, {"specs": [], "ctx": {}})
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": []},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["execution_deadline_at"] == ""
+    assert response.json()["execution_timeout_minutes"] == 0
+
+
+def test_legacy_remote_check_has_no_product_execution_timeout(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="check")
+    run.env_snapshot = {"product": "demo"}
+    RemoteRunner({}, None).start_checks(run, store.root, {"specs": [], "ctx": {}})
+
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": []},
+                           headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+    assert response.json()["execution_deadline_at"] == ""
+    assert response.json()["execution_timeout_minutes"] == 0
+
+def test_in_place_host_claims_one_run_regardless_of_its_resource_weight(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch, capacity=4, in_place=True)
+    first = queued_run(store)
+    first.env_snapshot = {"product": "demo", "resource_weight": 2}
+    first.save()
+    second = queued_run(store, "DM-002")
+    second.env_snapshot = {"product": "demo", "resource_weight": 1}
+    second.save()
+    auth = {"Authorization": "Bearer secret-token"}
+
+    claimed = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                   "capacity": 4}, headers=auth)
+
+    assert claimed.status_code == 200
+    assert claimed.json()["id"] == first.run_id
+    assert claimed.json()["resource_weight"] == 2
+    assert client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                "capacity": 4}, headers=auth).status_code == 204
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    saved.status = "done"
+    saved.finished_at = dt.datetime.now(dt.UTC).isoformat()
+    saved.save()
+    replacement = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                                                       "capacity": 4}, headers=auth)
+    assert replacement.status_code == 200
+    assert replacement.json()["id"] == second.run_id
+
+
+def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch, validation_timeout=731)
     run = queued_run(store)
     auth = {"Authorization": "Bearer secret-token"}
 
@@ -156,7 +519,12 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert payload["id"] == run.run_id and payload["brief"] == "safe brief"
     assert payload["lease_token"] and "secret-token" not in str(payload)
     assert set(payload) >= {"repo", "branch", "base", "push_ref", "setup", "turn_cap", "env_allowlist"}
+    assert payload["validation_timeout_seconds"] == 731
     assert payload["push_ref"].startswith(f"refs/heads/garden-worker/{run.run_id}/")
+    legacy = RunStore(store.config.garden_dir).latest("DM-001")
+    assert dt.datetime.fromisoformat(payload["execution_deadline_at"]) == (
+        dt.datetime.fromisoformat(legacy.execution_started_at) + dt.timedelta(minutes=6)
+    )
 
     beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
                        json={"lease_token": payload["lease_token"], "transcript": "hello\n"}, headers=auth)
@@ -222,6 +590,7 @@ def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
     claim1 = client.post("/api/runs/claim", json=offer, headers=auth).json()
     run = RunStore(store.config.garden_dir).latest("DM-001")
     run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    run.recovery_expires_at = run.lease_expires_at
     run.save()
     claim2 = client.post("/api/runs/claim", json=offer, headers=auth).json()
 
@@ -233,6 +602,111 @@ def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
     fresh = client.post(f"/api/runs/{run.run_id}/heartbeat",
                         json={"lease_token": claim2["lease_token"]}, headers=auth)
     assert fresh.status_code == 200
+
+
+def test_remote_queue_age_is_not_execution_age_and_timestamps_survive_reclaim(
+    garden, monkeypatch, fake_github,
+):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    queued = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=4)).isoformat()
+    run.started_at = queued
+    run.queued_at = queued
+    run.save()
+    auth = {"Authorization": "Bearer secret-token"}
+    offer = {"host": "build-1", "harnesses": ["claude"]}
+
+    first = client.post("/api/runs/claim", json=offer, headers=auth).json()
+    claimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert claimed.started_at == queued and claimed.queued_at == queued
+    assert claimed.execution_started_at == claimed.claimed_at
+    assert claimed.execution_minutes() < 1
+    first_claimed_at = claimed.claimed_at
+    first_execution_at = claimed.execution_started_at
+
+    claimed.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    claimed.recovery_expires_at = claimed.lease_expires_at
+    claimed.save()
+    second = client.post("/api/runs/claim", json=offer, headers=auth).json()
+    reclaimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert reclaimed.claimed_at == first_claimed_at
+    assert reclaimed.execution_started_at == first_execution_at
+    assert len(reclaimed.claim_history) == 2
+    assert second["lease_token"] != first["lease_token"]
+    assert client.post(f"/api/runs/{run.run_id}/heartbeat",
+                       json={"lease_token": first["lease_token"]}, headers=auth).status_code == 409
+
+    scheduler = Scheduler(store, github=fake_github)
+    assert not scheduler._finished_or_timed_out(reclaimed, scheduler.runner_for(
+        store.task("DM-001"), "remote", reclaimed.harness
+    ))
+
+    legacy = RunStore(store.config.garden_dir).new_run("DM-002", "remote", run_id="legacy-queued")
+    legacy.started_at = queued
+    legacy.queued_at = ""
+    legacy.save()
+    assert legacy.execution_minutes() == 0
+
+
+def test_remote_timeout_revokes_generation_and_rejects_late_evidence(
+    garden, monkeypatch, fake_github,
+):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    run.execution_started_at = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=2)).isoformat()
+    run.save()
+    scheduler = Scheduler(store, github=fake_github)
+
+    assert scheduler._finished_or_timed_out(
+        run, scheduler.runner_for(store.task("DM-001"), "remote", run.harness)
+    )
+    timed_out = RunStore(store.config.garden_dir).latest("DM-001")
+    assert timed_out.status == "timeout"
+    assert not timed_out.lease_token and not timed_out.lease_expires_at
+    late_beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                            json={"lease_token": claim["lease_token"], "transcript": "late"}, headers=auth)
+    late_finish = client.post(f"/api/runs/{run.run_id}/finish",
+                              json={"lease_token": claim["lease_token"], "exit_code": 0,
+                                    "result": {"status": "done"}, "usage": {"input_tokens": 99}},
+                              headers=auth)
+    assert late_beat.status_code == late_finish.status_code == 409
+    assert not (run.path / "remote_result.json").exists()
+    assert RunStore(store.config.garden_dir).usage_for("DM-001")["input_tokens"] == 0
+    from garden.model import Status
+    task = store.task("DM-001")
+    task.status = Status.RUNNING
+    store.save(task)
+    report = scheduler.tick()
+    assert any("DM-001" in transition for transition in report.transitions), report
+    old = next(item for item in RunStore(store.config.garden_dir).runs_for("DM-001")
+               if item.run_id == run.run_id)
+    assert old.started_at == run.started_at and old.execution_started_at == run.execution_started_at
+    active = [item for item in scheduler.active_runs() if item.task_id == "DM-001"]
+    assert len(active) <= 1
+    assert all(item.run_id != old.run_id for item in active)
+
+
+def test_each_run_keeps_its_own_trusted_fence_manifest(garden, fake_github):
+    store = Store(garden)
+    scheduler = Scheduler(store, github=fake_github)
+    task = store.task("DM-001")
+    first = RunStore(store.config.garden_dir).new_run(task.id, "remote", run_id="generation-one")
+    scheduler._fence_snapshot(task, first)
+    first = RunStore(store.config.garden_dir).runs_for(task.id)[0]
+    second = RunStore(store.config.garden_dir).new_run(task.id, "remote", run_id="generation-two")
+    (garden / "garden.yaml").write_text((garden / "garden.yaml").read_text() + "\n# second generation\n")
+    scheduler._fence_snapshot(task, second)
+    second = RunStore(store.config.garden_dir).latest(task.id)
+
+    assert first.fence_manifest_sha256
+    assert second.fence_manifest_sha256
+    assert first.fence_manifest_sha256 != second.fence_manifest_sha256
+    assert scheduler._fence_guard_check(task, first) == []
+    assert scheduler._fence_guard_check(task, second) == []
 
 
 def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch):
@@ -261,7 +735,8 @@ def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch
 
 @pytest.mark.parametrize("remote", [
     "oauth2:secret@example.test:team/repo.git",
-    "deploy@example.test:team/repo.git",
+    "ssh://deploy:secret@example.test/team/repo.git",
+    "ssh://deploy%40other@example.test/team/repo.git",
     "https://user:secret@example.test:bad/repo.git",
 ])
 def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch, remote):
@@ -282,14 +757,22 @@ def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch
     assert "secret" not in response.text
 
 
-def test_claim_allows_conventional_git_scp_remote(garden, monkeypatch):
+@pytest.mark.parametrize("remote", [
+    "git@example.test:team/repo.git",
+    "deploy@example.test:team/repo.git",
+    "acct-1234@example.test:team/repo.git",
+    "ssh://git@example.test/team/repo.git",
+    "ssh://acct-1234@example.test:443/team/repo.git",
+    "ssh://acct-1234@example.test:2222/team/repo.git",
+])
+def test_claim_preserves_safe_ssh_transport_usernames(garden, monkeypatch, remote):
     client, store = remote_client(garden, monkeypatch)
     queued_run(store)
     original_git = __import__("garden.gitops", fromlist=["git"]).git
 
     def safe_remote(*args, **kwargs):
         if args == ("remote", "get-url", "origin"):
-            return "git@example.test:team/repo.git"
+            return remote
         return original_git(*args, **kwargs)
 
     monkeypatch.setattr("garden.web.pages.api.gitops.git", safe_remote)
@@ -297,7 +780,7 @@ def test_claim_allows_conventional_git_scp_remote(garden, monkeypatch):
                            headers={"Authorization": "Bearer secret-token"})
 
     assert response.status_code == 200
-    assert response.json()["repo"] == "git@example.test:team/repo.git"
+    assert response.json()["repo"] == remote
 
 
 def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
@@ -305,6 +788,7 @@ def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
     run = queued_run(store)
     run.host = "build-1"
     run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    run.recovery_expires_at = run.lease_expires_at
     run.save()
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy"]},
                            headers={"Authorization": "Bearer secret-token"})
@@ -312,8 +796,230 @@ def test_expired_lease_is_claimable_without_failing_task(garden, monkeypatch):
     assert store.task("DM-001").status.value == "ready"
 
 
-def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
+def test_expired_lease_waits_for_durable_recovery_window(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    run.save()
+
+    assert client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                       headers=auth).status_code == 204
+    page = client.get(f"/runs/DM-001/{run.run_id}")
+    assert "Reconnecting after a controller interruption" in page.text
+    assert "seconds to reconnect before this lease can be reassigned" in page.text
+    if capture_dir := os.environ.get("GARDEN_REMOTE_RECOVERY_CAPTURES"):
+        import socket
+
+        import uvicorn
+        from playwright.sync_api import sync_playwright
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        application = create_app(Store(garden), watch=False, host="127.0.0.1")
+        server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        output = Path(capture_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch()
+                for width in (1280, 390):
+                    for scheme in ("light", "dark"):
+                        context = browser.new_context(
+                            viewport={"width": width, "height": 900}, color_scheme=scheme,
+                        )
+                        browser_page = context.new_page()
+                        browser_page.goto(f"http://127.0.0.1:{port}/runs/DM-001/{run.run_id}")
+                        assert browser_page.locator("body").evaluate("el => el.scrollWidth") == width
+                        browser_page.screenshot(
+                            path=str(output / f"run-reconnecting-{width}-{scheme}.png"), full_page=True,
+                        )
+                        context.close()
+                browser.close()
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+            sock.close()
+    beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                       json={"lease_token": claim["lease_token"]}, headers=auth)
+    assert beat.status_code == 200
+    assert RunStore(store.config.garden_dir).latest("DM-001").lease_token == claim["lease_token"]
+
+
+def test_cancelled_remote_lease_is_explicitly_rejected(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    run.status = "cancelled"
+    run.save()
+
+    rejected = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                           json={"lease_token": claim["lease_token"]}, headers=auth)
+    assert rejected.status_code == 409
+    assert "generation is no longer active" in rejected.text
+
+
+def test_transcript_replay_is_ordered_and_idempotent(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    path = f"/api/runs/{run.run_id}/heartbeat"
+    payload = {"lease_token": claim["lease_token"], "transcript_offset": 0,
+               "transcript": "héllo\n"}
+
+    first = client.post(path, json=payload, headers=auth)
+    replay = client.post(path, json=payload, headers=auth)
+    ahead = client.post(path, json={**payload, "transcript_offset": 99}, headers=auth)
+
+    assert first.json()["transcript_offset"] == len("héllo\n".encode())
+    assert replay.status_code == 200
+    assert replay.json()["transcript_offset"] == first.json()["transcript_offset"]
+    assert ahead.status_code == 409
+    assert RunStore(store.config.garden_dir).latest("DM-001").stdout_text() == "héllo\n"
+
+
+def test_finish_acknowledgement_replay_collects_one_result(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    payload = {"lease_token": claim["lease_token"], "exit_code": 0, "result": {"status": "done"},
+               "pushed_head": "abc", "final_text": "done"}
+    path = f"/api/runs/{run.run_id}/finish"
+
+    assert client.post(path, json=payload, headers=auth).json() == {"ok": True}
+    assert client.post(path, json=payload, headers=auth).json() == {
+        "ok": True, "already_finished": True,
+    }
+    assert client.post(path, json={**payload, "pushed_head": "other"}, headers=auth).status_code == 409
+
+
+def test_heartbeat_retries_transient_failure_but_rejection_is_terminal(monkeypatch):
+    class RecoveringClient:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, path, payload):
+            self.calls += 1
+            if self.calls == 1:
+                raise ConnectionRefusedError("controller restarting")
+            return 200, {"transcript_offset": len(str(payload.get("transcript") or "").encode())}
+
+    run = {"id": "run-1", "lease_token": "lease", "heartbeat_seconds": 0.05,
+           "recovery_seconds": 1}
+    recovering = RecoveringClient()
+    heartbeat = _LeaseHeartbeat(run, recovering)
+    assert heartbeat.upload(0, "kept") == 4
+    assert recovering.calls == 2
+
+    class RejectingClient:
+        def post(self, path, payload):
+            raise WorkerRequestError(403, "revoked")
+
+    started = time.monotonic()
+    with pytest.raises(WorkerRequestError, match="403"):
+        _LeaseHeartbeat(run, RejectingClient()).ensure_current()
+    assert time.monotonic() - started < 0.5
+
+
+def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
+    """The worker and controller fence the same generation at the 120 + 300 boundary."""
+    now = 0.0
+    controller_online = False
+
+    def monotonic():
+        return now
+
+    class RecoveringClient:
+        def post(self, path, payload):
+            if not controller_online:
+                raise ConnectionRefusedError("controller restarting")
+            return 200, {}
+
+    run = {
+        "id": "run-1", "lease_token": "lease", "heartbeat_seconds": 120,
+        "recovery_seconds": 300, "recovery_window_seconds": 420,
+    }
+    heartbeat = _LeaseHeartbeat(run, RecoveringClient())
+
+    def advance(delay):
+        nonlocal now, controller_online
+        now += delay
+        if now >= 301:
+            controller_online = True
+        return False
+
+    monkeypatch.setattr(time, "monotonic", monotonic)
+    monkeypatch.setattr(heartbeat.stop_event, "wait", advance)
+    heartbeat.ensure_current()
+    assert now >= 301
+    assert heartbeat.recovery_deadline == pytest.approx(now + 420)
+
+    controller_online = False
+    now = heartbeat.recovery_deadline + 0.01
+    with pytest.raises(ConnectionRefusedError, match="controller restarting"):
+        heartbeat.ensure_current()
+
+
+def test_terminal_lease_loss_stops_supervised_process_tree(tmp_path):
+    execution_dir = tmp_path / "execution"
+    execution_dir.mkdir()
+    stopped = tmp_path / "stopped"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import signal, time\n"
+        "from pathlib import Path\n"
+        f"stopped = Path({str(stopped)!r})\n"
+        "def stop(*_args):\n"
+        "    stopped.write_text('stopped')\n"
+        "    raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "stopped.with_suffix('.ready').write_text('ready')\n"
+        "while True: time.sleep(0.1)\n"
+    )
+    execution_env = dict(os.environ)
+    for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
+                "GARDEN_HEAVY_EXECUTION", "GARDEN_OWNER_SCOPED"):
+        execution_env.pop(key, None)
+    proc = subprocess.Popen([
+        sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+        f"{sys.executable} {child}",
+    ], env=execution_env)
+    ready = stopped.with_suffix(".ready")
+    deadline = time.monotonic() + 5
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready.exists()
+    heartbeat = _LeaseHeartbeat({
+        "id": "obsolete", "lease_token": "replaced", "recovery_seconds": 1,
+    }, object())
+    heartbeat.failure = WorkerRequestError(409, "lease replaced")
+
+    with pytest.raises(RuntimeError, match="lease renewal failed"):
+        _wait_for_process(proc, heartbeat)
+
+    assert proc.poll() is not None
+    assert stopped.read_text() == "stopped"
+
+
+def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    client, store = remote_client(garden, monkeypatch, validation_timeout=731)
     scheduler = Scheduler(store, github=fake_github)
     report = scheduler.tick()  # dispatch work
     assert report.dispatched, report
@@ -342,6 +1048,12 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert "exec_root" not in check_claim["checks"]["ctx"]
     assert set(check_claim["checks"]["config"]) == {"worker_env"}
     execute_claim(check_claim, tmp_path / "independent-host", PostingClient())
+    check_execution = next(
+        path for path in (tmp_path / "independent-host/runs").iterdir()
+        if (path / "checks_input.json").exists()
+    )
+    execution = json.loads((check_execution / "execution.json").read_text())
+    assert execution["state"] == "finished" and execution["timeout_seconds"] == 731
     scheduler.tick()  # reap check, open PR, and dispatch review
     store.invalidate_tasks()
     task = store.task("DM-001")
@@ -382,6 +1094,8 @@ def test_remote_harness_receives_working_owned_validation(
         "outer = Path(os.environ['GARDEN_EXECUTION_RUN_DIR'])\n"
         "assert outer.is_dir() and os.environ['GARDEN_EXECUTION_OWNER'] != 'wrong-owner'\n"
         "assert os.environ['GARDEN_VALIDATION_RUNNER'] != '/missing/controller/python'\n"
+        "assert os.environ['GARDEN_VALIDATION_TIMEOUT_SECONDS'] == '900'\n"
+        "assert 'GARDEN_EXECUTION_TIMEOUT_SECONDS' not in os.environ\n"
         "command = [os.environ['GARDEN_VALIDATION_RUNNER'], '-m', 'garden.validation', '--', "
         f"sys.executable, '-m', 'pytest', {str(target)!r}, '-q']\n"
         "result = subprocess.run(command, capture_output=True, text=True, timeout=10)\n"
@@ -397,11 +1111,10 @@ def test_remote_harness_receives_working_owned_validation(
     for key, value in {"GARDEN_EXECUTION_OWNER": "wrong-owner",
                        "GARDEN_EXECUTION_RUN_DIR": str(tmp_path / "wrong-run"),
                        "GARDEN_VALIDATION_RUNNER": "/missing/controller/python",
+                       "GARDEN_EXECUTION_TIMEOUT_SECONDS": "0.01",
                        "GARDEN_HEAVY_EXECUTION": "1", "GARDEN_OWNER_SCOPED": "1"}.items():
         monkeypatch.setenv(key, value)
-    runtime = tmp_path / "runtime"
-    runtime.mkdir(mode=0o700)
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    isolated_execution_runtime(tmp_path, monkeypatch)
     payload["env_allowlist"] = [*payload["env_allowlist"], "GARDEN_*", "XDG_RUNTIME_DIR", "PYTHONPATH"]
     # The source path is needed only because this fixture exercises a worktree, not an install.
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[1] / "src"))
@@ -422,6 +1135,7 @@ def test_remote_harness_receives_working_owned_validation(
     assert not (tmp_path / "wrong-run").exists()
 
 def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, tmp_path, fake_github):
+    isolated_execution_runtime(tmp_path, monkeypatch)
     client, store = remote_client(garden, monkeypatch)
     config_path = garden / "garden.yaml"
     config = yaml.safe_load(config_path.read_text())
@@ -469,6 +1183,117 @@ def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, t
     execute_while_asserting_not_reclaimed(check_claim)
 
 
+def test_active_worker_completes_once_across_controller_stop_start(
+    garden, monkeypatch, tmp_path, fake_github,
+):
+    """A disposable real HTTP controller disappears while a real harness child is active."""
+    import socket
+    import subprocess
+
+    import httpx
+    import uvicorn
+
+    _, store = remote_client(garden, monkeypatch)
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["workers"].update(lease_seconds=2, recovery_seconds=5)
+    config_path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+    scheduler = Scheduler(store, github=fake_github)
+    assert scheduler.tick().dispatched
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    url = f"http://127.0.0.1:{port}"
+
+    def start_controller():
+        server = uvicorn.Server(uvicorn.Config(
+            create_app(Store(garden), watch=False, host="127.0.0.1"),
+            host="127.0.0.1", port=port, log_level="error",
+        ))
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert server.started
+        return server, thread
+
+    server, controller_thread = start_controller()
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = httpx.post(f"{url}/api/runs/claim", json={
+        "host": "build-1", "harnesses": ["claude"],
+    }, headers=auth).json()
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
+    monkeypatch.setenv("FAKE_CLAUDE_STALL_SECONDS", "2.5")
+    worker_errors = []
+
+    def work():
+        try:
+            from garden.remote_worker import WorkerClient
+
+            execute_claim(claim, tmp_path / "restart-host", WorkerClient(url, "secret-token"))
+        except BaseException as exc:
+            worker_errors.append(exc)
+
+    worker = threading.Thread(target=work)
+    worker.start()
+    time.sleep(0.8)
+    server.should_exit = True
+    controller_thread.join(timeout=5)
+    assert not controller_thread.is_alive() and worker.is_alive()
+    with pytest.raises(httpx.ConnectError):
+        httpx.post(f"{url}/api/runs/claim", json={"host": "build-1"}, headers=auth, timeout=0.5)
+    time.sleep(1.0)
+    server, controller_thread = start_controller()
+    worker.join(timeout=15)
+
+    assert not worker.is_alive() and not worker_errors
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved.process_finished() and saved.read_exit_code() == 0
+    assert json.loads((saved.path / "remote_result.json").read_text())["result"]["status"] == "done"
+    assert len(list(saved.path.glob("remote_result.json"))) == 1
+    empty = httpx.post(f"{url}/api/runs/claim", json={
+        "host": "build-1", "harnesses": ["claude"],
+    }, headers=auth)
+    assert empty.status_code == 204
+    artifact = {
+        "head": subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+            cwd=Path(__file__).resolve().parents[1],
+        ).stdout.strip(),
+        "environment": "disposable FastAPI/uvicorn controller and real fake-harness child over TCP",
+        "command": (
+            ".venv/bin/python -m pytest "
+            "tests/test_remote_worker.py::test_active_worker_completes_once_across_controller_stop_start -q"
+        ),
+        "states": ["active", "controller_down", "reconnecting", "completed", "empty"],
+        "events": [
+            {"state": "active", "method": "POST", "url": "/api/runs/claim", "status": 200,
+             "consequence": "one worker generation started a live harness child"},
+            {"state": "controller_down", "action": "stop disposable controller",
+             "outcome": "connection refused", "consequence": "the harness child remained active"},
+            {"state": "reconnecting", "action": "restart controller on the same port",
+             "outcome": "heartbeat accepted", "consequence": "the original generation retained authority"},
+            {"state": "completed", "method": "POST", "url": f"/api/runs/{saved.run_id}/finish",
+             "status": 200, "consequence": "one durable result completed with exit code 0"},
+            {"state": "empty", "method": "POST", "url": "/api/runs/claim", "status": 204,
+             "consequence": "no duplicate work remained to claim"},
+        ],
+        "automated_checks": [
+            "one remote_result.json exists", "saved exit code is 0", "worker thread exited without error",
+        ],
+        "unverified": [],
+    }
+    if destination := os.environ.get("GARDEN_REMOTE_RESTART_ARTIFACT"):
+        output = Path(destination)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(artifact, indent=2) + "\n")
+    server.should_exit = True
+    controller_thread.join(timeout=5)
+
+
 def test_worker_cli_setup_option(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
@@ -501,6 +1326,11 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
 
     _, store = remote_client(garden, monkeypatch)
     config = yaml.safe_load((garden / "garden.yaml").read_text())
+    # The simulated remote host runs on this test process's machine.  Give its detached
+    # check supervisors their own lease namespace so they cannot wait on the enclosing
+    # validation command's host-wide slot after this test has returned.
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    config["worker_env"]["pass"].append("XDG_RUNTIME_DIR")
     config["products"]["demo"]["setup"] = {
         "command": "echo configured-product-setup", "timeout_seconds": 37,
         "env": {"PRIVATE_SETUP_VALUE": "must-not-travel"},
@@ -564,12 +1394,14 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
             assert "must-not-travel" not in json.dumps(claim)
             run = scheduler.runs.latest("DM-001")
             run.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+            run.recovery_expires_at = run.lease_expires_at
             run.save()
             assert client.post(f"/api/runs/{run.run_id}/heartbeat",
                                json={"lease_token": claim["lease_token"]}, headers=auth).status_code == 409
             # Reclaim through the actual CLI, without a controller object in that process.
             env = {k: v for k, v in os.environ.items() if k in
-                   {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"} or k.startswith("FAKE_")}
+                   {"PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "XDG_RUNTIME_DIR"}
+                   or k.startswith("FAKE_")}
             env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
                        GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
             setup_counts = {}

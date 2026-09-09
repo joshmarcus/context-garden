@@ -3,6 +3,7 @@ import textwrap
 
 from textual.widgets import DataTable
 
+from garden.events import EventLog
 from garden.model import Status
 from garden.store import Store
 from garden.tui.app import GardenTUI
@@ -102,6 +103,25 @@ def test_tui_dispatch_refuses_a_run_already_in_flight(sched, fake_github):
     from garden.runs import RunStore
 
     assert len(RunStore(sched.store.root / ".garden").runs_for("DM-001")) == 1
+
+
+def test_tui_retry_records_its_human_owner_actor(sched, fake_github):
+    """The interactive TUI has no delegated-operator control, so its retry is an owner action."""
+    async def run():
+        app = GardenTUI(Store(sched.store.root))
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.press("i")
+            await pilot.pause()
+            table = app.query_one("#table", DataTable)
+            table.move_cursor(row=table.get_row_index("DM-001"))
+            await pilot.pause()
+            await pilot.press("e")
+            await pilot.pause()
+
+    asyncio.run(run())
+    retries = [event for event in EventLog(sched.store.root / ".garden" / "events.jsonl").read()
+               if event["kind"] == "retry" and event["task"] == "DM-001"]
+    assert retries[-1]["actor"] == "human_owner"
 
 
 def test_tui_inbox_decisions_count_excludes_retrying(garden):

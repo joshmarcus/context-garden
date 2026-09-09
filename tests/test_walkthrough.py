@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -20,7 +21,9 @@ from garden.walkthrough import (
     NARROW_OUTER_WIDTH,
     VIEWPORTS,
     NarrowViewportError,
+    PageResult,
     PageSpec,
+    WalkthroughResult,
     _narrow_frame,
     _prepare_browser,
     _redact_home,
@@ -230,6 +233,28 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
                 assert (tmp_path / "ui" / f"{slug}-{width}-{scheme}.png").exists()
 
 
+def test_scoped_ui_check_does_not_expand_to_decision_card(tmp_path, monkeypatch):
+    """An Inbox-only check validates only the requested surface."""
+    monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: None)
+
+    def screenshots(_url, specs, out, _log):
+        for spec in specs:
+            for width in VIEWPORTS:
+                for scheme in COLOR_SCHEMES:
+                    (out / f"{spec.slug}-{width}-{scheme}.png").write_bytes(b"png")
+        evidence = [{"page": spec.slug, "action": "navigate", "viewport": width,
+                     "color_scheme": scheme, "clientWidth": width, "scrollWidth": width}
+                    for spec in specs for width in VIEWPORTS for scheme in COLOR_SCHEMES]
+        return {spec.slug for spec in specs}, None, evidence
+
+    monkeypatch.setattr("garden.walkthrough._screenshot", screenshots)
+    result = _seeded_ui_capture(tmp_path / "ui", ["inbox"])
+
+    assert result["status"] == "pass"
+    assert result["pages"] == ["inbox"]
+    assert not (tmp_path / "ui" / "task-decision-1280-light.png").exists()
+
+
 def test_ui_check_rejects_html_only_output_as_infrastructure_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: {
         "ready": False, "kind": "missing_libraries", "diagnostic": "libnss3.so is missing"})
@@ -270,6 +295,32 @@ def test_ui_check_rejects_pngs_without_executed_interaction_evidence(tmp_path, m
     assert "interaction/viewport evidence is incomplete" in result["summary"]
 
 
+def test_ui_check_keeps_application_http_failure_blocking_when_browser_is_unavailable(tmp_path, monkeypatch):
+    def failed_capture(_store, _phase, out_dir, **_kwargs):
+        out_dir.mkdir(parents=True)
+        decision = PageSpec("task-decision", "/tasks/DM-001", "Decision", "purpose", "look")
+        failed = PageSpec("task", "/tasks/DM-001", "Task", "purpose", "look")
+        (out_dir / "task-decision.html").write_text('<div class="panel decision-card">decision</div>')
+        (out_dir / "task-decision.txt").write_text("decision")
+        (out_dir / "task.html").write_text("application failure")
+        (out_dir / "task.txt").write_text("application failure")
+        return WalkthroughResult(
+            out_dir=out_dir,
+            pages=[PageResult(decision, 200, 48),
+                   PageResult(failed, 500, 19, note="empty or unsuccessful document")],
+            screenshots=False,
+            browser_note="Chromium unavailable",
+            browser_failure_kind="missing_executable",
+        )
+
+    monkeypatch.setattr("garden.walkthrough.capture", failed_capture)
+    result = _seeded_ui_capture(tmp_path / "ui")
+
+    assert result["status"] == "fail"
+    assert result["failure_kind"] == "product"
+    assert "task (HTTP 500)" in result["summary"]
+
+
 def test_ui_check_fails_when_browser_cannot_capture(tmp_path, monkeypatch):
     monkeypatch.setattr("garden.walkthrough._prepare_browser", lambda: {
         "ready": False, "kind": "launch_failure", "diagnostic": "Chromium unavailable"})
@@ -308,11 +359,196 @@ def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch)
         return subprocess.CompletedProcess(argv, 0, '{"status":"pass","pages":["now"]}\n', "")
 
     monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
-    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures")})
+    monkeypatch.setenv("PYTHONPATH", "/controller/worktrees/CG-428/src")
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(tmp_path / "captures"), "worktree": "/controller/worktrees/CG-428"},
+    )
     assert result["status"] == "pass"
     assert seen["cwd"] == worktree
-    assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(worktree / "src")
+    assert seen["env"]["PYTHONPATH"] == str(worktree / "src")
     assert seen["argv"][1:3] == ["-m", "garden.walkthrough"]
+
+
+def test_ui_check_retries_a_quiet_legacy_renderer_with_its_three_argument_form(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    calls = []
+    outcomes = iter([
+        subprocess.CompletedProcess([], 2, "", ""),
+        subprocess.CompletedProcess([], 0, '{"status":"pass","pages":["now"]}\n', ""),
+    ])
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return next(outcomes)
+
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures"), "pages": ["now"]})
+
+    assert result["status"] == "pass"
+    assert result["renderer_protocol"] == "legacy"
+    assert "exit 2" in result["details"]
+    assert "<capture-dir> <page-selection>" in result["details"]
+    assert len(calls[0]) == 6
+    assert len(calls[1]) == 5
+
+
+def test_ui_check_exercises_the_new_wrapper_against_an_old_renderer_source(tmp_path):
+    worktree = tmp_path / "old-worktree"
+    package = worktree / "src" / "garden"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "walkthrough.py").write_text(
+        "import json, sys\n"
+        "if sys.argv == [sys.argv[0], '--ui-check', sys.argv[2]]:\n"
+        "    print(json.dumps({'status': 'pass', 'captures': ['legacy.png']}))\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(2)\n"
+    )
+
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures"), "pages": ["now"]})
+
+    assert result["status"] == "pass"
+    assert result["renderer_protocol"] == "legacy"
+    assert result["captures"] == ["legacy.png"]
+
+
+def test_ui_check_does_not_fallback_when_page_selecting_renderer_reports_an_error(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 2, "", "usage: renderer failed to load")
+
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures")})
+
+    assert result["status"] == "error"
+    assert result["summary"] == "UI renderer did not return a result"
+    assert "usage: renderer failed to load" in result["details"]
+    assert "<capture-dir> <page-selection>" in result["details"]
+    assert len(calls) == 1
+
+
+def test_ui_check_reports_a_quiet_protocol_mismatch_with_retained_evidence(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    evidence = captures / "now.html"
+    evidence.write_text("partial renderer output")
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **_kwargs:
+                        subprocess.CompletedProcess(argv, 2, "", ""))
+
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(captures)})
+
+    assert result["status"] == "error"
+    assert result["summary"] == "UI renderer protocol mismatch"
+    assert "exit 2" in result["details"]
+    assert "empty stdout/stderr" in result["details"]
+    assert "<capture-dir> <page-selection>" in result["details"]
+    assert "<capture-dir>;" in result["details"]
+    assert result["captures"] == [str(evidence)]
+    assert result["capture_infrastructure"]["kind"] == "capture_protocol_mismatch"
+
+
+def test_ui_check_keeps_missing_proposed_source_blocking_in_advisory_mode(tmp_path):
+    result = ui_check(
+        {"worktree": str(tmp_path / "missing-worktree")},
+        {"out_dir": str(tmp_path / "captures"), "capture_infrastructure_policy": "advisory"},
+    )
+
+    assert result["status"] == "error"
+    assert result["summary"] == "UI check worktree source is missing"
+    assert "capture_infrastructure" not in result
+
+
+def test_ui_check_marks_unavailable_capture_output_path_from_trusted_wrapper(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    output_path = tmp_path / "captures"
+    output_path.mkdir()
+    fallback = output_path / "task.html"
+    fallback.write_text("<main>rendered fallback</main>")
+
+    def unavailable(*_args, **_kwargs):
+        raise PermissionError("capture filesystem is read-only")
+
+    monkeypatch.setattr("garden.walkthrough.tempfile.NamedTemporaryFile", unavailable)
+
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(output_path), "capture_infrastructure_policy": "advisory"},
+    )
+
+    assert result["status"] == "error"
+    assert result["summary"] == "UI capture output path is unavailable"
+    assert result["capture_infrastructure"]["source"] == "garden.walkthrough:ui_check"
+    assert result["capture_infrastructure"]["kind"] == "capture_path_unavailable"
+    assert result["captures"] == [str(fallback)]
+
+
+def test_ui_check_keeps_renderer_traceback_blocking_in_advisory_mode(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    monkeypatch.setattr("garden.walkthrough._probe_child", lambda: {
+        "ready": False, "kind": "missing_executable", "diagnostic": "browser missing",
+    })
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv, 1, "", "Traceback: application render failed"))
+
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(tmp_path / "captures"), "capture_infrastructure_policy": "advisory"},
+    )
+
+    assert result["status"] == "error"
+    assert "Traceback" in result["details"]
+    assert "capture_infrastructure" not in result
+
+
+def test_ui_check_trusts_its_own_browser_probe_not_child_classification(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    monkeypatch.setattr("garden.walkthrough._probe_child", lambda: {
+        "ready": False, "kind": "missing_libraries", "diagnostic": "trusted libnss diagnostic",
+    })
+    child = {
+        "status": "fail", "failure_kind": "infrastructure", "summary": "no PNGs",
+        "capture_infrastructure": {"source": "worker", "kind": "fake", "diagnostic": "spoof"},
+    }
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv, 0, json.dumps(child), ""))
+
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(tmp_path / "captures"), "capture_infrastructure_policy": "advisory"},
+    )
+
+    assert result["status"] == "fail"
+    assert result["capture_infrastructure"] == {
+        "source": "garden.walkthrough:ui_check", "kind": "browser_unavailable",
+        "diagnostic": "trusted libnss diagnostic", "browser_kind": "missing_libraries",
+    }
+
+
+def test_ui_check_classifies_clean_missing_result_as_return_infrastructure(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    monkeypatch.setattr("garden.walkthrough._probe_child", lambda: {"ready": True})
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **kwargs:
+                        subprocess.CompletedProcess(argv, 0, "renderer log without a JSON result", ""))
+
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(tmp_path / "captures"), "capture_infrastructure_policy": "advisory"},
+    )
+
+    assert result["status"] == "error"
+    assert result["capture_infrastructure"]["kind"] == "capture_result_unavailable"
 
 
 def test_browser_is_prepared_automatically(monkeypatch):
@@ -342,7 +578,7 @@ def test_browser_is_prepared_automatically(monkeypatch):
     assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
 
 
-def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
+def test_scheduler_leaves_ui_verification_to_reviewer_and_preserves_explicit_checks(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.title = "Tighten inbox layout"
     task.extra["visual_scope"] = {"behavior": "Tighter inbox layout"}
@@ -355,32 +591,33 @@ def test_scheduler_adds_ui_check_only_for_planned_pages(sched, monkeypatch):
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/web/templates/inbox.html"])
-    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
-                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
-    assert ui["worktree"] == str(worktree)
-    assert "garden_root" not in ui
-    assert ui["pages"] == ["inbox"]
+    run = sched._dispatch_check_run(
+        task, worktree=worktree, branch="garden/test", base="main",
+        specs=[{"name": "focused", "command": "true"}], stage="pre_pr", cont={}, rep=TickReport(),
+    )
+    assert captured[-1]["specs"] == [{"name": "focused", "command": "true"}]
+    assert run.env_snapshot["validation_plan"]["pages"] == ["inbox"]
+    assert run.env_snapshot["validation_plan"]["evidence_policy"] == "reviewer_judgment"
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/model.py"])
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+    assert captured[-1]["specs"] == []
 
     # A generic criterion can preserve milestone validation, but does not make this
     # backend-only PR capture the walkthrough inventory.
     task.extra["requires"] = ["captures"]
     sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
                               specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    assert not any(spec.get("name") == "ui" for spec in captured[-1]["specs"])
+    assert captured[-1]["specs"] == []
 
     monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names",
                         lambda _worktree, _base: ["src/garden/web/static/site.css"])
-    sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
-                              specs=[], stage="pre_pr", cont={}, rep=TickReport())
-    ui = next(spec for spec in captured[-1]["specs"] if spec.get("name") == "ui")
-    assert ui["pages"] == ["board", "inbox"]
+    run = sched._dispatch_check_run(task, worktree=worktree, branch="garden/test", base="main",
+                                    specs=[], stage="pre_pr", cont={}, rep=TickReport())
+    assert captured[-1]["specs"] == []
+    assert run.env_snapshot["validation_plan"]["pages"] == ["board", "inbox"]
 
 
 def test_explicit_empty_ui_capture_selection_captures_no_pages(garden, tmp_path):

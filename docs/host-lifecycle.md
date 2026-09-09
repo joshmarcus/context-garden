@@ -86,3 +86,56 @@ workplace policy/profile integration. Selecting a development profile never crea
 Contract additions remain backward compatible within `garden.hosts/v1`. A provider declaring
 a different contract version is rejected before planning. Breaking field semantics require a
 new contract version and an explicit adapter.
+
+## Command-backed acquisition and warm reuse
+
+`CommandProvider` adapts an approved controller-side wrapper without embedding a vendor or a
+second infrastructure lifecycle. Configure `provider_options.command` as an argv list and an
+optional `timeout_seconds` (at most one hour). The adapter appends one action argument and
+writes one compact JSON request to stdin; the wrapper returns one JSON value on stdout. There
+is no shell interpolation. Exit status, stdout and stderr remain byte-exact in
+`CommandResult`, and every invocation is bounded. A wrapper can use an API, a queue, SSH, or
+another approved transport, but it is always launched by the controller and does not require
+one acquired host to connect to another.
+
+The core actions are `inspect`, `inspect-one`, `acquire`, `ready`, `release`, `start`, and
+`retire`; host-local admission adds the actions documented below.
+`acquire` receives the stable logical host and operation aliases and may return
+`provisioning`; later reconciliation discovers the same operation rather than submitting a
+duplicate. `ready` is explicitly read-only and receives the configured workspace, exact
+revision and harness. Its response has five booleans: `workspace`, `revision`, `provisioned`,
+`harness_login`, and `smoke_probe`. The wrapper owns checkout reconciliation, but the
+lifecycle will not lease the host unless all five checks pass.
+
+`HostLifecycle.acquire_ready()` stores leases in the same atomic JSON state as pool facts.
+It reuses a warm host only after the prior run is terminal, retires hosts beyond
+`maximum_age_minutes`, and raises `EnvironmentStop` when preparation or readiness cannot
+admit work. Consumers call it before counting or dispatching a task attempt. After dispatch,
+`attach_run()` records the process identity. `release()` stops a reusable host and clears its
+lease; `cancel_acquisition()` clears an unlaunched reservation, `orphaned()` exposes terminal
+process leases for inspection, and `destroy()` remains the explicit retirement boundary.
+
+### Host-local resource and capability admission
+
+Callers that need resource routing pass `HostRequirements` to `acquire_ready()`. The command
+wrapper then receives an `admit` action after checkout readiness. The request names the
+activity (`work`, setup, base probe, check, or review), logical host class and environment,
+required capabilities, memory and disk headroom, whether it consumes heavy capacity, probe
+maximum age, and lease duration. These names are portable aliases; physical host identifiers
+and connection details do not enter shared evidence.
+
+`admit` is the authority for both measurement and leasing. It must atomically compare a fresh
+host-local probe with the request and reserve the requested capacity before returning. Its
+response contains `eligible`, `measured_at`, host class/environment, capabilities,
+`memory_available_mib`, `disk_free_gib`, `lease_id`, `lease_expires_at`, and a safe `detail`.
+Garden independently rejects stale or future probes, mismatched routing, missing capabilities,
+insufficient headroom, and missing or expired leases. Controller memory is never consulted for
+this decision. A rejected host is reported by its logical host alias.
+
+The wrapper's lease store is the cross-controller authority: all activities use the same
+host-local capacity and a repeated controller cannot manufacture another heavy slot.
+`renew-admission` receives the provider and lease IDs; an unknown, changed, or expired lease is
+an `EnvironmentStop`. `release-admission` must confirm `{"released": true}` and is called by
+`release()` (and by `cancel_acquisition(..., pool=...)` for an admitted but unlaunched run).
+These stops are environment-owned and happen before task-attempt accounting. Callers renew
+through setup and execution and treat lease loss as recoverable host unavailability.

@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -27,6 +35,28 @@ def _claim_slot(root: str, start, outcomes) -> None:
         outcomes.put("admitted")
     except ResourcePressureError:
         outcomes.put("deferred")
+
+
+def _add_product(sched, garden: Path, name: str, task_id: str, weight: int, timeout: int) -> None:
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"][name] = {"repo": "../repo", "base_branch": "main",
+                                 "timeout_minutes": timeout, "resources": {"weight": weight}}
+    config_path.write_text(yaml.safe_dump(config))
+    source = garden / "demo/p1/tasks/DM-001-first.md"
+    target = garden / name / "p1/tasks" / f"{task_id}-first.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(source.read_text().replace("DM-001", task_id))
+    shutil.copytree(garden / "demo/p1/specs", garden / name / "p1/specs")
+    (garden / name / "product.md").write_text(f"# {name}\n")
+    (garden / name / "p1/goals.md").write_text("# p1\n")
+    from garden.config import Config
+
+    sched.store.config = Config.load(garden)
+    sched.cfg = sched.store.config
+    sched.store.invalidate_tasks()
 
 
 def test_host_limit_counts_workers_reviews_and_checks_across_direct_launches(sched):
@@ -83,6 +113,100 @@ def test_concurrent_launchers_atomically_claim_the_last_host_slot(sched):
         assert process.exitcode == 0
 
     assert result == ["admitted", "deferred"]
+
+
+def test_weighted_capacity_is_atomic_and_reconciles_from_runs_after_restart(sched, garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    _set_resource_limit(sched, "max_parallel", 4)
+    _add_product(sched, garden, "heavy", "HV-001", 3, 180)
+    heavy = sched._new_local_run("HV-001", "work", "work")
+    assert heavy.env_snapshot["resource_weight"] == 3
+    # A cheap product still fits beside it.
+    cheap = sched._new_local_run("DM-001", "work", "work")
+    assert sched.resource_status().active == 4
+    with pytest.raises(ResourcePressureError, match="needs 1 capacity unit"):
+        sched._new_local_run("DM-002", "work", "work")
+
+    restarted = Scheduler(Store(garden), read_only=True)
+    restarted.set_override("resources.max_parallel", 4, by="test")
+    assert restarted.resource_status().active == 4
+    heavy.status = "done"
+    heavy.save()
+    assert restarted.resource_status().active == 1
+    cheap.status = "done"
+    cheap.save()
+
+
+def test_product_execution_timeout_is_snapshotted_and_checks_stay_distinct(sched, garden, monkeypatch):
+    _add_product(sched, garden, "heavy", "HV-001", 2, 180)
+    task = sched.store.task("HV-001")
+    assert sched.runner_for(task).config["timeout_minutes"] == 180
+    run = sched._new_local_run(task.id, "work", "work")
+    run.env_snapshot.update(product="heavy", execution_timeout_minutes=180)
+    monkeypatch.setattr(run, "elapsed_minutes", lambda: 100)
+    assert sched._finished_or_timed_out(run, sched.runner_for(task)) is False
+
+    check = sched._new_local_run(task.id, "check", "check")
+    check.env_snapshot.update(product="heavy", execution_timeout_minutes=0)
+    monkeypatch.setattr(check, "elapsed_minutes", lambda: 1000)
+    assert sched._finished_or_timed_out(check, sched.runner_for(task)) is False
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True])
+def test_product_resource_weight_requires_positive_integer(sched, value):
+    sched.cfg.data["products"]["demo"]["resources"] = {"weight": value}
+    with pytest.raises(ValueError, match="positive integer"):
+        sched.cfg.product_resource_weight("demo")
+
+
+def test_explicit_weight_is_reserved_before_taskless_aux_run_is_published(sched):
+    _set_resource_limit(sched, "max_parallel", 3)
+    occupied = sched._new_local_run("DM-001", "work", "work", resource_weight=2)
+
+    with pytest.raises(ResourcePressureError, match="needs 2 capacity unit"):
+        sched._new_local_run("_persona", "persona", "persona", resource_weight=2)
+
+    assert sched.resource_status().active == 2
+    assert not sched.runs.runs_for("_persona")
+    occupied.status = "done"
+    occupied.save()
+
+
+@pytest.mark.parametrize("kind", ["persona", "kickoff"])
+def test_taskless_product_aux_uses_product_weight_during_admission(sched, kind):
+    _set_resource_limit(sched, "max_parallel", 1)
+    sched.cfg.data["products"]["demo"]["resources"] = {"weight": 2}
+
+    with pytest.raises(ResourcePressureError, match="needs 2 capacity unit"):
+        sched.dispatch_aux(
+            kind, None, "brief", sched.store.root,
+            {"id": f"_{kind}-demo-p1", "product": "demo", "phase": "p1"},
+        )
+
+    assert not sched.runs.runs_for(f"_{kind}-demo-p1")
+
+
+def test_unschedulable_weight_does_not_starve_feasible_local_work(sched, garden, monkeypatch):
+    _set_resource_limit(sched, "max_parallel", 4)
+    _add_product(sched, garden, "oversized", "HV-001", 5, 180)
+    heavy = sched.store.task("HV-001")
+    cheap = sched.store.task("DM-001")
+    sched.state.get(heavy.id)["resource_bypasses"] = 3
+    sched.state.save()
+    monkeypatch.setattr(sched, "dispatch_queue", lambda: [
+        (heavy, "work", "older"), (cheap, "work", "newer"),
+    ])
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: False)
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+    dispatched = []
+    monkeypatch.setattr(sched, "dispatch", lambda task, mode, runner: dispatched.append(task.id))
+
+    sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
+
+    assert dispatched == [cheap.id]
+    assert sched.state.get(heavy.id)["resource_bypasses"] == 3
 
 
 def test_memory_or_temp_pressure_records_environment_stop_and_recovers(sched, monkeypatch):
@@ -303,3 +427,327 @@ def test_completed_check_continuation_survives_pressure_until_next_tick(sched, m
     assert sched.reap_check(task, type("Report", (), {})()) is True
     assert handled == [True]
     assert sched.state.get(task.id)["check_run"] == {}
+    assert sched.reap_check(task, type("Report", (), {})()) is False
+    assert handled == [True]
+
+
+def _cache_limited(sched, monkeypatch, tmp_path, *, inactive_file=700 * 1024 * 1024):
+    import garden.scheduler.resources as resources
+
+    group = tmp_path / "execution"
+    group.mkdir()
+    for name, value in (("memory.current", str(900 * 1024 * 1024)),
+                        ("memory.high", str(1800 * 1024 * 1024)),
+                        ("memory.max", str(2048 * 1024 * 1024)),
+                        ("memory.events", "high 0\nmax 0\noom 0\noom_kill 0\n"),
+                        ("memory.stat", f"file {inactive_file}\nshmem {300 * 1024 * 1024}\ninactive_file {inactive_file}\n"),
+                        ("memory.reclaim", ""), ("cgroup.procs", ""), ("cpu.max", "100000 100000")):
+        (group / name).write_text(value)
+    values = {
+        "resources.min_memory_available_mb": 1500,
+        "resources.execution_cgroup": str(group),
+        "resources.reclaim_max_mb": 256,
+        "resources.reclaim_cooldown_seconds": 300,
+        "resources.reclaim_timeout_seconds": 1,
+    }
+    monkeypatch.setattr(sched, "effective", lambda key, default=None: values.get(key, default))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8000)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 7000)
+    return group, values
+
+
+def test_cache_limited_admission_starts_one_bounded_helper_and_still_stops(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    launches = []
+
+    class Process:
+        pid = 4242
+
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda command, **kwargs: launches.append(command) or Process())
+    monkeypatch.setattr(resources, "_reclaim_pid_alive", lambda pid, token: True)
+
+    with pytest.raises(ResourcePressureError, match="execution cgroup available memory"):
+        sched._new_local_run("DM-001", "work", "work")
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-002", "review", "review")
+
+    assert len(launches) == 1
+    assert launches[0][launches[0].index("--bytes") + 1] == str(256 * 1024 * 1024)
+    state = json.loads((sched.cfg.garden_dir / "resource-reclaim.json").read_text())
+    assert state["memory_stat"]["shmem"] == 300 * 1024 * 1024
+    assert not sched.runs.runs_for("DM-001") and not sched.runs.runs_for("DM-002")
+
+
+@pytest.mark.parametrize("other_gate", ["slot", "temp", "oom", "host"])
+def test_reclaim_is_not_considered_while_an_ordinary_gate_also_blocks(
+        sched, monkeypatch, tmp_path, other_gate):
+    import garden.scheduler.resources as resources
+
+    group, values = _cache_limited(sched, monkeypatch, tmp_path)
+    if other_gate == "slot":
+        values["resources.max_parallel"] = 1
+        sched.runs.new_run("busy", "local", mode="check").save()
+    elif other_gate == "temp":
+        values["resources.min_temp_free_mb"] = 1000
+        monkeypatch.setattr(resources, "_free_mb", lambda path: 10)
+    elif other_gate == "oom":
+        (group / "memory.events").write_text("high 0\nmax 0\noom 1\noom_kill 0\n")
+    else:
+        monkeypatch.setattr(resources, "_memory_available_mb", lambda: 500)
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("reclaim started"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "check", "check")
+
+
+def test_partial_reclaim_requires_fresh_normal_gate_and_cooldown(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    _group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    state_path, report_path = sched._reclaim_paths()
+    started = resources.time.time() - 2
+    state_path.write_text(json.dumps({"running": True, "pid": 123, "started_at": started, "token": "x"}) + "\n")
+    report_path.write_text(json.dumps({"token": "x", "started_at": started, "finished_at": resources.time.time(),
+                                      "status": "complete", "headroom_before_bytes": 900 << 20,
+                                      "headroom_after_bytes": 1200 << 20}) + "\n")
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("cooldown ignored"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "work", "work")
+    assert "900→1200 MiB actual headroom" in sched.resource_status().reclaim
+    observe = status_line(sched.store, sched, resolve(sched.cfg, sched))
+    config = TestClient(create_app(sched.store, watch=False)).get("/config").text
+    assert "last bounded cache reclaim complete (900→1200 MiB actual headroom)" in observe
+    assert "Admission still requires a fresh ordinary headroom check" in config
+
+
+def test_fresh_headroom_under_lock_admits_after_completed_reclaim(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    _group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    state_path, report_path = sched._reclaim_paths()
+    started = resources.time.time() - 2
+    state_path.write_text(json.dumps({"running": True, "pid": 123, "started_at": started, "token": "x"}) + "\n")
+    report_path.write_text(json.dumps({"token": "x", "started_at": started, "finished_at": resources.time.time(),
+                                      "status": "complete", "headroom_before_bytes": 900 << 20,
+                                      "headroom_after_bytes": 1600 << 20}) + "\n")
+    monkeypatch.setattr(resources, "_cgroup_memory_status", lambda path: (1600, {"high": 0, "max": 0, "oom": 0, "oom_kill": 0}))
+
+    run = sched._new_local_run("DM-001", "check", "check")
+    assert run.status == "running"
+
+
+def test_missing_cache_reading_and_unavailable_delegation_preserve_stop(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    (group / "memory.stat").unlink()
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("reclaim started"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "work", "work")
+    assert not (sched.cfg.garden_dir / "resource-reclaim.json").exists()
+
+
+def test_stuck_reclaim_helper_is_killed_and_cooldown_preserves_stop(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    _group, _values = _cache_limited(sched, monkeypatch, tmp_path)
+    state_path, _report_path = sched._reclaim_paths()
+    state_path.write_text(json.dumps({"running": True, "pid": 456, "started_at": resources.time.time() - 10,
+                                      "token": "stuck"}) + "\n")
+    killed = []
+    monkeypatch.setattr(resources, "_reclaim_pid_alive", lambda pid, token: True)
+    monkeypatch.setattr(resources.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(resources.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("cooldown ignored"))
+
+    with pytest.raises(ResourcePressureError):
+        sched._new_local_run("DM-001", "review", "review")
+    assert killed == [(456, resources.signal.SIGKILL)]
+    result = json.loads(state_path.read_text())["result"]
+    assert result == {"error": "reclaim helper timed out", "status": "error"}
+
+
+def test_resource_status_reads_completed_reclaim_without_publishing(sched, monkeypatch):
+    state_path, report_path = sched._reclaim_paths()
+    state_path.write_text(json.dumps({"running": True, "pid": 123, "started_at": 1, "token": "x"}))
+    report_path.write_text(json.dumps({"token": "x", "status": "complete", "finished_at": 2}))
+    monkeypatch.setattr(sched, "_write_reclaim_state", lambda *args: pytest.fail("read path wrote state"))
+
+    errors = []
+    def read_status():
+        try:
+            sched.resource_status()
+        except Exception as exc:  # noqa: BLE001 - retain failures raised inside test threads
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read_status, daemon=True) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    assert json.loads(state_path.read_text())["running"] is True
+
+
+def test_dispatch_queue_attempts_reclaim_before_worker_slot_reader_stops_it(sched, monkeypatch):
+    attempts = []
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: attempts.append("worker"))
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+    monkeypatch.setattr(sched, "local_slots_free", lambda: 0)
+
+    sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
+
+    assert attempts == ["worker"]
+
+
+def test_pending_review_attempts_reclaim_before_review_slot_reader_stops_it(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = task.status.IN_REVIEW
+    sched.state.get(task.id)["pending_reviews"] = [{"kind": "review"}]
+    attempts = []
+    monkeypatch.setattr(sched, "dispatch_queue", lambda: [])
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: attempts.append("review"))
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+
+    sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
+
+    assert attempts == ["review"]
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("CG385_REAL_REPORT"),
+                    reason="CG-385 disposable cgroup evidence only")
+def test_real_disk_cache_reclaim_recovers_normal_tick_admission(sched, monkeypatch, request):
+    """Measure partial then successful real reclaim while the disposable web app responds."""
+    import os
+
+    import garden.scheduler.resources as resources
+
+    relative = next(line.split("::", 1)[1] for line in Path("/proc/self/cgroup").read_text().splitlines()
+                    if line.startswith("0::"))
+    group = Path("/sys/fs/cgroup") / relative.lstrip("/")
+    cache_file = Path.cwd() / ".cg385-real-disk-cache.bin"
+    cache_file.unlink(missing_ok=True)
+    request.addfinalizer(lambda: cache_file.unlink(missing_ok=True))
+    block = b"x" * (1024 * 1024)
+    with cache_file.open("wb") as stream:
+        for _ in range(600):
+            stream.write(block)
+        os.fsync(stream.fileno())
+    with cache_file.open("rb") as stream:
+        while stream.readinto(bytearray(1024 * 1024)):
+            pass
+    # Brief anonymous pressure ages the disk pages onto inactive_file without deleting
+    # them; the subsequent bounded memory.reclaim is the operation under test.
+    pressure_pages = bytearray(192 * 1024 * 1024)
+    for offset in range(0, len(pressure_pages), 4096):
+        pressure_pages[offset] = 1
+    del pressure_pages
+
+    def snapshot() -> dict[str, object]:
+        status, events = resources._cgroup_memory_status(group)
+        stat = resources._memory_stat(group) or {}
+        return {"headroom_mb": status, "memory.current": int((group / "memory.current").read_text()),
+                "memory.peak": int((group / "memory.peak").read_text()), "memory.stat": stat,
+                "events": events, "memory.pressure": (group / "memory.pressure").read_text().splitlines()}
+
+    before = snapshot()
+    print("cg385 cache snapshot", before)
+    assert int(before["memory.stat"]["inactive_file"]) >= 256 << 20
+    minimum = int(before["headroom_mb"]) + 160
+    original_effective = sched.effective
+    values = {"resources.execution_cgroup": str(group), "resources.min_memory_available_mb": minimum,
+              "resources.reclaim_max_mb": 32, "resources.reclaim_cooldown_seconds": 0,
+              "resources.reclaim_timeout_seconds": 5}
+    monkeypatch.setattr(sched, "effective", lambda key, default=None: values.get(key, original_effective(key, default)))
+    monkeypatch.setattr(resources, "_memory_available_mb", lambda: 8192)
+    monkeypatch.setattr(resources, "_cgroup_memory_available_mb", lambda: 8192)
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    counter = sched.store.root / "served-counts.json"
+    counter.write_text('{"reads": 0, "scans": 0}')
+    server = subprocess.Popen([
+        sys.executable, str(Path(__file__).parents[2] / "docs/validation/cg385/served_app.py"),
+        str(sched.store.root), str(counter), str(port),
+    ])
+    url = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            urllib.request.urlopen(url + "/healthz", timeout=1).read()
+            break
+        except Exception:
+            if time.monotonic() >= deadline:
+                server.terminate()
+                raise
+            time.sleep(0.05)
+
+    latencies: list[dict[str, object]] = []
+
+    def http_probe(stage: str) -> None:
+        started = time.monotonic()
+        with urllib.request.urlopen(url + "/config", timeout=3) as response:
+            response.read()
+            latencies.append({"stage": stage, "status_code": response.status,
+                              "seconds": time.monotonic() - started})
+
+    def await_report(token: str | None = None) -> dict[str, object]:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            http_probe("helper_running")
+            try:
+                result = json.loads(report_path.read_text())
+            except (OSError, ValueError):
+                result = {}
+            if result and (token is None or result.get("token") != token):
+                return result
+            time.sleep(0.02)
+        raise AssertionError("bounded reclaim helper did not publish its report")
+
+    report_path = sched._reclaim_paths()[1]
+    try:
+        first = sched.tick()
+        assert not first.dispatched
+        partial_reclaim = await_report()
+        assert partial_reclaim["status"] == "complete"
+        after_partial = snapshot()
+        assert int(after_partial["headroom_mb"]) < minimum
+
+        values["resources.reclaim_max_mb"] = 256
+        second = sched.tick()
+        assert not second.dispatched
+        recovered_reclaim = await_report(str(partial_reclaim["token"]))
+        assert recovered_reclaim["status"] == "complete"
+        after_reclaim = snapshot()
+        assert int(after_reclaim["headroom_mb"]) >= minimum
+
+        third = sched.tick()
+        assert any(item.startswith("DM-001(work)") for item in third.dispatched)
+        http_probe("after_admission")
+    finally:
+        server.terminate()
+        server.wait(timeout=5)
+
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    source_tree = subprocess.check_output(["git", "rev-parse", "HEAD:src"], text=True).strip()
+    test_tree = subprocess.check_output(["git", "rev-parse", "HEAD:tests"], text=True).strip()
+    evidence = {
+        "invocation": os.environ.get("CG385_INVOCATION", ""), "source_sha": head,
+        "source_tree": source_tree, "test_tree": test_tree,
+        "workload": "real disk-backed page cache, real bounded kernel reclaim, supervised test worker, and served HTTP requests",
+        "synthetic": False, "cgroup": str(group), "limits": {
+            "memory.high": (group / "memory.high").read_text().strip(),
+            "memory.max": (group / "memory.max").read_text().strip(),
+            "memory.swap.max": (group / "memory.swap.max").read_text().strip(),
+        }, "minimum_headroom_mb": minimum, "before": before,
+        "partial_reclaim": partial_reclaim, "after_partial": after_partial,
+        "recovered_reclaim": recovered_reclaim, "after_reclaim": after_reclaim,
+        "ticks": [first.dispatched, second.dispatched, third.dispatched],
+        "http": {"requests": latencies, "max_seconds": max(item["seconds"] for item in latencies)},
+        "cache_file_bytes": cache_file.stat().st_size,
+    }
+    Path(os.environ["CG385_REAL_REPORT"]).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")

@@ -270,6 +270,8 @@ def _garden_with_a_decision_and_a_notice(garden: Path) -> None:
 def test_group_kind_classifies_retrying_as_notice_and_approve_as_decision():
     assert GROUP_KIND["retrying"] == "notice"
     assert GROUP_KIND["tool"] == "notice"
+    assert GROUP_KIND["automated_review"] == "notice"
+    assert GROUP_KIND["deferred"] == "notice"
     for g in ("question", "decision", "triage", "review", "attention", "approve", "budget", "retro_verdict"):
         assert GROUP_KIND[g] == "decision", g
 
@@ -357,7 +359,7 @@ def test_in_review_card_reads_review_queued_while_a_review_run_is_in_flight(gard
     sched.state.save()
 
     items = {i["task"]: i for i in build_inbox(store, sched)}
-    assert items["DM-001"]["why"] == "review queued"
+    assert items["DM-001"]["why"] == "automated review running"
 
 
 def test_merged_task_with_review_cap_stop_shows_no_inbox_card(garden: Path, fake_github):

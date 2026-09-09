@@ -17,7 +17,7 @@ def worker_candidates(tasks: dict[str, Task], state: Any, max_revisions: int,
     queue += [(t, "revise") for t in tasks.values()
               if t.status == Status.CHANGES_REQUESTED and state.get(t.id).get("pending_feedback")
               and not state.get(t.id).get("rebase_pending") and not state.get(t.id).get("needs_human")
-              and not state.get(t.id).get("check_run")
+              and not state.get(t.id).get("check_run") and not state.get(t.id).get("review_run")
               and (state.get(t.id).get("pending_feedback_rebase")
                    or int(state.get(t.id).get("revisions", 0)) < max_revisions)]
     return queue + [(t, "work") for t in ready(tasks, stack=stack) if not edit_pending(t)]

@@ -21,7 +21,9 @@ from pathlib import Path
 
 import yaml
 
+from .checks import is_publishing_ci_helper
 from .config import CONFIG_NAME
+from .github import repo_slug_from_remote
 from .planner import import_plan, parse_plan, plan_prompt, run_planner
 from .scaffold import init_garden, new_phase
 from .store import Store
@@ -86,10 +88,9 @@ def _add_github_metadata(repo: Path, result: ProjectDiscovery) -> None:
     remote = subprocess.run(
         ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=False
     ).stdout.strip()
-    match = re.search(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?$", remote)
-    if not match:
+    slug = repo_slug_from_remote(remote)
+    if not slug:
         return
-    slug = f"{match.group(1)}/{match.group(2)}"
     repo_info = _gh_json(repo, ["repo", "view", slug, "--json", "defaultBranchRef"])
     if isinstance(repo_info, dict):
         default = (repo_info.get("defaultBranchRef") or {}).get("name")
@@ -173,7 +174,7 @@ def _documented_commands(repo: Path, files: list[Path]) -> tuple[str, str, str, 
     found: dict[str, tuple[str, str]] = {}
     patterns = {
         "setup": re.compile(r"(?:^|\s)(?:uv venv|uv sync|uv pip install|python(?:3)? -m pip install|npm (?:ci|install)|go mod download|cargo fetch|bundle install)"),
-        "test": re.compile(r"(?:^|\s)(?:[^\s`]+/)?(?:python -m )?pytest(?:\s|$)|(?:^|\s)(?:npm test|go test|cargo test|bundle exec rake test)(?:\s|$)"),
+        "test": re.compile(r"(?:^|\s)(?:[^\s`]+/)?(?:python -m )?pytest(?:\s|$)|(?:^|\s)(?:[^\s`]+/)?python(?:3)?\s+(?:[^\s`]+/)?scripts/check_ci\.py(?:\s|$)|(?:^|\s)(?:npm test|go test|cargo test|bundle exec rake test)(?:\s|$)"),
         "lint": re.compile(r"(?:^|\s)(?:[^\s`]+/)?ruff check(?:\s|$)|(?:^|\s)(?:npm run lint|go vet|cargo clippy|pre-commit run)(?:\s|$)"),
     }
     for name in ordered:
@@ -194,6 +195,25 @@ def _documented_commands(repo: Path, files: list[Path]) -> tuple[str, str, str, 
     test = found.get("test", ("", ""))[0]
     lint = found.get("lint", ("", ""))[0]
     return setup, test, lint, sources
+
+
+def _ambiguous_documented_ci_commands(repo: Path, files: list[Path]) -> list[str]:
+    """CI-looking documented commands whose execution contract discovery cannot prove."""
+    rels = {p.relative_to(repo).as_posix(): p for p in files}
+    ordered = [name for name in ("AGENTS.md", "CONTRIBUTING.md", "README.md") if name in rels]
+    ordered.extend(sorted(name for name in rels if name.startswith("docs/") and name.endswith(".md")))
+    ambiguous: list[str] = []
+    for name in ordered:
+        text = _text(rels[name])
+        candidates = re.findall(r"`([^`\n]+)`", text)
+        candidates.extend(line.strip() for block in re.findall(r"```[^\n]*\n(.*?)```", text, re.DOTALL) for line in block.splitlines())
+        for candidate in candidates:
+            command = candidate.strip().rstrip(".")
+            if not command or not _safe_ci_command(command) or is_publishing_ci_helper(command):
+                continue
+            if re.search(r"(?:^|[\s/])scripts/[^\s`]*ci[^\s`]*", command, re.IGNORECASE):
+                ambiguous.append(command)
+    return list(dict.fromkeys(ambiguous))
 
 
 def _commands(repo: Path, files: list[Path]) -> tuple[str, str, str, list[str]]:
@@ -340,6 +360,15 @@ def discover_project(repo: Path) -> ProjectDiscovery:
         f"{label} command from {', '.join(command_sources) or 'available project metadata'}: {value or 'not determined'}"
         for label, value in (("setup", setup), ("test", test), ("lint", lint))
     )
+    if is_publishing_ci_helper(test):
+        result.configure_by_hand.append(
+            f"CI helper `{test}` publishes a branch; before approval explicitly set "
+            "setup.worker_push: true and configure Git/GitHub credentials for the scrubbed worker environment."
+        )
+    for command in _ambiguous_documented_ci_commands(repo, files):
+        result.unavailable.append(
+            f"Whether documented CI command `{command}` is a local check or a branch-publishing helper"
+        )
 
     for rel, path in rels.items():
         lower = path.name.lower().split(".")[0]

@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from .github import is_git_remote_url
+
 CONFIG_NAME = "garden.yaml"
 
 # Config keys read once at startup — either when the Scheduler is constructed or when the
@@ -40,7 +42,9 @@ def no_live_garden_root(base: Path) -> str:
 # fence manifest until the run is reaped or an operator confirms it (CG-242): live reload must
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
-EXECUTABLE_KEYS: tuple[str, ...] = ("notify.command", "checks", "worker_env.pass")
+EXECUTABLE_KEYS: tuple[str, ...] = (
+    "notify.command", "checks", "worker_env.pass", "worker_env.config_files", "runner_adapters",
+)
 
 
 def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
@@ -60,6 +64,11 @@ def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
         name: (p.get("setup") or {}).get("command")
         for name, p in (data.get("products") or {}).items()
         if isinstance(p, dict) and (p.get("setup") or {}).get("command")
+    }
+    sig["validation"] = {
+        name: deepcopy(p.get("validation"))
+        for name, p in (data.get("products") or {}).items()
+        if isinstance(p, dict) and p.get("validation") is not None
     }
     sig["harnesses"] = {
         name: {"bin": h.get("bin"), "command": h.get("command")}
@@ -100,6 +109,7 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
     products = out.setdefault("products", {})
     if isinstance(products, dict):
         commands = signature.get("setup.command") or {}
+        validations = signature.get("validation") or {}
         for name, product in products.items():
             if not isinstance(product, dict):
                 continue
@@ -111,6 +121,10 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
                 setup["command"] = deepcopy(commands[name])
             else:
                 setup.pop("command", None)
+            if name in validations:
+                product["validation"] = deepcopy(validations[name])
+            else:
+                product.pop("validation", None)
 
     harnesses = out.setdefault("harnesses", {})
     if isinstance(harnesses, dict):
@@ -137,11 +151,17 @@ DEFAULTS: dict[str, Any] = {
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
     "runner": "local",
+    # Private runner classes are named only by operator configuration.  Their modules are
+    # deliberately not imported while config is being read; resolution happens at runner
+    # construction, after normal scheduler admission and fencing have already applied.
+    "runner_adapters": {},
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
     "resources": {               # host-wide local admission; thresholds of 0 disable sensing
-        "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
+        "max_parallel": None,     # capacity units shared by workers + reviews + checks
+        "weight": 1,              # default reservation per run, in capacity units
+        "max_bypasses": 3,        # cheap claims allowed past an older heavy run before reserving room
         "heavy_test_parallel": 1, # per-user supported setup/check/validation capacity
         # A detached check can wait for the host-wide heavy-validation lease without looking
         # like a silent worker.  This is deliberately separate from idle_kill_minutes: the
@@ -150,6 +170,9 @@ DEFAULTS: dict[str, Any] = {
         "min_memory_available_mb": 0,
         "min_temp_free_mb": 0,
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
+        "reclaim_max_mb": 512,     # bounded best-effort file-cache reclaim; 0 disables it
+        "reclaim_timeout_seconds": 5,
+        "reclaim_cooldown_seconds": 300,
     },
     "max_attempts": 2,
     "max_consecutive_env_errors": 3,
@@ -173,9 +196,15 @@ DEFAULTS: dict[str, Any] = {
     "discovered": {"auto_approve_blocking": True},  # blocking discovered work is created ready
     "stall": {"enabled": True},   # escalate to a human when revise rounds stop changing the diff
     "budgets": {},                # "<product>/<phase>": usd cap; also products.<name>.budget_usd
-    "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 600},
+    # One hard execution budget for worker-issued validations and detached checks. Admission
+    # waiting is reported separately by run_supervisor and does not consume this clock.
+    "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 900},
     "review": {
         "enabled": True,
+        # Temporary, owner-selected escape hatch for unavailable screenshot plumbing.
+        # The UI check still records a failure; only its trusted infrastructure cause becomes
+        # advisory. Visible/application/check failures remain blocking.
+        "capture_infrastructure_policy": "require",  # require | advisory
         "max_rounds": 2,          # positive automated-review cap per PR; null means unlimited
         "friction_after": 4,      # positive round count that records a non-blocking loop signal; null disables it
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
@@ -183,6 +212,8 @@ DEFAULTS: dict[str, Any] = {
         "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
         "ladder": [],              # weakest-to-strongest `harness:model` PR reviewer route
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
+        "recovery_attempts": 2,   # bounded retries for a review that never yields a verdict
+        "recovery_backoff_seconds": 30,  # linear delay before each recovered review admission
     },
     "retro": {
         "difficulty": "hard",     # tier for persona reviews (phase and PR), the retro reconciliation and
@@ -198,7 +229,7 @@ DEFAULTS: dict[str, Any] = {
                                # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
                                # the codex defaults and docs/codex.md for where the numbers came from
     "ssh": {"hosts": []},
-    "workers": {"lease_seconds": 120, "poll_seconds": 5, "hosts": []},
+    "workers": {"lease_seconds": 120, "recovery_seconds": 300, "poll_seconds": 5, "hosts": []},
     "git": {"user_name": "", "user_email": ""},  # identity written into a fresh product clone; see Scheduler.git_identity
     "brief": {
         "inline_max_chars": 24000,  # reading-list files larger than this are listed, not inlined
@@ -242,6 +273,8 @@ DEFAULTS: dict[str, Any] = {
                                   # variable the harness reads. Claude's .credentials.json and
                                   # Codex's auth.json are copied into a fresh private directory
                                   # per dispatch; custom variables pass through unchanged.
+        "config_files": {},       # explicitly named {source, destination, required} files;
+                                  # destinations are relative to the isolated worker HOME.
     },
     "browser_readiness": {
         "timeout_seconds": 20,   # bounded Chromium launch before capture-required work dispatches
@@ -323,6 +356,13 @@ class Config:
         """The optional, non-blocking round count at which loop friction is recorded."""
         return self._positive_optional_int("review.friction_after")
 
+    def capture_infrastructure_policy(self) -> str:
+        """Whether trusted screenshot-infrastructure failures block visual review."""
+        value = str(self.get("review.capture_infrastructure_policy", "require") or "require")
+        if value not in ("require", "advisory"):
+            raise ValueError("review.capture_infrastructure_policy must be 'require' or 'advisory'")
+        return value
+
     def _positive_optional_int(self, dotted: str) -> int | None:
         value = self.get(dotted)
         if value is None:
@@ -334,10 +374,33 @@ class Config:
     def product(self, name: str) -> dict[str, Any]:
         return dict(self.data.get("products", {}).get(name, {}) or {})
 
+    def product_github(self, name: str) -> dict[str, str]:
+        """Return the product's explicitly scoped GitHub route.
+
+        ``github: owner/repo`` remains the compact public-GitHub spelling. Enterprise
+        products use a mapping so their web host, API base, and token source travel
+        together instead of relying on ambient ``gh`` configuration.
+        """
+        value = self.product(name).get("github")
+        if isinstance(value, str):
+            return {"slug": value, "host": "github.com"}
+        if not isinstance(value, dict):
+            return {}
+        slug = str(value.get("slug") or "")
+        host = str(value.get("host") or "github.com")
+        if not slug:
+            raise ValueError(f"products.{name}.github.slug is required when github is a mapping")
+        return {
+            "slug": slug,
+            "host": host,
+            "api_base": str(value.get("api_base") or value.get("api_url") or ""),
+            "token_env": str(value.get("token_env") or ""),
+        }
+
     def product_repo(self, name: str) -> Path | str:
         """A local path (resolved against root) or a URL for the product's code repo."""
         repo = self.product(name).get("repo", ".")
-        if "://" in str(repo) or str(repo).startswith("git@"):
+        if is_git_remote_url(str(repo)):
             return str(repo)
         return (self.root / str(repo)).resolve()
 
@@ -370,6 +433,22 @@ class Config:
         r = str(self.product(name).get("runner") or self.get("runner"))
         return "local" if r == "claude-local" else r
 
+    def runner_adapter(self, name: str) -> dict[str, Any] | None:
+        """Return the trusted operator registration for a private runner, if any.
+
+        Task frontmatter and worker output are intentionally not inputs here: only the
+        layered operator configuration may name code to import.
+        """
+        adapters = self.get("runner_adapters") or {}
+        if not isinstance(adapters, dict):
+            raise ValueError("runner_adapters must be a mapping")
+        registration = adapters.get(name)
+        if registration is None:
+            return None
+        if not isinstance(registration, dict):
+            raise ValueError(f"runner_adapters.{name} must be a mapping")
+        return dict(registration)
+
     def product_harness(self, name: str) -> str:
         return str(self.product(name).get("harness") or self.get("harness") or "claude")
 
@@ -389,6 +468,47 @@ class Config:
         differently sets its own commands (or leaves the block empty)."""
         s = self.product(name).get("setup")
         return dict(s) if isinstance(s, dict) else {}
+
+    def product_validation(self, name: str) -> dict[str, str]:
+        """Return the product's merge-validation policy."""
+        value = self.product(name).get("validation")
+        if value is None:
+            return {"provider": "legacy", "command": ""}
+        if isinstance(value, str):
+            return {"provider": value, "command": ""}
+        if not isinstance(value, dict):
+            raise ValueError(f"products.{name}.validation must be a string or mapping")
+        return {"provider": str(value.get("provider") or ""),
+                "command": str(value.get("command") or "")}
+
+    def product_checkout(self, name: str) -> dict[str, Any]:
+        """Opt-in checkout policy for a product.
+
+        The default is the historical per-task linked worktree.  ``in_place`` names an
+        explicitly provisioned canonical checkout and a command which is run before every
+        use (unlike ``setup.command``, which is stamped and normally runs once).
+        """
+        value = self.product(name).get("checkout")
+        return dict(value) if isinstance(value, dict) else {}
+    def product_timeout_minutes(self, name: str) -> float:
+        """Worker/revision wall-clock budget, inherited from the garden default.
+
+        Check commands intentionally use ``checks.timeout_seconds`` instead.
+        """
+        value = self.product(name).get("timeout_minutes", self.get("timeout_minutes", 90))
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"products.{name}.timeout_minutes must be a non-negative number")
+        return float(value)
+
+    def product_resource_weight(self, name: str) -> int:
+        """Capacity units reserved by one run, inherited from ``resources.weight``."""
+        resources = self.product(name).get("resources") or {}
+        if not isinstance(resources, dict):
+            raise ValueError(f"products.{name}.resources must be a mapping")
+        value = resources.get("weight", self.get("resources.weight", 1))
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"products.{name}.resources.weight must be a positive integer (capacity units)")
+        return value
 
     def harness(self, name: str):
         from .harness import DEFAULT_HARNESSES, Harness
@@ -497,6 +617,12 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_product_policies(data: dict[str, Any]) -> None:
     """Reject ambiguous branch-ownership and protected-path configuration early."""
+    review = data.get("review") or {}
+    if not isinstance(review, dict):
+        raise ValueError("review must be a mapping")
+    capture_policy = review.get("capture_infrastructure_policy", "require")
+    if capture_policy not in ("require", "advisory"):
+        raise ValueError("review.capture_infrastructure_policy must be 'require' or 'advisory'")
     products = data.get("products") or {}
     if not isinstance(products, dict):
         raise ValueError("products must be a mapping")
@@ -509,6 +635,23 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         paths = product.get("protected_paths", [])
         if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
             raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
+        validation = product.get("validation")
+        if validation is not None:
+            if isinstance(validation, str):
+                provider, validation_command = validation, ""
+            elif isinstance(validation, dict):
+                provider = validation.get("provider")
+                validation_command = validation.get("command", "")
+            else:
+                raise ValueError(f"products.{name}.validation must be a string or mapping")
+            if provider not in ("actions", "status", "command", "none"):
+                raise ValueError(
+                    f"products.{name}.validation.provider must be 'actions', 'status', 'command', or 'none'"
+                )
+            if provider == "command" and (not isinstance(validation_command, str) or not validation_command.strip()):
+                raise ValueError(f"products.{name}.validation.command is required for the command provider")
+            if provider != "command" and validation_command:
+                raise ValueError(f"products.{name}.validation.command is only valid with the command provider")
 
 
 def find_root(start: Path | None = None) -> Path:

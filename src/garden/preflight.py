@@ -16,17 +16,26 @@ PREFLIGHT_ITEMS = (
 )
 
 PREFLIGHT_RULES = """\
-## Review pre-flight
+## Optional review pre-flight
 
-Before writing your result, walk this rubric and include `pre_flight` in `GARDEN_RESULT`.
-It is a list with one entry for each item below, each shaped as
-`{{"item": "<item>", "status": "pass" | "not_applicable" | "fail", "evidence": "<short reason>"}}`.
+Use this rubric when it helps you choose proportionate verification. You may include
+`pre_flight` in `GARDEN_RESULT`, but the list and its exact shape are optional; a clear
+attestation of what you tested or inspected is sufficient.
 
 {items}
 
-The garden rejects a result that omits this list or any item. Mechanical failures are sent
-back before review; include a stated reason rather than silently skipping an item.
+Actual conflict markers, syntax errors, failed applicable checks, or unmet behavior remain
+blocking. Missing checklist rows, captures, or description polish alone are advisory.
+{capture_policy}
 """
+
+CAPTURE_INFRASTRUCTURE_POLICIES = ("require", "advisory")
+_TRUSTED_CAPTURE_FAILURES = {
+    "browser_unavailable",
+    "capture_path_unavailable",
+    "capture_result_unavailable",
+    "capture_protocol_mismatch",
+}
 
 # A regular unified diff prefixes newly-added source lines with ``+``.  Match both
 # that form and raw file content, but not a marker removed from the branch.
@@ -35,16 +44,64 @@ _CONFLICT = re.compile(r"^(?:\+)?(?:<<<<<<<|>>>>>>>)(?:[ \t]|$)", re.MULTILINE)
 
 
 def _is_ui_path(path: str) -> bool:
+    # The JSON API is served from the web package but does not render a page.  It has
+    # functional coverage rather than screenshot coverage when a legacy preflight
+    # caller has no frozen validation plan to consult.
+    if path == "src/garden/web/pages/api.py":
+        return False
     return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
             or path.endswith((".css", ".scss")))
 
 
-def preflight_section() -> str:
-    return PREFLIGHT_RULES.format(items="\n".join(f"- {item}" for item in PREFLIGHT_ITEMS))
+def preflight_section(capture_infrastructure_policy: str = "require") -> str:
+    policy = _capture_policy(capture_infrastructure_policy)
+    if policy == "advisory":
+        capture_policy = (
+            "\nCapture infrastructure policy for this run: `advisory`. If the trusted UI check "
+            "cannot launch its browser, reach its capture path, or return its result, report that "
+            "attempt as failed with its diagnostic and preserve any HTML/text artifacts. The "
+            "scheduler may continue with focused behavior evidence. Observed UI defects, "
+            "application/render errors, functional check "
+            "failures, and contradictory source or artifacts still fail this rubric. Never mark "
+            "a missing screenshot as a pass."
+        )
+    else:
+        capture_policy = ""
+    return PREFLIGHT_RULES.format(
+        items="\n".join(f"- {item}" for item in PREFLIGHT_ITEMS),
+        capture_policy=capture_policy,
+    )
+
+
+def capture_infrastructure_reason(result: dict[str, Any], *, policy: str,
+                                  trusted_generated_check: bool) -> str:
+    """Return a trusted capture-infrastructure diagnostic eligible for advisory handling.
+
+    The result field alone is not trusted: the scheduler must also prove that it generated the
+    built-in UI check.  The built-in wrapper removes any child-supplied classification before it
+    writes this metadata, so worker code cannot opt its own application failure out of review.
+    """
+    if _capture_policy(policy) != "advisory" or not trusted_generated_check:
+        return ""
+    if result.get("name") != "ui" or result.get("status") not in ("fail", "error"):
+        return ""
+    infrastructure = result.get("capture_infrastructure")
+    if not isinstance(infrastructure, dict):
+        return ""
+    if infrastructure.get("source") != "garden.walkthrough:ui_check":
+        return ""
+    if infrastructure.get("kind") not in _TRUSTED_CAPTURE_FAILURES:
+        return ""
+    return str(infrastructure.get("diagnostic") or result.get("summary") or "capture infrastructure unavailable").strip()
+
+
+def _capture_policy(value: Any) -> str:
+    """Normalize internal/default callers while failing closed on unknown values."""
+    return "advisory" if value == "advisory" else "require"
 
 
 def missing_preflight(value: Any) -> list[str]:
-    """Return required rubric items missing from a worker result."""
+    """Return omitted optional rubric items for advisory display or legacy callers."""
     if not isinstance(value, list):
         return list(PREFLIGHT_ITEMS)
     reported = {str(row.get("item") or "").strip() for row in value if isinstance(row, dict)
@@ -54,7 +111,8 @@ def missing_preflight(value: Any) -> list[str]:
 
 def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_description: bool,
                        ui_changed: bool, captures: list[str], inspection_error: str = "",
-                       required_ui: bool | None = None) -> list[dict[str, Any]]:
+                       required_ui: bool | None = None,
+                       capture_infrastructure_advisory: str = "") -> list[dict[str, Any]]:
     """Checks that never need a reviewer or model, one concise failure each."""
     if inspection_error:
         return [_fail("mechanical pre-flight", f"could not inspect candidate diff: {inspection_error}")]
@@ -91,11 +149,21 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
     ui_changed = (ui_changed or any(_is_ui_path(name) for name in names)) if required_ui is None else required_ui
     pngs = [p for p in captures if p.endswith(".png")]
     if ui_changed and not pngs:
-        results.append(_fail("UI captures", "planned visual behavior has no PNG captures"))
+        details = capture_infrastructure_advisory or (
+            "The reviewer may inspect the affected behavior directly or accept another clear attestation."
+        )
+        results.append(_advisory(
+            "UI captures",
+            "planned visual behavior has no PNG captures",
+            details,
+        ))
     else:
         results.append(_pass("UI captures"))
     if require_description and not pr_body.strip():
-        results.append(_fail("PR description", "worker result has an empty pr_body"))
+        results.append(_advisory(
+            "PR description", "worker result has an empty pr_body",
+            "Description presentation is advisory; judge the source and claimed outcome.",
+        ))
     else:
         results.append(_pass("PR description"))
     return results
@@ -107,3 +175,7 @@ def _pass(name: str) -> dict[str, Any]:
 
 def _fail(name: str, summary: str) -> dict[str, Any]:
     return {"name": name, "status": "fail", "summary": summary, "details": ""}
+
+
+def _advisory(name: str, summary: str, details: str) -> dict[str, Any]:
+    return {"name": name, "status": "advisory", "summary": summary, "details": details}

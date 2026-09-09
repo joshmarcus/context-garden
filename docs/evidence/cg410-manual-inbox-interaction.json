@@ -1,0 +1,116 @@
+{
+  "head": "d2d2ce76aded9c22e64cec2a71d981f68a303ab2",
+  "environment": "disposable local garden fixture served at an ephemeral 127.0.0.1 port",
+  "command": "python scripts/capture_cg410.py (served interaction; preserves existing inspected captures)",
+  "states": [
+    "affected",
+    "blocked",
+    "frozen",
+    "empty",
+    "failure",
+    "recovery"
+  ],
+  "events": [
+    {
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
+      "method": "GET",
+      "url": "/inbox",
+      "status_code": 200,
+      "observed": "manual work is actionable despite full automated capacity; dependent work waits"
+    },
+    {
+      "kind": "http_request",
+      "state": "blocked",
+      "outcome": "safe_waiting",
+      "method": "GET",
+      "url": "/tasks/DM-002",
+      "status_code": 200,
+      "observed": "dependency-blocked manual task page offers no Take action"
+    },
+    {
+      "kind": "http_request",
+      "state": "frozen",
+      "outcome": "safe_waiting",
+      "method": "GET",
+      "url": "/tasks/DM-001",
+      "status_code": 200,
+      "observed": "frozen manual task page offers no Take action"
+    },
+    {
+      "kind": "http_request",
+      "state": "paused",
+      "outcome": "safe_waiting",
+      "method": "GET",
+      "url": "/inbox",
+      "status_code": 200,
+      "observed": "revision-capped manual work is shown as paused with no Resume action"
+    },
+    {
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
+      "method": "POST",
+      "url": "/tasks/DM-001/take",
+      "status_code": 303,
+      "observed": "one manual session claims the packet"
+    },
+    {
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
+      "method": "GET",
+      "url": "/tasks/DM-001/packet",
+      "status_code": 200,
+      "observed": "the assigned packet is available"
+    },
+    {
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
+      "method": "POST",
+      "url": "/tasks/DM-001/take",
+      "status_code": 409,
+      "observed": "a stale take returns a conflict response and does not create another run"
+    },
+    {
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
+      "method": "POST",
+      "url": "/tasks/DM-001/finish-manual",
+      "status_code": 303,
+      "observed": "invalid completion leaves the manual session recoverable"
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "POST",
+      "url": "/tasks/DM-001/finish-manual",
+      "status_code": 303,
+      "observed": "a valid result finishes the claimed session"
+    },
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "empty",
+      "method": "GET",
+      "url": "/inbox",
+      "status_code": 200,
+      "observed": "no manual task remains actionable after the claimed session finishes"
+    }
+  ],
+  "artifacts": [
+    "docs/design/captures/cg-410-manual-inbox-1280-dark.png",
+    "docs/design/captures/cg-410-manual-inbox-1280-light.png",
+    "docs/design/captures/cg-410-manual-inbox-390-dark.png",
+    "docs/design/captures/cg-410-manual-inbox-390-light.png",
+    "docs/design/captures/cg-410-manual-task-1280-dark.png",
+    "docs/design/captures/cg-410-manual-task-1280-light.png",
+    "docs/design/captures/cg-410-manual-task-390-dark.png",
+    "docs/design/captures/cg-410-manual-task-390-light.png"
+  ],
+  "render": "Existing 1280px and 390px Inbox/task captures are preserved; this replay records only the revised served interaction."
+}

@@ -15,9 +15,21 @@ runner instead uses HTTPS and shares no filesystem with the scheduler.
 | scheduler to worker | the **working directory** | a git worktree on the task's branch, based on the right base |
 | scheduler to worker | two **environment variables** | `GARDEN_TASK_ID`, `GARDEN_RUN_ID` (informational) |
 | worker to scheduler | **stdout** | the harness's structured output: the final message, token usage, cost, session id |
-| worker to scheduler | the **worktree** | commits on the task branch (CI pushes only when explicitly enabled) |
+| worker to scheduler | the **worktree** | commits on the task branch; publication is handled by the configured transport |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
 
+## Concurrent review and CI feedback
+
+A revision waits for already-running review and CI analysis to finish. Their feedback is
+stored separately for the target PR head and combined into the worker's saved brief, so a
+late CI result cannot replace review findings or vice versa. A fresh review replaces its
+own contribution; recovered CI clears only CI feedback. Operator-edited handoffs remain
+intact, and GitHub comments retain their original commit context when available.
+
+CI analysis records its target head before starting. Results for a moved head or closed PR
+are retained as run evidence but cannot queue feedback for the new revision. Replaying a
+collected CI result after a restart does not create another revision or duplicate comments.
+Original verdicts, finding identities and repeated-finding stops remain part of the record.
 ## Independent hosts
 
 With `runner: remote`, dispatch queues a run without launching a process. An independent
@@ -65,9 +77,12 @@ workers:
 the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
-the whole result contract. Except for explicitly enabled worker CI pushes (`docs/worker-ci.md`), publication
-(the branch, pull request and review comments) is done by the scheduler from what it finds
-in the run directory and the worktree.
+the whole result contract. For the local runner, publication of the task branch, pull request
+and review comments is done by the scheduler. A product may explicitly set
+`products.<name>.setup.worker_push: true` for a local worker that must publish its assigned
+branch for CI; this does not grant PR-management credentials. The SSH runner pushes its
+host-side branch, while the remote runner pushes a lease-specific staging ref for scheduler
+promotion. Review comments and pull requests remain scheduler-owned.
 
 ## Required review evidence
 
@@ -124,6 +139,18 @@ Browser readiness is infrastructure evidence only. It is not application accepta
 current PR head must still produce every expected PNG and provide executed interaction and
 viewport evidence. HTML/text fallback output and partial screenshot sets fail the UI check;
 they are retained as diagnostics, never presented as successful captures.
+
+An owner can temporarily set `review.capture_infrastructure_policy: advisory` when the
+screenshot host path is unavailable. The default is `require`. Advisory mode skips the
+pre-dispatch browser hold but still runs the generated UI check. Its original failed result,
+diagnostic, and any HTML/text artifacts remain in the check record; the scheduler separately
+records that trusted browser-launch, capture-path, or clean-result-return failure as advisory
+and can admit a review using focused behavior and functional evidence. The setting does not
+cover an observed UI defect, an application or renderer traceback, incomplete interaction or
+viewport behavior, another failed functional check, or source/artifact evidence that
+contradicts the reviewed head. Those remain blocking, and a missing PNG is never reported as a
+pass. Restore `require` once capture infrastructure is available.
+
 The scheduler also classifies changes to the web app, scheduler lifecycle, Inbox/model state,
 or QA journeys as interaction-affecting. Their automated reviewer must serve the reviewed head
 against a disposable garden and report the command, performed actions, observed consequences,
@@ -162,7 +189,7 @@ sequenceDiagram
   W->>D: exit_code
   Note over S: a later tick
   S->>D: exit_code present, so parse stdout.json and keep final.md
-  S->>T: preserve uncommitted leftovers as a named recovery stash, count committed work ahead of the base
+  S->>T: local reap preserves uncommitted leftovers as a named recovery stash; SSH reap receives its host-side leftover commit; count committed work ahead of the base
   S->>G: push the branch, open a draft PR from pr_title and pr_body
   S->>W: start a review run the same way, with a review brief
   S->>D: run.json updated: status, usage, cost
@@ -199,6 +226,39 @@ have had to make:
   truly does not exist there is listed as "not found when the brief was built".
 - **The run record**: `RunStore.new_run()` creates `.garden/runs/<id>/<timestamp>-<mode>/`
   with `run.json` holding the choices above.
+
+#### Controller restart recovery
+
+Pull-based workers may keep their host-side clone, setup, model/check subprocess, transcript,
+and completed result alive across an ordinary controller stop/start. Each claim has two
+durable controller deadlines: `lease_expires_at` is the normal heartbeat deadline and
+`recovery_expires_at` is the last instant that the same lease generation may reconnect.
+The default recovery grace is 300 seconds after the 120-second lease (`workers.recovery_seconds`
+and `workers.lease_seconds`). While that grace remains, the run is shown as reconnecting and
+cannot be claimed by another worker. A successful heartbeat renews the ordinary lease and its
+grace; it does not change any EC2/bootstrap runtime deadline.
+
+Workers retry connection refusal, transport timeouts, HTTP 408/425/429, and 5xx responses with
+bounded exponential backoff through the claim's total recovery window (the lease plus its
+recovery grace, 420 seconds with the defaults). Each successful heartbeat starts a fresh total
+window matching the controller's renewed durable deadlines. Authentication failures and other
+4xx rejections are terminal.
+When the durable recovery deadline passes, the old token is rejected and the run becomes
+claimable with a new token and staging ref. Thus a stale generation can neither renew itself
+nor publish after confirmed replacement.
+
+Transcript heartbeats carry a byte offset. The controller appends only at its durable offset,
+accepts an exact replay after an acknowledgement was lost, and rejects gaps or conflicting
+bytes. A finish replay with the same lease, exit code, result, and pushed head is acknowledged
+without collecting again; a conflicting replay is rejected. The scheduler alone promotes the
+accepted staging ref and opens the PR, so reconnect does not repeat model work or publication.
+
+Deploy the controller before workers when introducing this protocol version. New controllers
+accept transcript heartbeats from older workers, but old controllers do not provide durable
+offset acknowledgements or idempotent finish replay. Recovery is intentionally bounded by the
+configured grace: outages longer than it cause reassignment, and the original subprocess must
+stop when its next authority check is rejected. Set the grace below the independently managed
+host runtime remaining at dispatch; the protocol never prolongs a host deadline.
 
 ### 2. Starting the process (the runner, in `start`)
 
@@ -265,6 +325,13 @@ dispatch would if the private HOME hid the credentials. `Harness.parse` tags an 
 that looks like a login failure (`"not logged in"`) with `env_error: true, env_kind:
 "auth"`, so this is told apart from a worker's own failure and pauses the harness (an
 environment stop) rather than counting toward the task's attempts.
+
+Tools outside the harness can receive individual approved configuration files through
+`worker_env.config_files`. Each entry is named and supplies a host-local `source`, a
+`destination` relative to the isolated HOME, and optional `required: true`. The local, SSH,
+and pull-based remote paths refresh only these files for each run, remove a stale optional
+copy when its source disappears, and reject traversal or destination symlinks. Directories
+are mode 0700 and files mode 0600. File contents never enter the brief or remote claim.
 
 `start` returns at once. The scheduler records the `running` transition, bumps
 `attempts` and `last_dispatched_at` on the task file, saves `state.json`, and the tick
@@ -353,8 +420,11 @@ exits, `garden serve` may be restarted, the laptop may sleep. The run's existenc
 
 The web UI's "Running now" list and `garden runs` read the same `run.json` files. The
 worker, meanwhile, sees a normal repository checkout on a branch and a prompt that ends
-with the operating rules: commit in small steps, do not push, do not open a PR, do not
-edit `tasks/`, run the project's checks, and finish with the result line.
+with the operating rules: commit in small steps, do not open a PR, do not edit `tasks/`,
+run the project's checks, and finish with the result line. Local workers normally leave
+branch publication to the scheduler; an explicitly configured `setup.worker_push: true`
+may permit the assigned-branch CI push. SSH and remote workers follow their transport's
+push rules above.
 
 ### 4. What the worker sends back
 
@@ -372,10 +442,11 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
 ```
 
 - `done`: the branch is ready; `pr_title` and `pr_body` are used verbatim.
-- The scheduler pushes only committed work. Uncommitted files at dispatch or reap are
-  preserved as a named recovery stash in the task worktree, with the task and run recorded
-  in the run record and task state. Restore one with its recorded `git stash apply <sha>`;
-  a later reap or revise starts clean and cannot add that artifact to the PR.
+- For local runs, the scheduler pushes only committed work. Uncommitted files at dispatch or
+  reap are preserved as a named recovery stash in the task worktree, with the task and run
+  recorded in the run record and task state. Restore one with its recorded `git stash apply
+  <sha>`; a later reap or revise starts clean and cannot add that artifact to the PR. The SSH
+  host commits dirty paths before pushing instead; see its transport variant below.
 - `pr_body` is the permanent description of the change for a reader without the task file:
   what it does, why, how it was verified, follow-ups. It never narrates the process — rounds,
   rebases, reviews, checks, prior attempts — and on a revise round it is omitted unless the
@@ -445,8 +516,12 @@ On the next tick after `exit_code` appears, the scheduler:
 2. Decides from the exit code and the result line (the table is in
    `docs/architecture.md`): retry or fail, `waiting_human`, or carry on.
 3. Files discovered work as task files in the same phase.
-4. Commits anything the worker left uncommitted (`<id>: leftover changes from worker run
-   ...`), counts commits ahead of the base, and fails the run if there are none.
+4. For a local run, preserves anything the worker left uncommitted as a named recovery
+   stash, records its SHA and restore command in the run and task state, and keeps it out of
+   the PR. A later local dispatch also stashes dirty leftovers before syncing a reused
+   worktree. The SSH host instead stages and commits dirty paths as a synthetic leftover
+   commit before pushing; SSH has no scheduler recovery-stash record. In either case, the
+   scheduler counts committed work ahead of the base and fails the run if there are none.
 5. Pushes the branch. From here on the branch exists outside the machine.
 6. Runs `checks.pre_pr` in the worktree (tests, lint: no model). A failure becomes
    feedback and the task goes to `changes_requested` before any PR exists.
@@ -515,8 +590,9 @@ blocking finding keeps the task's tier.
 in a heredoc and pipes it to `ssh <host> sh -s`. On the host, the script refreshes that
 host's clone of the product repo, creates or reuses a worktree under
 `<repo>/.garden-worktrees/<id>` on the task branch, runs the harness with the brief on
-stdin, commits leftovers and pushes the branch itself (the host has push access; the
-scheduler's machine may not). The harness and the setup command run under the same
+stdin, stages and commits any dirty paths as a synthetic leftover commit, and pushes the
+branch itself (the host has push access; the scheduler's machine may not). Unlike local
+reap, the SSH transport does not record a recovery stash. The harness and the setup command run under the same
 allowlist as the local worker (`runner.base.PASS_ENV` plus `worker_env.pass` and
 `setup.env`), applied in shell: every other variable of the remote login environment is
 unset before they run, so a host's ambient tokens do not reach the worker either, and (as
@@ -581,9 +657,9 @@ reach `ready`, whatever `plan.auto_approve` says.
 
 | the scheduler never | the worker never |
 |---|---|
-| calls a model, or reads a transcript | pushes, opens a PR, or comments on one |
+| calls a model, or reads a transcript | opens a PR or comments on one; a local worker normally leaves publication to the scheduler |
 | holds a connection to a worker | edits files under `tasks/` |
-| edits code in a worktree (it only commits leftovers before pushing) | reads the whole garden; it gets the brief and the reading list |
+| edits code in a worktree (local uncommitted leftovers are stashed, not committed; SSH commits its dirty paths on the host) | reads the whole garden; it gets the brief and the reading list |
 | retries without a cap | waits for the scheduler; it finishes and exits |
 | lets an answer or a brief widen the fence | writes or commits outside its own worktree (the runner denies it; a slip is reverted, §2a) |
 
@@ -648,7 +724,17 @@ build-tool launchers fail closed because they could discard the current selectio
 delegating to an older pytest configuration; non-pytest tools run directly. Validation remains
 serialized per owner and uses the host's heavy-work
 admission and service limits. Controller paths and inherited execution ownership are not
-forwarded as a substitute. Nonzero command results propagate through the wrapper.
+forwarded as a substitute. The controller's `checks.timeout_seconds` value travels with a
+remote claim and in the scrubbed local/SSH worker environment. Its hard clock starts only
+after owner and host admission, remains fixed through primary-command execution and adopted
+descendant drain, and never resets for output or retries. On expiry the supervisor records
+`validation_timeout.json` plus `execution.json` state `timeout`, returns 124, terminates only
+its owned descendants, and releases its validation slot while the parent model remains live.
+Nonzero command results propagate through the wrapper.
+
+Detached check claims use the same supervisor and capped post-admission clock around their
+whole check batch. The private execution-timeout input is removed from ordinary work, review,
+and persona environments, so this validation budget never shortens a model session.
 
 This requires a versioned worker runtime update. Updating only the controller's briefs or
 exporting the interpreter variable on its own does not repair an already running worker.

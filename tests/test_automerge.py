@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from garden import gitops
 from garden.events import EventLog, digest
 from garden.model import Status, Task
 
@@ -23,8 +24,23 @@ def _in_review(sched, fake_github, *, automerge=True):
     t = sched.store.task("DM-001")
     assert t.status == Status.IN_REVIEW
     st = sched.state.get("DM-001")
+    wt = sched.worktree_for(t)
+    base = sched.base_for(t)
+    review = sched.runs.new_run(t.id, "local", mode="review", run_id="rev-1")
+    review.status = "done"
+    review.branch, review.base, review.worktree = t.branch, base, str(wt)
+    review.result = {"verdict": "approve"}
+    review.env_snapshot = {
+        "review_head": gitops.head_sha(wt),
+        "review_base_head": gitops.rev_parse(wt, gitops.base_ref(wt, base)),
+        "review_diff_hash": gitops.diff_hash(wt, base),
+    }
+    review.save()
     st["last_review"] = {"verdict": "approve", "summary": "looks good"}
-    st["last_review_run"] = "rev-1"
+    st["last_review_run"] = review.run_id
+    st["last_review_head"] = review.env_snapshot["review_head"]
+    st["last_review_base_head"] = review.env_snapshot["review_base_head"]
+    st["last_diff_hash"] = review.env_snapshot["review_diff_hash"]
     st["review_rounds"] = 1
     sched.state.save()
     pr = fake_github.prs[BRANCH]
@@ -404,4 +420,29 @@ def test_worker_ci_requires_a_pr_result_before_merge(sched, fake_github):
     pr.checks = "FAILURE"
     assert not sched._automerge_gate(t, pr)[0]
     pr.checks = "SUCCESS"
+    assert sched._automerge_gate(t, pr)[0]
+
+
+def test_explicit_actions_and_status_require_rollup_but_none_does_not(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    pr.checks = ""
+    for provider in ("actions", "status"):
+        sched.cfg.data["products"]["demo"]["validation"] = provider
+        ok, reason = sched._automerge_gate(t, pr)
+        assert not ok and "no result" in reason
+    sched.cfg.data["products"]["demo"]["validation"] = "none"
+    assert sched._automerge_gate(t, pr)[0]
+
+
+def test_command_validation_must_match_exact_pr_head(sched, fake_github):
+    t, st, pr = _in_review(sched, fake_github)
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "make validate"
+    }
+    pr.head_sha = gitops.head_sha(sched.worktree_for(t))
+    pr.checks = "FAILURE"
+    st["validation_head"] = "old"
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "exact PR head" in reason
+    st["validation_head"] = pr.head_sha
     assert sched._automerge_gate(t, pr)[0]

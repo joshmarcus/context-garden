@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from garden.brief import build_brief, resume_prompt
+from garden.scheduler.reap import ReapMixin
 from garden.store import Store
 
 SPEC = importlib.util.spec_from_file_location("worker_ci", Path(__file__).parents[1] / "scripts/check_ci.py")
@@ -244,8 +245,80 @@ def test_brief_ci_permission_is_explicit_per_product(garden):
         text = build_brief(store, store.task("DM-001")).text
         assert ("You may push ONLY this assigned branch" in text) == allowed
         assert ("Do NOT push and do NOT open" in text) != allowed
-        assert "python scripts/check_ci.py" in text
+        assert ("python scripts/check_ci.py" in text) == allowed
+        assert ("do not run it until the product explicitly sets setup.worker_push: true" in text) != allowed
     assert "original brief's push/CI rules" in resume_prompt("q", "a")
+
+
+def test_publishing_ci_check_waits_for_explicit_worker_push_permission(garden):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["setup"] = {"test": "python3 scripts/check_ci.py"}
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+
+    class Scheduler:
+        cfg = store.config
+
+    specs = ReapMixin._pre_pr_specs(Scheduler(), store.task("DM-001"))
+    assert specs == [{"name": "test", "command": "python3 scripts/check_ci.py", "requires_worker_push": True}]
+
+    config["products"]["demo"]["setup"]["worker_push"] = True
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+    Scheduler.cfg = store.config
+    assert ReapMixin._pre_pr_specs(Scheduler(), store.task("DM-001")) == [
+        {"name": "test", "command": "python3 scripts/check_ci.py"}
+    ]
+
+
+def test_non_actions_policy_never_briefs_or_runs_publishing_helper(garden):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"].update({
+        "validation": "status",
+        "setup": {"worker_push": True, "test": "python3 scripts/check_ci.py"},
+    })
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+
+    class Scheduler:
+        cfg = store.config
+
+    brief = build_brief(store, store.task("DM-001")).text
+    assert "Do NOT push and do NOT open" in brief
+    assert "python3 scripts/check_ci.py" not in brief
+    assert ReapMixin._pre_pr_specs(Scheduler(), store.task("DM-001"))[0]["requires_worker_push"] is True
+
+
+def test_command_validation_is_an_exact_head_pre_pr_check(garden):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "./ci/validate-head"
+    }
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+
+    class Scheduler:
+        cfg = store.config
+
+    assert {"name": "validation", "command": "./ci/validate-head"} in ReapMixin._pre_pr_specs(
+        Scheduler(), store.task("DM-001")
+    )
+
+
+@pytest.mark.parametrize("validation", [
+    "actions", "status", "none", {"provider": "command", "command": "make verify"},
+])
+def test_validation_policies_load(garden, validation):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["validation"] = validation
+    path.write_text(yaml.safe_dump(config))
+    assert Store(garden).config.product_validation("demo")["provider"] == (
+        validation if isinstance(validation, str) else validation["provider"]
+    )
 
 
 def test_repository_ci_runs_before_pr_and_keeps_full_suite():
@@ -253,4 +326,7 @@ def test_repository_ci_runs_before_pr_and_keeps_full_suite():
     cfg = yaml.load((Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
     assert set(cfg["on"]["push"]["branches"]) >= {"garden/**", "codex/**", "main"}
     assert "pull_request" in cfg["on"]
-    assert any(s.get("run") == "pytest -q" for s in cfg["jobs"]["test"]["steps"])
+    assert any(
+        s.get("run") == "pytest -q --durations=40 --timeout=120 --timeout-method=thread"
+        for s in cfg["jobs"]["test"]["steps"]
+    )

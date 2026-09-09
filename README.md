@@ -72,7 +72,10 @@ The tool defaults to the Claude harness; set `harness: codex` in `garden.yaml` b
 planning if that is your harness. [Codex setup](docs/codex.md) explains its configuration.
 Workers have a private HOME and a scrubbed environment. Saved harness credentials are
 copied into private directories per dispatch; `worker_env.config_dirs` can specify their
-sources. Keep secrets out of tracked YAML.
+sources. Additional approved tool files can be named individually under
+`worker_env.config_files`, with a host-local `source`, a `destination` relative to the
+private HOME, and optional `required: true`. Only those files are copied, with private
+permissions; keep their contents and other secrets out of tracked YAML.
 
 ## First project and first PR
 
@@ -146,6 +149,22 @@ garden serve
 ```
 
 `doctor` checks configuration, repositories, graph and logins in the worker environment.
+
+For a product on GitHub Enterprise, scope its repository identity, API base, and token
+source together. This keeps its operations independent of the host selected in a local
+`gh` session:
+
+```yaml
+products:
+  internal-service:
+    repo: git@forge.example.test:team/internal-service.git
+    base_branch: release
+    github:
+      slug: team/internal-service
+      host: forge.example.test
+      api_base: https://forge.example.test/api/v3
+      token_env: INTERNAL_SERVICE_GITHUB_TOKEN
+```
 It sends a small harness prompt and executes a configured notification command, so it is
 not an offline check. Resolve its failures and validate the product's setup/test/lint
 commands in a disposable checkout before approving. `validate` checks the task graph and
@@ -193,12 +212,14 @@ CPU/memory containment requires a configured delegated execution cgroup; queue l
 alone do not enforce it. [Resource controls](docs/architecture.md#dispatch-filling-the-slots)
 explain the boundaries. Size capacity for your machine and model accounts.
 
-The supported runners are **local**, **ssh** to prepared hosts, and **manual** for an
-interactive worker. [Transport details](docs/worker-protocol.md#variants-of-the-transport)
-and [an SSH/non-Python configuration example](examples/garden.work.yaml) cover those
-options. HTTP claim/heartbeat workers, automatic AWS provisioning, model pools and an
-OpenRouter adapter are not implemented in this version. Their development plans are not
-configuration options; SSH remains available for a host you provision yourself.
+The supported runners are **local**, **ssh** to prepared hosts, **remote** pull-based
+workers that claim HTTPS leases, and **manual** for an interactive worker. [Transport
+details](docs/worker-protocol.md#variants-of-the-transport) and [an SSH/non-Python
+configuration example](examples/garden.work.yaml) cover those options. Automatic AWS
+provisioning, model pools and an OpenRouter adapter are not implemented in this version.
+Their development plans are not configuration options; SSH remains available for a host
+you provision yourself, and the remote runner remains available for an independently
+prepared host running `garden worker`.
 
 ## Operate and recover
 

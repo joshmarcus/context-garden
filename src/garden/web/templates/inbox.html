@@ -5,7 +5,6 @@
   <div><h1>What needs you</h1><p>Decision cards need your judgment; operator cards name a bounded repair. Beyond that, the garden grows.</p></div>
   <div class="tools"><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
 </div>
-<div class="panel" style="margin-bottom:12px"><div class="eyebrow">Serving build</div><p><b>{{ tool_build.get('active', '')[:12] if tool_build.get('active') else 'unversioned' }}</b>{% if tool_build.get('status') %} · update {{ tool_build.status }}{% if tool_build.get('sha') %} {{ tool_build.sha[:12] }}{% endif %}{% if tool_build.get('reason') %} · {{ tool_build.reason }}{% endif %}{% endif %}</p></div>
 <div class="kpis">
   <div class="kpi {{ 'hot' if inbox_count else '' }}"><div class="v">{{ inbox_count }}</div><div class="l">need you</div></div>
   <div class="kpi"><div class="v">{{ workers_running }}/{{ max_parallel }}</div><div class="l">workers running</div></div>
@@ -82,8 +81,16 @@
         <form method="post" action="/tasks/{{ it.task }}/triage-changes"><input type="text" name="note" placeholder="what to change" required><button>Send back</button></form>
       {% elif it.group == 'review' %}
         {% if it.pr %}<a class="btn primary" href="{{ it.pr }}" target="_blank">Review on GitHub ↗</a>{% endif %}
+      {% elif it.group == 'manual' %}
+        <form method="post" action="/tasks/{{ it.task }}/take"><button class="primary">{{ it.actions[0].label }}</button></form>
+        <a class="btn quiet" href="/tasks/{{ it.task }}">Open task packet ↗</a>
+      {% elif it.group == 'manual_waiting' and it.actions %}
+        <a class="btn quiet" href="{{ it.actions[0].href }}">{{ it.actions[0].label }} ↗</a>
       {% elif it.group == 'operator' and it.get('kind') == 'operator_scope' %}
         <form method="post" action="/tasks/{{ it.task }}/operator-evidence" style="flex-direction:column;align-items:stretch"><textarea name="note" placeholder="What you verified in the live environment" required></textarea><button class="primary">Record evidence and continue</button><span class="faint">{{ it.actions[0].detail }}</span></form>
+      {% elif it.group == 'deferred' %}
+        {% if it.move_to %}<form method="post" action="/tasks/{{ it.task }}/move"><input type="hidden" name="note" value="{{ it.move_to }}"><button class="quiet">Move to {{ it.move_label }}</button></form>{% endif %}
+        <a class="btn quiet" href="/phases/{{ it.phase.split('/', 1)[0] }}/{{ it.phase.split('/', 1)[1] }}">View freeze policy</a>
       {% elif it.group == 'attention' and it.get('decision_kind') == 'question' %}
         <form method="post" action="/decisions/{{ it.decision }}/answer" style="flex-direction:column;align-items:stretch"><textarea name="answer" placeholder="Your answer." required></textarea><button class="primary">Answer</button></form>
         <form method="post" action="/decisions/{{ it.decision }}/dismiss"><button class="quiet danger">Dismiss</button></form>
@@ -123,9 +130,6 @@
         <a class="btn quiet" href="/config">Config page ↗</a>
       {% endif %}
     </div>
-    {% if it.group == 'review' %}
-      <form class="escape-hatch" method="post" action="/tasks/{{ it.task }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>
-    {% endif %}
     </div>
   </div>
   {% endfor %}

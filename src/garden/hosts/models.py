@@ -86,6 +86,55 @@ class HostFacts:
 
 
 @dataclass(frozen=True)
+class HostReadiness:
+    """Read-only evidence required before a host may run a process."""
+
+    workspace: bool
+    revision: bool
+    provisioned: bool
+    harness_login: bool
+    smoke_probe: bool
+    detail: str = ""
+
+    @property
+    def ready(self) -> bool:
+        return all(
+            (self.workspace, self.revision, self.provisioned, self.harness_login, self.smoke_probe)
+        )
+
+
+@dataclass(frozen=True)
+class HostRequirements:
+    """Portable requirements for one host-local admission decision."""
+
+    activity: str
+    host_class: str
+    environment: str
+    capabilities: tuple[str, ...] = ()
+    memory_mib: int = 0
+    disk_gib: int = 0
+    heavy: bool = False
+    probe_max_age_seconds: int = 60
+    lease_seconds: int = 120
+
+
+@dataclass(frozen=True)
+class HostAdmission:
+    """Measured readiness and an authoritative lease issued by the host service."""
+
+    eligible: bool
+    measured_at: float
+    host_class: str
+    environment: str
+    capabilities: tuple[str, ...]
+    memory_available_mib: int
+    disk_free_gib: int
+    lease_id: str = ""
+    lease_expires_at: float = 0
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class HostPlan:
     pool: str
     enabled: bool

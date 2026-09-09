@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import subprocess
@@ -85,6 +86,48 @@ def _source_state(cwd: Path) -> tuple[str, str]:
     except (OSError, subprocess.CalledProcessError):
         return "", ""
 
+HARD_VALIDATION_TIMEOUT_SECONDS = 900
+
+
+def inherits_validation_lease() -> bool:
+    """Whether this wrapper already runs below another validation supervisor."""
+    return (os.environ.get("GARDEN_VALIDATION_INHERITS_LEASE") == "1"
+            or (os.environ.get("GARDEN_HEAVY_EXECUTION") == "1"
+                and os.environ.get("GARDEN_OWNER_SCOPED") == "1"))
+
+
+def bounded_validation_timeout_seconds(raw: object | None = None) -> float:
+    """Return a usable validation budget without allowing the hard ceiling to rise."""
+    if raw is None:
+        raw = os.environ.get("GARDEN_VALIDATION_TIMEOUT_SECONDS", HARD_VALIDATION_TIMEOUT_SECONDS)
+    try:
+        configured = float(raw)
+    except (TypeError, ValueError):
+        configured = HARD_VALIDATION_TIMEOUT_SECONDS
+    if not math.isfinite(configured) or configured <= 0:
+        configured = HARD_VALIDATION_TIMEOUT_SECONDS
+    return min(configured, HARD_VALIDATION_TIMEOUT_SECONDS)
+
+
+def validation_timeout_result(run_dir: Path, exit_code: int | None) -> dict[str, str] | None:
+    """Translate a supervisor timeout receipt into one stable check result."""
+    if exit_code != 124:
+        return None
+    try:
+        receipt = json.loads((run_dir / "validation_timeout.json").read_text())
+        if (receipt.get("kind") != "validation_execution_timeout"
+                or int(receipt.get("exit_code")) != 124):
+            return None
+        reason = str(receipt.get("reason") or "").strip()
+    except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not reason:
+        return None
+    return {
+        "name": "checks", "status": "error", "summary": "check execution timed out",
+        "details": reason[:2000],
+    }
+
 
 def main() -> int:
     argv = sys.argv[1:]
@@ -126,11 +169,14 @@ def main() -> int:
         return 2
     if policy.get("stress_opt_in"):
         _enable_stress_opt_in(os.environ)
-    os.environ["GARDEN_HEAVY_EXECUTION"] = "1"
-    os.environ["GARDEN_OWNER_SCOPED"] = "1"
-    # Run the ordinary supervisor: nested validation therefore gets
-    # the same signal forwarding, subreaper ownership and adopted-descendant drain as an
-    # outer run, plus both the authoritative host slot and its owner's serialization lock.
+    if inherits_validation_lease():
+        os.environ.pop("GARDEN_HEAVY_EXECUTION", None)
+        os.environ.pop("GARDEN_OWNER_SCOPED", None)
+        os.environ["GARDEN_VALIDATION_INHERITS_LEASE"] = "1"
+    else:
+        os.environ["GARDEN_HEAVY_EXECUTION"] = "1"
+        os.environ["GARDEN_OWNER_SCOPED"] = "1"
+    os.environ["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{bounded_validation_timeout_seconds():g}"
     command = shlex.join(argv)
     effective_command = shlex.join(effective_argv)
     completed = subprocess.run(

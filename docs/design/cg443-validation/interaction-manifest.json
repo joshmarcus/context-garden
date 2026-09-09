@@ -1,0 +1,126 @@
+{
+  "producer": "cg443.disposable-served-review-clarification/v2",
+  "head": "a891defc081191e9f6b14c170d992496755189ec",
+  "application_source_head": "c1b4d88330c6e64938f77f2a459d1f8bc721735d",
+  "source_note": "The replay head contains the unchanged application tree from c1b4d883 plus evidence-only commits under docs/design/cg443-validation.",
+  "environment": "disposable garden with MemoryGitHub and QA harness",
+  "command": "timeout --signal=TERM --kill-after=10s 900 $GARDEN_VALIDATION_RUNNER -m garden.validation -- .venv/bin/python -m pytest --timeout=120 --timeout-method=thread docs/design/cg443-validation/replay_test.py -q",
+  "started_at": "2026-09-08T22:54:14.664914+00:00",
+  "finished_at": "2026-09-08T22:54:15.137270+00:00",
+  "status": "pass",
+  "fixture_setup": "A disposable garden was seeded with a reviewer-owned clarification stop; the served app then received an invalid request before the valid recovery action.",
+  "states": {
+    "empty": {
+      "status": "pass",
+      "actions": [
+        "GET /inbox before reviewer-owned stop"
+      ],
+      "observed": "Inbox has no reviewer-clarification attention card."
+    },
+    "affected": {
+      "status": "pass",
+      "actions": [
+        "GET /inbox after reviewer-owned stop"
+      ],
+      "observed": "Inbox explains the stop and offers One more automated review."
+    },
+    "failure_recovery": {
+      "status": "pass",
+      "actions": [
+        "GET an invalid task URL",
+        "POST /tasks/DM-001/review",
+        "GET /inbox"
+      ],
+      "observed": "HTTP 404 is followed by successful reviewer-owned recovery; no author revision is queued."
+    }
+  },
+  "events": [
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "empty",
+      "method": "GET",
+      "url": "http://127.0.0.1:37459/inbox",
+      "status_code": 200,
+      "observed": "Inbox has no reviewer-clarification attention card."
+    },
+    {
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
+      "method": "GET",
+      "url": "http://127.0.0.1:37459/inbox",
+      "status_code": 200,
+      "observed": "Reviewer-owned clarification stop is visible with its recovery action."
+    },
+    {
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
+      "method": "GET",
+      "url": "http://127.0.0.1:37459/tasks/NOT-A-TASK",
+      "status_code": 404,
+      "observed": "An invalid task request is rejected with HTTP 404; the clarification stop remains intact."
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:37459/tasks/DM-001/review",
+      "status_code": 303,
+      "observed": "The valid operator action dispatches reviewer-owned work without an author revision."
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "GET",
+      "url": "http://127.0.0.1:37459/inbox",
+      "status_code": 200,
+      "observed": "The recovered Inbox no longer shows the clarification stop."
+    }
+  ],
+  "viewports": [
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-1280-light.png",
+      "width": 1280,
+      "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-1280-dark.png",
+      "width": 1280,
+      "color_scheme": "dark",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-390-light.png",
+      "width": 390,
+      "color_scheme": "light",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "artifact": "docs/design/cg443-validation/inbox-review-clarification-390-dark.png",
+      "width": 390,
+      "color_scheme": "dark",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    }
+  ],
+  "artifacts": [
+    "docs/design/cg443-validation/interaction-manifest.json",
+    "docs/design/cg443-validation/inbox-review-clarification-1280-light.png",
+    "docs/design/cg443-validation/inbox-review-clarification-1280-dark.png",
+    "docs/design/cg443-validation/inbox-review-clarification-390-light.png",
+    "docs/design/cg443-validation/inbox-review-clarification-390-dark.png"
+  ],
+  "automated_checks": [
+    "served replay test passed on the recorded source head",
+    "focused review and web tests run separately"
+  ],
+  "unverified": []
+}

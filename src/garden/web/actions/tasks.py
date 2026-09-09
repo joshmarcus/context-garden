@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -110,8 +111,33 @@ def cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> N
 
 
 @action("retry")
-def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    sched.retry(t)
+def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor: str = "human_owner") -> None:
+    sched.retry(t, actor=actor)
+
+
+@action("take")
+def take(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    try:
+        sched.take_manual(t)
+    except RuntimeError as exc:
+        # A stale form is a claim conflict, not a successful redirect.  Returning a
+        # conflict lets callers distinguish a refused take from the 303 that confirms
+        # a real assignment, while the scheduler remains the authoritative guard.
+        raise HTTPException(409, str(exc)) from exc
+    return f"{t.id} claimed. Open the assigned task packet to begin."
+
+
+@action("finish-manual")
+def finish_manual(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    """Finish through the scheduler's guarded manual-session path."""
+    try:
+        result = json.loads(note)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("manual result must be valid JSON") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("manual result must be a JSON object")
+    sched.finish_manual(t, result)
+    return f"{t.id} manual session finished."
 
 
 @action("recover")
@@ -135,8 +161,11 @@ def resume(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> N
 
 
 @action("done")
-def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
-    sched.mark_done(t, note or "marked done without merging (web)", force=True)
+def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor: str = "human_owner") -> None:
+    run = sched.runs.latest(t.id)
+    if not sched.runner_for(t).detached and run is not None and run.status == "running":
+        raise RuntimeError("finish the claimed manual session instead of marking this task done")
+    sched.mark_done(t, note or "marked done without merging (web)", force=True, actor=actor)
 
 
 @action("review")
@@ -320,7 +349,8 @@ def register(app: FastAPI, site: Site) -> None:
         return {"gaps": []}
 
     @app.post("/tasks/{task_id}/{action}")
-    def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form("")):
+    def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form(""),
+                    actor: str = Form("human_owner")):
         s = hub.fresh()
         try:
             t = s.task(task_id)
@@ -339,7 +369,10 @@ def register(app: FastAPI, site: Site) -> None:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)
-                warning = run_action(s, sched, t, note, applies_to)
+                if action in {"retry", "done"}:
+                    warning = run_action(s, sched, t, note, applies_to, actor)  # type: ignore[call-arg]
+                else:
+                    warning = run_action(s, sched, t, note, applies_to)
         except HTTPException:
             raise
         except (RuntimeError, GitError, GitHubError) as e:

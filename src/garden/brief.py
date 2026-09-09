@@ -35,22 +35,19 @@ A blocking finding must identify a concrete defect, failed check, contradictory 
 identity or materially unverified outcome. Missing artifact metadata alone is advisory.
 Never invent evidence or turn an unverified outcome into a pass.
 
-For every claimed outcome, record the actual source commit, command/check and result,
-observed actions and consequences, available artifact paths and material limitations.
-Authors put these references in `verified[].evidence`; reviewers inspect them and report
-what they established. Verify paths and results before finishing. Save new evidence only
-inside the allowed worktree/disposable output area, and use durable paths when available;
-never write into the live garden. A reviewer may paraphrase an existing record without
-creating an identical second JSON file or rerunning a passing check merely for packaging.
+Choose verification in proportion to the actual change. Focused tests, source inspection,
+a CLI command, CI, browser interaction, or a small integration exercise can each be enough.
+Report what you actually tested or inspected and the result; a clear honest attestation is
+valid evidence and does not need a prescribed JSON shape, artifact manifest, HTTP journey,
+state matrix, screenshot set, or load report. Reuse trustworthy existing checks instead of
+rerunning them for packaging. Save any new artifacts only inside the allowed worktree or a
+disposable output area; never write into the live garden.
 
-When a served interaction is required, include `head`, `environment`, `command`, `states`
-and chronological `events` in a saved record when possible. Each event describes its
-state, actual HTTP method/URL/status or browser action/target, and observed consequence.
-Cover the affected outcome, an empty state and relevant failure followed by recovery.
-The reviewer reports those events in `interaction.events` and names the artifacts in
-`interaction.artifacts`; record separate `automated_checks` and any `unverified` outcomes.
-An existing record with equivalent content is sufficient. Explicit phase evidence holds
-and final current-head CI still apply.
+For a material UI or workflow change, inspect the named affected behavior with a method you
+judge suitable and say what you observed. Performance or load work is required only when the
+task's actual outcome needs it, never because a path or keyword matched. Optional evidence
+fields and presentation omissions are advisory. Explicit phase evidence holds and final
+current-head CI still apply.
 """
 
 
@@ -73,14 +70,14 @@ OPERATING_RULES = """\
 - If you need a decision only a human can make, commit what you have, stop, and report `status: needs_input` with one precise `question`. Your session is paused, not discarded: the human's answer comes back to you and you continue from where you stopped. Do not guess on questions that change the design.
 - If you conclude the task should not be done at all, do not force a change you don't believe in: report `status: wont_do` with a `reason`. If this is a revision round and there is genuinely nothing to change (the code is already right, e.g. the failing check is the environment, not the diff), report `status: no_change` with a `reason`. Either way a person reads your reasoning and decides; it is not a failure.
 - If you discover work that should be done but is outside this task (a bug you noticed, a missing spec, a refactor the task needs but did not ask for), do NOT do it. List it under `discovered` in your result and, if you truly cannot finish without it, mark it `blocking`.
-- Speak to every acceptance criterion. In `verified`, give one entry per criterion in the task's **Acceptance criteria** list, in order: quote the `criterion` and give its `evidence` — the test that proves it (by name), the command and its output, or the page and what it shows. A criterion you did not meet is `{{"criterion": "...", "not_done": true, "reason": "<why>"}}`, never a silent omission. Do not write a Verification section in `pr_body`: the garden builds one from `verified`.
+- Judge the task's goal and acceptance outcomes and report what you actually tested or inspected. Use `verified` when per-criterion rows help, or give a clear attestation in `summary` or `notes`. A genuinely unmet outcome is `{{"criterion": "...", "not_done": true, "reason": "<why>"}}`; never turn uncertainty into a pass. Do not write a generated verification checklist into `pr_body`.
 - End your final message with exactly one line of the form:
 
-  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test name and output>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "criteria_amended": [{{"index": 0, "text": "<replacement criterion>", "reason": "<why the original was false or missing>"}}], "improvements_taken": ["<optional review improvement taken>"], "improvements_declined": [{{"suggestion": "<optional review improvement declined>", "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "file": "<affected path>", "error": "<symptom>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
+  {marker} {{"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_change", "summary": "<1-3 sentences, including what you verified when useful>", "question": "<only for needs_input>", "reason": "<only for wont_do / no_change>", "pr_title": "<title>", "pr_body": "<markdown body>", "pr_comment": "<optional comment to post on the PR>", "verified": [{{"criterion": "<acceptance criterion, quoted>", "evidence": "<test, inspection, or attestation>"}}, {{"criterion": "<another>", "not_done": true, "reason": "<why>"}}], "criteria_amended": [{{"index": 0, "text": "<replacement criterion>", "reason": "<why the original was false or missing>"}}], "improvements_taken": ["<optional review improvement taken>"], "improvements_declined": [{{"suggestion": "<optional review improvement declined>", "reason": "<why>"}}], "friction": ["<short friction item>"], "notes": "<anything the human should know>", "discovered": [{{"kind": "task", "title": "<short>", "body": "<goal + context, markdown>", "file": "<affected path>", "error": "<symptom>", "difficulty": "easy" | "medium" | "hard", "blocking": false}}]}}
 
   The JSON must be on a single line. `pr_title` and `pr_body` are used verbatim for the pull request. `pr_comment` is posted as a comment and is optional. `discovered` may be omitted or empty; each item carries a `kind` (default `task`):
 
-  **The `pr_body` contract.** `pr_body` is the permanent description of this change for a reader who does not have the task file: what it does, why, how it fits the phase, how you verified it, and any follow-ups. It never mentions rounds, rebases, reviews, checks, prior attempts or this run — a description is written as if the change were right the first time. Anything about the process (answering a review, resolving a rebase, explaining a decision) goes in `pr_comment`, which is posted as a PR comment, not in the description. On a revision round, omit `pr_body` unless the description itself must change; the current description stays as it is. Report friction (missing context, a confusing spec, tooling pain) as `friction` items — short strings — not in the body; the garden posts them as one PR comment and files them for the next planning round.
+  **The `pr_body` guidance.** Prefer a durable description of what changed and why. Description style, section choice, and omitted process cleanup are editorial advice and do not by themselves make correct source fail review. Use `pr_comment` for replies when useful. On a revision round, omit `pr_body` unless the description itself should change. Report tooling or context friction as `friction` items when useful.
 
   - `task` — work to do; becomes a draft task file (`blocking: true` fast-tracks it). This is the shape above.
   - `duplicate` — two tasks are the same. Not work: it reaches the human as a decision. `{{"kind": "duplicate", "of": "<task-id-to-keep>", "duplicates": "<task-id-to-cancel>", "reason": "<why>"}}`. If accepted it cancels the `duplicates` task in favour of `of`.
@@ -188,10 +185,11 @@ class Brief:
         return max(1, chars // 4)
 
 
-def _push_rule(setup: dict, ci: dict[str, Any] | None = None) -> str:
-    ci = ci or {}
-    if ci.get("status_provider") == "worker_check":
-        command = str((ci.get("worker_check") or {}).get("command") or "").strip()
+def _push_rule(setup: dict, validation: dict | None = None) -> str:
+    validation = validation or {}
+    provider = str(validation.get("provider") or "legacy")
+    if provider == "worker_check":
+        command = str((validation.get("worker_check") or {}).get("command") or "").strip()
         validation = f" Run `{command}`" if command else " Run the configured ordinary suite"
         return (
             "Do NOT push and do NOT poll GitHub Actions. The controller owns publication and "
@@ -201,7 +199,7 @@ def _push_rule(setup: dict, ci: dict[str, Any] | None = None) -> str:
             "changes afterward; a later commit or rebase invalidates the receipt. Keep local iteration focused and exclude stress/load tests unless "
             "a separate bounded experiment explicitly opts in."
         )
-    if setup.get("worker_push") is True:
+    if setup.get("worker_push") is True and provider in ("legacy", "actions"):
         return (
             "You may push ONLY this assigned branch to origin for the configured CI checks, "
             "without force or changing git configuration. Run focused local checks first, "
@@ -210,10 +208,17 @@ def _push_rule(setup: dict, ci: dict[str, Any] | None = None) -> str:
             "a pass. Report the commit, run URL and conclusion in your acceptance evidence. "
             "Do NOT open, edit or merge pull requests: the garden runner owns them."
         )
-    return "Do NOT push and do NOT open a pull request: the garden runner does that when you finish."
+    rule = "Do NOT push and do NOT open a pull request: the garden runner does that when you finish."
+    if provider == "status":
+        rule += " The scheduler awaits the configured external status provider; do not start or poll GitHub Actions."
+    elif provider == "command":
+        rule += " The scheduler runs the configured exact-head validation command before opening or updating the PR."
+    elif provider == "none":
+        rule += " This product explicitly has no external CI service; do not start or poll GitHub Actions."
+    return rule
 
 
-def _env_rule(setup: dict) -> str:
+def _env_rule(setup: dict, validation: dict | None = None) -> str:
     """The operating rule about the working environment: it is already prepared, so the worker
     must not install packages or make a virtualenv, and here are the exact commands to run its
     checks (from the product's `setup.test`/`setup.lint`). Nothing here names pip, uv or a venv
@@ -222,14 +227,29 @@ def _env_rule(setup: dict) -> str:
         "- Your working environment is already prepared: do not install packages, create a "
         "virtualenv, or run a package manager (the runner did any setup before you started)."
     )
+    from .checks import is_publishing_ci_helper
+    test = str((setup or {}).get("test") or "")
+    publishing_helper_needs_permission = (
+        is_publishing_ci_helper(test) and (
+            setup.get("worker_push") is not True
+            or str((validation or {}).get("provider") or "legacy") not in ("legacy", "actions")
+        )
+    )
     checks = []
     for label, key in (("tests", "test"), ("lint", "lint")):
         cmd = str((setup or {}).get(key) or "").strip()
+        if key == "test" and publishing_helper_needs_permission:
+            continue
         if cmd:
             checks.append(f"`{cmd}` ({label})")
     if checks:
         prepared += (" During iteration run focused tests only. Before finishing, run the project's checks "
                      "sequentially with " + " and ".join(checks) + "; full CI remains the merge gate.")
+    if publishing_helper_needs_permission:
+        prepared += (
+            " The configured test publishes a branch; do not run it until the product explicitly "
+            "sets setup.worker_push: true and configures Git/GitHub credentials for this worker."
+        )
     return prepared + "\n"
 
 
@@ -407,8 +427,8 @@ def build_brief(
             base=base or cfg.product_base_branch(task.product),
             marker=RESULT_MARKER,
             turn_cap_rule=turn_cap_rule,
-            env_rule=_env_rule(cfg.product_setup(task.product)),
-            push_rule=_push_rule(cfg.product_setup(task.product), dict(cfg.get("ci", {}) or {})),
+            env_rule=_env_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
+            push_rule=_push_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
         )
         sections.append(("rules", rules + "\n" + EVIDENCE_GUIDANCE))
         if review_feedback:
@@ -443,7 +463,7 @@ def build_brief(
         sections.append(("criteria", "## Criteria frozen for this dispatch\n\n" +
                          "\n".join(f"- {item}" for item in frozen) + "\n"))
     if include_rules:
-        sections.append(("pre_flight", preflight_section()))
+        sections.append(("pre_flight", preflight_section(cfg.capture_infrastructure_policy())))
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []

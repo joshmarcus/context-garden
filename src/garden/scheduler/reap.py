@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
+from ..canonical import CanonicalCheckoutError, configured_root
 from ..checks import to_feedback
 from ..criteria import amend_criteria, apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
@@ -95,7 +96,7 @@ class ReapMixin:
         for run in self.runs.all_runs():
             # A terminal metadata value alone is not enough: prove the wrapper exited (or
             # wrote its exit_code) before deleting files a still-live descendant may use.
-            if run.runner == "local" and run.status != "running" and run.process_finished():
+            if run.is_local_execution and run.status != "running" and run.process_finished():
                 shutil.rmtree(run_temp_dir(work_dir, run), ignore_errors=True)
 
     # ---- reap --------------------------------------------------------------
@@ -179,12 +180,23 @@ class ReapMixin:
             return True
         if not runner.detached:
             return False
-        timeout_min = float(self.cfg.get("timeout_minutes", 90) or 0)
-        if timeout_min and run.elapsed_minutes() > timeout_min + 5:
+        # The dispatch-time value survives config edits and scheduler restarts. Check
+        # commands have their own seconds-based timeout and never inherit this budget.
+        snapshot = run.env_snapshot or {}
+        timeout_min = float(snapshot.get("execution_timeout_minutes", 0 if run.mode == "check"
+                            else self.cfg.product_timeout_minutes(
+                                str(snapshot.get("product") or ""))) or 0)
+        elapsed = run.execution_minutes() if run.runner == "remote" else run.elapsed_minutes()
+        if timeout_min and elapsed > timeout_min + 5:
             run.kill()
             run.status = "timeout"
             run.finished_at = now_iso()
             run.error = "timed out"
+            if run.runner == "remote":
+                # Revoke the accepted generation before a retry can be dispatched.  A late
+                # heartbeat/result is then rejected even when its former lease had time left.
+                run.lease_token = ""
+                run.lease_expires_at = ""
             run.save()
             return True
         admission_reason = run.supervisor_waiting_reason()
@@ -298,41 +310,12 @@ class ReapMixin:
             self._retry_or_fail(task, run, rep, f"worker exited {run.exit_code}: {run.error[:200]}")
             return
         status = str(result.get("status", "")).lower()
-        # New briefs make the pre-flight result part of the worker contract.  Do this
-        # before missing-result salvage can synthesize a summary and send the branch
-        # directly to review.  Publish any committed work first, so the revise worker
-        # builds on it instead of dispatch's normal sync shelving it on a backup branch.
-        if not status and bool((run.env_snapshot or {}).get("requires_preflight")):
-            base = run.base or self.base_for(task)
-            branch = run.branch or task.branch or task.default_branch()
-            if not runner.remote and worktree.exists():
-                try:
-                    if gitops.commits_ahead(worktree, base):
-                        gitops.push(worktree, branch, base=base, lease=run.start_head)
-                        task.branch = branch
-                        self.store.save(task)
-                except gitops.GitError as exc:
-                    run.status = "failed"
-                    run.error = f"could not preserve commits before pre-flight revise: {exc}"
-                    run.save()
-                    self._retry_or_fail(task, run, rep, run.error)
-                    return
-            run.status = "failed"
-            run.error = "missing review pre-flight: result block and review pre-flight checklist"
-            run.save()
-            criteria = list((run.env_snapshot or {}).get("criteria") or [])
-            criteria_note = "\n".join(f"- {item}" for item in criteria) or "- (none)"
-            failed = [{"name": "review pre-flight", "status": "fail",
-                       "summary": "missing items: result block and review pre-flight checklist",
-                       "details": ""}]
-            self._start_check_revise(task, failed, rep, cost,
-                                     feedback_note="### Criteria frozen for the interrupted dispatch\n\n"
-                                     + criteria_note)
-            return
         # A headless worker can finish its commits but lose its final result while waiting for
         # an unattended command.  The worktree is the durable record in that case: salvage its
-        # commits before treating the missing protocol marker as a failed attempt.  A reported
-        # status still wins, so `blocked` and the other deliberate outcomes below are unchanged.
+        # commits before treating an optional result/checklist omission as a failed attempt.
+        # A reported status still wins, so `blocked` and the other deliberate outcomes below
+        # are unchanged. Missing results with no usable commits still follow the ordinary
+        # retry/failure path below.
         if not status and run.mode in ("work", "revise") and not runner.remote and worktree.exists():
             try:
                 base = run.base or self.base_for(task)
@@ -438,20 +421,44 @@ class ReapMixin:
 
         missing = missing_preflight(result.get("pre_flight"))
         if missing and bool((run.env_snapshot or {}).get("requires_preflight")):
-            run.status = "failed"
-            run.error = "missing review pre-flight: " + ", ".join(missing)
-            run.save()
-            failed = [{"name": "review pre-flight", "status": "fail",
-                       "summary": "missing items: " + ", ".join(missing), "details": ""}]
-            self._start_check_revise(task, failed, rep, cost)
-            return
+            # The rubric helps an agent choose checks; its serialization is not itself a
+            # product outcome. Preserve the omission for review without turning otherwise
+            # usable source into an evidence-only revision.
+            st = self.state.get(task.id)
+            advisories = st.setdefault("verification_advisories", [])
+            if not any(isinstance(item, dict) and item.get("run") == run.run_id
+                       and item.get("kind") == "pre_flight" for item in advisories):
+                advisories.append({"kind": "pre_flight", "run": run.run_id, "missing": missing})
+            task.log("review pre-flight advisory: omitted optional items: " + ", ".join(missing))
+            self.store.save(task)
+            self.events.emit("verification_advisory", task.id, run=run.run_id,
+                             advisory="pre_flight", missing=missing)
+            self.state.save()
 
         base = run.base or self.base_for(task)
         branch = run.branch or task.branch or task.default_branch()
         repo = self.repo_for(task)
 
         if runner.remote or run.completion_mode == "pushed":
-            gitops.fetch(repo)
+            wt = self.worktree_for(task)
+            canonical = None
+            try:
+                # SSH/pull workers publish their result remotely, but checks may still use
+                # an explicitly provisioned local canonical checkout.  Claim and preflight
+                # that checkout before even fetching through it: the legacy materialisation
+                # path below must never reset operator work or a drifted branch.
+                if configured_root(self.cfg.product_checkout(task.product), self.store.root) is not None:
+                    local_runner = self.runner_for(task, "local")
+                    canonical = self.prepare_canonical_run(task, run, local_runner, branch, base)
+                    if canonical is not None:
+                        wt = canonical
+                gitops.fetch(repo)
+            except (gitops.GitError, CanonicalCheckoutError) as e:
+                run.status = "failed"
+                run.error = f"could not prepare local canonical checkout: {e}"
+                run.save()
+                self._retry_or_fail(task, run, rep, run.error)
+                return
             try:
                 if run.pushed_ref:
                     staged = f"refs/remotes/origin/{run.pushed_ref.removeprefix('refs/heads/')}"
@@ -485,7 +492,6 @@ class ReapMixin:
                 return
             run.status = "done"
             run.save()
-            wt = self.worktree_for(task)
             try:
                 if wt.exists():
                     gitops.git("fetch", "origin", cwd=wt)
@@ -591,6 +597,18 @@ class ReapMixin:
                 cmd = str(setup.get(name) or "").strip()
                 if cmd:
                     specs.append({"name": name, "command": cmd})
+        validation = self.cfg.product_validation(task.product)
+        if validation["provider"] == "command":
+            specs.append({"name": "validation", "command": validation["command"]})
+        from ..checks import is_publishing_ci_helper
+        publishing_allowed = setup.get("worker_push") is True and validation["provider"] in ("legacy", "actions")
+        if not publishing_allowed:
+            specs = [
+                {**spec, "requires_worker_push": True}
+                if is_publishing_ci_helper(str(spec.get("command") or ""))
+                else spec
+                for spec in specs
+            ]
         # A task can require a configured check by name.  It is deliberately a name, rather
         # than a command from task text: check commands run branch code and stay garden config.
         from ..criteria import required_evidence

@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from .. import operator_spend as ops
 from ..events import EventLog, metrics, parse_since
+from ..github import GitHubError, RepositorySlug, is_safe_pr_url, pull_request_number
 from ..graph import blockers, effective_status, validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
 from ..model import Status, dispatch_sort_key, now_iso
@@ -211,7 +212,7 @@ def closed_phase_keys(s: Store) -> set[str]:
 
 
 def board_view(view: str | None) -> str:
-    return view if view in ("list", "backlog") else "columns"
+    return view if view in ("list", "backlog", "prs") else "columns"
 
 
 class Site:
@@ -275,6 +276,9 @@ class Site:
             "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
             "operating_profile_spend_rate": run_store.spend_since(parse_since("1h")),
             "rail_metrics": rail_metrics,
+            # The installed revision is useful when diagnosing a served garden, but it is
+            # secondary to the operational controls and warnings in the rail and Inbox.
+            "tool_build": sched.upgrade_status(),
             **kw,
         }
 
@@ -360,3 +364,56 @@ class Site:
                 sections.append({"phase": ph, "rows": rows})
         return {"sections": sections, "move_phases": move_phases, "active": active,
                 "product": product, "phase": None, "closed": include_closed, "problems": validate(tasks)}
+
+    def pr_data(self, product: str | None) -> dict[str, Any]:
+        """Build one repository's open-PR rows without letting GitHub failure break Board."""
+        s = self.hub.fresh()
+        configured = [p.name for p in s.products() if s.config.product_github(p.name)]
+        selected = product or (configured[0] if configured else "")
+        base = {"product": selected or None, "phase": None, "closed": False, "problems": validate(s.tasks())}
+        if selected not in configured:
+            return {**base, "pr_product": selected, "pr_rows": [], "pr_error": "No GitHub repository is configured for this product."}
+
+        route = s.config.product_github(selected)
+        slug = RepositorySlug(route["slug"], route["host"])
+        github = self.hub.reader().github
+        if not github.available:
+            return {**base, "pr_product": selected, "pr_rows": [], "pr_error": f"GitHub is unavailable for {selected}: {github.describe()}."}
+        try:
+            prs = github.list_open_prs(slug)
+        except (GitHubError, OSError, ValueError) as exc:
+            LOGGER.warning("open PR listing failed for %s", selected, exc_info=True)
+            return {**base, "pr_product": selected, "pr_rows": [], "pr_error": f"Could not fetch pull requests: {exc}"}
+
+        tasks_by_number: dict[int, Any] = {}
+        for task in s.tasks().values():
+            if task.product != selected or not task.pr:
+                continue
+            number = pull_request_number(task.pr, str(slug), slug.host)
+            if number is not None:
+                tasks_by_number[number] = task
+
+        validation = s.config.product_validation(selected)["provider"]
+        rows = []
+        for pr in prs:
+            task = tasks_by_number.get(pr.number)
+            if task is not None and task.status.terminal:
+                continue
+            rows.append({
+                "pr": pr,
+                "task": task,
+                "safe_url": pr.url if is_safe_pr_url(pr.url) else "",
+                "review": pr.review_decision.replace("_", " ").lower() or "not reported",
+                "checks": self._pr_check_state(pr.checks, validation),
+            })
+        return {**base, "pr_product": selected, "pr_rows": rows, "pr_error": ""}
+
+    @staticmethod
+    def _pr_check_state(checks: str, provider: str) -> str:
+        if checks:
+            return checks.lower()
+        if provider == "none":
+            return "not configured"
+        if provider == "command":
+            return "not available (configured command)"
+        return "not reported"

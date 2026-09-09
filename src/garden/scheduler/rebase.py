@@ -58,6 +58,34 @@ class RebaseOutcome:
 
 
 class RebaseMixin:
+    def _reviewed_branch_is_current(self, task: Task, wt: Path, branch: str, base: str) -> bool:
+        """Prove a reviewed remote head already contains the latest base without rewriting it."""
+        st = self.state.get(task.id)
+        run_id = str(st.get("last_review_run") or "")
+        review_run = next((run for run in reversed(self.runs.runs_for(task.id))
+                           if run.run_id == run_id and run.mode == "review"), None)
+        if review_run is None or review_run.status != "done" or review_run.base != base:
+            return False
+        snapshot = review_run.env_snapshot or {}
+        reviewed_head = str(snapshot.get("review_head") or "")
+        reviewed_base_head = str(snapshot.get("review_base_head") or "")
+        reviewed_diff = str(snapshot.get("review_diff_hash") or "")
+        if not reviewed_head or not reviewed_base_head or not reviewed_diff:
+            return False
+        if not gitops.fetch(wt):
+            return False
+        try:
+            local_head = gitops.rev_parse(wt, "HEAD")
+            remote_head = gitops.rev_parse(wt, f"origin/{branch}")
+            current_base_head = gitops.rev_parse(wt, gitops.base_ref(wt, base))
+            current_diff = gitops.diff_hash(wt, base)
+        except gitops.GitError:
+            return False
+        return (local_head == remote_head == reviewed_head
+                and current_base_head == reviewed_base_head
+                and gitops.is_ancestor(wt, current_base_head, local_head)
+                and current_diff == reviewed_diff)
+
     # ---- the one mechanical-rebase primitive (rule 1) ----------------------
     def _rebase_and_record(self, task: Task, base: str, *, wt: Path | None = None,
                            skip_if_current: bool = False, reason: str = "") -> RebaseOutcome:
@@ -77,11 +105,26 @@ class RebaseMixin:
             self.log(f"{task.id}: external stack owner controls {branch}; skipped automatic rebase")
             return RebaseOutcome("error", wt, branch)
         repo = self.repo_for(task)
+        canonical_enabled = str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place"
+        run = self.runs.new_run(task.id, "local", mode="rebase") if canonical_enabled else None
+        if run is not None:
+            run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+            runner = self.runner_for(task, "local")
+            canonical = self.prepare_canonical_run(task, run, runner, branch, base)
+            if canonical is not None:
+                wt = canonical
+                run.worktree = str(wt)
+                run.save()
         patch_before = ""
         artifact_dir: Path | None = None
         try:
             if not wt.exists():
                 gitops.prepare_worktree(repo, wt, branch, base)
+            if skip_if_current and self._reviewed_branch_is_current(task, wt, branch, base):
+                if reason:
+                    task.log(f"{reason}; reviewed remote head already contains {base}; not rebased or pushed")
+                    self.store.save(task)
+                return RebaseOutcome("current", wt, branch)
             # The patch id of the branch's own diff before anything moves — compared against the
             # same id computed after the rebase, this is how rule 2 tells a mechanical shift of
             # line numbers and context (CG-210) apart from a genuine change to the PR's own patch.
@@ -100,7 +143,13 @@ class RebaseMixin:
                 artifacts = json.loads(manifest.read_text())
                 for item in artifacts.values():
                     item["manifest"] = str(manifest)
-            return RebaseOutcome("conflict", wt, branch, files=files, hunks=hunks, artifacts=artifacts)
+            if run is not None:
+                run.mode = "canonical"
+                run.status = "done"
+                run.error = "mechanical rebase conflicts; agent resolution required"
+                run.finished_at = now_iso()
+                run.save()
+            return RebaseOutcome("conflict", wt, branch, run=run, files=files, hunks=hunks, artifacts=artifacts)
         if skip_if_current:
             # A branch already on the base's tip whose diff is exactly what was reviewed: the
             # rebase above was a no-op, origin already holds this head, and the verdict still
@@ -117,9 +166,16 @@ class RebaseMixin:
                 if reason:
                     task.log(f"{reason}; already on {base}'s tip; not rebased or pushed")
                     self.store.save(task)
-                return RebaseOutcome("current", wt, branch)
-        run = self.runs.new_run(task.id, "local", mode="rebase")
-        run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
+                if run is not None:
+                    run.mode = "canonical"
+                    run.status = "done"
+                    run.cost_usd = 0.0
+                    run.finished_at = now_iso()
+                    run.save()
+                return RebaseOutcome("current", wt, branch, run=run)
+        if run is None:
+            run = self.runs.new_run(task.id, "local", mode="rebase")
+            run.branch, run.base, run.worktree, run.difficulty = branch, base, str(wt), "easy"
         try:
             note = gitops.push(wt, branch, force=True)
             if note:
@@ -395,6 +451,7 @@ class RebaseMixin:
         st["automerged"] = {"at": now_iso(), "method": method, "review_run": review_run,
                             "verdict": "approve", "review_rounds": rounds}
         self.events.emit("automerged", task.id, pr=task.pr, method=method, review_run=review_run,
+                         actor="automated_scheduler",
                          verdict="approve", review_rounds=rounds)
         self.log(f"{task.id}: merged by the garden ({method}); all gates green")
         try:

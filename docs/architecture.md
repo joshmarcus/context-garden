@@ -75,8 +75,9 @@ flowchart LR
   blockers, and `garden maintenance-resume` explicitly permits normal collection again.
 - **GitHub** holds the pull requests and the review conversation. Only the scheduler opens
   PRs and talks to it through the `gh` CLI when it is installed and logged in, otherwise
-  the REST API with `GITHUB_TOKEN`. Local workers never push or open PRs; a remote SSH
-  worker pushes its assigned branch, but does not open a PR.
+  the REST API with `GITHUB_TOKEN`. Local workers normally leave branch publication to the
+  scheduler, but `setup.worker_push: true` explicitly permits an assigned-branch CI push;
+  a remote SSH worker pushes its assigned branch, but does not open a PR.
 - **The filesystem** carries everything between those three: the garden's markdown, the
   run directories, the git worktrees, the JSON side-store and the event log. There is no
   queue, no database and no socket.
@@ -100,6 +101,7 @@ of the loop touch different files.
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
 | `scheduler/kickoff.py` | the phase kickoff run: dispatches or synchronously files design gaps, goal gaps, owner questions and stale-doc findings |
+| `scheduler/feedback.py` | current-head composition of review, CI and PR-comment feedback, preserving operator handoffs and replacing only the resolving producer |
 | `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; the automerge gate; stacking, restack and conflicts |
 | `scheduler/rebase.py` | rebase as its own mode: mechanical first, an agent only on a real conflict, verdict kept when the diff is unchanged, the automerge queue |
 | `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; the tracked source-grep test `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
@@ -111,6 +113,7 @@ of the loop touch different files.
 | `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py` | harness definitions and output parsing |
+| `resource_reclaim.py` | the bounded cgroup v2 cache-reclaim helper: verifies the opened cgroup identity, writes one timed `memory.reclaim` request, and publishes measured before/after headroom without granting admission itself |
 | `runner/base.py` | shared runner lifecycle helpers |
 | `runner/local.py` | the local worker runner backend |
 | `runner/ssh.py` | the remote-over-SSH worker runner backend |
@@ -119,7 +122,7 @@ of the loop touch different files.
 | `remote_worker.py` | the independent-host worker agent |
 | `managed_worker.py` | measured single-host admission and remote resource/version attribution |
 | `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py` | scheduler-independent declarative host lifecycle, strict configuration and versioned provider/profile contracts |
-| `hosts/ec2.py`, `hosts/fake.py` | the first infrastructure adapter and the local extension/contract fixture |
+| `hosts/ec2.py`, `hosts/command.py`, `hosts/fake.py` | the first infrastructure adapter, the vendor-neutral controller command adapter, and the local extension/contract fixture |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
 | `interaction_replay.py`, `preflight.py` | disposable application replay that records review-journey evidence; shared worker pre-flight rules and token-free mechanical checks |
 | `observe.py` | `garden observe`'s feed: the status line, inbox cards trimmed to one line each, stuck-run detection, a scan for an unhandled traceback in a recent run's stderr, and `garden digest`'s summary trimmed down — plus the built-in profiles and `observe.events`' kind/alias matching that `--follow` streams by |
@@ -129,7 +132,7 @@ of the loop touch different files.
 | `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now (`/now`, `garden now`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
-| `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
+| `gitops.py`, `canonical.py`, `github.py` | git worktrees and pushes; fenced in-place checkout leases and reconciliation; pull requests through `gh` or the REST API |
 | `kickoff.py` | the kickoff brief and verdict parsing |
 | `planner.py`, `plants.py`, `notify.py`, `host_identity.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; host-alias and shared-text redaction boundary; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
@@ -157,6 +160,25 @@ Git is the database. The split between the four stores is deliberate.
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
 `repos/` (clones of products given as URLs), `trials.jsonl` (model trial records), and
 `reservations.json` (durable id reservations, below).
+
+A product may opt into a provisioned canonical checkout instead of per-task worktrees:
+
+```yaml
+products:
+  widget:
+    checkout:
+      strategy: in_place
+      root: /srv/checkouts/widget       # local runner; SSH uses the host's repos entry
+      reconcile_command: ./prepare-run # optional, runs before every run
+      reconcile_timeout_seconds: 300
+```
+
+This mode is deliberately exclusive. A durable per-checkout lease covers worker, review,
+check and auxiliary sessions across scheduler restarts. Before switching from the configured
+base to the assigned task branch, the garden refuses dirty files, an unrelated branch, a
+symlinked root, or the controller checkout. Reconciliation is bounded, uses the scrubbed
+worker environment, and is followed by a fresh clean-tree/branch readiness check. The
+default remains linked worktrees.
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 
@@ -306,7 +328,7 @@ output. Details of the transport are in `docs/worker-protocol.md`; the decisions
 | `status: needs_input` | stores the question, session id, host and harness | `waiting_human` (holds no slot) |
 | `status: wont_do` or `no_change` | stores the reason and the worker's final message as a decision for the person | `waiting_human`; Accept ends a `wont_do` in the terminal `wont_do` status (closing any PR) or resumes a `no_change` to the PR/review; Reject sends it back to a revise run with the person's note |
 | `status: done` but no commits ahead of the base | marks the run failed | `ready` or `failed`, as above |
-| `status: done` with commits | files discovered work as tasks, commits leftovers, pushes, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
+| `status: done` with commits | files discovered work as tasks, preserves local-run uncommitted leftovers as a named recovery stash (the SSH host commits its dirty paths), pushes committed work, runs token-free pre-PR checks, opens or updates the PR, starts the automated review | `awaiting_triage` (draft PR) or `in_review`; `changes_requested` if a pre-PR check failed |
 | still running after `timeout_minutes` + 5 | kills the process group | `ready` or `failed` |
 | no output or worktree change for `idle_kill_minutes` | shown as "idle N min" past `idle_minutes`, then kills the process group like a timeout | `ready` or `failed` |
 
@@ -340,12 +362,17 @@ The queue is revise runs first (tasks in `changes_requested` with feedback waiti
 flagged for a human, under `max_revisions`), then the ready set from `graph.ready()`:
 approved tasks whose dependencies are all `done`, or, with `stack: true`, whose single
 unfinished dependency has an open PR to build on. Order is priority, then id. Each
-candidate is skipped when no slot is free (`max_parallel` minus every active run that is
-not human-driven, review and persona runs included), when its phase is over budget, or when
+candidate is skipped when no worker slot is free (`max_parallel` minus active worker runs;
+review and persona runs use their separate `review_parallel` pool), when its phase is over budget, or when
 its runner is `manual` (a person takes those with `garden take`).
 
-Local admission is also host-wide: `resources.max_parallel` counts workers, reviews,
-personas and checks together, including automatic base probes and direct CLI dispatches.
+When configured, local admission is also host-wide: `resources.max_parallel` is a capacity-unit budget shared
+by workers, reviews, personas and checks, including automatic base probes and direct CLI
+dispatches. The default `null` preserves the separate worker and review pools described above.
+Each product may set `products.<name>.resources.weight` to a positive integer;
+it inherits `resources.weight` (default one unit). First-fit admission lets cheaper work use
+remaining units beside heavier work, while `resources.max_bypasses` bounds how often an older
+heavy run may be passed before capacity is reserved for it.
 Optional available-memory and work-dir temp-free thresholds defer every new local launch.
 The capacity check and new running record are published under one filesystem lock, so a
 service action and concurrent CLI commands cannot all claim the final slot.
@@ -461,12 +488,13 @@ files under `tasks/` must not be hand-edited.
     before it can automerge. Merging a child into the parent's branch would put commits
     there that the parent's worktree does not have, and the parent's next rebase round
     would force-push them away.
-  - **A self or tool product needs a second round.** A PR against a product with `self: true`
-    (the garden's own repo) or `provides_tool: true` (the product that ships the `garden`
-    binary) can change the loop that merges it, so `automerge_min_review_rounds` is 2 there
-    by default — one approving LLM review is not enough (`_needs_second_review_round`). An
-    explicit per-product `automerge_min_review_rounds` overrides the default; otherwise the
-    PR waits for a second approving round or a person merging it by hand.
+  - **A self product needs an independent second opinion.** A PR against a product with
+    `self: true` (the garden's own repo) can change the loop that merges it. By default it
+    needs one approving automated review plus a current-head persona review or human GitHub
+    approval; a second automated review from the same product does not satisfy that gate.
+    An explicit per-product `automerge_min_review_rounds` overrides the default self-product
+    review policy. A `provides_tool: true` product instead keeps the ordinary default of two
+    approving automated rounds unless that setting overrides it.
   - **A rebase round keeps remote-only commits.** A rebase round rewrites a branch in the
     worktree and force-pushes it, so before rebasing the scheduler folds in any commits
     that exist only on `origin/<branch>` by rebasing the worktree's commits onto it first.
@@ -675,6 +703,9 @@ hand a held reload's executable fields a route around the gate.
 
 Every automatic loop has a bound here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
+`products.<name>.timeout_minutes` overrides the worker, revision and review execution budget
+for that product and otherwise inherits the top-level value. Check commands remain governed
+separately by `checks.timeout_seconds`.
 `review.max_rounds` defaults to two but accepts a positive cap or `null` for unlimited review
 rounds; its separate `review.friction_after` threshold emits one non-blocking loop record.
 Stall handling still stops unchanged paid attempts.
@@ -822,8 +853,12 @@ live work.
 - `model`, `store`, `graph` and `brief` make no network calls and no subprocess calls
   beyond git, so briefs and readiness are testable offline.
 - Only `scheduler` changes a task's status; the CLI, web and TUI call it.
-- Workers commit and never push; the scheduler pushes and never commits code of its own
-  (it only commits a worker's leftover changes before pushing).
+- Local workers commit in their worktree; by default the scheduler publishes the branch.
+  A product may set `setup.worker_push: true` when its worker needs to push the assigned
+  branch (for example to await CI). SSH workers push their host-side branch, and pull-based
+  remote workers push a lease-specific staging ref that the scheduler promotes. The scheduler
+  does not commit code on a worker's behalf: uncommitted leftovers are preserved as named
+  recovery stashes for explicit restoration.
 - A worker runs in a scrubbed environment (`runner.base.scrubbed_env`): an allowlist of the
   scheduler's variables (`runner.base.PASS_ENV`, widened by `worker_env.pass`) plus the
   product's `setup.env`, never its GitHub token, cloud credentials or ssh agent, and never
