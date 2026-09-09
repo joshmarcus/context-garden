@@ -14,7 +14,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -226,7 +225,6 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                            timeout=int(setup.get("timeout_seconds") or 600), check=True)
         if run.get("mode") == "check":
             check_data = _host_check_data(run, repo)
-            ctx = check_data["ctx"]
             # A managed consumer passes the product command above so admission covers it.
             # Do not repeat it inside the check job. A standalone worker may instead
             # supply its own setup override; without one the check job prepares the product.
