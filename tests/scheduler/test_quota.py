@@ -448,3 +448,23 @@ def test_direct_review_and_aux_dispatch_refuse_a_paused_harness(sched, monkeypat
                     lambda: sched.dispatch_aux("compare", task, "brief", sched.worktree_for(task), {})):
         with pytest.raises(RuntimeError, match="paused"):
             attempt()
+
+
+def test_empty_pause_read_cannot_overwrite_concurrent_pause(sched):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    assert sched.paused_harnesses() == {}
+    newer = Scheduler(Store(sched.store.root))
+    newer.pause_harness("claude", "concurrent quota pause")
+    sched.control()["unrelated_tick_note"] = "saved after pause"
+    sched.state.save()
+
+    fresh = Scheduler(Store(sched.store.root))
+    assert fresh.is_harness_paused("claude")
+    assert fresh.paused_harnesses()["claude"]["reason"] == "concurrent quota pause"
+    assert fresh.control()["unrelated_tick_note"] == "saved after pause"
+    with pytest.raises(RuntimeError, match="paused"):
+        fresh._raise_if_harness_paused("claude")
+    fresh.resume_harness("claude", by="test")
+    assert not Scheduler(Store(sched.store.root)).is_harness_paused("claude")
