@@ -132,8 +132,18 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             subprocess.run(["git", "clone", str(run["repo"]), str(repo)], check=True)
         subprocess.run(["git", "fetch", "--prune", "origin"], cwd=repo, check=True)
         branch, base = str(run["branch"]), str(run["base"])
-        remote_branch = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo).returncode == 0
-        subprocess.run(["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"], cwd=repo, check=True)
+        source_head = str(run.get("source_head") or "")
+        if source_head:
+            # Base probes must run on the immutable source advertised by the controller.
+            # A detached checkout also ensures a bad source cannot alter the author branch.
+            subprocess.run(["git", "checkout", "--detach", source_head], cwd=repo, check=True)
+            actual_source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                                           capture_output=True, text=True, check=True).stdout.strip()
+            if actual_source != source_head:
+                raise RuntimeError(f"advertised source {source_head} materialised as {actual_source}")
+        else:
+            remote_branch = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo).returncode == 0
+            subprocess.run(["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"], cwd=repo, check=True)
         env = _env(list(run.get("env_allowlist") or []), repo, run)
         setup = dict(run.get("setup") or {})
         if setup_command:

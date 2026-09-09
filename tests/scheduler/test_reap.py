@@ -77,6 +77,31 @@ def test_worker_amendment_round_trip_reaches_review_brief(sched, fake_github, mo
     assert "Judge each amended line against its stated outcome" in brief
 
 
+def test_mismatched_base_probe_receipt_cannot_park_the_base(sched, fake_github, tmp_path):
+    """A remote probe with the wrong source is a provenance failure, not a main failure."""
+    task = sched.store.task("DM-001")
+    advertised = "a" * 40
+    run = sched.runs.new_run(task.id, "remote", mode="check")
+    run.start_head, run.pushed_head = advertised, "b" * 40
+    run.save()
+    failed = [{"name": "guard", "status": "fail", "summary": "branch guard failed", "details": ""}]
+
+    sched._after_base_probe_check(
+        task, run, [{"name": "guard", "status": "fail", "summary": "probe failed", "details": ""}],
+        {"probe": str(tmp_path / "missing-probe"), "worktree": str(tmp_path / "branch"),
+         "branch": task.default_branch(), "base": "main", "cost": "", "failed": failed,
+         "base_sha": advertised, "moved": False}, TickReport(),
+    )
+
+    saved = sched.runs.latest(task.id)
+    assert "base probe provenance failure" in saved.error
+    assert [item["name"] for item in saved.result["checks"]] == ["guard", "base probe provenance"]
+    assert sched.state.get(task.id).get("needs_human", {}).get("kind") != "base_broken"
+    assert "branch guard failed" in sched.state.get(task.id)["pending_feedback"]
+    events = sched.events.read(task_id=task.id, kinds=["base_probe_provenance_failure"])
+    assert events and events[-1]["advertised"] == advertised
+
+
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
     """CG-083: a crash between the run record's final-status write and the task
     transition / push / PR step must not strand the finished run. Simulate the
