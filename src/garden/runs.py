@@ -23,6 +23,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .proctree import pid_alive as _pid_alive
+from .proctree import process_group_alive as _process_group_alive
+
 if TYPE_CHECKING:
     from .config import Config
     from .events import EventLog
@@ -419,44 +422,6 @@ def _newest_mtime(root: Path) -> float:
             if m > newest:
                 newest = m
     return newest
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    # zombie check on linux
-    try:
-        state = Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0]
-        return state != "Z"
-    except OSError:
-        return True
-
-
-def _process_group_alive(pgid: int) -> bool:
-    """Whether any process remains in a local run's session/process group."""
-    proc = Path("/proc")
-    if proc.is_dir():
-        try:
-            for entry in proc.iterdir():
-                if not entry.name.isdigit():
-                    continue
-                fields = (entry / "stat").read_text().split(")", 1)[1].split()
-                if len(fields) > 2 and int(fields[2]) == pgid and fields[0] != "Z":
-                    return True
-            return False
-        except (OSError, ValueError):
-            pass
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _invalidate_index(runs_dir: Path, task_id: str | None = None) -> None:

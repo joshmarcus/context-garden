@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import IO
 
+from .proctree import descendants
+
 
 def _finite_cgroup_limits(target: Path) -> tuple[bool, dict[str, str], str]:
     """Return whether *target* has finite aggregate CPU and memory controls."""
@@ -296,31 +298,32 @@ def _become_subreaper() -> None:
         # Orphaned grandchildren are reparented here rather than to init. This keeps a
         # daemonized test process owned by the run until it exits or the run is stopped.
         ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
-
-
-def _children(pid: int) -> list[int]:
-    try:
-        return [int(value) for value in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()]
-    except (OSError, ValueError):
-        return []
-
-
-def _descendants(pid: int) -> list[int]:
-    found: list[int] = []
-    pending = _children(pid)
-    while pending:
-        child = pending.pop()
-        found.append(child)
-        pending.extend(_children(child))
-    return found
+    # Elsewhere there is no equivalent: a descendant that calls setsid and outlives its
+    # parent is reparented to init and leaves this run's ownership. Every descendant that
+    # is still reachable through live parentage is signalled through proctree.descendants.
 
 
 def _signal_descendants(sig: int) -> None:
-    for pid in reversed(_descendants(os.getpid())):
+    """Signal this supervisor's whole descendant tree, deepest first, never itself."""
+    for pid in reversed(descendants(os.getpid())):
         try:
             os.kill(pid, sig)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
+
+
+def _adopted_children() -> list[int]:
+    """Direct children this supervisor has adopted as a subreaper.
+
+    Only Linux reparents orphans here, and only Linux publishes the list; on every other
+    platform this supervisor's sole child is the run leader, which ``Popen`` reaps.
+    """
+    pid = os.getpid()
+    try:
+        text = Path(f"/proc/{pid}/task/{pid}/children").read_text()
+        return [int(value) for value in text.split()]
+    except (OSError, ValueError):
+        return []
 
 
 def _reap_exited_children(*, excluding: int | None = None) -> None:
@@ -330,7 +333,7 @@ def _reap_exited_children(*, excluding: int | None = None) -> None:
     status between ``Popen.poll`` calls.  Orphaned descendants become direct children
     of this subreaper, so this reaps only processes this run owns.
     """
-    for pid in _children(os.getpid()):
+    for pid in _adopted_children():
         if pid == excluding:
             continue
         try:
