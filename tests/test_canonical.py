@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -259,7 +261,9 @@ def test_ssh_in_place_refuses_reconciliation_without_working_timeout(garden, tmp
     assert "requires working timeout(1)" in (run.path / "stderr.log").read_text()
 
 
-def test_ssh_in_place_refuses_competing_active_claim(garden, tmp_path):
+def test_ssh_in_place_refuses_competing_active_claim_without_fetch_or_mutation(
+    garden, tmp_path, monkeypatch
+):
     remote = _remote_clone(garden)
     scheduler = Scheduler(_enable(garden, (garden / "../repo").resolve()))
     task = scheduler.store.task("DM-001")
@@ -268,13 +272,57 @@ def test_ssh_in_place_refuses_competing_active_claim(garden, tmp_path):
     lease = remote / ".git" / "garden-canonical-lease"
     lease.mkdir()
     (lease / "run-id").write_text("active-run\n")
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fetch_marker = tmp_path / "fetch-called"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_wrapper = fake_bin / "git"
+    git_wrapper.write_text(
+        "#!/bin/sh\n"
+        f"[ \"$1\" != fetch ] || printf fetch > {shlex.quote(str(fetch_marker))}\n"
+        f"exec {shlex.quote(real_git)} \"$@\"\n"
+    )
+    git_wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    before = subprocess.run(
+        [real_git, "status", "--porcelain=v2", "--branch"],
+        cwd=remote,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    refs_before = subprocess.run(
+        [real_git, "for-each-ref", "--format=%(refname) %(objectname)"],
+        cwd=remote,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
     run = scheduler.runs.new_run(task.id, "ssh")
     run.host, run.branch, run.base = "boxA", task.default_branch(), "main"
     run.env_snapshot["canonical_active_run_ids"] = ["active-run"]
     runner.start(run, tmp_path, "brief")
     assert _wait_run(run) == 4
     assert "leased by active run active-run" in (run.path / "stderr.log").read_text()
+    assert not fetch_marker.exists()
     assert (lease / "run-id").read_text() == "active-run\n"
+    after = subprocess.run(
+        [real_git, "status", "--porcelain=v2", "--branch"],
+        cwd=remote,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    refs_after = subprocess.run(
+        [real_git, "for-each-ref", "--format=%(refname) %(objectname)"],
+        cwd=remote,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert after == before
+    assert refs_after == refs_before
 
 
 @pytest.mark.parametrize("consumer", ["review", "persona", "rebase", "retro"])
