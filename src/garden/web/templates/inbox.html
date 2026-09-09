@@ -39,7 +39,7 @@
   {% for it in gitems %}
   <div class="item {{ 'q-open' if it.group == 'question' else '' }}">
     <div>{% if it.status %}{{ stage(it.status, 26) }}{% endif %}</div>
-    <div class="who">{% if it.task %}<a class="id" href="/tasks/{{ it.task }}">{{ it.task }}</a>{% endif %}{% if it.status %}<span class="state s-{{ it.status }}">{{ it.status.replace('_',' ') }}</span>{% endif %}<span class="age">{{ stage_word(it.status) if it.status else '' }}{% if it.difficulty %} · {{ it.difficulty }}{% endif %}{% if it.task %} · owner {{ it.owner or 'unassigned' }}{% endif %} · {{ it.age }}</span></div>
+    <div class="who">{% if it.task %}<a class="id" href="/tasks/{{ it.task }}">{{ it.task }}</a>{% endif %}{% if it.status %}<span class="state s-{{ it.status }}">{{ it.status.replace('_',' ') }}</span>{% endif %}<span class="age">{{ stage_word(it.status) if it.status else '' }}{% if it.difficulty %} · {{ it.difficulty }}{% endif %}{% if it.task %} · owner {{ it.get('owner') or 'unassigned' }}{% endif %} · {{ it.age }}</span></div>
     <div class="what decision-content">
       {% if it.task or it.group != 'question' %}<div class="t">{% if it.task %}<a href="/tasks/{{ it.task }}" style="text-decoration:none">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</div>{% endif %}
       {% if not it.get('decision_card') and it.why != it.get('question') %}<div class="why">{{ it.why }}</div>{% endif %}
