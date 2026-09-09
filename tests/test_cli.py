@@ -875,6 +875,22 @@ def test_trial_cli_prints_a_contenders_table(garden, monkeypatch):
     assert "running" in r.output
 
 
+def test_trial_cli_expands_a_tier_pool(garden, monkeypatch):
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["models"] = {"medium": [
+        {"harness": "claude", "model": "sonnet"},
+        {"harness": "codex", "model": "gpt-std"},
+    ]}
+    config_path.write_text(yaml.safe_dump(config))
+
+    r = run(garden, "trial", "DM-001", "-c", "tier:medium")
+
+    assert r.exit_code == 0, r.output
+    assert "claude:sonnet" in r.output and "codex:gpt-std" in r.output
+
+
 def test_trial_wait_polls_until_the_trial_concludes(garden, monkeypatch):
     """CG-231: `garden trial ... --wait` blocks (ticking the scheduler) until the trial
     reaches a terminal state and prints the resolved contender table, instead of the
