@@ -350,6 +350,8 @@ class ReapMixin:
             st["session_host"] = run.host
             st["session_harness"] = run.harness
             st["question_run"] = run.run_id
+            # An immediate answer needs the question and its resume identity.
+            self.state.save()
             self.events.emit("waiting_human", task.id, question=question, run=run.run_id)
             self._transition(task, Status.WAITING_HUMAN, f"worker asks: {question}{cost}")
             rep.transitions.append(f"{task.id} -> waiting_human")

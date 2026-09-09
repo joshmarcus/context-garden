@@ -335,3 +335,29 @@ def test_web_decision_flow(garden, monkeypatch):
     assert r.status_code == 303
     api = {t["id"]: t for t in c.get("/api/tasks").json()}
     assert api["DM-001"]["status"] == "wont_do"
+
+
+def test_question_resume_identity_is_readable_when_waiting_status_is_published(sched, monkeypatch):
+    """An immediate answer must resume the worker that asked the question."""
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "needs_input")
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    observed = []
+    save = sched.store.save
+
+    def read_after_publication(task, *args, **kwargs):
+        result = save(task, *args, **kwargs)
+        if task.id == "DM-001" and task.status == Status.WAITING_HUMAN:
+            observed.append(dict(State(sched.state.path).get(task.id)))
+        return result
+
+    monkeypatch.setattr(sched.store, "save", read_after_publication)
+    sched.tick()
+
+    assert observed, "the worker question must publish a waiting status"
+    for state in observed:
+        assert state.get("question") == "Postgres or SQLite?"
+        assert state.get("session_id") == "sess-42"
+        assert state.get("session_host") == run.host
+        assert state.get("session_harness") == run.harness
+        assert state.get("question_run") == run.run_id
