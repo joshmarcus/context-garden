@@ -1,5 +1,8 @@
+import html
+import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -10,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from garden.gitops import head_sha
 from garden.runs import Run, RunStore
-from garden.scheduler import Scheduler
+from garden.scheduler import Scheduler, State
 from garden.scheduler.snapshot import _safe
 from garden.store import Store
 from garden.web.app import create_app
@@ -76,6 +79,33 @@ def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
     assert "DM-002" in c.get("/board").text
     assert "Inbox zero" in c.get("/").text
     assert c.get("/tasks/NOPE").status_code == 404
+
+
+def test_task_page_returns_to_automation_after_observed_manual_head_change(garden):
+    c = client(garden)
+    reserved = c.post(
+        "/api/tasks/DM-001/manual-mode",
+        json={"actor": "operator", "note": "watching an external update"},
+    ).json()["reservation"]
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001")["manual_observed_pr"] = {"head_sha": "observed-new-head"}
+    state.save()
+
+    page = c.get("/tasks/DM-001")
+    match = re.search(r'name="note" value="([^"]+)"', page.text)
+    assert match is not None
+    expected = json.loads(html.unescape(match.group(1)))
+    assert expected["head_sha"] == "observed-new-head"
+
+    returned = c.post(
+        "/tasks/DM-001/return-automation",
+        data={"applies_to": reserved["id"], "note": json.dumps(expected)},
+        headers={"referer": "http://testserver/tasks/DM-001"},
+        follow_redirects=True,
+    )
+    assert returned.status_code == 200
+    assert "DM-001 returned to automation" in returned.text
+    assert "Return to automation" not in returned.text
 
 
 def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(garden):
