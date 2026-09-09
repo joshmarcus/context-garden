@@ -4,6 +4,7 @@ import json
 import pytest
 
 from garden.brief import build_brief
+from garden.inbox import build_inbox
 from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
@@ -67,6 +68,428 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     assert st2.get("last_review_run") == run_id
     assert st2.get("last_review_head") == st.get("last_review_head")
     assert st2.get("last_review_head") == review_run.env_snapshot["review_head"]
+
+
+@pytest.mark.parametrize("failure", ["unclaimed timeout", "admission timeout", "startup environment failure"])
+def test_unstarted_review_failures_keep_one_durable_current_head_continuation(
+        sched, fake_github, failure):
+    """The three observed pre-claim failures refund the round and survive restart once."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000,
+                                "recovery_attempts": 2, "recovery_backoff_seconds": 300}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = next(r for r in sched.runs.runs_for(task.id) if r.run_id == st["review_run"])
+    for name in ("stdout.json", "final.md", "remote_result.json"):
+        (run.path / name).unlink(missing_ok=True)
+    run.runner = "remote"
+    run.pid = None
+    run.host = ""
+    run.claimed_at = ""
+    run.status = "timeout"
+    run.finished_at = "2026-09-08T16:00:00+00:00"
+    run.error = failure
+    run.save()
+
+    rep = TickReport()
+    assert sched.reap_review(task, rep)
+    assert st["review_rounds"] == 0
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert st["review_recovery"]["started"] is False
+    assert st["review_recovery"]["head"] == run.env_snapshot["review_head"]
+    assert [item.get("kind") for item in build_inbox(sched.store, sched)].count("review_recovery") == 1
+
+    fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    fresh.dispatch_ready(TickReport())
+    recovered = fresh.state.get(task.id)
+    assert recovered["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert recovered["review_recovery"]["attempts"] == 1
+
+
+def test_claimed_review_recovery_preserves_logical_round_and_exhausts_to_decision(sched, fake_github):
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000,
+                                "recovery_attempts": 1, "recovery_backoff_seconds": 0}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = next(r for r in sched.runs.runs_for(task.id) if r.run_id == st["review_run"])
+    run.runner = "remote"
+    run.claimed_at = "2026-09-08T16:00:00+00:00"
+    run.status = "timeout"
+    run.error = "claimed worker timed out"
+    run.save()
+
+    assert sched.reap_review(task, TickReport())
+    assert st["review_rounds"] == 1
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+    st["review_run"] = "missing-after-restart"
+    rep = TickReport()
+    assert sched.reap_review(task, rep)
+    assert st["needs_human"]["kind"] == "review_recovery_exhausted"
+    assert not st.get("pending_reviews")
+    assert not st.get("last_review")
+
+
+def test_timed_out_review_applies_a_collected_verdict_once(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"]["enabled"] = True
+    for _ in range(5):
+        sched.tick()
+        if sched.state.get("DM-001").get("review_run"):
+            break
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    (run.path / "exit_code").unlink()
+    collected = []
+    runner_type = type(sched.runner_for(task, run.runner, run.harness))
+    original_collect = runner_type.collect
+
+    def collect_once(self, finished):
+        collected.append(finished.run_id)
+        return original_collect(self, finished)
+
+    def timeout(finished, _runner):
+        finished.status = "timeout"
+        finished.error = "claimed worker timed out"
+        finished.save()
+        return True
+
+    monkeypatch.setattr(runner_type, "collect", collect_once)
+    monkeypatch.setattr(sched, "_finished_or_timed_out", timeout)
+
+    assert sched.reap_review(task, TickReport())
+    assert collected == [run.run_id]
+    assert st["last_review_run"] == run.run_id
+    assert st["last_review"]["verdict"] == "approve"
+    assert st["review_rounds"] == 1
+    assert not st.get("review_run")
+    assert not st.get("pending_reviews")
+    assert not st.get("review_recovery")
+    assert sched.reap_review(task, TickReport()) is False
+    assert collected == [run.run_id]
+
+
+def test_started_review_env_error_preserves_collected_usage_and_cost(sched, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"]["enabled"] = True
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    runner_type = type(sched.runner_for(task, run.runner, run.harness))
+    collected = {
+        "env_error": True,
+        "env_kind": "quota",
+        "error": "reviewer quota exhausted",
+        "usage": {"input_tokens": 123, "output_tokens": 7},
+        "cost_usd": 0.42,
+        "model": "review-model-with-usage",
+    }
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda *_args: True)
+    monkeypatch.setattr(runner_type, "collect", lambda *_args: collected)
+
+    assert sched.reap_review(task, TickReport())
+
+    saved = sched._run_by_id(task, run.run_id)
+    assert saved is not None
+    assert saved.status == "env_error"
+    assert saved.usage == collected["usage"]
+    assert saved.cost_usd == collected["cost_usd"]
+    assert saved.model == collected["model"]
+    assert saved.error == collected["error"]
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert st["review_recovery"]["attempts"] == 1
+    assert st["review_recovery"]["started"] is True
+
+
+def test_repeated_review_env_errors_exhaust_bounded_recovery_after_restart(
+        sched, fake_github, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"].update({
+        "enabled": True,
+        "recovery_attempts": 2,
+        "recovery_backoff_seconds": 0,
+    })
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    first = sched._run_by_id(task, st["review_run"])
+    assert first is not None
+    runner_type = type(sched.runner_for(task, first.runner, first.harness))
+    collected = {
+        "env_error": True,
+        "env_kind": "quota",
+        "error": "reviewer quota exhausted",
+        "usage": {"input_tokens": 10, "output_tokens": 1},
+        "cost_usd": 0.05,
+    }
+    monkeypatch.setattr(runner_type, "collect", lambda *_args: collected)
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda *_args: True)
+
+    assert sched.reap_review(task, TickReport())
+    assert st["review_recovery"]["attempts"] == 1
+    assert st["review_rounds"] == 0
+
+    # Recovery state and its bound survive a controller restart. Each successful
+    # harness probe permits one more attempt; repeated account failure cannot loop.
+    current = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    current.cfg.data["review"].update({
+        "enabled": True,
+        "recovery_attempts": 2,
+        "recovery_backoff_seconds": 0,
+    })
+    monkeypatch.setattr(current, "_finished_or_timed_out", lambda *_args: True)
+    for expected_attempt in (2, 3):
+        current.resume_harness(first.harness, by="probe")
+        state = current.state.get(task.id)
+        current._drain_pending_reviews(current.store.tasks(), TickReport())
+        assert state.get("review_run")
+
+        assert current.reap_review(current.store.task(task.id), TickReport())
+        if expected_attempt <= 2:
+            assert state["review_recovery"]["attempts"] == expected_attempt
+            assert state["pending_reviews"] == [{"kind": "review", "count_round": True}]
+            assert not state.get("needs_human")
+        else:
+            assert state["needs_human"]["kind"] == "review_recovery_exhausted"
+            assert not state.get("pending_reviews")
+        assert state["review_rounds"] == 0
+
+
+def test_review_audit_preserves_the_round_of_a_lost_started_review(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 1})
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 1})
+    lost = sched.runs.new_run(task.id, "local", mode="review")
+    lost.status = "timeout"
+    lost.pid = 123
+    lost.error = "host stopped after claim"
+    lost.env_snapshot = {"review_head": "current", "count_round": True}
+    lost.save()
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert st["review_rounds"] == 1
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+    assert st["review_recovery"]["started"] is True
+    assert st["review_recovery"]["last_run"] == lost.run_id
+    assert rep.transitions == ["DM-001 review recovery queued (1/2)"]
+
+
+@pytest.mark.parametrize("event_already_emitted", [False, True])
+def test_review_audit_applies_a_lost_terminal_result_once(
+        sched, event_already_emitted):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 1})
+    wt = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task),
+        task.branch or task.default_branch(), sched.base_for(task))
+    head = gitops.head_sha(wt)
+    st = sched.state.get(task.id)
+    st.update({"head_sha": head, "review_rounds": 1})
+    completed = sched.runs.new_run(task.id, "local", mode="review")
+    completed.status = "done"
+    completed.result = {"verdict": "approve", "summary": "valid terminal verdict",
+                        "criteria": [], "findings": []}
+    completed.env_snapshot = {"review_head": head, "count_round": True}
+    completed.save()
+    if event_already_emitted:
+        sched.events.emit("run_finished", task.id, run=completed.run_id,
+                          mode="review", status="approve")
+
+    first = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), first)
+    sched._audit_review_continuations(sched.store.tasks(), first)
+
+    assert st["last_review_run"] == completed.run_id
+    assert st["last_review"]["verdict"] == "approve"
+    assert not st.get("review_run")
+    assert not st.get("pending_reviews")
+    finished = [event for event in sched.events.read(task_id=task.id, kinds=["run_finished"])
+                if event.get("run") == completed.run_id]
+    assert len(finished) == 1
+
+
+def test_served_tick_recovers_an_unstarted_review_with_original_round_intent(sched, fake_github):
+    import yaml
+    from fastapi.testclient import TestClient
+
+    from garden.web.app import create_app
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    config_path = sched.store.root / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["review"].update({"enabled": True, "max_rounds": 2, "recovery_attempts": 2,
+                             "recovery_backoff_seconds": 300})
+    config_path.write_text(yaml.safe_dump(config))
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 1})
+    lost = sched.runs.new_run(task.id, "local", mode="review")
+    lost.status = "failed"
+    lost.error = "startup failed before execution was confirmed"
+    lost.env_snapshot = {"review_head": "current", "count_round": True}
+    lost.save()
+    sched.state.save()
+
+    client = TestClient(create_app(Store(sched.store.root), watch=False, github=fake_github))
+    response = client.post("/tick")
+
+    assert response.status_code == 200
+    recovered = Scheduler(Store(sched.store.root), github=fake_github).state.get(task.id)
+    assert recovered["review_rounds"] == 0
+    assert recovered["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert recovered["review_recovery"]["started"] is False
+    assert recovered["review_recovery"]["last_run"] == lost.run_id
+
+
+def test_review_audit_restores_a_lost_additional_round_once(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
+    sched.cfg.data["products"][task.product]["automerge_min_review_rounds"] = 2
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 1, "last_review": {"verdict": "approve"}})
+    prior = sched.runs.new_run(task.id, "local", mode="review")
+    prior.status = "done"
+    prior.env_snapshot = {"review_head": "current"}
+    prior.result = {"verdict": "approve"}
+    prior.save()
+    st["last_review_run"] = prior.run_id
+    assert sched.cfg.product(task.product)["automerge_min_review_rounds"] == 2
+    assert sched._review_round_pending(st)
+    assert sched.store.tasks()[task.id].status == Status.IN_REVIEW
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert rep.transitions == ["DM-001 missing review continuation restored"]
+
+
+def test_review_audit_replaces_stale_head_recovery_with_a_fresh_counted_round(sched, fake_github):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = fake_github.create_pr(
+        "test/demo", task.branch or task.default_branch(), task.default_branch(), task.title, "").url
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 2})
+    wt = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task),
+        task.branch or task.default_branch(), sched.base_for(task))
+    current = gitops.head_sha(wt)
+    st = sched.state.get(task.id)
+    st.update({
+        "head_sha": current,
+        "review_rounds": 0,
+        "pending_reviews": [{"kind": "review", "count_round": False}],
+        "review_recovery": {
+            "head": "obsolete-head",
+            "attempts": 1,
+            "limit": 2,
+            "retry_at": "2999-01-01T00:00:00+00:00",
+            "reason": "old head review was lost",
+            "owner": "scheduler",
+            "started": True,
+            "last_run": "old-review",
+        },
+    })
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert st["review_recovery"]["head"] == current
+    assert st["review_recovery"]["attempts"] == 0
+    assert rep.transitions == [
+        "DM-001 stale review recovery discarded",
+        "DM-001 missing review continuation restored",
+    ]
+
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+    fresh = sched._run_by_id(task, st["review_run"])
+    assert fresh is not None
+    assert fresh.env_snapshot["review_head"] == current
+    assert fresh.env_snapshot["count_round"] is True
+    assert st["review_rounds"] == 1
+    assert not st.get("pending_reviews")
+    assert not any(str((run.env_snapshot or {}).get("review_head") or "") == "obsolete-head"
+                   for run in sched.runs.runs_for(task.id))
+
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+    sched._drain_pending_reviews(sched.store.tasks(), rep)
+    assert st["review_run"] == fresh.run_id
+    assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == 1
+
+
+@pytest.mark.parametrize("terminal", [Status.DONE, Status.CANCELLED])
+def test_terminal_transition_retires_queued_review_recovery(sched, terminal):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({
+        "pending_reviews": [{"kind": "review", "count_round": True}],
+        "review_recovery": {
+            "head": "current-head",
+            "attempts": 1,
+            "reason": "unclaimed timeout",
+            "owner": "scheduler",
+        },
+    })
+    review_runs_before = len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"])
+
+    sched._transition(task, terminal, "terminal during automatic review recovery")
+    sched.tick()
+
+    assert not st.get("pending_reviews")
+    assert not st.get("review_recovery")
+    assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == review_runs_before
+    retired = sched.events.read(task_id=task.id, kinds=["review_recovery_retired"])
+    assert len(retired) == 1
+    assert retired[0]["status"] == terminal.value
+    assert "automatic review recovery retired" in task.body
+
+
+def test_pending_review_drain_repairs_terminal_recovery_state_without_dispatch(sched):
+    """A restart may expose terminal state written by a controller predating cleanup."""
+    task = sched.store.task("DM-001")
+    task.status = Status.CANCELLED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["pending_reviews"] = [{"kind": "review", "count_round": True}]
+    st["review_recovery"] = {"head": "old-head", "attempts": 1}
+
+    sched._drain_pending_reviews(sched.store.tasks(), TickReport())
+
+    assert not st.get("pending_reviews")
+    assert not st.get("review_recovery")
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "review"]
 
 
 def test_review_ladder_routes_across_harnesses_and_records_the_writer(sched):
@@ -1250,11 +1673,7 @@ def test_review_after_stale_base_rebase_round_does_not_count_toward_review_cap(s
 
 
 def _review_after_completed_empty_replay(sched, task):
-    from garden import gitops
-
-    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
-                                task.branch or task.default_branch(), sched.base_for(task))
-    sched.state.get(task.id)["interaction_replay"] = {"head": gitops.head_sha(wt)}
+    """Compatibility helper for reviews that no longer require replay admission."""
     return sched.dispatch_review(task)
 
 
