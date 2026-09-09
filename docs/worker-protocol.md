@@ -737,6 +737,21 @@ descendant drain, and never resets for output or retries. On expiry the supervis
 its owned descendants, and releases its validation slot while the parent model remains live.
 Nonzero command results propagate through the wrapper.
 
+### Runner-spawning test environments
+
+Tests that start a real `LocalRunner` supervisor are synthetic child runs, not nested
+validations of the test command. Build their `env` from the current environment after
+removing `GARDEN_EXECUTION_RUN_DIR`, `GARDEN_EXECUTION_OWNER`,
+`GARDEN_HEAVY_EXECUTION`, `GARDEN_OWNER_SCOPED`,
+`GARDEN_EXECUTION_TIMEOUT_SECONDS`, and `GARDEN_VALIDATION_INHERITS_LEASE`. The child
+supervisor then assigns its own owner and run directory and competes normally for the
+authoritative host slot. This prevents a runner-spawning test executed through
+`garden.validation` from waiting for the enclosing test command's owner lock.
+
+Keep the child bounded and reap it in fixture cleanup. Production worker environments
+continue to pass their execution identity to supported validation wrappers: the isolation
+is only for disposable test-created supervisors.
+
 Detached check claims use the same supervisor and capped post-admission clock around their
 whole check batch. The private execution-timeout input is removed from ordinary work, review,
 and persona environments, so this validation budget never shortens a model session.
