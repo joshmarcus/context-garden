@@ -277,6 +277,11 @@ def investigation_retry(s: Store, sched: Scheduler, t: Task, note: str, applies_
     sched.retry_investigation(t)
 
 
+@action("investigation-publish-retry")
+def investigation_publish_retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.retry_investigation_publication(t)
+
+
 @action("troubled-change-approach")
 def troubled_change_approach(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.change_troubled_approach(t, note)
