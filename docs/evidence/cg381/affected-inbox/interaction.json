@@ -1,0 +1,124 @@
+{
+  "head": "8dcb5de9b4462a90d2bab6fd0578b9451efcfc5e",
+  "environment": "disposable",
+  "command": "python scripts/replay_cg381_inbox.py --out OUTPUT",
+  "pages": [
+    "inbox"
+  ],
+  "events": [
+    {
+      "kind": "http_request",
+      "state": "affected",
+      "outcome": "success",
+      "method": "GET",
+      "url": "http://127.0.0.1:39977/inbox",
+      "status_code": 200,
+      "observed": "Queued review, prior verdict, deferred draft and operator deployment have zero owner decisions."
+    },
+    {
+      "kind": "http_request",
+      "state": "failure",
+      "outcome": "failure",
+      "method": "POST",
+      "url": "http://127.0.0.1:39977/tasks/DM-999/resume",
+      "status_code": 404,
+      "observed": "Resuming a missing task fails without changing the Inbox."
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:39977/tasks/DM-002/resume",
+      "status_code": 303,
+      "observed": "The operator completes deployment and resumes through the served action."
+    },
+    {
+      "kind": "http_request",
+      "state": "recovery",
+      "outcome": "success",
+      "method": "GET",
+      "url": "http://127.0.0.1:39977/inbox",
+      "status_code": 200,
+      "observed": "The deployment prerequisite disappears while the queued review remains."
+    },
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:39977/tasks/DM-001/cancel",
+      "status_code": 303,
+      "observed": "Cancel disposable fixture DM-001 through the served action."
+    },
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:39977/tasks/DM-002/cancel",
+      "status_code": 303,
+      "observed": "Cancel disposable fixture DM-002 through the served action."
+    },
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "success",
+      "method": "POST",
+      "url": "http://127.0.0.1:39977/tasks/DM-003/cancel",
+      "status_code": 303,
+      "observed": "Cancel disposable fixture DM-003 through the served action."
+    },
+    {
+      "kind": "http_request",
+      "state": "empty",
+      "outcome": "empty",
+      "method": "GET",
+      "url": "http://127.0.0.1:39977/inbox",
+      "status_code": 200,
+      "observed": "No task action cards remain after fixture cancellation."
+    }
+  ],
+  "viewport_evidence": [
+    {
+      "page": "inbox-ownership",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "light",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "inbox-ownership",
+      "action": "navigate",
+      "viewport": 1280,
+      "color_scheme": "dark",
+      "clientWidth": 1280,
+      "scrollWidth": 1280
+    },
+    {
+      "page": "inbox-ownership",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "light",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "inbox-ownership",
+      "action": "frame",
+      "viewport": 390,
+      "color_scheme": "dark",
+      "clientWidth": 390,
+      "scrollWidth": 390
+    }
+  ],
+  "artifacts": [
+    "docs/evidence/cg381/affected-inbox/inbox-ownership-1280-dark.png",
+    "docs/evidence/cg381/affected-inbox/inbox-ownership-1280-light.png",
+    "docs/evidence/cg381/affected-inbox/inbox-ownership-390-dark.png",
+    "docs/evidence/cg381/affected-inbox/inbox-ownership-390-light.png"
+  ],
+  "unverified": [],
+  "source_provenance": "Executed on8dcb5de9b4462a90d2bab6fd0578b9451efcfc5e. Application src and tests remain byte-identical; the replay script only normalizes its final line ending. Committed CLI output removes trailing spaces; raw receipt retained by operator."
+}
