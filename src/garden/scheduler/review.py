@@ -31,6 +31,7 @@ from ..review import (
 )
 from ..runs import Run
 from .report import TickReport
+from .resources import ResourcePressureError
 
 
 class ReviewMixin:
@@ -187,8 +188,10 @@ class ReviewMixin:
             if self.review_slots_free() <= 0:
                 deferred.append(item)
                 continue
-            harness_name = (self._review_route(task, work_run)[0] if item["kind"] == "review"
-                            else self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")))
+            runner_name, harness_name = self._review_item_route(task, item, work_run)
+            if runner_name == "local" and self.local_slots_free() <= 0:
+                deferred.append(item)
+                continue
             if self.is_harness_paused(harness_name):
                 deferred.append(item)
                 continue
@@ -206,6 +209,11 @@ class ReviewMixin:
                     if item.get("required"):
                         evidence[f"persona:{item['name']}"] = "running"
                     rep.dispatched.append(f"{task.id}(persona:{item['name']})")
+            except ResourcePressureError:
+                # The preflight above is advisory; the atomic local launch gate may lose
+                # its final slot to another scheduler process. Keep the item queued without
+                # charging a review round or presenting ordinary occupancy as a failed run.
+                deferred.append(item)
             except Exception as e:  # noqa: BLE001
                 task.log(f"automated {kind} could not start: {e}")
                 self.store.save(task)
@@ -240,6 +248,25 @@ class ReviewMixin:
             return self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")), "", writer
         return harness, model, writer
 
+    def _review_item_route(self, task: Task, item: dict[str, Any],
+                           work_run: Run | None = None) -> tuple[str, str]:
+        """Return the execution backend and harness used by one pending review item."""
+        harness = (self._review_route(task, work_run)[0] if item.get("kind") == "review"
+                   else self.resolved_harness_name(task, str(self.cfg.get("review.harness") or "")))
+        backend = "remote" if self.runner_for(task).name == "remote" else "local"
+        return backend, harness
+
+    def _review_item_wait_reason(self, task: Task, item: dict[str, Any]) -> tuple[str, str] | None:
+        """Backend-aware item gate shared by queue admission and its user explanation."""
+        backend, harness = self._review_item_route(task, item)
+        if self.is_harness_paused(harness):
+            return "harness", f"{harness} harness paused"
+        if backend == "local" and self.local_slots_free() <= 0:
+            status = self.resource_status()
+            reason = "; ".join(status.reasons) or "local execution capacity is unavailable"
+            return "local", reason
+        return None
+
     def _worker_holding_reviews(self, task: Task) -> Run | None:
         """The worker run a review for this task waits behind (a review never runs beside a
         worker round for the same task, CG-177): the newest one, or None."""
@@ -265,15 +292,19 @@ class ReviewMixin:
             return "worker", f"waits for its {run.mode} run to finish"
         if self.state.get(task.id).get("check_run"):
             return "check", "waits for its validation check to finish"
-        harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
-        if self.is_harness_paused(harness):
-            return "harness", f"{harness} harness paused"
+        pending = list(self.state.get(task.id).get("pending_reviews") or [{"kind": "review"}])
+        item_reasons = [reason for item in pending if (reason := self._review_item_wait_reason(task, item))]
+        harness_reason = next((reason for reason in item_reasons if reason[0] == "harness"), None)
+        if harness_reason is not None:
+            return harness_reason
         predecessor = self._queued_review_predecessor(task)
         if predecessor is not None:
             return "queue", (f"queued behind {predecessor.id} (priority {predecessor.priority}; "
                              "reviews use priority, order, then id)")
         if self.review_slots_free() <= 0:
             return "slots", f"no review slot ({len(self.review_runs_active())} of {self.review_parallel_limit()} busy)"
+        if item_reasons and len(item_reasons) == len(pending):
+            return item_reasons[0]
         if last_tick and last_tick > last_moved:
             return "overdue", "still queued after a tick and no gate explains it: see the task's log"
         return "tick", "queued: the next tick starts it"
@@ -347,10 +378,7 @@ class ReviewMixin:
             if item.get("kind") == "review":
                 if any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
                     continue
-                harness = self._review_route(task)[0]
-            else:
-                harness = self.resolved_harness_name(task, str(self.cfg.get("review.harness") or ""))
-            if not self.is_harness_paused(harness):
+            if self._review_item_wait_reason(task, item) is None:
                 return True
         return False
 
@@ -358,10 +386,10 @@ class ReviewMixin:
         return self._queued_review_predecessor(task) is not None
 
     def _drain_pending_reviews(self, tasks: dict[str, Task], rep: TickReport) -> None:
-        # Reviews share the host-wide local admission cap with workers and checks.
-        # Drain them before ready work starts, strict by task priority.  A task whose
-        # own gate is held is requeued and does not prevent the next eligible task from
-        # using the slot; equal-priority tasks are deterministic by order then id.
+        # Local reviews share host admission with workers and checks; remote reviews do
+        # not. Drain before ready work starts, strict by task priority among eligible
+        # entries. A backend-held task is requeued without preventing the next eligible
+        # task from using the global slot.
         self._audit_review_continuations(tasks, rep)
         for task in sorted(tasks.values(), key=dispatch_sort_key):
             if self.review_slots_free() <= 0:
