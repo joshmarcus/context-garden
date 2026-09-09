@@ -398,6 +398,30 @@ def test_terminal_check_recovery_does_not_touch_a_newer_live_pointer(sched, monk
     assert sched.state.get(task.id)["needs_human"]["run"] == stopped.run_id
 
 
+def test_terminal_check_recovery_does_not_touch_a_newer_parked_pointer(sched):
+    """A newer parked continuation owns recovery_check even without check_run."""
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    stopped = _terminal_check_stop(sched, task)
+    newer = sched.runs.new_run(task.id, "local", mode="check")
+    newer.status = "done"
+    newer.save()
+    st = sched.state.get(task.id)
+    st.pop("check_run")
+    st["recovery_check"] = {"run": newer.run_id, "stage": "ci", "cont": {}, "specs": []}
+    sched.state.save()
+
+    outcome = sched.recover_waiting_check(task)
+
+    assert f"recovery check {newer.run_id} does not match stopped check {stopped.run_id}" in outcome
+    state = sched.state.get(task.id)
+    assert not state.get("check_run")
+    assert state["needs_human"]["run"] == stopped.run_id
+    assert state["recovery_check"]["run"] == newer.run_id
+
+
 def test_terminal_check_recovery_waits_for_tick_lock(sched):
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW

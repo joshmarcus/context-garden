@@ -217,6 +217,10 @@ class CheckRunMixin:
             # check may already own the task, and its continuation must win this race.
             if run is None or run.lifecycle_state != "finished":
                 return f"check {stopped_run_id} is not proven terminal; left its continuation untouched"
+            recovery_run_id = str(recovery.get("run") or "")
+            if recovery_run_id and recovery_run_id != stopped_run_id:
+                return (f"recovery check {recovery_run_id} does not match stopped check {stopped_run_id}; "
+                        "left both continuations untouched")
 
             st.pop("check_run", None)
             st.pop("needs_human", None)
