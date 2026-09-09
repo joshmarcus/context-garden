@@ -313,6 +313,14 @@ class PollMixin:
         rev = st.get("last_review") or {}
         if str(rev.get("verdict") or "") != "approve":
             return False, f"the automated review verdict is {rev.get('verdict') or 'not in yet'}, not approve"
+        require_current_base = bool(
+            self._github_cfg("automerge_require_current_base", task.product, True)
+        )
+        reviewed_head = self._effective_approved_head(task, st)
+        if not require_current_base and not pr.head_sha:
+            return False, "GitHub did not report the current PR head"
+        if not require_current_base and reviewed_head != pr.head_sha:
+            return False, "the approved review is not for the current PR head"
         min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
         if hard_tier:
             min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
@@ -361,6 +369,8 @@ class PollMixin:
                 return False, "worker CI is enabled but the PR has no CI result yet"
             if pr.checks not in ("SUCCESS", ""):
                 return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
+            if not require_current_base and pr.checks != "SUCCESS":
+                return False, "the exact-head PR checks have not reported success"
         if pr.mergeable != "MERGEABLE":
             return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
         if pr.review_decision == "CHANGES_REQUESTED":

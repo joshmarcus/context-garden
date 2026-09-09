@@ -246,7 +246,8 @@ class GitHubLike(Protocol):
     def reopen_pr(self, slug: str, number: int) -> None: ...
     def branch_exists(self, slug: str, branch: str) -> bool: ...
     def base_ref_deleted(self, slug: str, number: int) -> bool: ...
-    def merge_pr(self, slug: str, number: int, method: str = ..., delete_branch: bool = ...) -> None: ...
+    def merge_pr(self, slug: str, number: int, method: str = ..., delete_branch: bool = ...,
+                 expected_head: str = ...) -> None: ...
     def delete_branch(self, slug: str, branch: str) -> None: ...
     def issue_comments(self, slug: str, number: int) -> list[str]: ...
     def comment(self, slug: str, number: int, body: str) -> None: ...
@@ -666,18 +667,24 @@ class GitHub:
             return False
         return any(isinstance(e, dict) and e.get("event") == "base_ref_deleted" for e in events)
 
-    def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True) -> None:
+    def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True,
+                 expected_head: str = "") -> None:
         """Merge an open PR. `method` is squash | merge | rebase. Raises GitHubError if GitHub
         refuses the merge (not mergeable, failing required checks, blocked by a review)."""
         if method not in ("squash", "merge", "rebase"):
             method = "squash"
         if self.gh:
             args = ["pr", "merge", str(number), "-R", self._repo(slug), f"--{method}"]
+            if expected_head:
+                args += ["--match-head-commit", expected_head]
             if delete_branch:
                 args.append("--delete-branch")
             self._gh(*args)
             return
-        self._rest("PUT", f"/repos/{slug}/pulls/{number}/merge", json={"merge_method": method})
+        payload = {"merge_method": method}
+        if expected_head:
+            payload["sha"] = expected_head
+        self._rest("PUT", f"/repos/{slug}/pulls/{number}/merge", json=payload)
         if delete_branch:
             try:
                 pr = self._rest("GET", f"/repos/{slug}/pulls/{number}")

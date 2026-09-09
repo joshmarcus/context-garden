@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from ..github import Feedback, PRInfo
+from ..github import Feedback, GitHubError, PRInfo
 
 WORKER = Path(__file__).with_name("worker.py")
 
@@ -186,8 +186,11 @@ class MemoryGitHub:
     def close_pr(self, slug: str, number: int) -> None:
         self._by_number(number).state = "CLOSED"
 
-    def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True) -> None:
+    def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True,
+                 expected_head: str = "") -> None:
         pr = self._by_number(number)
+        if expected_head and pr.head_sha != expected_head:
+            raise GitHubError("head changed before merge")
         if pr.state != "OPEN":
             raise RuntimeError(f"PR #{number} is {pr.state.lower()}, not open")
         if pr.is_draft:

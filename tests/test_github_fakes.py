@@ -90,6 +90,22 @@ def test_merge_deletes_branch_and_closes_stacked_child(fake_cls):
 
 
 @pytest.mark.parametrize("fake_cls", FAKES, ids=lambda c: c.__name__)
+def test_merge_rejects_a_changed_expected_head(fake_cls):
+    from garden.github import GitHubError
+
+    gh = fake_cls()
+    pr = gh.create_pr("o/r", "garden/feature", "main", "Feature", "body")
+    pr.head_sha = "current-head"
+
+    with pytest.raises(GitHubError, match="head changed"):
+        gh.merge_pr("o/r", pr.number, expected_head="reviewed-head")
+    assert pr.state == "OPEN"
+
+    gh.merge_pr("o/r", pr.number, expected_head="current-head")
+    assert pr.state == "MERGED"
+
+
+@pytest.mark.parametrize("fake_cls", FAKES, ids=lambda c: c.__name__)
 def test_reopen_and_refused_reopen(fake_cls):
     from garden.github import GitHubError
 
