@@ -1,0 +1,75 @@
+{
+  "browser": "152.0.4191.66",
+  "pages": [
+    {
+      "name": "inbox-light",
+      "route": "/inbox",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1280,
+        "height": 1200
+      },
+      "widths": {
+        "client": 1280,
+        "scroll": 1280
+      },
+      "errors": []
+    },
+    {
+      "name": "trellis-light",
+      "route": "/trellis",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1280,
+        "height": 1200
+      },
+      "widths": {
+        "client": 1280,
+        "scroll": 1280
+      },
+      "errors": []
+    },
+    {
+      "name": "task-dark",
+      "route": "/tasks/DM-002",
+      "colorScheme": "dark",
+      "viewport": {
+        "width": 1280,
+        "height": 1200
+      },
+      "widths": {
+        "client": 1280,
+        "scroll": 1280
+      },
+      "errors": []
+    },
+    {
+      "name": "phase-light",
+      "route": "/phases/demo/p1",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1280,
+        "height": 1200
+      },
+      "widths": {
+        "client": 1280,
+        "scroll": 1280
+      },
+      "errors": []
+    },
+    {
+      "name": "costs-light",
+      "route": "/costs",
+      "colorScheme": "light",
+      "viewport": {
+        "width": 1280,
+        "height": 1200
+      },
+      "widths": {
+        "client": 1280,
+        "scroll": 1280
+      },
+      "errors": []
+    }
+  ]
+}
