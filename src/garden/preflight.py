@@ -16,16 +16,16 @@ PREFLIGHT_ITEMS = (
 )
 
 PREFLIGHT_RULES = """\
-## Review pre-flight
+## Optional review pre-flight
 
-Before writing your result, walk this rubric and include `pre_flight` in `GARDEN_RESULT`.
-It is a list with one entry for each item below, each shaped as
-`{{"item": "<item>", "status": "pass" | "not_applicable" | "fail", "evidence": "<short reason>"}}`.
+Use this rubric when it helps you choose proportionate verification. You may include
+`pre_flight` in `GARDEN_RESULT`, but the list and its exact shape are optional; a clear
+attestation of what you tested or inspected is sufficient.
 
 {items}
 
-The garden rejects a result that omits this list or any item. Mechanical failures are sent
-back before review; include a stated reason rather than silently skipping an item.
+Actual conflict markers, syntax errors, failed applicable checks, or unmet behavior remain
+blocking. Missing checklist rows, captures, or description polish alone are advisory.
 {capture_policy}
 """
 
@@ -55,7 +55,7 @@ def preflight_section(capture_infrastructure_policy: str = "require") -> str:
             "cannot launch its browser, reach its capture path, or return its result, report that "
             "attempt as failed with its diagnostic and preserve any HTML/text artifacts. The "
             "scheduler may continue with focused behavior evidence. Observed UI defects, "
-            "application/render errors, incomplete interaction evidence, functional check "
+            "application/render errors, functional check "
             "failures, and contradictory source or artifacts still fail this rubric. Never mark "
             "a missing screenshot as a pass."
         )
@@ -95,7 +95,7 @@ def _capture_policy(value: Any) -> str:
 
 
 def missing_preflight(value: Any) -> list[str]:
-    """Return required rubric items missing from a worker result."""
+    """Return omitted optional rubric items for advisory display or legacy callers."""
     if not isinstance(value, list):
         return list(PREFLIGHT_ITEMS)
     reported = {str(row.get("item") or "").strip() for row in value if isinstance(row, dict)
@@ -143,18 +143,21 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
     ui_changed = (ui_changed or any(_is_ui_path(name) for name in names)) if required_ui is None else required_ui
     pngs = [p for p in captures if p.endswith(".png")]
     if ui_changed and not pngs:
-        if capture_infrastructure_advisory:
-            results.append(_advisory(
-                "UI captures",
-                "planned visual behavior has no PNG captures because capture infrastructure was unavailable",
-                capture_infrastructure_advisory,
-            ))
-        else:
-            results.append(_fail("UI captures", "planned visual behavior has no PNG captures"))
+        details = capture_infrastructure_advisory or (
+            "The reviewer may inspect the affected behavior directly or accept another clear attestation."
+        )
+        results.append(_advisory(
+            "UI captures",
+            "planned visual behavior has no PNG captures",
+            details,
+        ))
     else:
         results.append(_pass("UI captures"))
     if require_description and not pr_body.strip():
-        results.append(_fail("PR description", "worker result has an empty pr_body"))
+        results.append(_advisory(
+            "PR description", "worker result has an empty pr_body",
+            "Description presentation is advisory; judge the source and claimed outcome.",
+        ))
     else:
         results.append(_pass("PR description"))
     return results

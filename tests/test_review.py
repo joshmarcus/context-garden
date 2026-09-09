@@ -1,12 +1,8 @@
-import copy
 import hashlib
 import json
-import shlex
-from pathlib import Path
 
 import pytest
 
-from garden import interaction_replay
 from garden.model import Status
 from garden.now1 import strip_for_run
 from garden.review import (
@@ -14,7 +10,6 @@ from garden.review import (
     enforce_criteria_verdict,
     feedback_from_review,
     interaction_evidence_gaps,
-    interaction_requirement,
     parse_review,
     review_brief,
     review_to_markdown,
@@ -354,18 +349,6 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
-@pytest.mark.parametrize("criterion", [
-    {"criterion": "The outcome works.", "met": False, "evidence": "test_outcome"},
-    {"criterion": "The outcome works.", "met": True},
-])
-def test_unmet_or_evidenceless_criterion_forces_request_changes(criterion):
-    review = enforce_criteria_verdict({"verdict": "approve", "criteria": [criterion], "findings": []})
-
-    assert review["verdict"] == "request_changes"
-    assert review["findings"][-1]["severity"] == "blocking"
-    assert "The outcome works." in review["findings"][-1]["summary"]
-
-
 def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
     store = Store(garden)
     review = parse_review('GARDEN_REVIEW: {"verdict":"request_changes","summary":"s","findings":[{"severity":"blocking","file":"a.py","line":2,"summary":"bug","fix":"Guard the empty value in parse()."},{"severity":"high","file":"b.py","line":3,"summary":"edge case","fix":"Handle the empty collection."},{"severity":"nit","file":"c.py","line":4,"summary":"unclear name","fix":"Rename result to parsed_value."}],"improvements":[{"area":"naming","suggestion":"Rename x to parsed_value.","why":"It reads at the caller.","effort":"small"}]}')
@@ -390,138 +373,6 @@ def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
     brief = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+x",
                          max_diff_chars=100, reask_missing_fixes=True)
     assert "Follow-up required" in brief and "`fix` for every blocking finding" in brief
-
-
-def test_review_without_blocking_fix_is_reasked_once(sched, fake_github, monkeypatch):
-    from tests.fake_claude import REVIEWS
-
-    REVIEWS["review-no-fix"] = {"verdict": "request_changes", "summary": "needs a test",
-                                "description_ok": True,
-                                "findings": [{"severity": "blocking", "file": "a.py", "line": 1,
-                                              "summary": "missing test"}]}
-    sched.cfg.data["stack"] = False
-    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-no-fix")
-    sched.tick()
-    sched.tick()
-    rep = sched.tick()
-    assert "DM-001 review re-asked for blocking fixes" in rep.transitions
-    rerun = sched.runs.latest("DM-001")
-    assert rerun.mode == "review"
-    assert "Follow-up required" in (rerun.path / "brief.md").read_text()
-    assert sched.store.task("DM-001").status == Status.IN_REVIEW
-
-
-def test_review_brief_includes_ui_capture_paths(garden, tmp_path):
-    store = Store(garden)
-    shot = tmp_path / "board-390-dark.png"
-    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T",
-                        pr_body="B", diff="+x", max_diff_chars=1000, captures=[str(shot)])
-    assert "## Rendered UI captures" in text
-    assert str(shot) in text
-    assert "pages_seen" in text
-
-
-def test_interaction_review_brief_names_running_app_states_and_head(garden):
-    store = Store(garden)
-    required, scalability, reason = interaction_requirement(
-        ["src/garden/scheduler/review.py"], "Keep lifecycle review dependable",
-    )
-    assert required and not scalability and "scheduler/review.py" in reason
-    text = review_brief(
-        store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
-        diff="+x", max_diff_chars=1000, interaction_required=True, review_head="abc123",
-        interaction_reason=reason,
-    )
-    assert "Running-application interaction required" in text
-    assert "affected journey" in text and "empty state" in text and "failure followed" in text
-    assert "`abc123`" in text and '"environment": "disposable"' in text
-    assert "screenshots and test-client" in text
-    assert interaction_requirement(["src/garden/costs.py"], "Refactor aggregation") == (
-        False, False, "non-UI change",
-    )
-
-
-@pytest.mark.parametrize(("behavior", "path"), [
-    ("worker interruption", "src/garden/run_supervisor.py"),
-    ("changed PR head", "src/garden/gitops.py"),
-    ("restart recovery", "src/garden/scheduler/state.py"),
-    ("no_change outcome", "src/garden/outcomes.py"),
-    ("runner execution", "src/garden/runner/local.py"),
-    ("run records", "src/garden/runs.py"),
-    ("harness execution", "src/garden/harness.py"),
-])
-def test_lifecycle_implementations_require_interaction_evidence(behavior, path):
-    required, scalability, reason = interaction_requirement([path], "Lifecycle reliability")
-    assert required and not scalability, behavior
-    assert path in reason, behavior
-
-
-@pytest.mark.parametrize("path", ["src/garden/review.py", "src/garden/stabilization.py"])
-def test_review_and_phase_close_implementations_require_interaction_evidence(path):
-    required, scalability, _ = interaction_requirement([path], "Internal policy cleanup")
-    assert required and not scalability
-
-
-@pytest.mark.parametrize("path", [
-    "src/garden/browser.py", "src/garden/profiles.py", "src/garden/web/pages/task.py",
-    "src/garden/tui/app.py", "src/garden/scheduler/human.py",
-])
-def test_behavior_owning_surfaces_require_interaction_evidence(path):
-    required, _, _ = interaction_requirement([path], "Behavior change")
-    assert required
-
-
-@pytest.mark.parametrize("path", [
-    "src/garden/model.py", "src/garden/checkrun.py", "src/garden/checks.py",
-])
-def test_status_and_check_recovery_surfaces_require_interaction_evidence(path):
-    required, scalability, reason = interaction_requirement([path], "Lifecycle behavior")
-    assert required and not scalability
-    assert path in reason
-
-
-@pytest.mark.parametrize("path", [
-    "src/garden/brief.py", "src/garden/criteria.py", "src/garden/events.py",
-    "src/garden/validation.py", "src/garden/charts.py",
-    "src/garden/scheduler/report.py",
-])
-def test_offline_and_formatting_modules_keep_proportionate_validation(path):
-    assert interaction_requirement([path], "Internal refactor") == (False, False, "non-UI change")
-
-
-def test_explicit_change_metadata_can_require_interaction_evidence():
-    required, scalability, reason = interaction_requirement(
-        ["src/garden/brief.py"], "Interaction-evidence: required",
-    )
-    assert required and not scalability
-    assert reason == "change metadata requires interaction evidence"
-
-
-def test_validation_plan_scopes_backend_parser_page_and_shared_ui_changes():
-    backend = validation_plan(["src/garden/scheduler/human.py"], "Change incident control")
-    assert backend["pages"] == []
-    assert backend["interaction"] is True
-    assert backend["reasons"][-1]["reason"].endswith("scheduler/human.py")
-
-    parser = validation_plan(["src/garden/criteria.py"], "Parse result markers")
-    assert parser["pages"] == []
-    assert parser["interaction"] is False
-    assert parser["reasons"] == [{"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"}]
-    assert parser["checks"] == [{"item": "configured pre-PR checks",
-                                  "reason": "parser or brief behavior changed without rendered behavior"}]
-
-    page = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout",
-                           visual_scope={"behavior": "Tighter task layout"})
-    assert page["pages"] == ["task"]
-    assert page["interaction"] is True
-
-    shared = validation_plan(["src/garden/web/templates/base.html"], "Update shared rail style",
-                             visual_scope={"behavior": "Updated shared rail style"})
-    assert shared["pages"] == ["board", "inbox"]
-    assert any("representative consumers" in reason["reason"] for reason in shared["reasons"])
-    assert shared["checks"] == [{"item": "configured pre-PR checks",
-                                  "reason": "changed behavior requires the configured pre-PR checks"}]
 
 
 def test_validation_plan_requires_bounded_inspection_for_unknown_ui_scope():
@@ -582,18 +433,6 @@ def test_visual_source_digest_ignores_generated_capture_artifacts(tmp_path):
     assert visual_source_digest(tmp_path, plan) == before
 
 
-def test_review_brief_distinguishes_required_validation_from_available_captures(garden):
-    store = Store(garden)
-    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a",
-                           visual_scope={"behavior": "Tighter task layout"})
-    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
-                        diff="+x", max_diff_chars=1000,
-                        captures=["/tmp/task-1280-light.png", "/tmp/inbox-1280-light.png"], plan=plan)
-
-    assert '"pages": [\n    "task"\n  ]' in text
-    assert "not the available" in text
-
-
 def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_demand(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
@@ -603,24 +442,6 @@ def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_d
 
     assert run.env_snapshot["capture_pages"] == ["task"]
     assert run.env_snapshot["validation_plan"]["pages"] == ["task"]
-
-
-def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypatch):
-    task = sched.store.task("DM-001")
-    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
-    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a",
-                           visual_scope=task.extra["visual_scope"])
-    check = sched.runs.new_run(task.id, "local", mode="check")
-    check.status = "done"
-    check.env_snapshot = {"validation_plan": plan}
-    check.save()
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/criteria.py"])
-    monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "head-a")
-
-    run = _review_after_completed_empty_replay(sched, task)
-
-    assert run.env_snapshot["validation_plan"] == plan
-    assert run.env_snapshot["capture_pages"] == ["task"]
 
 
 def test_review_admits_trusted_capture_infrastructure_advisory_with_fallback_evidence(sched, monkeypatch):
@@ -875,84 +696,6 @@ def test_worker_brief_carries_the_frozen_validation_plan(sched, monkeypatch):
     assert "## Validation plan" in (run.path / "brief.md").read_text()
 
 
-def test_review_rejects_unmapped_unknown_ui_scope_and_accepts_consumer_mapping(sched, monkeypatch):
-    task = sched.store.task("DM-001")
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/web/widgets/unmapped.py"])
-    monkeypatch.setattr("garden.scheduler.review.interaction_evidence_gaps", lambda *args, **kwargs: [])
-    for mapping, expected in (([], True), ([{"path": "src/garden/web/widgets/unmapped.py", "consumers": ["task"]}], False)):
-        run = _review_after_completed_empty_replay(sched, task)
-        review = {"verdict": "approve", "summary": "looks good", "pages_seen": [], "ui_scope": mapping,
-                  "scope_expansions": [], "criteria": [], "description_ok": True,
-                  "description_feedback": "", "description_rewrite": "", "findings": [], "improvements": []}
-        (run.path / "stdout.json").write_text(json.dumps({
-            "type": "result", "subtype": "success", "is_error": False,
-            "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
-        }))
-        sched.reap_review(task, TickReport())
-        result = sched.runs.latest(task.id).result
-        summaries = [finding["summary"] for finding in result["findings"]]
-        assert any("Bounded UI inspection incomplete" in text for text in summaries) is expected
-
-
-def test_scalability_claim_in_pr_description_requires_load_evidence():
-    required, scalability, _ = interaction_requirement(
-        ["docs/design.md"], "Documentation task", "Routine update", "PR title",
-        "Keeps p95 latency bounded with larger histories",
-    )
-    assert not required and scalability
-
-
-@pytest.mark.parametrize("path", [
-    "src/garden/runner/local.py",
-    "src/garden/runs.py",
-    "src/garden/gitops.py",
-    "src/garden/harness.py",
-])
-def test_scheduler_rejects_nominal_approval_without_lifecycle_interaction(
-    sched, fake_github, monkeypatch, path,
-):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: [path])
-    task = sched.store.task("DM-001")
-    run = _review_after_completed_empty_replay(sched, task)
-
-    assert run.env_snapshot["interaction_required"] is True
-    assert run.process_finished()
-    sched.reap_review(task, TickReport())
-
-    persisted = sched.runs.latest(task.id)
-    assert persisted is not None
-    assert persisted.result["verdict"] == "request_changes"
-    assert "Running-app evidence incomplete" in persisted.result["findings"][-1]["summary"]
-
-
-def test_reap_review_rejects_truthy_malformed_interaction_evidence(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    run = _review_after_completed_empty_replay(sched, task)
-    malformed = {
-        "verdict": "approve", "summary": "looks good", "pages_seen": [], "criteria": [],
-        "description_ok": True, "description_feedback": "", "description_rewrite": "",
-        "findings": [], "improvements": [],
-        "interaction": {
-            "head": run.env_snapshot["review_head"], "environment": "disposable", "command": "true",
-            "states": {name: {"status": "pass", "actions": "clicked", "observed": True}
-                       for name in ("affected", "empty", "failure_recovery")},
-            "artifacts": ["/etc/hosts"], "automated_checks": "pytest", "unverified": False,
-        },
-    }
-    envelope = {
-        "type": "result", "subtype": "success", "is_error": False,
-        "result": "GARDEN_REVIEW: " + json.dumps(malformed), "usage": {},
-    }
-    (run.path / "stdout.json").write_text(json.dumps(envelope))
-
-    sched.reap_review(task, TickReport())
-
-    persisted = sched.runs.latest(task.id)
-    assert persisted is not None and persisted.result["verdict"] == "request_changes"
-    assert "affected interaction is missing or failed" in persisted.result["findings"][-1]["summary"]
-
-
 def interaction_events() -> list[dict[str, object]]:
     return [
         {"kind": "http_request", "state": state, "outcome": outcome, "method": "POST",
@@ -965,67 +708,6 @@ def interaction_events() -> list[dict[str, object]]:
             ("recovery", "success", 200, "request succeeded after retry"),
         )
     ]
-
-
-def test_scheduler_manifest_proves_independent_head_bound_execution(tmp_path):
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({
-        "producer": "garden.scheduler.interaction-replay/v1", "head": "head-a",
-        "nonce": "issued-by-scheduler", "started_at": "2026-09-07T10:00:00+00:00",
-        "finished_at": "2026-09-07T10:00:01+00:00", "status": "pass",
-        "environment": "disposable", "flows": [{
-            "name": "affected flow", "ok": True,
-            "requests": [{"at": 1.0, "method": "POST", "url": "http://127.0.0.1/action",
-                          "status_code": 303}],
-        }], "states": {state: {"status": "pass", "action": state, "observed": "observed"}
-                        for state in ("affected", "empty", "failure", "recovery")},
-        "events": [{"state": state, "action": state, "observed": "observed", "at": at}
-                   for at, state in enumerate(("affected", "failure", "recovery", "empty"), 1)],
-    }))
-    assert interaction_evidence_gaps(
-        {}, required=True, scalability=False, expected_head="head-a",
-        replay_manifest=manifest, replay_nonce="wrong",
-    )[0] == "running-application interaction evidence was not reported"
-    review = {"interaction": {}}
-    gaps = interaction_evidence_gaps(
-        review, required=True, scalability=False, expected_head="head-a",
-        replay_manifest=manifest, replay_nonce="wrong",
-        replay_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-    )
-    assert any("provenance" in gap for gap in gaps)
-    gaps = interaction_evidence_gaps(
-        review, required=True, scalability=False, expected_head="head-a",
-        replay_manifest=manifest, replay_nonce="issued-by-scheduler",
-        replay_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-    )
-    assert not any("scheduler-produced" in gap for gap in gaps)
-
-
-def test_interaction_evidence_must_be_performed_current_complete_and_replayable(tmp_path):
-    artifact = tmp_path / "journey.json"
-    states = {
-        name: {"status": "pass", "actions": [f"POST /{name}"], "observed": "state changed"}
-        for name in ("affected", "empty", "failure_recovery")
-    }
-    events = interaction_events()
-    artifact.write_text(json.dumps({"head": "head-a", "states": states, "events": events}))
-    review = {"criteria": [{"criterion": "Empty prompt is clear"}], "interaction": {
-        "head": "head-a", "environment": "disposable", "command": "garden qa --scripted",
-        "states": states, "events": events, "artifacts": [str(artifact)], "automated_checks": ["pytest"],
-        "unverified": [],
-    }}
-    assert interaction_evidence_gaps(review, required=True, scalability=False, expected_head="head-a") == []
-
-    review["interaction"]["head"] = "old-head"
-    review["interaction"]["states"]["failure_recovery"]["status"] = "fail"
-    review["interaction"]["unverified"] = [{
-        "scope": "required", "criterion": "Empty prompt is clear",
-        "outcome": "empty prompt copy", "reason": "the empty response was not inspected",
-    }]
-    gaps = interaction_evidence_gaps(review, required=True, scalability=False, expected_head="head-a")
-    assert any("stale" in gap for gap in gaps)
-    assert any("failure/recovery" in gap for gap in gaps)
-    assert any("required outcome remains unverified" in gap for gap in gaps)
 
 
 def test_out_of_scope_limitation_is_visible_but_does_not_block_cg430_shape(tmp_path):
@@ -1043,155 +725,6 @@ def test_out_of_scope_limitation_is_visible_but_does_not_block_cg430_shape(tmp_p
     ) == []
     assert enforce_criteria_verdict(review)["verdict"] == "approve"
     assert "September 8 launch failures" in review_to_markdown(review)
-
-
-def test_required_gap_blocks_and_legacy_string_needs_clarification():
-    review = {"interaction": _performed_interaction(), "criteria": []}
-    review["interaction"]["unverified"] = [{
-        "scope": "required", "affected_flow": "adopted-zombie cleanup",
-        "outcome": "recovery was not observed", "reason": "fixture stopped after failure",
-    }]
-    assert any("affected flow: adopted-zombie cleanup" in gap for gap in interaction_evidence_gaps(
-        review, required=True, scalability=False, expected_head="head-a",
-        affected_flow="adopted-zombie cleanup",
-    ))
-
-    review["interaction"]["unverified"] = ["cause remains unknown"]
-    assert ambiguous_unverified(review) == ["cause remains unknown"]
-    assert interaction_evidence_gaps(
-        review, required=True, scalability=False, expected_head="head-a",
-    ) == []
-
-
-@pytest.mark.parametrize("events", [
-    [
-        {"kind": "http_request", "state": "affected", "outcome": "success", "method": "GET",
-         "url": "http://localhost/affected", "status_code": 200, "observed": "ok"},
-        {"kind": "http_request", "state": "empty", "outcome": "empty", "method": "GET",
-         "url": "http://localhost/empty", "status_code": 200, "observed": "ok"},
-        {"kind": "http_request", "state": "failure", "outcome": "failure", "method": "GET",
-         "url": "http://localhost/failure", "status_code": 200, "observed": "ok"},
-        {"kind": "http_request", "state": "recovery", "outcome": "success", "method": "GET",
-         "url": "http://localhost/recovery", "status_code": 200, "observed": "ok"},
-    ],
-    [
-        {"kind": "http_request", "state": state, "outcome": "success", "method": "GET",
-         "url": f"http://localhost/{state}", "status_code": 200, "observed": "ok"}
-        for state in ("affected", "empty", "failure_recovery")
-    ],
-])
-def test_label_only_success_responses_do_not_prove_empty_and_failure_recovery(tmp_path, events):
-    states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
-              for name in ("affected", "empty", "failure_recovery")}
-    artifact = tmp_path / "journey.json"
-    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
-    review = {"interaction": {
-        "head": "h", "environment": "disposable", "command": "serve fixture",
-        "states": states, "events": events, "artifacts": [str(artifact)],
-        "automated_checks": [], "unverified": [],
-    }}
-
-    assert interaction_evidence_gaps(review, required=True, scalability=False, expected_head="h")
-
-
-def test_recovery_must_follow_failure_chronologically():
-    events = interaction_events()
-    events[2], events[3] = events[3], events[2]
-
-    gaps = interaction_evidence_gaps(
-        {"interaction": {"head": "h", "environment": "disposable", "command": "serve fixture",
-                         "states": {}, "events": events, "artifacts": [],
-                         "automated_checks": [], "unverified": []}},
-        required=True, scalability=False, expected_head="h",
-    )
-
-    assert any("chronologically" in gap for gap in gaps)
-
-
-@pytest.mark.parametrize("action", ["echo screenshot-only", "opened screenshot.png"])
-def test_screenshot_only_placeholders_are_not_performed_interaction(tmp_path, action):
-    states = {
-        name: {"status": "pass", "actions": [action], "observed": "opened screenshot.png"}
-        for name in ("affected", "empty", "failure_recovery")
-    }
-    events = [
-        {"kind": "browser_action", "state": state, "outcome": outcome, "action": action,
-         "target": "screenshot.png", "observed": "opened screenshot.png"}
-        for state, outcome in (("affected", "success"), ("empty", "empty"),
-                               ("failure", "failure"), ("recovery", "success"))
-    ]
-    artifact = tmp_path / "journey.json"
-    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
-    review = {"interaction": {
-        "head": "h", "environment": "disposable", "command": action,
-        "states": states, "events": events, "artifacts": [str(artifact)],
-        "automated_checks": [], "unverified": [],
-    }}
-
-    gaps = interaction_evidence_gaps(review, required=True, scalability=False, expected_head="h")
-
-    assert any("non-image action" in gap for gap in gaps)
-
-
-def test_scalability_claim_requires_served_load_distribution_and_scan_counts(tmp_path):
-    artifact = tmp_path / "latencies.json"
-    states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
-              for name in ("affected", "empty", "failure_recovery")}
-    events = interaction_events()
-    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
-    required, scalability, _ = interaction_requirement([], "Keep p95 latency bounded after cache expiry")
-    assert not required and scalability
-    review = {"interaction": {
-        "head": "h", "environment": "disposable", "command": "serve fixture",
-        "states": states, "events": events,
-        "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
-        "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
-                        "cache_expiry_intervals": 3, "executing_processes": 2,
-                        "latencies": [0.1, 0.2], "read_scan_counts": {"reads": 3, "scans": 0},
-                        "load_kind": "controlled"},
-    }}
-    assert interaction_evidence_gaps(review, required=False, scalability=True, expected_head="h") == []
-    del review["interaction"]["scalability"]["read_scan_counts"]
-    assert "read_scan_counts" in interaction_evidence_gaps(
-        review, required=False, scalability=True, expected_head="h",
-    )[0]
-
-
-@pytest.mark.parametrize(("field", "value", "message"), [
-    ("history_sizes", [100], "history_sizes"),
-    ("history_sizes", [1000, 100], "history_sizes"),
-    ("history_sizes", [100, 100], "history_sizes"),
-    ("cache_expiry_intervals", 1, "cache_expiry_intervals"),
-    ("cache_expiry_intervals", "3", "cache_expiry_intervals"),
-    ("executing_processes", 0, "executing_processes"),
-    ("executing_processes", True, "executing_processes"),
-    ("latencies", [0.1], "latencies"),
-    ("latencies", [0.1, "slow"], "latencies"),
-    ("read_scan_counts", {"reads": 3}, "read_scan_counts"),
-    ("read_scan_counts", {"reads": 3, "scans": "one"}, "read_scan_counts"),
-    ("load_kind", "synthetic-ish", "load_kind"),
-])
-def test_scalability_evidence_rejects_malformed_boundaries(tmp_path, field, value, message):
-    artifact = tmp_path / "latencies.json"
-    states = {name: {"status": "pass", "actions": ["request"], "observed": "ok"}
-              for name in ("affected", "empty", "failure_recovery")}
-    events = interaction_events()
-    artifact.write_text(json.dumps({"head": "h", "states": states, "events": events}))
-    interaction = {
-        "head": "h", "environment": "disposable", "command": "serve fixture",
-        "states": states, "events": events,
-        "artifacts": [str(artifact)], "automated_checks": [], "unverified": [],
-        "scalability": {"served_app": "http://localhost:8783", "history_sizes": [100, 6000],
-                        "cache_expiry_intervals": 3, "executing_processes": 2,
-                        "latencies": [0.1, 0.2], "read_scan_counts": {"reads": 3, "scans": 0},
-                        "load_kind": "controlled"},
-    }
-    malformed = copy.deepcopy(interaction)
-    malformed["scalability"][field] = value
-    gaps = interaction_evidence_gaps(
-        {"interaction": malformed}, required=False, scalability=True, expected_head="h",
-    )
-    assert any(message in gap for gap in gaps)
 
 
 def test_second_review_dispatch_supersedes_the_first(sched, fake_github):
@@ -1287,14 +820,6 @@ def test_review_parses_description_rewrite():
     assert rev["description_rewrite"] == "## What\n\nBetter."
 
 
-def test_review_brief_advertises_description_rewrite(garden):
-    store = Store(garden)
-    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
-                        diff="+a", max_diff_chars=1000)
-    assert "description_rewrite" in text
-    assert "rewrite the description yourself" in text
-
-
 def test_review_brief_marks_an_amended_criterion(garden):
     store = Store(garden)
     task = store.task("DM-001")
@@ -1303,47 +828,6 @@ def test_review_brief_marks_an_amended_criterion(garden):
     text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+a", max_diff_chars=1000)
     assert "## Amended acceptance criteria" in text
     assert "amended — The original was false." in text
-
-
-def test_review_description_only_rewrite_applied_without_a_round(sched, fake_github, monkeypatch):
-    """description_ok false, no blocking finding, rewrite supplied: the scheduler updates the PR
-    body through the API and starts no revise round."""
-
-    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-rewrite")
-    sched.tick()
-    rep = sched.tick()  # reap work -> PR opened -> review dispatched (as review-rewrite)
-    assert "DM-001(review)" in rep.dispatched
-    rep = sched.tick()  # reap review -> apply the rewrite, no round
-    assert any("description rewritten by the reviewer" in t for t in rep.transitions)
-    assert "DM-001(revise)" not in rep.dispatched
-    assert not any("changes_requested" in t for t in rep.transitions)
-    # the corrected body reached GitHub
-    assert fake_github.updated and fake_github.updated[-1]["body"] == "## What\n\nThe corrected description."
-    sched.store.invalidate()
-    task = sched.store.task("DM-001")
-    assert task.status.value == "in_review"
-    assert "description rewritten by the reviewer" in task.body
-
-
-def test_description_only_revise_dispatches_on_easy_tier(sched, fake_github, monkeypatch):
-    """CG-109: a review with no code findings, only a description fix, is a paragraph
-    rewrite, so the revise round should not cost a code-review-tier model."""
-
-    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
-    sched.tick()
-    sched.tick()  # reap work -> PR opened -> review dispatched
-    rep = sched.tick()  # reap review -> request_changes -> revise dispatched
-    assert "DM-001 -> changes_requested (review)" in rep.transitions and "DM-001(revise)" in rep.dispatched
-    run = sched.runs.latest("DM-001")
-    assert run.mode == "revise"
-    assert run.model == "haiku"  # the easy tier, not the task's (medium) tier
-    assert run.difficulty == "easy"
-    sched.store.invalidate()
-    task = sched.store.task("DM-001")
-    assert task.difficulty == "medium"  # the task's own tier is unchanged
-    assert "description only; easy tier" in task.body
 
 
 def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatch):
@@ -1363,44 +847,6 @@ def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatc
     sched.store.invalidate()
     task = sched.store.task("DM-001")
     assert "description only; easy tier" not in task.body
-
-
-def test_approve_with_description_rewrite_applies_directly(sched, fake_github, monkeypatch):
-    """CG-140: an approve verdict with description_ok false and a rewrite applies the
-    rewrite through the GitHub API and stores no pending feedback; the task stays
-    in_review with no revise round."""
-
-    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-rewrite")
-    sched.tick()
-    rep = sched.tick()  # reap work -> PR opened -> review dispatched
-    assert "DM-001(review)" in rep.dispatched
-    rep = sched.tick()  # reap review -> approve, apply the rewrite, no round
-    assert any("description rewritten by the reviewer" in t for t in rep.transitions)
-    assert "DM-001(revise)" not in rep.dispatched
-    assert not any("changes_requested" in t for t in rep.transitions)
-    assert fake_github.updated and fake_github.updated[-1]["body"] == "## What\n\nThe corrected description."
-    sched.store.invalidate()
-    task = sched.store.task("DM-001")
-    assert task.status.value == "in_review"
-    assert not str(sched.state.get("DM-001").get("pending_feedback") or "").strip()
-
-
-def test_approve_with_empty_rewrite_dispatches_description_round(sched, fake_github, monkeypatch):
-    """CG-140: an approve verdict with description_ok false and no rewrite dispatches a
-    description-only revise round instead of leaving feedback parked on an in_review task."""
-
-    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-desc")
-    sched.tick()
-    rep = sched.tick()  # reap work -> PR opened -> review dispatched
-    assert "DM-001(review)" in rep.dispatched
-    rep = sched.tick()  # reap review -> approve but description flagged -> revise dispatched
-    assert "DM-001 -> changes_requested (description round)" in rep.transitions
-    assert "DM-001(revise)" in rep.dispatched
-    run = sched.runs.latest("DM-001")
-    assert run.mode == "revise"
-    assert run.difficulty == "easy"  # description-only: the easy tier, not the task's own
 
 
 def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
@@ -1489,80 +935,6 @@ def test_maybe_review_never_dispatches_for_a_merged_task(sched, fake_github):
     assert not sched.runs.runs_for("DM-001")
     assert sched.store.task("DM-001").status == Status.DONE
     assert "could not start" in sched.store.task("DM-001").body
-
-
-def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round(sched, fake_github, monkeypatch):
-    """CG-117: once the cap stops the automated reviewer, the task says so instead of sitting
-    silently in review, and the Inbox offers one more round without a human editing state.json."""
-    from garden.inbox import build_inbox
-
-    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
-    sched.tick()
-    sched.tick()  # reap work -> PR opened -> review dispatched (round 1)
-    sched.tick()  # reap review round 1: request_changes (description only) -> revise dispatched
-    rep = sched.tick()  # reap revise -> pushed -> review dispatched (round 2)
-    assert "DM-001(review)" in rep.dispatched
-    assert sched.state.get("DM-001")["review_rounds"] == 2
-    sched.tick()  # reap review round 2: request_changes again -> revise dispatched
-    rep = sched.tick()  # reap revise -> pushed -> cap already used; no third review dispatched
-    assert "DM-001(review)" not in rep.dispatched
-    assert "DM-001 review cap reached" in rep.transitions
-
-    sched.store.invalidate()
-    task = sched.store.task("DM-001")
-    assert "2 automated review round(s) used" in task.body
-    assert task.status == Status.IN_REVIEW  # still in review; the loop did not stall it
-
-    st = sched.state.get("DM-001")
-    assert st["needs_human"]["kind"] == "review_cap"
-    assert st["review_rounds"] == 2
-
-    items = [i for i in build_inbox(sched.store, sched) if i["group"] == "attention" and i["task"] == "DM-001"]
-    assert items, "reaching the review cap should raise an Inbox card under 'Needs a decision'"
-    it = items[0]
-    assert it["pr"] == task.pr
-    labels = [a["label"] for a in it["actions"]]
-    assert "One more automated review" in labels
-    assert "Send back with a note" in labels
-    assert "Open PR" in labels
-
-    # "one more review": raises the cap by one round and dispatches right away
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-ok")
-    run = sched.review_again(task)
-    assert run.mode == "review"
-    assert sched.state.get("DM-001")["review_rounds"] == 2  # rolled back one, then re-incremented
-    assert not sched.state.get("DM-001").get("needs_human")
-
-    rep = sched.tick()  # reap the extra review: approve, no third cap-reached flag
-    assert "DM-001 review: approve" in rep.transitions
-    assert not sched.state.get("DM-001").get("needs_human")
-
-
-def test_unlimited_review_cap_dispatches_beyond_the_former_limit_under_review_admission(sched, fake_github, monkeypatch):
-    """A null cap keeps the normal work/review/revise lifecycle going past two rounds.
-
-    The third dispatch proves that the unlimited setting is not merely accepted by the
-    config helper: it still goes through the normal one-slot review admission path.
-    """
-    sched.cfg.data["stack"] = False
-    sched.cfg.data["review_parallel"] = 1
-    sched.cfg.data["review"] = {"enabled": True, "max_rounds": None, "friction_after": 4,
-                                "max_diff_chars": 60000}
-    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
-
-    sched.tick()  # dispatch work
-    sched.tick()  # reap work -> review round 1
-    sched.tick()  # reap review 1 -> revise
-    sched.tick()  # reap revise -> review round 2
-    sched.tick()  # reap review 2 -> revise
-    rep = sched.tick()  # reap revise -> review round 3, beyond the former cap
-
-    assert "DM-001(review)" in rep.dispatched
-    st = sched.state.get("DM-001")
-    assert st["review_rounds"] == 3
-    assert len(sched.review_runs_active()) == 1
-    assert sched.review_slots_free() == 0
 
 
 def test_review_cap_recovery_keeps_actionable_feedback_after_a_scheduler_restart(sched, fake_github, monkeypatch):
@@ -1697,86 +1069,6 @@ def _review_after_completed_empty_replay(sched, task):
     return sched.dispatch_review(task)
 
 
-def test_interaction_replay_defers_model_review_and_survives_collection(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    check = sched.dispatch_review(task)
-    assert check.mode == "check"
-    assert not sched.state.get(task.id).get("review_run")
-    assert sched.state.get(task.id).get("review_rounds", 0) == 0
-    # Repeated requests while the detached check owns the slot must reuse that run.
-    assert sched.dispatch_review(task).run_id == check.run_id
-    assert len([r for r in sched.runs.runs_for(task.id) if r.mode == "check"]) == 1
-    info = sched.state.get(task.id)["check_run"]
-    manifest = Path(info["cont"]["manifest"])
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text('{"fixture": "completed independently before reviewer"}')
-    (check.path / "checks.json").write_text(json.dumps([
-        {"name": "interaction replay", "status": "pass", "summary": "fixture"}]))
-    (check.path / "exit_code").write_text("0")
-    sched.state.save()
-    sched = Scheduler(Store(sched.store.root), github=sched.github)
-    task = sched.store.task(task.id)
-    assert sched.reap_check(task, TickReport())
-    digest = sched.state.get(task.id)["interaction_replay"]["digest"]
-    assert digest == hashlib.sha256(manifest.read_bytes()).hexdigest()
-    run = sched.dispatch_review(task)
-    assert run.mode == "review"
-    assert run.env_snapshot["interaction_replay_digest"] == digest
-    assert sched.state.get(task.id)["review_rounds"] == 1
-
-
-def test_remote_authored_interaction_replay_stays_on_controller_and_records_ownership(sched, monkeypatch):
-    """A replay command contains controller paths, so task runner inheritance is unsafe."""
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    task.runner = "remote"
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    submitted = []
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks",
-                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
-
-    check = sched.dispatch_review(task)
-
-    assert check.runner == "local"
-    assert check.env_snapshot["check_execution"] == {
-        "backend": "local", "provenance": "controller-owned replay inputs",
-    }
-    assert sched.state.get(task.id)["check_run"]["backend"] == "local"
-    command = submitted[0][1]["specs"][0]["command"]
-    assert str(sched.worktree_for(task)) in command
-    assert str(sched.cfg.garden_dir / "interaction-replays") in command
-
-
-@pytest.mark.parametrize("nonce", ["-leading", "--double-hyphen", "ordinary_urlsafe_value"])
-def test_interaction_replay_command_passes_option_like_nonce_as_a_value(sched, monkeypatch, nonce):
-    """CG-456: replay nonce identity reaches argparse even when it resembles an option."""
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    monkeypatch.setattr("garden.scheduler.review.secrets.token_urlsafe", lambda _size: nonce)
-    task = sched.store.task("DM-001")
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    submitted = []
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks",
-                        lambda _self, _run, _worktree, payload: submitted.append(payload))
-
-    sched.dispatch_review(task)
-
-    command = submitted[0]["specs"][0]["command"]
-    argv = shlex.split(command)
-    replay_argv = argv[argv.index("garden.interaction_replay") + 1:]
-    parsed = interaction_replay.parse_args(replay_argv)
-    assert parsed.nonce == nonce
-    continuation = sched.state.get(task.id)["check_run"]["cont"]
-    assert parsed.head == continuation["head"]
-    assert continuation["nonce"] == nonce
-
-
 def test_remote_authored_portable_check_remains_remote(sched):
     task = sched.store.task("DM-001")
     task.runner = "remote"
@@ -1791,43 +1083,6 @@ def test_remote_authored_portable_check_remains_remote(sched):
     assert check.env_snapshot["check_execution"] == {
         "backend": "remote", "provenance": "portable check payload",
     }
-
-
-def test_interaction_replay_retry_preserves_local_backend_and_continuation(sched, monkeypatch):
-    task = sched.store.task("DM-001")
-    task.runner = "remote"
-    sched.store.save(task)
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks", lambda *_args: None)
-    cont = {"head": "controller-head", "nonce": "replay-nonce", "manifest": "/controller/replay.json"}
-    first = sched._dispatch_check_run(
-        task, worktree=sched.worktree_for(task), branch=task.default_branch(), base="main",
-        specs=[{"name": "interaction replay", "command": "controller-only"}],
-        stage="interaction_replay", cont=cont, rep=TickReport(),
-    )
-    (first.path / "exit_code").write_text("1\n")
-
-    assert sched.reap_check(task, TickReport())
-    info = sched.state.get(task.id)["check_run"]
-    retry = sched._run_by_id(task, info["run_id"])
-    assert retry is not None and retry.run_id != first.run_id and retry.runner == "local"
-    assert task.runner == "remote"
-    assert info["backend"] == "local"
-    assert info["cont"] == cont
-    assert retry.env_snapshot["check_execution"] == first.env_snapshot["check_execution"]
-
-    (retry.path / "checks.json").write_text(json.dumps([
-        {"name": "interaction replay", "status": "fail", "summary": "affected replay module was not found"},
-    ]))
-    (retry.path / "exit_code").write_text("1\n")
-    assert sched.reap_check(task, TickReport())
-    recovery = sched.state.get(task.id)["recovery_check"]
-    assert recovery["stage"] == "interaction_replay"
-    assert recovery["cont"] == cont
-    assert recovery["cause"] == "affected replay module was not found"
-    fresh = Scheduler(Store(sched.store.root), github=sched.github)
-    assert fresh.state.get(task.id)["recovery_check"] == recovery
-    assert fresh.state.get(task.id)["needs_human"]["kind"] == "check_did_not_run"
 
 
 def test_scoped_backend_preflight_does_not_reintroduce_capture_all(garden, monkeypatch):
@@ -1852,61 +1107,6 @@ def test_shared_ui_without_a_current_check_is_not_verified(sched, monkeypatch):
     run = _review_after_completed_empty_replay(sched, task)
     assert run.env_snapshot["validation_plan"]["pages"] == ["board", "inbox"]
     assert run.env_snapshot["validation_check_current"] is False
-
-
-@pytest.mark.parametrize(("changed", "title", "pages"), [
-    (["src/garden/web/actions/control.py"], "Backend pause action", []),
-    (["src/garden/criteria.py"], "Parser behavior", []),
-    (["docs/design/captures/board-1280-light.png"], "Record generated capture", []),
-    (["src/garden/web/pages/task.py"], "Tighten task layout", ["task"]),
-    (["src/garden/web/templates/base.html"], "Update shared rail style", ["board", "inbox"]),
-])
-def test_precheck_submits_only_the_planned_capture_pages(sched, monkeypatch, changed, title, pages):
-    task = sched.store.task("DM-001")
-    task.title = title
-    if pages:
-        task.extra["visual_scope"] = {"behavior": title}
-    # Capture the job at the real scheduler/runner boundary; no browser is needed to
-    # verify which pages the scheduler actually requests.
-    submitted = []
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks", lambda self, run, wt, payload: submitted.append(payload))
-    monkeypatch.setattr("garden.scheduler.checkruns.gitops.diff_names", lambda *_: changed)
-    monkeypatch.setattr("garden.scheduler.checkruns.gitops.head_sha", lambda *_: "planned-head")
-    run = sched._dispatch_check_run(task, worktree=sched.store.root,
-                                    branch=task.default_branch(), base="main", stage="pre_pr",
-                                    specs=[{"name": "focused lint", "command": "true"}], cont={}, rep=TickReport())
-    ui = [spec for spec in submitted[0]["specs"] if spec["name"] == "ui"]
-    assert [spec["pages"] for spec in ui] == ([pages] if pages else [])
-    plan = run.env_snapshot["validation_plan"]
-    assert plan["head"] == "planned-head"
-    assert plan["checks"][0]["item"] == "focused lint"
-    assert run.env_snapshot["generated_ui_check_indices"] == ([1] if pages else [])
-    if ui:
-        assert ui[0]["capture_infrastructure_policy"] == "require"
-
-
-def test_queued_replays_do_not_recursively_drain_or_duplicate_checks(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    runner_type = type(sched.runner_for(sched.store.task("DM-001"), "local"))
-    monkeypatch.setattr(runner_type, "start_checks", lambda *args: None)
-    sched.cfg.data["review_parallel"] = 3
-    sched.cfg.data["resources"] = {"max_parallel": 5}
-    for tid in ("DM-001", "DM-002"):
-        task = sched.store.task(tid)
-        task.status = Status.IN_REVIEW
-        task.priority = 0
-        task.depends_on = []
-        sched.store.save(task)
-        sched.state.get(tid)["pending_reviews"] = [{"kind": "review"}]
-    first = TickReport()
-    sched._drain_pending_reviews(sched.store.tasks(), first)
-    assert first.dispatched == ["DM-001(check:interaction_replay)", "DM-002(check:interaction_replay)"]
-    assert len([r for r in sched.runs.active() if r.mode == "check"]) == 2
-    second = TickReport()
-    sched._drain_pending_reviews(sched.store.tasks(), second)
-    assert second.dispatched == []
-    assert sched.review_wait_reason(sched.store.task("DM-001"))[0] == "check"
 
 
 def _performed_interaction(head="head-a"):
@@ -1948,63 +1148,21 @@ def test_artifact_may_use_equivalent_schema_and_reviewer_paraphrase(tmp_path):
         {"interaction": row}, required=True, scalability=False, expected_head="head-a"))
 
 
-def test_generic_replay_cannot_claim_a_declared_affected_flow(tmp_path):
+def test_generic_replay_missing_optional_affected_flow_is_advisory(tmp_path):
     manifest = tmp_path / "generic.json"
     manifest.write_text(json.dumps({
         "producer": "garden.scheduler.interaction-replay/v1", "head": "head-a", "nonce": "n",
         "coverage": "generic_smoke", "environment": "disposable", "status": "pass",
     }))
+    warnings = []
     gaps = interaction_evidence_gaps(
         {"interaction": _performed_interaction()}, required=True, scalability=False,
         expected_head="head-a", replay_manifest=manifest, replay_nonce="n",
         replay_digest=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-        affected_flow="harness-pause",
+        affected_flow="harness-pause", metadata_warnings=warnings,
     )
-    assert any("declared affected flow: harness-pause" in gap for gap in gaps)
-
-
-def test_current_task_specific_author_evidence_skips_generic_replay(sched, monkeypatch):
-    from garden import gitops
-
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    task.extra["interaction_replay"] = {"affected_flow": "harness-pause"}
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
-                                 task.branch or task.default_branch(), sched.base_for(task))
-    head = gitops.head_sha(wt)
-    work = _writer_run(sched, task.id, "claude", "sonnet")
-    work.result = {"interaction": {**_performed_interaction(head), "affected_flow": "harness-pause"}}
-    work.save()
-
-    review = sched.dispatch_review(task, work_run=work)
-
-    assert review.mode == "review"
-    assert review.env_snapshot["author_interaction_reused"] is True
-    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
-    assert "Author's task-specific interaction evidence" in (review.path / "brief.md").read_text()
-
-
-def test_declared_affected_replay_module_is_selected_for_remote_author(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    task.runner = "remote"
-    task.status = Status.IN_REVIEW
-    task.extra["interaction_replay"] = {
-        "affected_flow": "harness-pause", "module": "project_qa.harness_pause",
-    }
-    sched.store.save(task)
-    submitted = []
-    runner_type = type(sched.runner_for(task, "local"))
-    monkeypatch.setattr(runner_type, "start_checks",
-                        lambda _self, run, _worktree, payload: submitted.append((run, payload)))
-
-    check = sched.dispatch_review(task)
-
-    assert check.runner == "local"
-    assert "-m project_qa.harness_pause" in submitted[0][1]["specs"][0]["command"]
-    assert sched.state.get(task.id)["check_run"]["cont"]["affected_flow"] == "harness-pause"
+    assert gaps == []
+    assert "scheduler-produced replay affected flow was not recorded" in warnings
 
 
 @pytest.mark.parametrize("bug", [False, True])
@@ -2034,48 +1192,6 @@ def test_scheduler_metadata_advisory_preserves_verdict_and_real_findings(sched, 
     assert any(f["severity"] == "blocking" for f in persisted["findings"]) is bug
 
 
-def test_legacy_unverified_gets_one_restart_safe_reviewer_clarification(sched, monkeypatch):
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    run = _review_after_completed_empty_replay(sched, task)
-    run.env_snapshot["validation_check_current"] = True
-    run.save()
-    review = {"verdict": "approve", "summary": "required behavior passed", "pages_seen": [],
-              "criteria": [], "description_ok": True, "findings": [], "improvements": [],
-              "interaction": _performed_interaction(run.env_snapshot["review_head"])}
-    review["interaction"]["unverified"] = ["the broader launch incident was not reproduced"]
-    (run.path / "stdout.json").write_text(json.dumps({
-        "type": "result", "subtype": "success", "is_error": False,
-        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
-    }))
-
-    rep = TickReport()
-    assert sched.reap_review(task, rep)
-    assert rep.transitions == ["DM-001 review re-asked to classify unverified observations"]
-    clarification = sched.runs.latest(task.id)
-    assert clarification.run_id != run.run_id
-    assert clarification.env_snapshot["count_round"] is False
-    assert clarification.env_snapshot["clarify_unverified"] is True
-    assert "broader launch incident" in (clarification.path / "brief.md").read_text()
-    assert sched._run_by_id(task, run.run_id).result["interaction"]["unverified"] == review["interaction"]["unverified"]
-
-    fresh = Scheduler(Store(sched.store.root), github=sched.github)
-    assert fresh.state.get(task.id)["review_run"] == clarification.run_id
-
-
-def test_failed_state_blocks_even_when_reviewer_calls_it_a_limitation():
-    review = {"interaction": _performed_interaction()}
-    review["interaction"]["states"]["affected"]["status"] = "fail"
-    review["interaction"]["unverified"] = [{
-        "scope": "limitation", "observation": "affected behavior was not demonstrated",
-    }]
-
-    gaps = interaction_evidence_gaps(
-        review, required=True, scalability=False, expected_head="head-a",
-    )
-    assert "affected interaction is missing or failed" in gaps
-
-
 def test_required_target_blocks_even_when_reviewer_calls_it_a_limitation():
     review = {"criteria": [{"criterion": "Recovery is demonstrated"}],
               "interaction": _performed_interaction()}
@@ -2092,97 +1208,6 @@ def test_required_target_blocks_even_when_reviewer_calls_it_a_limitation():
     assert ambiguous_unverified(
         review, expected_criteria=["Recovery is demonstrated"],
     ) == []
-
-
-def test_required_gap_cannot_target_a_reviewer_invented_criterion():
-    review = {"criteria": [{"criterion": "Invented by reviewer"}],
-              "interaction": _performed_interaction()}
-    review["interaction"]["unverified"] = [{
-        "scope": "required", "criterion": "Invented by reviewer",
-        "outcome": "was not observed", "reason": "the reviewer expanded scope",
-    }]
-
-    gaps = interaction_evidence_gaps(
-        review, required=True, scalability=False, expected_head="head-a",
-        expected_criteria=["Frozen task criterion"],
-    )
-    assert gaps == ["required unverified outcome names no frozen criterion: Invented by reviewer"]
-    assert ambiguous_unverified(
-        review, expected_criteria=["Frozen task criterion"],
-    ) == [json.dumps(review["interaction"]["unverified"][0], sort_keys=True)]
-
-
-def test_fabricated_required_target_gets_one_reviewer_clarification_then_operator_stop(
-        sched, monkeypatch):
-    from fastapi.testclient import TestClient
-
-    from garden.web.app import create_app
-
-    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/review.py"])
-    task = sched.store.task("DM-001")
-    task.status = Status.IN_REVIEW
-    sched.store.save(task)
-    writer = sched.runs.new_run(task.id, "local", mode="work")
-    writer.status = "done"
-    writer.env_snapshot = {"criteria": ["Frozen task criterion"]}
-    writer.save()
-    run = _review_after_completed_empty_replay(sched, task)
-    run.env_snapshot["validation_check_current"] = True
-    run.save()
-    interaction = _performed_interaction(run.env_snapshot["review_head"])
-    interaction["unverified"] = [{
-        "scope": "required", "criterion": "Invented by reviewer",
-        "outcome": "was not observed", "reason": "the reviewer expanded scope",
-    }]
-    review = {"verdict": "approve", "summary": "Everything passed", "pages_seen": [],
-              "criteria": [{"criterion": "Invented by reviewer", "met": True,
-                            "evidence": "reviewer assertion"}],
-              "description_ok": True, "findings": [], "improvements": [],
-              "interaction": interaction}
-    (run.path / "stdout.json").write_text(json.dumps({
-        "type": "result", "subtype": "success", "is_error": False,
-        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
-    }))
-
-    first = TickReport()
-    assert sched.reap_review(task, first)
-    assert first.transitions == ["DM-001 review re-asked to classify unverified observations"]
-    clarification = sched.runs.latest(task.id)
-    assert clarification.run_id != run.run_id
-    assert clarification.env_snapshot["count_round"] is False
-    assert clarification.env_snapshot["criteria"] == ["Frozen task criterion"]
-    assert "Invented by reviewer" in (clarification.path / "brief.md").read_text()
-    task = sched.store.task(task.id)
-    task.pr = "https://example.com/pull/101"
-    sched.store.save(task)
-    assert task.status == Status.IN_REVIEW
-    assert not sched.state.get(task.id).get("pending_feedback")
-    assert not [candidate for candidate in sched.runs.runs_for(task.id) if candidate.mode == "revise"]
-
-    (clarification.path / "stdout.json").write_text(json.dumps({
-        "type": "result", "subtype": "success", "is_error": False,
-        "result": "GARDEN_REVIEW: " + json.dumps(review), "usage": {},
-    }))
-    second = TickReport()
-    assert sched.reap_review(task, second)
-    assert second.transitions == ["DM-001 reviewer clarification needs operator attention"]
-    stopped = sched._run_by_id(task, clarification.run_id)
-    assert stopped.status == "failed"
-    assert stopped.result["interaction"]["unverified"] == interaction["unverified"]
-    state = sched.state.get(task.id)
-    assert state["needs_human"]["kind"] == "review_clarification"
-    assert state["needs_human"]["owner"] == "reviewer"
-    assert not state.get("review_run")
-    assert not state.get("last_review")
-    assert not state.get("pending_feedback")
-    assert sched.store.task(task.id).status == Status.IN_REVIEW
-    assert not [candidate for candidate in sched.runs.runs_for(task.id) if candidate.mode == "revise"]
-
-    page = TestClient(create_app(Store(sched.store.root), watch=False, github=sched.github)).get("/inbox")
-    assert page.status_code == 200
-    assert "Reviewer clarification needs attention" in page.text
-    assert "implementation author has not been asked to change code" in page.text
-    assert "One more automated review" in page.text
 
 
 def test_reviewer_clarification_survives_restart_and_reconnects_saved_continuation(
@@ -2236,16 +1261,222 @@ def test_reviewer_clarification_survives_restart_and_reconnects_saved_continuati
     assert [run.run_id for run in restarted_again.runs.runs_for(task.id)] == run_ids
     assert rep.transitions == ["DM-001 review clarification continuation restored"]
 
+def test_explicitly_unmet_criterion_forces_request_changes():
+    criterion = {"criterion": "The outcome works.", "met": False, "evidence": "test_outcome"}
+    review = enforce_criteria_verdict({"verdict": "approve", "criteria": [criterion], "findings": []})
 
-def test_worker_and_reviewer_share_evidence_contract_and_complete_event_example(garden):
-    from garden.brief import EVIDENCE_GUIDANCE, build_brief
+    assert review["verdict"] == "request_changes"
+    assert review["findings"][-1]["severity"] == "blocking"
+    assert "The outcome works." in review["findings"][-1]["summary"]
 
+
+def test_review_brief_includes_ui_capture_paths(garden, tmp_path):
     store = Store(garden)
-    task = store.task("DM-001")
-    author = build_brief(store, task).text
-    reviewer = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B",
-                            diff="+x", max_diff_chars=1000)
-    assert EVIDENCE_GUIDANCE in author and EVIDENCE_GUIDANCE in reviewer
-    assert "Missing artifact metadata alone is advisory" in author
-    assert '"events": [{"kind": "http_request"' in reviewer
-    assert "A missing item is a blocking finding" not in reviewer
+    shot = tmp_path / "board-390-dark.png"
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T",
+                        pr_body="B", diff="+x", max_diff_chars=1000, captures=[str(shot)])
+    assert "## Rendered UI captures" in text
+    assert str(shot) in text
+    assert "choose verification" in text
+
+
+def test_validation_plan_scopes_backend_parser_page_and_shared_ui_changes():
+    backend = validation_plan(["src/garden/scheduler/human.py"], "Change incident control")
+    assert backend["pages"] == []
+    assert backend["interaction"] is False
+    assert backend["reasons"] == [
+        {"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"},
+    ]
+
+    parser = validation_plan(["src/garden/criteria.py"], "Parse result markers")
+    assert parser["pages"] == []
+    assert parser["interaction"] is False
+    assert parser["reasons"] == [{"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"}]
+    assert parser["checks"] == [{"item": "configured pre-PR checks",
+                                  "reason": "parser or brief behavior changed without rendered behavior"}]
+
+    page = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout",
+                           visual_scope={"behavior": "Tighter task layout"})
+    assert page["pages"] == ["task"]
+    assert page["interaction"] is False
+
+    shared = validation_plan(["src/garden/web/templates/base.html"], "Update shared rail style",
+                             visual_scope={"behavior": "Updated shared rail style"})
+    assert shared["pages"] == ["board", "inbox"]
+    assert shared["interaction"] is False
+    assert any("representative consumers" in reason["reason"] for reason in shared["reasons"])
+    assert shared["checks"] == [{"item": "configured pre-PR checks",
+                                  "reason": "changed code requires focused regression coverage"}]
+
+
+def test_review_brief_distinguishes_required_validation_from_available_captures(garden):
+    store = Store(garden)
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a",
+                           visual_scope={"behavior": "Tighter task layout"})
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T", pr_body="B",
+                        diff="+x", max_diff_chars=1000,
+                        captures=["/tmp/task-1280-light.png", "/tmp/inbox-1280-light.png"], plan=plan)
+
+    assert '"pages": [\n    "task"\n  ]' in text
+    assert "generic replay" in text
+    assert "Running-application interaction required" not in text
+
+
+def test_review_reuses_the_current_head_precheck_validation_plan(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    plan = validation_plan(["src/garden/web/pages/task.py"], "Task layout", head="head-a",
+                           visual_scope=task.extra["visual_scope"])
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    check.env_snapshot = {"validation_plan": plan}
+    check.save()
+    monkeypatch.setattr("garden.scheduler.review.gitops.diff_names", lambda *_: ["src/garden/criteria.py"])
+    monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "head-a")
+
+    run = _review_after_completed_empty_replay(sched, task)
+
+    assert run.env_snapshot["validation_plan"]["pages"] == plan["pages"]
+    assert run.env_snapshot["validation_plan"]["head"] == plan["head"]
+    assert run.env_snapshot["validation_plan"]["evidence_policy"] == "reviewer_judgment"
+    assert run.env_snapshot["capture_pages"] == ["task"]
+
+
+def test_description_rewrite_does_not_override_explicit_request_changes(sched, fake_github, monkeypatch):
+    """Editorial feedback is advisory, while an explicit native verdict still routes."""
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-rewrite")
+    sched.tick()
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched (as review-rewrite)
+    assert "DM-001(review)" in rep.dispatched
+    rep = sched.tick()
+    assert "DM-001 -> changes_requested (review)" in rep.transitions
+    assert "DM-001(revise)" in rep.dispatched
+    assert not fake_github.updated
+
+
+def test_explicit_request_changes_keeps_the_task_tier(sched, fake_github, monkeypatch):
+    """Native judgment is routed without inferring a cosmetic-only easy round."""
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched
+    rep = sched.tick()  # reap review -> request_changes -> revise dispatched
+    assert "DM-001 -> changes_requested (review)" in rep.transitions and "DM-001(revise)" in rep.dispatched
+    run = sched.runs.latest("DM-001")
+    assert run.mode == "revise"
+    assert run.model == "sonnet"
+    assert run.difficulty == "medium"
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert task.difficulty == "medium"  # the task's own tier is unchanged
+    assert "description only; easy tier" not in task.body
+
+
+def test_approve_with_description_rewrite_keeps_style_advisory(sched, fake_github, monkeypatch):
+    """An approved source change is not mutated or revised for description style."""
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-rewrite")
+    sched.tick()
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched
+    assert "DM-001(review)" in rep.dispatched
+    rep = sched.tick()
+    assert "DM-001 review: approve" in rep.transitions
+    assert "DM-001(revise)" not in rep.dispatched
+    assert not any("changes_requested" in t for t in rep.transitions)
+    assert not fake_github.updated
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert task.status.value == "in_review"
+    assert not str(sched.state.get("DM-001").get("pending_feedback") or "").strip()
+
+
+def test_approve_with_description_feedback_does_not_dispatch_a_style_round(sched, fake_github, monkeypatch):
+    """Description feedback remains visible without forcing an unchanged-source revision."""
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-approve-desc")
+    sched.tick()
+    rep = sched.tick()  # reap work -> PR opened -> review dispatched
+    assert "DM-001(review)" in rep.dispatched
+    rep = sched.tick()
+    assert "DM-001 review: approve" in rep.transitions
+    assert "DM-001(revise)" not in rep.dispatched
+    assert not str(sched.state.get("DM-001").get("pending_feedback") or "").strip()
+
+
+def test_review_cap_reached_flags_needs_human_and_one_more_review_grants_a_round(sched, fake_github, monkeypatch):
+    """CG-117: once the cap stops the automated reviewer, the task says so instead of sitting
+    silently in review, and the Inbox offers one more round without a human editing state.json."""
+    from garden.inbox import build_inbox
+
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched (round 1)
+    sched.tick()  # reap review round 1: request_changes (description only) -> revise dispatched
+    rep = sched.tick()  # reap revise -> pushed -> review dispatched (round 2)
+    assert "DM-001(review)" in rep.dispatched
+    assert sched.state.get("DM-001")["review_rounds"] == 2
+    sched.tick()  # reap review round 2: request_changes again -> revise dispatched
+    rep = sched.tick()  # reap revise -> pushed -> cap already used; no third review dispatched
+    assert "DM-001(review)" not in rep.dispatched
+    assert "DM-001 review cap reached" in rep.transitions
+
+    sched.store.invalidate()
+    task = sched.store.task("DM-001")
+    assert "2 automated review round(s) used" in task.body
+    assert task.status == Status.IN_REVIEW  # still in review; the loop did not stall it
+
+    st = sched.state.get("DM-001")
+    assert st["needs_human"]["kind"] == "review_cap"
+    assert st["review_rounds"] == 2
+
+    items = [i for i in build_inbox(sched.store, sched) if i["group"] == "attention" and i["task"] == "DM-001"]
+    assert items, "reaching the review cap should raise an Inbox card under 'Needs a decision'"
+    it = items[0]
+    assert it["pr"] == task.pr
+    labels = [a["label"] for a in it["actions"]]
+    assert "One more automated review" in labels
+    assert "Send back with a note" in labels
+    assert "Open PR" in labels
+
+    # "one more review": raises the cap by one round and dispatches right away
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-ok")
+    run = sched.review_again(task)
+    assert run.mode == "review"
+    assert sched.state.get("DM-001")["review_rounds"] == 2  # rolled back one, then re-incremented
+    assert not sched.state.get("DM-001").get("needs_human")
+
+    rep = sched.tick()  # reap the extra review: approve, no third cap-reached flag
+    assert "DM-001 review: approve" in rep.transitions
+    assert not sched.state.get("DM-001").get("needs_human")
+
+
+def test_unlimited_review_cap_dispatches_beyond_the_former_limit_under_review_admission(sched, fake_github, monkeypatch):
+    """A null cap keeps the normal work/review/revise lifecycle going past two rounds.
+
+    The third dispatch proves that the unlimited setting is not merely accepted by the
+    config helper: it still goes through the normal one-slot review admission path.
+    """
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review_parallel"] = 1
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": None, "friction_after": 4,
+                                "max_diff_chars": 60000}
+    monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-desc")
+
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> review round 1
+    sched.tick()  # reap review 1 -> revise
+    sched.tick()  # reap revise -> review round 2
+    sched.tick()  # reap review 2 -> revise
+    rep = sched.tick()  # reap revise -> review round 3, beyond the former cap
+
+    assert "DM-001(review)" in rep.dispatched
+    st = sched.state.get("DM-001")
+    assert st["review_rounds"] == 3
+    assert len(sched.review_runs_active()) == 1
+    assert sched.review_slots_free() == 0
