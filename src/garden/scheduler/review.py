@@ -1176,7 +1176,10 @@ class ReviewMixin:
                 if repeated and bool(self.cfg.get("stall.enabled", True)):
                     self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                     return True
-                fb = feedback_from_review(review)
+                fb = feedback_from_review(
+                    review, run_id=run.run_id,
+                    source_head=str(run.env_snapshot.get("review_head") or ""),
+                )
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
@@ -1193,7 +1196,10 @@ class ReviewMixin:
                 # Approved, but the description still needs work and the reviewer gave no
                 # rewrite to apply directly: dispatch a description-only revise round rather
                 # than leaving the flagged description sitting on an in_review task forever.
-                fb = feedback_from_review(review)
+                fb = feedback_from_review(
+                    review, run_id=run.run_id,
+                    source_head=str(run.env_snapshot.get("review_head") or ""),
+                )
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()

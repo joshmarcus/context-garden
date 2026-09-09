@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from garden import interaction_replay
+from garden.brief import build_brief
 from garden.inbox import build_inbox
 from garden.model import Status
 from garden.now1 import strip_for_run
@@ -14,10 +15,12 @@ from garden.review import (
     ambiguous_unverified,
     enforce_criteria_verdict,
     feedback_from_review,
+    feedback_with_operator_note,
     interaction_evidence_gaps,
     interaction_requirement,
     parse_review,
     review_brief,
+    review_item_id,
     review_to_markdown,
     validation_plan,
     visual_source_digest,
@@ -60,6 +63,8 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     run_id = st.get("last_review_run")
     assert run_id
     assert st.get("last_review_head")
+    review_run = sched._run_by_id(sched.store.task("DM-001"), run_id)
+    assert st.get("last_review_head") == review_run.env_snapshot["review_head"]
 
     # a new process on the same garden: state.json is the only thing that survives it
     fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
@@ -67,6 +72,7 @@ def test_review_verdict_survives_a_scheduler_restart(sched, fake_github):
     assert st2.get("last_review", {}).get("verdict") == "approve"
     assert st2.get("last_review_run") == run_id
     assert st2.get("last_review_head") == st.get("last_review_head")
+    assert st2.get("last_review_head") == review_run.env_snapshot["review_head"]
 
 
 @pytest.mark.parametrize("failure", ["unclaimed timeout", "admission timeout", "startup environment failure"])
@@ -680,6 +686,188 @@ def test_review_fixes_and_improvements_reach_comment_and_revise_brief(garden):
     brief = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+x",
                          max_diff_chars=100, reask_missing_fixes=True)
     assert "Follow-up required" in brief and "`fix` for every blocking finding" in brief
+
+
+def test_revision_feedback_retains_long_findings_and_criterion_only_rejections(garden):
+    long_fix = "preserve every detail " * 799 + "final detail"
+    review = {
+        "summary": "A complete review record",
+        "criteria": [{"criterion": "The rejected outcome is explained.", "met": False,
+                      "reason": "the empty result has no source link",
+                      "evidence": "test_revision_feedback_retains_long_findings"}],
+        "findings": [{"severity": "blocking", "file": "src/garden/review.py", "line": 677,
+                      "summary": "The finding remains actionable", "fix": long_fix}],
+    }
+
+    feedback = feedback_from_review(review, run_id="DM-001-review-2", source_head="a" * 40)
+
+    assert "DM-001-review-2" in feedback and "a" * 40 in feedback
+    assert "The rejected outcome is explained." in feedback
+    assert "the empty result has no source link" in feedback
+    assert "test_revision_feedback_retains_long_findings" in feedback
+    assert long_fix in feedback
+    store = Store(garden)
+    brief = build_brief(store, store.task("DM-001"), review_feedback=feedback)
+    assert long_fix in brief.text
+    assert "test_revision_feedback_retains_long_findings" in brief.text
+
+
+def test_operator_triage_and_recovery_notes_preserve_review_provenance(sched):
+    task = sched.store.task("DM-001")
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+    review = {"summary": "Prior review", "criteria": [{"criterion": "Original criterion", "met": False,
+              "reason": "not yet verified", "evidence": "review evidence"}],
+              "findings": [{"severity": "blocking", "file": "a.py", "line": 4,
+                            "summary": "Original finding", "fix": "Make the original fix."},
+                           {"severity": "nit", "summary": "Finding without a supplied fix"}],
+              "description_ok": False, "description_feedback": "Old description feedback",
+              "improvements": [{"area": "docs", "suggestion": "Old optional suggestion"}]}
+    source_run = sched.runs.new_run(task.id, "local", mode="review")
+    source_run.status = "done"
+    source_run.env_snapshot = {"review_head": "a" * 40}
+    source_run.save()
+    st = sched.state.get(task.id)
+    st.update(last_review=review, last_review_run=source_run.run_id, head_sha="b" * 40)
+
+    sched.triage(task, changes="Use the new handoff instead.")
+    triage = st["pending_feedback"]
+    assert "Operator triage note" in triage and "Applicable automated review record" in triage
+    assert "remains applicable and this note supplements it" in triage
+    assert "Original finding" in triage and "Original criterion" in triage
+    assert source_run.run_id in triage and "a" * 40 in triage
+    assert "b" * 40 not in triage
+    assert st["last_review_head"] == "a" * 40
+
+    task.status = Status.AWAITING_TRIAGE
+    sched.store.save(task)
+    sched.triage(task, changes="The prior review is resolved.", supersede_review=True)
+    superseded = st["pending_feedback"]
+    assert "Superseded automated review record" in superseded
+    assert "do not repeat its requests" in superseded
+    assert "Original finding" in superseded and "a" * 40 in superseded
+    assert "Applicable automated review" not in superseded
+    assert "Findings to address" not in superseded
+    assert "Automated review provenance" in superseded
+    assert "Recorded findings" in superseded
+    assert "Recorded PR description assessment" in superseded
+    assert "Recorded optional improvements" in superseded
+    assert "put the new description" not in superseded
+    assert "Take or decline each item" not in superseded
+    assert "determine the smallest correct change" not in superseded
+
+    recovery = feedback_with_operator_note(
+        review, "Retry after the operator cleared the stop.", kind="recovery",
+        run_id=source_run.run_id, source_head="a" * 40,
+    )
+    assert "Operator recovery note" in recovery
+    assert "remains applicable and this note supplements it" in recovery
+    assert "Original finding" in recovery and "review evidence" in recovery
+
+
+def test_operator_triage_resolves_selected_finding_and_keeps_unmatched_review(sched):
+    task = sched.store.task("DM-001")
+    task.pr = "https://example.test/pull/1"
+    sched.store.save(task)
+    fixed = {"severity": "blocking", "file": "fixed.py", "line": 4,
+             "summary": "Already fixed", "fix": "Keep the correction."}
+    outstanding = {"severity": "blocking", "file": "open.py", "line": 9,
+                   "summary": "Still outstanding", "fix": "Implement this change."}
+    review = {"summary": "Mixed review", "criteria": [],
+              "findings": [fixed, outstanding]}
+    st = sched.state.get(task.id)
+    st.update(last_review=review, last_review_run="review-1", last_review_head="a" * 40)
+    fixed_id = review_item_id("finding", fixed)
+    outstanding_id = review_item_id("finding", outstanding)
+
+    sched.triage(task, changes="The first finding is resolved.",
+                 resolve_review_items=[fixed_id])
+
+    feedback = st["pending_feedback"]
+    resolved, applicable = feedback.split("## Applicable automated review record", 1)
+    assert "Resolved automated review items" in resolved
+    assert "Already fixed" in resolved and fixed_id in resolved
+    assert "Still outstanding" not in resolved
+    assert "Applicable automated review" not in resolved
+    assert "Findings to address" not in resolved
+    assert "Automated review provenance" in resolved
+    assert "Recorded findings" in resolved
+    assert "Still outstanding" in applicable and outstanding_id in applicable
+    assert "Already fixed" not in applicable
+    assert "Applicable automated review" in applicable
+    assert "Findings to address" in applicable
+    assert "Unmatched items remain applicable" in feedback
+
+    task.status = Status.AWAITING_TRIAGE
+    sched.store.save(task)
+    with pytest.raises(RuntimeError, match="unknown review item"):
+        sched.triage(task, changes="bad selection",
+                     resolve_review_items=["finding:000000000000"])
+    with pytest.raises(RuntimeError, match="cannot be combined"):
+        sched.triage(task, changes="ambiguous operation", supersede_review=True,
+                     resolve_review_items=[fixed_id])
+
+
+def test_served_triage_and_recovery_handoffs_preserve_applicable_review(sched, fake_github):
+    from fastapi.testclient import TestClient
+
+    from garden.web.app import create_app
+
+    task = sched.store.task("DM-001")
+    task.status = Status.AWAITING_TRIAGE
+    task.pr = "https://example.test/pull/101"
+    sched.store.save(task)
+    review = {"summary": "Review from the examined head", "criteria": [],
+              "findings": [{"severity": "blocking", "file": "a.py", "line": 4,
+                            "summary": "Keep this finding", "fix": "Apply the retained fix."}]}
+    st = sched.state.get(task.id)
+    st.update(last_review=review, last_review_run="DM-001-review-1",
+              last_review_head="a" * 40, head_sha="b" * 40)
+    sched.state.save()
+    client = TestClient(create_app(
+        Store(sched.store.root), watch=False, host="testserver", github=fake_github))
+
+    response = client.post(
+        "/tasks/DM-001/triage-changes", data={"note": "Also cover the empty case."},
+        headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=False)
+    assert response.status_code == 303
+    brief = client.get("/tasks/DM-001/brief?revise=true")
+    assert brief.status_code == 200
+    assert "Operator triage note" in brief.text
+    assert "remains applicable and this note supplements it" in brief.text
+    assert "Keep this finding" in brief.text and "a" * 40 in brief.text
+    assert "b" * 40 not in brief.text
+
+    recovered = Scheduler(Store(sched.store.root), github=fake_github)
+    task = recovered.store.task(task.id)
+    task.status = Status.IN_REVIEW
+    recovered.store.save(task)
+    state = recovered.state.get(task.id)
+    state.pop("pending_feedback", None)
+    recovered._set_needs_human(task, "stall", "simulated failed handoff")
+    recovered.state.save()
+    response = client.post(
+        "/tasks/DM-001/retry", headers={"referer": "http://testserver/tasks/DM-001"},
+        follow_redirects=False)
+    assert response.status_code == 303
+    recovery_brief = client.get("/tasks/DM-001/brief?revise=true")
+    assert recovery_brief.status_code == 200
+    assert "Operator recovery note" in recovery_brief.text
+    assert "Keep this finding" in recovery_brief.text and "a" * 40 in recovery_brief.text
+
+    no_review = Scheduler(Store(sched.store.root), github=fake_github)
+    second = no_review.store.task("DM-002")
+    second.status = Status.AWAITING_TRIAGE
+    second.pr = "https://example.test/pull/102"
+    no_review.store.save(second)
+    response = client.post(
+        "/tasks/DM-002/triage-changes", data={"note": "Handle the empty state."},
+        headers={"referer": "http://testserver/tasks/DM-002"}, follow_redirects=False)
+    assert response.status_code == 303
+    empty_brief = client.get("/tasks/DM-002/brief?revise=true")
+    assert empty_brief.status_code == 200
+    assert "Operator triage note" in empty_brief.text
+    assert "Applicable automated review" not in empty_brief.text
 
 
 def test_review_without_blocking_fix_is_reasked_once(sched, fake_github, monkeypatch):
