@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from garden import gitops
-from garden.github import GitHubError
+from garden.github import Feedback, GitHubError
 from garden.model import Status, now_iso
 from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
@@ -332,6 +332,42 @@ def test_attach_pr_refuses_a_checkout_owned_by_an_active_run(sched, fake_github)
 
     with pytest.raises(RuntimeError, match="active run"):
         sched.attach_pr(task, pr.url)
+
+
+def test_attached_pr_revision_keeps_the_verified_non_default_pr(sched, fake_github):
+    """An adopted PR receives an ordinary feedback revision, never a replacement PR."""
+    task = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    second.status = Status.DRAFT
+    sched.store.save(second)
+    pr = fake_github.create_pr("test/demo", "operator/adopted", "main", "external", "")
+    repo = sched.repo_for(task)
+    gitops.git("checkout", "-q", "-b", pr.head, cwd=repo)
+    gitops.git("push", "-q", "-u", "origin", pr.head, cwd=repo)
+    gitops.git("checkout", "-q", "main", cwd=repo)
+
+    sched.attach_pr(task, pr.url)
+    pr.head_sha = "moved-before-revision"
+    fake_github.feedback[pr.number] = Feedback(
+        items=[{"kind": "review", "state": "CHANGES_REQUESTED", "author": "reviewer",
+                "body": "Please revise this adopted branch.", "created": "2099-01-01T00:00:00Z"}]
+    )
+
+    rep = sched.tick()
+    assert rep.dispatched == ["DM-001(revise)"]
+    assert statuses(sched)[task.id] == Status.RUNNING.value
+    assert sched.runs.latest(task.id).branch == pr.head
+
+    sched.tick()
+
+    assert statuses(sched)[task.id] == Status.IN_REVIEW.value
+    assert sched.store.task(task.id).pr == pr.url
+    assert sched.store.task(task.id).branch == pr.head
+    assert sched.state.get(task.id)["head_sha"] == "moved-before-revision"
+    assert fake_github.updated[-1]["number"] == pr.number
+    assert len(fake_github.created) == 1  # the synthetic attached PR, not a replacement
+
+
 def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sched, fake_github, tmp_path):
     """Work from another clone is materialised before the ordinary PR/review handoff."""
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
