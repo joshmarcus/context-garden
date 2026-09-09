@@ -455,6 +455,23 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
     assert sched.state.get("DM-001")["ci_status"]["green"] is True
 
 
+def test_product_command_policy_selects_worker_receipt_for_exact_command(sched, fake_github):
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "pytest -q",
+    }
+    # A conflicting legacy global must not override the product policy.
+    sched.cfg.data["ci"] = {"status_provider": "github", "required": False}
+    task = sched.store.task("DM-001")
+    pr = PRInfo(1, "https://github.com/test/demo/pull/1", "OPEN", head_sha="head")
+
+    policy = sched.cfg.product_ci_policy("demo")
+    status = sched._ci_status(task, pr)
+    assert policy == {"status_provider": "worker_check", "required": True,
+                      "worker_check": {"command": "pytest -q"}}
+    assert status.provider == "worker_check"
+    assert status.state == "missing"
+
+
 def test_worker_check_old_green_does_not_clear_merge_gate(sched, fake_github):
     sched.cfg.data["ci"] = {"status_provider": "worker_check", "required": True,
                             "worker_check": {"command": "pytest -q"}}

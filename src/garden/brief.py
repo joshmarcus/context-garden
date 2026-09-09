@@ -431,7 +431,7 @@ def build_brief(
             turn_cap_rule=turn_cap_rule,
             env_rule=_env_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
             push_rule=_push_rule(cfg.product_setup(task.product), cfg.product_validation(task.product),
-                                 dict(cfg.get("ci", {}) or {})),
+                                 cfg.product_ci_policy(task.product)),
         )
         sections.append(("rules", rules + "\n" + EVIDENCE_GUIDANCE))
         if review_feedback:

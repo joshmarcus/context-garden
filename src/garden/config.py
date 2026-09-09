@@ -675,6 +675,28 @@ class Config:
         return {"provider": str(value.get("provider") or ""),
                 "command": str(value.get("command") or "")}
 
+    def product_ci_policy(self, name: str) -> dict[str, Any]:
+        """Resolve the exact-head gate from the product validation policy.
+
+        The top-level ``ci`` block predates per-product validation and remains the
+        compatibility policy for products which have not selected one explicitly.
+        """
+        validation = self.product_validation(name)
+        provider = validation["provider"]
+        if provider == "legacy":
+            policy = dict(self.get("ci", {}) or {})
+            policy["required"] = bool(
+                policy.get("required") or self.product_setup(name).get("worker_push") is True
+            )
+            return policy
+        if provider == "command":
+            return {
+                "status_provider": "worker_check",
+                "required": True,
+                "worker_check": {"command": validation["command"]},
+            }
+        return {"status_provider": "github", "required": provider in ("actions", "status")}
+
     def product_checkout(self, name: str) -> dict[str, Any]:
         """Opt-in checkout policy for a product.
 
