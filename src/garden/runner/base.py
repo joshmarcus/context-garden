@@ -49,6 +49,23 @@ PASS_ENV: tuple[str, ...] = (
 )
 
 
+def _no_fsmonitor_env() -> dict[str, str]:
+    """Force `core.fsmonitor` off for every `git` a worker or a check runs.
+
+    A machine-wide `core.fsmonitor` makes git start `git fsmonitor--daemon` the first time it
+    reads the index in a worktree. That daemon detaches from its caller but keeps the run's
+    process group, and it does not exit when the run does — so `runs.Run.process_finished`,
+    which waits for the whole owned group, could never see the run end, and the tick that
+    would reap it never came. A worker's git operations are short-lived and gain nothing from
+    the monitor. Stating it in the environment (highest-priority config, above the clone's own
+    `.git/config`) also keeps a planted `core.fsmonitor` command from running as the worker,
+    which is the same reason `gitops._git_env` forces it off scheduler-side. The isolated HOME
+    means an operator's own `core.fsmonitor false` is not inherited, so it is set here rather
+    than assumed."""
+    return {"GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false"}
+
+
 def pass_env_patterns(config: dict[str, Any] | None) -> list[str]:
     """The environment-variable allowlist: `PASS_ENV` plus the names or globs under
     `config['worker_env']['pass']`. Shared by `scrubbed_env` (the local runner and checks,
@@ -251,6 +268,7 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     scratch_home = worker_home(worktree)
     env.update(private_config_dir_env(config, scratch_home))
     install_config_files(config, scratch_home)
+    env.update(_no_fsmonitor_env())
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     return env

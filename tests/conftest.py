@@ -12,6 +12,7 @@ import yaml
 
 from garden import runner as runner_registry
 from garden.github import Feedback, PRInfo
+from garden.runner.base import _no_fsmonitor_env
 from garden.scheduler import Scheduler
 from garden.store import Store
 from tests.inprocess import InProcessRunner
@@ -26,6 +27,18 @@ def pytest_addoption(parser):
         "--run-stress", action="store_true", default=False,
         help="Opt in to stress/load experiments (excluded from ordinary test runs and CI)",
     )
+
+
+def pytest_configure(config):
+    """Keep this suite from leaving a git filesystem-monitor daemon behind every repository.
+
+    Where `core.fsmonitor` is on machine-wide, each fixture repository makes git start a
+    `git fsmonitor--daemon`; it detaches, outlives the test that caused it and goes on
+    watching a deleted temporary directory, so a full run accumulates hundreds of them.
+    `GIT_CONFIG_*` is the highest-priority git configuration, so setting it on this process
+    reaches every git the suite runs, including the ones product code runs on its behalf.
+    """
+    os.environ.update(_no_fsmonitor_env())
 
 
 def pytest_collection_modifyitems(config, items):
