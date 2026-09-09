@@ -34,6 +34,31 @@ INVESTIGATION_RECOMMENDATIONS = frozenset({
 })
 
 
+def validate_investigation_report(report: Any) -> dict[str, Any]:
+    """Return a complete structured investigation report or raise a useful error."""
+    required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
+                "retain_work", "alternatives", "recommendation"}
+    missing = sorted(required - report.keys()) if isinstance(report, dict) else sorted(required)
+    if missing:
+        raise RuntimeError(f"investigation report is missing: {', '.join(missing)}")
+    for field in ("likely_cause", "confidence"):
+        if not isinstance(report[field], str) or not report[field].strip():
+            raise RuntimeError(f"investigation report {field} is required")
+    for field in ("unknowns", "evidence", "attempted_checks", "alternatives"):
+        if not isinstance(report[field], list) or not all(isinstance(item, str) for item in report[field]):
+            raise RuntimeError(f"investigation report {field} must be a list of text values")
+    if not report["evidence"] or not report["attempted_checks"] or not report["alternatives"]:
+        raise RuntimeError("investigation report requires evidence, attempted checks, and alternatives")
+    if not isinstance(report["retain_work"], bool):
+        raise RuntimeError("investigation report retain_work must be true or false")
+    if report["recommendation"] not in INVESTIGATION_RECOMMENDATIONS:
+        raise RuntimeError("investigation report has an unsupported recommendation")
+    links = report.get("links", [])
+    if not isinstance(links, list) or not all(isinstance(item, str) for item in links):
+        raise RuntimeError("investigation report links must be a list of text values")
+    return report
+
+
 class HumanMixin:
     def set_difficulty(self, task: Task, difficulty: str, *, reason: str = "", actor: str = "") -> None:
         """Set an implementation tier without accidentally lowering an escalation floor.
@@ -367,26 +392,7 @@ class HumanMixin:
         inv = st.get("investigation")
         if not isinstance(inv, dict) or inv.get("status") not in ("requested", "active"):
             raise RuntimeError(f"{task.id} has no active investigation")
-        required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
-                    "retain_work", "alternatives", "recommendation"}
-        missing = sorted(required - report.keys()) if isinstance(report, dict) else sorted(required)
-        if missing:
-            raise RuntimeError(f"investigation report is missing: {', '.join(missing)}")
-        for field in ("likely_cause", "confidence"):
-            if not isinstance(report[field], str) or not report[field].strip():
-                raise RuntimeError(f"investigation report {field} is required")
-        for field in ("unknowns", "evidence", "attempted_checks", "alternatives"):
-            if not isinstance(report[field], list) or not all(isinstance(item, str) for item in report[field]):
-                raise RuntimeError(f"investigation report {field} must be a list of text values")
-        if not report["evidence"] or not report["attempted_checks"] or not report["alternatives"]:
-            raise RuntimeError("investigation report requires evidence, attempted checks, and alternatives")
-        if not isinstance(report["retain_work"], bool):
-            raise RuntimeError("investigation report retain_work must be true or false")
-        if report["recommendation"] not in INVESTIGATION_RECOMMENDATIONS:
-            raise RuntimeError("investigation report has an unsupported recommendation")
-        links = report.get("links", [])
-        if not isinstance(links, list) or not all(isinstance(item, str) for item in links):
-            raise RuntimeError("investigation report links must be a list of text values")
+        validate_investigation_report(report)
         inv.update({"status": "report_ready", "report": report, "completed_at": now_iso()})
         self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
         self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))

@@ -628,6 +628,42 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     assert "base comparison" in st["investigation_handoff"]["diagnosis"]
 
 
+@pytest.mark.parametrize("field,value,error", [
+    ("likely_cause", "", "likely_cause is required"),
+    ("confidence", None, "confidence is required"),
+    ("evidence", [], "requires evidence"),
+    ("attempted_checks", "focused test", "must be a list"),
+    ("alternatives", [], "requires evidence"),
+    ("retain_work", "yes", "must be true or false"),
+])
+def test_agent_investigation_rejects_malformed_report(sched, field, value, error):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["investigation"] = {
+        "status": "active", "owner": "agent",
+        "task_status": Status.CHANGES_REQUESTED.value,
+    }
+    report = {
+        "likely_cause": "stale fixture", "confidence": "high", "unknowns": [],
+        "evidence": ["base comparison"], "attempted_checks": ["focused test"],
+        "retain_work": True, "alternatives": ["repair fixture"],
+        "recommendation": "repair environment/verification",
+    }
+    report[field] = value
+    run = sched.runs.new_run(task.id, "local", mode="investigation")
+    run.result = {"status": "done", "investigation_report": report}
+
+    sched._finalize_investigation(task, run, TickReport(), {})
+
+    assert st["investigation"]["status"] == "failed"
+    assert error in st["investigation"]["error"]
+    assert "report" not in st["investigation"]
+    assert st["needs_human"]["kind"] == "investigation"
+    assert task.status == Status.CHANGES_REQUESTED
+
+
 def test_corrective_worker_refreshes_origin_pr_feedback_at_dispatch(sched, monkeypatch):
     origin = sched.store.task("DM-001")
     origin.status = Status.RUNNING
