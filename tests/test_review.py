@@ -205,6 +205,63 @@ def test_started_review_env_error_preserves_collected_usage_and_cost(sched, monk
     assert saved.model == collected["model"]
     assert saved.error == collected["error"]
     assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+    assert st["review_recovery"]["attempts"] == 1
+    assert st["review_recovery"]["started"] is True
+
+
+def test_repeated_review_env_errors_exhaust_bounded_recovery_after_restart(
+        sched, fake_github, monkeypatch):
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"].update({
+        "enabled": True,
+        "recovery_attempts": 2,
+        "recovery_backoff_seconds": 0,
+    })
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    first = sched._run_by_id(task, st["review_run"])
+    assert first is not None
+    runner_type = type(sched.runner_for(task, first.runner, first.harness))
+    collected = {
+        "env_error": True,
+        "env_kind": "quota",
+        "error": "reviewer quota exhausted",
+        "usage": {"input_tokens": 10, "output_tokens": 1},
+        "cost_usd": 0.05,
+    }
+    monkeypatch.setattr(runner_type, "collect", lambda *_args: collected)
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda *_args: True)
+
+    assert sched.reap_review(task, TickReport())
+    assert st["review_recovery"]["attempts"] == 1
+    assert st["review_rounds"] == 0
+
+    # Recovery state and its bound survive a controller restart. Each successful
+    # harness probe permits one more attempt; repeated account failure cannot loop.
+    current = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    current.cfg.data["review"].update({
+        "enabled": True,
+        "recovery_attempts": 2,
+        "recovery_backoff_seconds": 0,
+    })
+    monkeypatch.setattr(current, "_finished_or_timed_out", lambda *_args: True)
+    for expected_attempt in (2, 3):
+        current.resume_harness(first.harness, by="probe")
+        state = current.state.get(task.id)
+        current._drain_pending_reviews(current.store.tasks(), TickReport())
+        assert state.get("review_run")
+
+        assert current.reap_review(current.store.task(task.id), TickReport())
+        if expected_attempt <= 2:
+            assert state["review_recovery"]["attempts"] == expected_attempt
+            assert state["pending_reviews"] == [{"kind": "review", "count_round": True}]
+            assert not state.get("needs_human")
+        else:
+            assert state["needs_human"]["kind"] == "review_recovery_exhausted"
+            assert not state.get("pending_reviews")
+        assert state["review_rounds"] == 0
 
 
 def test_review_audit_preserves_the_round_of_a_lost_started_review(sched):
