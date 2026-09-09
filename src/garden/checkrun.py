@@ -43,9 +43,16 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
         try:
             setup_env = scrubbed_env(config, setup, worktree=cwd)
             setup_env.update(temp_env)
-            run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log", env=setup_env)
+            run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log",
+                      env=setup_env, cache_key=str(payload.get("setup_cache_key") or ""))
         except RunnerError as e:
-            return [{"name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e)}]
+            result: dict[str, Any] = {
+                "name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e),
+            }
+            if e.returncode is not None:
+                result["exit_code"] = e.returncode
+                result["unavailable"] = e.returncode in (126, 127)
+            return [result]
     elif cwd is not None and not cwd.exists():
         cwd = None  # do not run command checks in a worktree that isn't there
     specs = [{**spec, "env": {**(spec.get("env") or {}), **temp_env}} for spec in specs]
