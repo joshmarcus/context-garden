@@ -259,7 +259,11 @@ class CheckRunMixin:
             ci_failed = str(st.get("checks") or "").upper() == "FAILURE"
             feedback = str(st.get("pending_feedback") or "").strip()
             if task.pr and not (feedback or ci_failed or failed_checks):
-                expected_head = str(recovery.get("source_head") or st.get("head_sha") or "")
+                # A task's observed head is mutable polling state and cannot prove which
+                # source the stopped check actually validated.  Prefer the parked
+                # continuation, with the immutable run record as the legacy fallback;
+                # if neither recorded a source, successful recovery must fail closed.
+                expected_head = str(recovery.get("source_head") or run.source_head or "")
                 self._require_current_success_head(task, expected_head)
 
             st.pop("check_run", None)

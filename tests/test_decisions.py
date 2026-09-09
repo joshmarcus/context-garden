@@ -277,16 +277,19 @@ def test_waiting_state_recovery_clears_only_missing_check_metadata(sched):
     assert sched.store.task(task.id).status == Status.CHANGES_REQUESTED
 
 
-def _terminal_check_stop(sched, task, *, checks="SUCCESS", feedback=""):
+def _terminal_check_stop(sched, task, *, checks="SUCCESS", feedback="",
+                         source_head="current-head"):
     """Record the stale-pointer shape left by a terminal check recovery interruption."""
     run = sched.runs.new_run(task.id, "local", mode="check")
     run.status = "done"
     run.result = {"checks": []}
     run.error = "original check diagnostic"
+    run.source_head = source_head
     run.save()
     st = sched.state.get(task.id)
     st["check_run"] = {"run_id": run.run_id, "stage": "ci", "cont": {}}
-    st["recovery_check"] = {"run": run.run_id, "stage": "ci", "cont": {}, "specs": []}
+    st["recovery_check"] = {"run": run.run_id, "stage": "ci", "cont": {}, "specs": [],
+                            "source_head": source_head}
     st["needs_human"] = {"kind": "check_did_not_run", "run": run.run_id,
                           "reason": "check did not run"}
     st["checks"] = checks
@@ -296,12 +299,14 @@ def _terminal_check_stop(sched, task, *, checks="SUCCESS", feedback=""):
     return run
 
 
-def _parked_terminal_check_stop(sched, task, *, checks="SUCCESS", feedback=""):
+def _parked_terminal_check_stop(sched, task, *, checks="SUCCESS", feedback="",
+                                source_head="current-head"):
     """Create the ordinary exhausted-check stop through its production parking path."""
     run = sched.runs.new_run(task.id, "local", mode="check")
     run.status = "done"
     run.result = {"checks": []}
     run.error = "original check diagnostic"
+    run.source_head = source_head
     run.save()
     st = sched.state.get(task.id)
     st["check_run"] = {"run_id": run.run_id, "stage": "ci", "cont": {}}
@@ -369,9 +374,9 @@ def test_terminal_check_recovery_refuses_success_from_an_older_pr_head(sched):
     sched.github.prs["garden/test"] = PRInfo(
         number=101, url=task.pr, state="OPEN", head_sha="new-head"
     )
-    run = _parked_terminal_check_stop(sched, task)
+    run = _parked_terminal_check_stop(sched, task, source_head="old-head")
     st = sched.state.get(task.id)
-    st["head_sha"] = "old-head"
+    st["head_sha"] = "new-head"
 
     with pytest.raises(RuntimeError, match="different PR head"):
         sched.recover_waiting_check(task)
@@ -380,6 +385,29 @@ def test_terminal_check_recovery_refuses_success_from_an_older_pr_head(sched):
     assert state["needs_human"]["run"] == run.run_id
     assert state["recovery_check"]["run"] == run.run_id
     assert state["checks"] == "SUCCESS"
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+
+
+def test_terminal_check_recovery_refuses_success_without_immutable_source_head(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="new-head"
+    )
+    run = _terminal_check_stop(sched, task, source_head="")
+    st = sched.state.get(task.id)
+    st["head_sha"] = "new-head"
+
+    with pytest.raises(RuntimeError, match="no recorded source head"):
+        sched.recover_waiting_check(task)
+
+    state = sched.state.get(task.id)
+    assert state["needs_human"]["run"] == run.run_id
+    assert state["recovery_check"]["run"] == run.run_id
+    assert state["checks"] == "SUCCESS"
+    assert sched._run_by_id(task, run.run_id).result == {"checks": []}
     assert sched.store.task(task.id).status == Status.IN_REVIEW
 
 
