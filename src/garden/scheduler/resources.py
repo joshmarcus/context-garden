@@ -252,7 +252,7 @@ class ResourceMixin:
 
     def local_runs_active(self) -> list[Any]:
         """Every process launched on this host, regardless of scheduler queue or CLI path."""
-        return [r for r in self.active_runs() if r.runner == "local"]
+        return [r for r in self.active_runs() if r.is_local_execution]
 
     def resource_status(self) -> ResourceStatus:
         active = len(self.local_runs_active())
@@ -435,8 +435,11 @@ class ResourceMixin:
                 "pause dispatch or wait for active runs to drain, then retry"
             )
 
-    def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "") -> Any:
+    def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "",
+                       runner_name: str = "local") -> Any:
         """Atomically admit and publish a running local run across all launchers."""
         with self._local_admission_lock():
             self._admit_local_launch(kind)
-            return self.runs.new_run(task_id, "local", mode=mode, run_id=run_id)
+            run = self.runs.new_run(task_id, runner_name, mode=mode, run_id=run_id)
+            run.execution_remote = False
+            return run

@@ -43,7 +43,7 @@ def no_live_garden_root(base: Path) -> str:
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
-    "notify.command", "checks", "worker_env.pass", "worker_env.config_files",
+    "notify.command", "checks", "worker_env.pass", "worker_env.config_files", "runner_adapters",
 )
 
 
@@ -141,6 +141,10 @@ DEFAULTS: dict[str, Any] = {
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
     "runner": "local",
+    # Private runner classes are named only by operator configuration.  Their modules are
+    # deliberately not imported while config is being read; resolution happens at runner
+    # construction, after normal scheduler admission and fencing have already applied.
+    "runner_adapters": {},
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
@@ -407,6 +411,22 @@ class Config:
     def product_runner(self, name: str) -> str:
         r = str(self.product(name).get("runner") or self.get("runner"))
         return "local" if r == "claude-local" else r
+
+    def runner_adapter(self, name: str) -> dict[str, Any] | None:
+        """Return the trusted operator registration for a private runner, if any.
+
+        Task frontmatter and worker output are intentionally not inputs here: only the
+        layered operator configuration may name code to import.
+        """
+        adapters = self.get("runner_adapters") or {}
+        if not isinstance(adapters, dict):
+            raise ValueError("runner_adapters must be a mapping")
+        registration = adapters.get(name)
+        if registration is None:
+            return None
+        if not isinstance(registration, dict):
+            raise ValueError(f"runner_adapters.{name} must be a mapping")
+        return dict(registration)
 
     def product_harness(self, name: str) -> str:
         return str(self.product(name).get("harness") or self.get("harness") or "claude")

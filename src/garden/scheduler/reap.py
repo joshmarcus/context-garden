@@ -95,7 +95,7 @@ class ReapMixin:
         for run in self.runs.all_runs():
             # A terminal metadata value alone is not enough: prove the wrapper exited (or
             # wrote its exit_code) before deleting files a still-live descendant may use.
-            if run.runner == "local" and run.status != "running" and run.process_finished():
+            if run.is_local_execution and run.status != "running" and run.process_finished():
                 shutil.rmtree(run_temp_dir(work_dir, run), ignore_errors=True)
 
     # ---- reap --------------------------------------------------------------
