@@ -671,12 +671,18 @@ class Scheduler(
         self.store.invalidate_tasks()
         tasks = self.store.tasks()
         with self._step(rep, "poll"):
+            observed, suppressed_products = (
+                self.refresh_open_prs(tasks, rep) if self.github.available else ({}, set())
+            )
             for t in list(tasks.values()):
                 if self.state.get(t.id).get("check_run"):
                     continue  # a check run in flight owns this task; don't re-poll it (CG-182)
                 if t.pr and t.status.pr_pending:
+                    if t.product in suppressed_products:
+                        continue
                     try:
-                        self.poll(t, rep)
+                        number = self._pr_number(t)
+                        self.poll(t, rep, observed.get((t.product, number)) if number else None)
                         rep.polled.append(t.id)
                     except Exception as e:  # noqa: BLE001
                         rep.errors.append(f"{t.id}: poll failed: {e}")

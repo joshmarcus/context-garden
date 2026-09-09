@@ -1,7 +1,8 @@
 """Poll: what GitHub says about an open PR (feedback, bot notices, the revision cap, CI, merged, closed)."""
 
+import json
 
-from garden.github import Feedback
+from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status
 from garden.scheduler.report import TickReport
 from tests.scheduler.conftest import statuses
@@ -93,6 +94,146 @@ def test_feedback_triggers_revise_round(sched, fake_github):
     assert len(dm001_prs) == 1  # same PR, no second one
     assert fake_github.comments and "revised per feedback" in fake_github.comments[0]
     assert sched.state.get("DM-001")["revisions"] == 1
+
+
+def test_repository_refresh_reuses_linked_pr_and_deduplicates_feedback_after_restart(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.updated_at = "t2"
+    item = {"id": "comment:41", "kind": "comment", "author": "josh", "body": "please rename it",
+            "created": "2099-01-01T00:00:00Z"}
+    fake_github.feedback[pr.number] = Feedback(items=[item])
+    calls = {"list": 0, "get": 0}
+    original_list, original_get = fake_github.list_open_prs, fake_github.get_pr
+    fake_github.list_open_prs = lambda slug: (calls.__setitem__("list", calls["list"] + 1) or original_list(slug))
+    fake_github.get_pr = lambda slug, number: (calls.__setitem__("get", calls["get"] + 1) or original_get(slug, number))
+
+    sched.tick()
+    # list_open_prs is the repository fetch; FakeGitHub calls get_pr internally to model
+    # its enriched result. Scheduler itself does not issue a second linked-PR lookup.
+    assert calls == {"list": 1, "get": 2}
+    assert sched.state.get("DM-001")["revisions"] == 1
+
+    from garden.scheduler import Scheduler
+    restarted = Scheduler(sched.store, github=fake_github)
+    restarted.tick()
+    assert restarted.state.get("DM-001")["revisions"] == 1
+
+
+def test_first_observation_seeds_linked_pr_feedback_before_existing_cursor(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    # Model an upgrade from the former task cursor: the linked PR exists, while the
+    # repository observation identity set has not been created yet.
+    sched.state.get("__open_prs__")["demo"] = {"prs": []}
+    sched.state.save()
+    pr.updated_at = "t2"
+    historical = {
+        "id": "comment:40", "kind": "comment", "author": "josh",
+        "body": "already handled", "created": "2000-01-01T00:00:00Z",
+    }
+    fake_github.feedback[pr.number] = Feedback(items=[historical])
+
+    sched.tick()
+
+    assert sched.state.get(task.id).get("revisions", 0) == 0
+    observations = sched.state.get("__open_prs__")["demo"]["prs"]
+    row = next(row for row in observations if row["number"] == pr.number)
+    assert "comment:40" in row["feedback_seen"]
+    assert row["feedback_count"] == 0
+
+    pr.updated_at = "t3"
+    current = {
+        "id": "comment:41", "kind": "comment", "author": "josh",
+        "body": "new feedback", "created": "2099-01-01T00:00:00Z",
+    }
+    fake_github.feedback[pr.number] = Feedback(items=[historical, current])
+    sched.tick()
+    assert sched.state.get(task.id)["revisions"] == 1
+
+
+def test_manual_pr_refresh_records_current_head_conflict_without_action(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    task.runner = "manual"
+    sched.store.save(task)
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.head_sha, pr.mergeable, pr.checks, pr.updated_at = "new-head", "CONFLICTING", "FAILURE", "t2"
+    fake_github.feedback[pr.number] = Feedback(items=[{
+        "id": "comment:9", "kind": "comment", "author": "josh", "body": "change this", "created": "t2"
+    }])
+
+    rep = sched.tick()
+    state = sched.state.get(task.id)
+    assert state["head_sha"] == "new-head" and state["mergeable"] == "CONFLICTING"
+    assert state["checks"] == "FAILURE"
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    assert not rep.dispatched and not any("changes_requested" in transition for transition in rep.transitions)
+
+
+def test_open_pr_refresh_keeps_stale_rows_and_recovers_after_transient_error(sched, fake_github):
+    fake_github.prs["outside"] = PRInfo(
+        77, "https://github.com/test/demo/pull/77", "OPEN", "Outside", head_sha="h77",
+        mergeable="MERGEABLE", checks="PENDING"
+    )
+    sched.tick()
+    original = fake_github.list_open_prs
+    fake_github.list_open_prs = lambda slug: (_ for _ in ()).throw(
+        GitHubError("temporary outage")
+    )
+    sched.tick()
+    disk = json.loads(sched.state.path.read_text())["__open_prs__"]["demo"]
+    assert disk["stale"] is True and disk["error"] == "temporary outage"
+    assert any(row["number"] == 77 for row in disk["prs"])
+
+    fake_github.list_open_prs = original
+    sched.tick()
+    recovered = json.loads(sched.state.path.read_text())["__open_prs__"]["demo"]
+    assert recovered["stale"] is False and recovered["error"] == ""
+
+
+def test_rate_limited_repository_refresh_backs_off(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    calls = {"list": 0, "get": 0}
+    original_get = fake_github.get_pr
+
+    def limited(slug):
+        calls["list"] += 1
+        raise GitHubError("429 rate limit exceeded")
+
+    fake_github.list_open_prs = limited
+    fake_github.get_pr = lambda slug, number: (
+        calls.__setitem__("get", calls["get"] + 1) or original_get(slug, number)
+    )
+    sched.tick()
+    sched.tick()
+    assert calls == {"list": 1, "get": 0}
+
+
+def test_successful_open_pr_refresh_falls_back_for_closed_linked_pr(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.state = "CLOSED"
+    calls = 0
+    original_get = fake_github.get_pr
+
+    def counted_get(slug, number):
+        nonlocal calls
+        if number == pr.number:
+            calls += 1
+        return original_get(slug, number)
+
+    fake_github.get_pr = counted_get
+    sched.tick()
+
+    assert calls == 1
+    assert sched.store.task("DM-001").status == Status.FAILED
 
 
 def test_bot_notice_does_not_trigger_revise_but_is_logged(sched, fake_github):

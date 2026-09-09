@@ -141,7 +141,7 @@ class MemoryGitHub:
         return self.prs.get(head_branch)
 
     def list_open_prs(self, slug: str) -> list[PRInfo]:
-        return [pr for pr in self.prs.values() if pr.state == "OPEN"]
+        return [self.get_pr(slug, pr.number) for pr in self.prs.values() if pr.state == "OPEN"]
 
     def set_checks(self, branch: str, state: str, latency: int | None = None) -> None:
         """Arm a PR's checks rollup the way a push does on real GitHub: PENDING for `latency`

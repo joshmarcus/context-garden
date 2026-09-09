@@ -22,6 +22,38 @@ def _stub(monkeypatch, gh: GitHub, reviews, comments, issue_comments, login="jos
     gh.gh = "/usr/bin/gh"
 
 
+def test_rest_feedback_paginates_every_collection(monkeypatch):
+    gh = GitHub(use_gh=False, token="token", trusted_authors=["alice"])
+    paths: list[tuple[str, int]] = []
+
+    def fake_rest(method, path, **kwargs):
+        assert method == "GET"
+        page = kwargs["params"]["page"]
+        paths.append((path, page))
+        if page == 1:
+            return [{"id": i, "user": {"login": "alice"}} for i in range(100)]
+        if path.endswith("/reviews"):
+            return [{"id": 101, "user": {"login": "alice"}, "submitted_at": "2026-09-04T10:00:00Z",
+                     "state": "COMMENTED", "body": "review on page two"}]
+        if path.endswith("/pulls/7/comments"):
+            return [{"id": 102, "user": {"login": "alice"}, "created_at": "2026-09-04T10:01:00Z",
+                     "body": "line comment on page two", "path": "a.py", "line": 3}]
+        return [{"id": 103, "user": {"login": "alice"}, "created_at": "2026-09-04T10:02:00Z",
+                 "body": "issue comment on page two"}]
+
+    monkeypatch.setattr(gh, "_rest", fake_rest)
+    feedback = gh.feedback_since("o/r", 7, "2026-09-04T09:00:00Z")
+
+    assert [item["body"] for item in feedback.items] == [
+        "review on page two", "line comment on page two", "issue comment on page two",
+    ]
+    assert paths == [
+        ("/repos/o/r/pulls/7/reviews", 1), ("/repos/o/r/pulls/7/reviews", 2),
+        ("/repos/o/r/pulls/7/comments", 1), ("/repos/o/r/pulls/7/comments", 2),
+        ("/repos/o/r/issues/7/comments", 1), ("/repos/o/r/issues/7/comments", 2),
+    ]
+
+
 def test_own_login_comments_count_but_garden_marked_ones_do_not(monkeypatch):
     gh = GitHub(use_gh=True, trusted_bots=["ci[bot]"])
     _stub(

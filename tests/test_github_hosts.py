@@ -280,6 +280,161 @@ def test_same_slug_on_two_hosts_keeps_rest_tokens_isolated(monkeypatch):
     ]
 
 
+def test_rest_pr_preserves_explicit_merge_conflict(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    responses = {
+        "/repos/team/repo/pulls/7": {
+            "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+            "state": "open", "mergeable": False,
+            "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
+        },
+        "/repos/team/repo/commits/head-7/check-runs": {"check_runs": []},
+        "/repos/team/repo/commits/head-7/status": {"statuses": []},
+        "/repos/team/repo/pulls/7/reviews": [],
+    }
+    monkeypatch.setattr(github, "_rest", lambda method, path, **kwargs: responses[path])
+
+    assert github.get_pr("team/repo", 7).mergeable == "CONFLICTING"
+
+
+def test_rest_pr_paginates_check_runs_before_computing_rollup(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    pull = {
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "mergeable": True,
+        "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
+    }
+    pages = []
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/check-runs"):
+            page = kwargs["params"]["page"]
+            pages.append(page)
+            if page == 1:
+                return {"total_count": 101, "check_runs": [
+                    {"name": f"pass-{i}", "status": "completed", "conclusion": "success"}
+                    for i in range(100)
+                ]}
+            return {"total_count": 101, "check_runs": [
+                {"name": "late-failure", "status": "completed", "conclusion": "failure"}
+            ]}
+        if path.endswith("/status"):
+            return {"statuses": []}
+        if path.endswith("/reviews"):
+            return []
+        return pull
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    pr = github.get_pr("team/repo", 7)
+    assert pages == [1, 2]
+    assert pr.checks == "FAILURE" and pr.failed_checks == ["late-failure"]
+
+
+@pytest.mark.parametrize("status, expected", [(403, "PERMISSION"), (503, "UNAVAILABLE")])
+def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expected):
+    github = GitHub(use_gh=False, token="scoped-token")
+    pull = {
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "mergeable": True,
+        "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
+    }
+
+    def rest(method, path, **kwargs):
+        if path.endswith(("/check-runs", "/status")):
+            raise GitHubError(f"GET {path}: {status} synthetic failure")
+        if path.endswith("/reviews"):
+            return []
+        return pull
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    assert github.get_pr("team/repo", 7).checks == expected
+
+
+@pytest.mark.parametrize(
+    ("blocked_path", "accessible_path", "accessible_response", "expected", "failed_checks"),
+    [
+        ("/check-runs", "/status", {"statuses": [
+            {"context": "external/validation", "state": "failure"}
+        ]}, "FAILURE", ["external/validation"]),
+        ("/status", "/check-runs", {"check_runs": [
+            {"name": "actions/unit", "status": "completed", "conclusion": "success"}
+        ]}, "SUCCESS", []),
+    ],
+)
+def test_rest_pr_uses_accessible_check_source_when_other_is_forbidden(
+    monkeypatch, blocked_path, accessible_path, accessible_response, expected, failed_checks
+):
+    github = GitHub(use_gh=False, token="scoped-token")
+    pull = {
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "mergeable": True,
+        "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
+    }
+
+    def rest(method, path, **kwargs):
+        if path.endswith(blocked_path):
+            raise GitHubError(f"GET {path}: 403 synthetic failure")
+        if path.endswith(accessible_path):
+            return accessible_response
+        if path.endswith("/reviews"):
+            return []
+        return pull
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    pr = github.get_pr("team/repo", 7)
+    assert pr.checks == expected
+    assert pr.failed_checks == failed_checks
+
+
+def test_rest_pr_combines_commit_statuses_with_check_runs(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    pull = {
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "mergeable": True,
+        "head": {"ref": "feature", "sha": "head-7"}, "base": {"ref": "main"},
+    }
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/check-runs"):
+            return {"check_runs": [
+                {"name": "unit", "status": "completed", "conclusion": "success"}
+            ]}
+        if path.endswith("/status"):
+            return {"statuses": [
+                {"context": "external/validation", "state": "failure"}
+            ]}
+        if path.endswith("/reviews"):
+            return []
+        return pull
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    pr = github.get_pr("team/repo", 7)
+    assert pr.checks == "FAILURE"
+    assert pr.failed_checks == ["external/validation"]
+
+
+def test_rest_open_pr_list_propagates_pr_detail_failure(monkeypatch):
+    github = GitHub(use_gh=False, token="scoped-token")
+    listed = [{
+        "number": 7, "html_url": "https://github.com/team/repo/pull/7",
+        "state": "open", "head": {"ref": "feature"}, "base": {"ref": "main"},
+    }]
+
+    def rest(method, path, **kwargs):
+        if path == "/repos/team/repo/pulls":
+            return listed
+        raise GitHubError(f"GET {path}: 503 synthetic detail failure")
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    with pytest.raises(GitHubError, match="synthetic detail failure"):
+        github.list_open_prs("team/repo")
+
+
 @pytest.mark.parametrize("repo", [
     "acct-1234@forge-one.test:team/repo.git",
     "forge-one.test:team/repo.git",

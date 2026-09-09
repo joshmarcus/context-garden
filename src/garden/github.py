@@ -201,6 +201,12 @@ def is_safe_pr_url(url: str) -> bool:
     )
 
 
+def _check_error_state(exc: GitHubError) -> str:
+    """Represent a failed check-rollup request without implying that no checks exist."""
+    message = str(exc)
+    return "PERMISSION" if " 401 " in message or " 403 " in message else "UNAVAILABLE"
+
+
 # Appended to every comment the garden posts, so its own comments can be told apart from a
 # person's even when both use the same GitHub login. Invisible on GitHub (an HTML comment).
 GARDEN_MARKER = "<!-- context-garden -->"
@@ -334,6 +340,17 @@ class GitHub:
             raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
         return r.json() if r.content else None
 
+    def _rest_pages(self, path: str) -> list[dict[str, Any]]:
+        """Collect every page from a REST list endpoint."""
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            batch = self._rest("GET", path, params={"per_page": 100, "page": page}) or []
+            items.extend(batch)
+            if len(batch) < 100:
+                return items
+            page += 1
+
     def me(self) -> str:
         if self._me is None:
             try:
@@ -407,13 +424,13 @@ class GitHub:
         """Return open pull requests with whatever review/check state is available.
 
         REST's list endpoint omits those details, so enrich its rows independently. A
-        missing permission for one PR's review or check must not make the repository
-        appear empty.
+        missing permission for one PR's review or check is represented by ``get_pr``;
+        failure to fetch the PR itself propagates so callers can retain stale facts.
         """
         if self.gh:
             out = self._gh(
                 "pr", "list", "-R", self._repo(slug), "--state", "open",
-                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,statusCheckRollup,updatedAt,isDraft",
+                "--json", "number,url,state,title,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,statusCheckRollup,updatedAt,isDraft",
                 "--limit", "1000",
             )
             return [
@@ -421,6 +438,7 @@ class GitHub:
                     number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
                     head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                     review_decision=p.get("reviewDecision") or "",
+                    mergeable=p.get("mergeable") or "", head_sha=p.get("headRefOid") or "",
                     checks=_rollup_state(p.get("statusCheckRollup") or []),
                     failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
                     updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
@@ -440,10 +458,7 @@ class GitHub:
         result: list[PRInfo] = []
         for item in listed:
             basic = self._pr_from_rest(item)
-            try:
-                result.append(self.get_pr(slug, basic.number))
-            except GitHubError:
-                result.append(basic)
+            result.append(self.get_pr(slug, basic.number))
         return result
 
     def get_pr(self, slug: str, number: int) -> PRInfo:
@@ -469,14 +484,55 @@ class GitHub:
         info.head_sha = (p.get("head") or {}).get("sha", "")
         info.merge_commit_sha = p.get("merge_commit_sha") or ""
         if info.head_sha:
+            rollup: list[dict[str, Any]] = []
+            check_errors: list[GitHubError] = []
             try:
-                runs = self._rest("GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs", params={"per_page": 100}) or {}
-                rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"), "state": c.get("status")}
-                          for c in runs.get("check_runs", [])]
+                check_runs: list[dict[str, Any]] = []
+                page = 1
+                while True:
+                    runs = self._rest(
+                        "GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs",
+                        params={"per_page": 100, "page": page},
+                    ) or {}
+                    batch = runs.get("check_runs", [])
+                    check_runs.extend(batch)
+                    total = int(runs.get("total_count") or 0)
+                    if len(batch) < 100 or (total and len(check_runs) >= total):
+                        break
+                    page += 1
+                rollup.extend(
+                    {"name": check.get("name"), "conclusion": check.get("conclusion"),
+                     "state": check.get("status")}
+                    for check in check_runs
+                )
+            except GitHubError as exc:
+                check_errors.append(exc)
+            try:
+                statuses: list[dict[str, Any]] = []
+                page = 1
+                while True:
+                    combined = self._rest(
+                        "GET", f"/repos/{slug}/commits/{info.head_sha}/status",
+                        params={"per_page": 100, "page": page},
+                    ) or {}
+                    batch = combined.get("statuses", [])
+                    statuses.extend(batch)
+                    total = int(combined.get("total_count") or 0)
+                    if len(batch) < 100 or (total and len(statuses) >= total):
+                        break
+                    page += 1
+                rollup.extend(
+                    {"name": status.get("context"), "state": status.get("state")}
+                    for status in statuses
+                )
+            except GitHubError as exc:
+                check_errors.append(exc)
+            if rollup or not check_errors:
                 info.checks = _rollup_state(rollup)
                 info.failed_checks = _rollup_failed(rollup)
-            except GitHubError:
-                pass
+            else:
+                states = [_check_error_state(exc) for exc in check_errors]
+                info.checks = "PERMISSION" if "PERMISSION" in states else "UNAVAILABLE"
         try:
             reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
             latest: dict[str, str] = {}
@@ -496,7 +552,8 @@ class GitHub:
         return PRInfo(
             number=p["number"], url=p["html_url"], state=state, title=p.get("title", ""),
             head=p.get("head", {}).get("ref", ""), base=p.get("base", {}).get("ref", ""),
-            mergeable=("MERGEABLE" if p.get("mergeable") else "") if p.get("mergeable") is not None else "",
+            mergeable=("MERGEABLE" if p.get("mergeable") else "CONFLICTING")
+            if p.get("mergeable") is not None else "",
             updated_at=p.get("updated_at", ""), is_draft=bool(p.get("draft")), node_id=str(p.get("node_id") or ""),
         )
 
@@ -561,9 +618,9 @@ class GitHub:
             comments = json.loads(self._gh("api", f"repos/{slug}/pulls/{number}/comments", "--paginate") or "[]")
             issue_comments = json.loads(self._gh("api", f"repos/{slug}/issues/{number}/comments", "--paginate") or "[]")
         else:
-            reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
-            comments = self._rest("GET", f"/repos/{slug}/pulls/{number}/comments", params={"per_page": 100}) or []
-            issue_comments = self._rest("GET", f"/repos/{slug}/issues/{number}/comments", params={"per_page": 100}) or []
+            reviews = self._rest_pages(f"/repos/{slug}/pulls/{number}/reviews")
+            comments = self._rest_pages(f"/repos/{slug}/pulls/{number}/comments")
+            issue_comments = self._rest_pages(f"/repos/{slug}/issues/{number}/comments")
         for r in reviews:
             author = r.get("user", {}).get("login", "")
             created = r.get("submitted_at", "") or ""
@@ -571,20 +628,20 @@ class GitHub:
             state = r.get("state", "")
             if state == "CHANGES_REQUESTED" and newer(created) and author not in exclude:
                 if not untrusted(author, created, body or "(changes requested)"):
-                    items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created,
-                                  "id": r.get("id"), "commit_id": r.get("commit_id")})
+                    items.append({"id": f"review:{r.get('id', '')}", "kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created,
+                                  "commit_id": r.get("commit_id")})
             elif keep(author, created, body) and not untrusted(author, created, body):
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": created, "reason": "notice"})
                 else:
-                    items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created,
-                                  "id": r.get("id"), "commit_id": r.get("commit_id")})
+                    items.append({"id": f"review:{r.get('id', '')}", "kind": "review", "state": state, "author": author, "body": body, "created": created,
+                                  "commit_id": r.get("commit_id")})
         for c in comments:
             author = c.get("user", {}).get("login", "")
             if keep(author, c.get("created_at", ""), c.get("body", "")) and not untrusted(author, c["created_at"], c["body"]):
                 # a comment on a diff line always points at code, notice or not
-                items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"],
-                              "id": c.get("id"), "commit_id": c.get("commit_id") or c.get("original_commit_id")})
+                items.append({"id": f"line:{c.get('id', '')}", "kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"],
+                              "commit_id": c.get("commit_id") or c.get("original_commit_id")})
         for c in issue_comments:
             author = c.get("user", {}).get("login", "")
             body = c.get("body", "")
@@ -592,8 +649,7 @@ class GitHub:
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": c["created_at"], "reason": "notice"})
                 else:
-                    items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"],
-                                  "id": c.get("id")})
+                    items.append({"id": f"comment:{c.get('id', '')}", "kind": "comment", "author": author, "body": body, "created": c["created_at"]})
         items.sort(key=lambda i: i.get("created", ""))
         ignored.sort(key=lambda i: i.get("created", ""))
         return Feedback(items=items, ignored=ignored)
@@ -957,4 +1013,6 @@ def _rollup_state(rollup: list[dict[str, Any]]) -> str:
         return "FAILURE"
     if any(s in ("", "PENDING", "IN_PROGRESS", "QUEUED", "EXPECTED", "WAITING") for s in states):
         return "PENDING"
-    return "SUCCESS"
+    if states <= {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+        return "SUCCESS"
+    return "UNKNOWN"
