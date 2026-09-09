@@ -64,16 +64,19 @@ def _summary(samples: list[float]) -> dict[str, float]:
     return {"median_ms": round(statistics.median(samples), 1), "max_ms": round(max(samples), 1)}
 
 
-def _server(root: Path, repeats: int) -> dict[str, dict[str, float]]:
-    client = TestClient(create_app(Store(root), watch=False, host="testserver"))
+def _server(root: Path, repeats: int, *, cache_discovery: bool) -> dict[str, dict[str, float]]:
     output = {}
     for route in ROUTES:
+        app = create_app(Store(root), watch=False, host="testserver")
+        client = TestClient(app)
         cold_start = time.perf_counter()
         response = client.get(route)
         response.raise_for_status()
         cold = (time.perf_counter() - cold_start) * 1000
         warm = []
         for _ in range(repeats):
+            if not cache_discovery:
+                app.state.hub._page_store.invalidate_tasks()
             started = time.perf_counter()
             response = client.get(route)
             response.raise_for_status()
@@ -82,34 +85,48 @@ def _server(root: Path, repeats: int) -> dict[str, dict[str, float]]:
     return output
 
 
-def _browser(root: Path, repeats: int) -> dict[str, dict[str, float]]:
+def _navigation(page, url: str) -> dict[str, float]:
+    page.goto(url, wait_until="domcontentloaded")
+    return page.evaluate("""() => { const n = performance.getEntriesByType('navigation')[0]; return {
+        response_ms: n.responseEnd - n.requestStart,
+        render_ms: n.domContentLoadedEventEnd - n.responseEnd,
+        total_ms: n.domContentLoadedEventEnd - n.startTime,
+    }}""")
+
+
+def _browser(root: Path, repeats: int, *, cache_discovery: bool) -> dict[str, dict[str, object]]:
     from playwright.sync_api import sync_playwright
 
-    app = create_app(Store(root), watch=False, host="127.0.0.1", port=8799)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8799, log_level="error"))
-    thread = threading.Thread(target=server.run)
-    thread.start()
-    while not server.started:
-        time.sleep(0.01)
     output = {}
-    try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            page = browser.new_page()
-            for route in ROUTES:
-                samples = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        for port, route in enumerate(ROUTES, start=8799):
+            app = create_app(Store(root), watch=False, host="127.0.0.1", port=port)
+            server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+            thread = threading.Thread(target=server.run)
+            thread.start()
+            while not server.started:
+                time.sleep(0.01)
+            try:
+                url = f"http://127.0.0.1:{port}{route}"
+                cold = _navigation(page, url)
+                warm = []
                 for _ in range(repeats):
-                    page.goto(f"http://127.0.0.1:8799{route}", wait_until="domcontentloaded")
-                    samples.append(page.evaluate("""() => { const n = performance.getEntriesByType('navigation')[0]; return {
-                        response_ms: n.responseEnd - n.requestStart,
-                        render_ms: n.domContentLoadedEventEnd - n.responseEnd,
-                        total_ms: n.domContentLoadedEventEnd - n.startTime,
-                    }}"""))
-                output[route] = {key: round(statistics.median([s[key] for s in samples]), 1) for key in samples[0]}
-            browser.close()
-    finally:
-        server.should_exit = True
-        thread.join()
+                    if not cache_discovery:
+                        app.state.hub._page_store.invalidate_tasks()
+                    warm.append(_navigation(page, url))
+                output[route] = {
+                    "cold": {key: round(value, 1) for key, value in cold.items()},
+                    "warm": {key: round(statistics.median([sample[key] for sample in warm]), 1) for key in cold},
+                }
+            finally:
+                # `/now` holds an SSE connection open. Leave the page before asking its
+                # isolated server to drain so a cold sample cannot stall the benchmark.
+                page.goto("about:blank")
+                server.should_exit = True
+                thread.join()
+        browser.close()
     return output
 
 
@@ -124,9 +141,14 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="garden-web-benchmark-") as tmp:
         root = Path(tmp)
         _fixture(root, args.tasks, args.runs, args.events)
-        result = {"fixture": vars(args), "server": _server(root, args.repeats)}
-        if args.browser:
-            result["browser"] = _browser(root, args.repeats)
+        result: dict[str, object] = {"fixture": vars(args)}
+        for label, cache_discovery in (("before", False), ("after", True)):
+            measurements: dict[str, object] = {
+                "server": _server(root, args.repeats, cache_discovery=cache_discovery),
+            }
+            if args.browser:
+                measurements["browser"] = _browser(root, args.repeats, cache_discovery=cache_discovery)
+            result[label] = measurements
         print(json.dumps(result, indent=2))
 
 
