@@ -104,8 +104,10 @@ def test_old_branch_can_explicitly_opt_in_to_known_stress(tmp_path):
     ["uv", "run", "pytest"],
     ["tox"],
     ["make", "test"],
+    ["./scripts/test"],
+    [sys.executable, "project_test.py"],
 ])
-def test_indirect_validation_launcher_is_blocked_before_execution(tmp_path, command):
+def test_unproven_validation_launcher_is_blocked_before_execution(tmp_path, command):
     repo = _checkout(tmp_path, "old")
 
     with pytest.raises(ValidationPolicyError, match="cannot be proven non-pytest"):
