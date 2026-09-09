@@ -1157,6 +1157,39 @@ def test_external_take_persists_pr_identity_and_can_finish_blocked(garden):
     assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
 
 
+def test_take_pr_refuses_identity_replacement_while_a_review_run_is_active(garden, fake_github, monkeypatch):
+    """`take --pr` must not replace an identity owned by an active non-worker run."""
+    import garden.cli.loop as loop
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.branch = "operator/current"
+    task.pr = "https://github.com/test/demo/pull/11"
+    store.save(task)
+    sched = Scheduler(store, github=fake_github)
+    sched.state.get(task.id).update({"pr_number": 11, "head_sha": "current-head"})
+    sched.state.save()
+    review = RunStore(garden / ".garden").new_run(task.id, "local", mode="review")
+    review.status = "running"
+    review.save()
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    monkeypatch.setattr(fake_github, "get_pr", lambda *_: pytest.fail("conflicting attachment was looked up"))
+
+    result = run(garden, "take", task.id, "--pr", "https://github.com/test/demo/pull/12")
+
+    assert result.exit_code == 1
+    assert "active run" in result.output
+    reloaded = Store(garden).task(task.id)
+    assert reloaded.branch == "operator/current" and reloaded.pr.endswith("/11")
+    state = Scheduler(Store(garden)).state.get(task.id)
+    assert state["pr_number"] == 11 and state["head_sha"] == "current-head"
+
+
 @pytest.mark.parametrize("url", [
     "https://gitlab.com/test/demo/pull/1",
     "https://github.com/other/demo/pull/1",
@@ -1226,7 +1259,6 @@ def test_take_accepts_an_enterprise_pr_on_the_configured_host(garden, fake_githu
     monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
     monkeypatch.setattr(fake_github, "get_pr", lambda slug, number: PRInfo(
         number=number, url="https://forge-one.test/test/demo/pull/71", state="OPEN",
-<<<<<<< HEAD
         head="operator/work", head_sha="verified-head", base="main", head_repo="test/demo",
     ))
 
