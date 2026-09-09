@@ -30,6 +30,7 @@ from ..review import (
     visual_source_digest,
 )
 from ..runs import Run
+from .feedback import merge_pending_feedback, remember_pending_feedback
 from .report import TickReport
 from .resources import ResourcePressureError
 
@@ -1162,6 +1163,12 @@ class ReviewMixin:
                       f"automated review produced no verdict ({run.error[:120] or run.status}){cost}", task.pr or "")
             rep.transitions.append(f"{task.id} review failed")
             return True
+        review_head = str((run.env_snapshot or {}).get("review_head") or "")
+        parts = remember_pending_feedback(st, review_head)
+        st["pending_feedback_sources"] = {
+            "head": review_head, "parts": parts,
+            "rendered": str(st.get("pending_feedback") or "").strip(),
+        }
         st["last_review"] = review
         st["last_review_run"] = run.run_id
         st["last_review_head"] = str((run.env_snapshot or {}).get("review_head") or "")
@@ -1201,7 +1208,14 @@ class ReviewMixin:
             current_head = str(st.get("head_sha") or "")
             if not reconciled_head or not current_head or reconciled_head == current_head:
                 st.pop("no_change_reconciliation", None)
-        if task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE):
+        if verdict == "approve":
+            merge_pending_feedback(st, review_head, "review", "")
+            if (task.status == Status.CHANGES_REQUESTED and not st.get("pending_feedback")
+                    and not st.get("needs_human")):
+                self._transition(task, Status.IN_REVIEW, "current review resolved the pending review findings")
+        if task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.CHANGES_REQUESTED):
+            # CI can already have queued this revision while its review was still running.
+            already_queued = task.status == Status.CHANGES_REQUESTED
             # Only the description is wrong (no blocking finding) and the reviewer supplied the
             # corrected body: apply it directly instead of spending a revise round on wording.
             # This applies whether the code itself was approved or sent back.
@@ -1214,9 +1228,6 @@ class ReviewMixin:
                           f"automated review: {verdict} (description rewritten){cost}", task.pr or "")
                 return True
             if verdict == "request_changes":
-                if repeated and bool(self.cfg.get("stall.enabled", True)):
-                    self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
-                    return True
                 fb = feedback_from_review(
                     review, run_id=run.run_id,
                     source_head=str(run.env_snapshot.get("review_head") or ""),
@@ -1224,13 +1235,23 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb and bool(self.cfg.get("auto_revise", True)):
+                if fb:
                     st.setdefault("review_feedback_history", []).append(fb)
-                    st["pending_feedback"] = fb
-                    st["pending_feedback_easy"] = review_is_description_only(review)
+                    merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
+                    st["pending_feedback_easy"] = review_is_description_only(review) and not already_queued
                     st.pop("pending_feedback_rebase", None)
                     st.pop("review_fix_reasked", None)
-                    self._transition(task, Status.CHANGES_REQUESTED, f"automated review requested changes: {review.get('summary', '')}{cost}")
+                    if repeated and bool(self.cfg.get("stall.enabled", True)):
+                        self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
+                        return True
+                    manual_handoff = not bool(self.cfg.get("auto_revise", True))
+                    if manual_handoff and not st.get("needs_human"):
+                        self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
+                    if already_queued and (not manual_handoff or st.get("needs_human")):
+                        return True
+                    self._transition(task, Status.CHANGES_REQUESTED,
+                                     f"automated review requested changes: {review.get('summary', '')}{cost}",
+                                     needs_human=manual_handoff)
                     rep.transitions.append(f"{task.id} -> changes_requested (review)")
                     return True
             elif verdict == "approve" and description_only:
@@ -1244,12 +1265,18 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb and bool(self.cfg.get("auto_revise", True)):
-                    st["pending_feedback"] = fb
-                    st["pending_feedback_easy"] = True
+                if fb:
+                    merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
+                    st["pending_feedback_easy"] = not already_queued
                     st.pop("pending_feedback_rebase", None)
+                    manual_handoff = not bool(self.cfg.get("auto_revise", True))
+                    if manual_handoff and not st.get("needs_human"):
+                        self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
+                    if already_queued and (not manual_handoff or st.get("needs_human")):
+                        return True
                     self._transition(task, Status.CHANGES_REQUESTED,
-                                      f"automated review approved but flagged the description: {review.get('description_feedback', '') or review.get('summary', '')}{cost}")
+                                      f"automated review approved but flagged the description: {review.get('description_feedback', '') or review.get('summary', '')}{cost}",
+                                      needs_human=manual_handoff)
                     rep.transitions.append(f"{task.id} -> changes_requested (description round)")
                     return True
         task.log(f"automated review: {verdict} — {review.get('summary', '')}{cost}")

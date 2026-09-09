@@ -546,6 +546,7 @@ class DispatchMixin:
             else:
                 st["revisions"] = int(st.get("revisions", 0)) + 1
             st["pending_feedback"] = ""
+            st.pop("pending_feedback_sources", None)
             st.pop("pending_feedback_easy", None)
         elif mode == "rebase":
             # A rebase round has its own counter and never touches max_revisions.
