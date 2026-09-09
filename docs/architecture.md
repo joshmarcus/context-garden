@@ -101,6 +101,7 @@ of the loop touch different files.
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
 | `scheduler/edits.py` | the edit run that folds pending suggestions into a task body |
 | `scheduler/kickoff.py` | the phase kickoff run: dispatches or synchronously files design gaps, goal gaps, owner questions and stale-doc findings |
+| `scheduler/feedback.py` | current-head composition of review, CI and PR-comment feedback, preserving operator handoffs and replacing only the resolving producer |
 | `scheduler/poll.py` | `poll`: merged, closed, triage on GitHub, feedback, CI; the automerge gate; stacking, restack and conflicts |
 | `scheduler/rebase.py` | rebase as its own mode: mechanical first, an agent only on a real conflict, verdict kept when the diff is unchanged, the automerge queue |
 | `scheduler/queue.py` | the one writer of the merge queue's `state.json` facts (`automerge_candidate`, `automerge_ready_at`, `merge_head`, `automerge_blocked`): `_queue_join` / `_queue_head` / `_queue_drop_head` / `_queue_leave` / `_queue_hold`; the tracked source-grep test `tests/test_queue_state.py` asserts no other module writes them (CG-202) |
@@ -131,7 +132,7 @@ of the loop touch different files.
 | `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now (`/now`, `garden now`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
-| `gitops.py`, `github.py` | git worktrees and pushes; pull requests through `gh` or the REST API |
+| `gitops.py`, `canonical.py`, `github.py` | git worktrees and pushes; fenced in-place checkout leases and reconciliation; pull requests through `gh` or the REST API |
 | `kickoff.py` | the kickoff brief and verdict parsing |
 | `planner.py`, `plants.py`, `notify.py`, `host_identity.py`, `upgrade.py`, `config.py` | the planning prompt and import; the botanical drawings; `notify.command`; host-alias and shared-text redaction boundary; the pinned install; configuration layering |
 | `web/app.py`, `web/common.py`, `web/trust.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md` and the origin check on POSTs |
@@ -159,6 +160,25 @@ Git is the database. The split between the four stores is deliberate.
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
 `repos/` (clones of products given as URLs), `trials.jsonl` (model trial records), and
 `reservations.json` (durable id reservations, below).
+
+A product may opt into a provisioned canonical checkout instead of per-task worktrees:
+
+```yaml
+products:
+  widget:
+    checkout:
+      strategy: in_place
+      root: /srv/checkouts/widget       # local runner; SSH uses the host's repos entry
+      reconcile_command: ./prepare-run # optional, runs before every run
+      reconcile_timeout_seconds: 300
+```
+
+This mode is deliberately exclusive. A durable per-checkout lease covers worker, review,
+check and auxiliary sessions across scheduler restarts. Before switching from the configured
+base to the assigned task branch, the garden refuses dirty files, an unrelated branch, a
+symlinked root, or the controller checkout. Reconciliation is bounded, uses the scrubbed
+worker environment, and is followed by a fresh clean-tree/branch readiness check. The
+default remains linked worktrees.
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 
@@ -346,9 +366,13 @@ candidate is skipped when no worker slot is free (`max_parallel` minus active wo
 review and persona runs use their separate `review_parallel` pool), when its phase is over budget, or when
 its runner is `manual` (a person takes those with `garden take`).
 
-When configured, local admission is also host-wide: `resources.max_parallel` counts workers,
-reviews, personas and checks together, including automatic base probes and direct CLI dispatches.
-The default `null` preserves the separate worker and review pools described above.
+When configured, local admission is also host-wide: `resources.max_parallel` is a capacity-unit budget shared
+by workers, reviews, personas and checks, including automatic base probes and direct CLI
+dispatches. The default `null` preserves the separate worker and review pools described above.
+Each product may set `products.<name>.resources.weight` to a positive integer;
+it inherits `resources.weight` (default one unit). First-fit admission lets cheaper work use
+remaining units beside heavier work, while `resources.max_bypasses` bounds how often an older
+heavy run may be passed before capacity is reserved for it.
 Optional available-memory and work-dir temp-free thresholds defer every new local launch.
 The capacity check and new running record are published under one filesystem lock, so a
 service action and concurrent CLI commands cannot all claim the final slot.
@@ -502,8 +526,15 @@ files under `tasks/` must not be hand-edited.
     resolution, or a rebase that folds the branch's own commit away as already-applied
     elsewhere.
   - **Automerge is a queue that keeps its head.** Approved candidates are ordered
-    oldest-approved-first; only the head is rebased, checked and merged, and the next candidate
-    is taken once the head is off the queue. A branch already on the base's tip is merged as it
+    oldest-approved-first; only the head is processed, and the next candidate is fetched once the
+    head is off the queue. By default (`github.automerge_require_current_base: true`) the head is
+    rebased, checked and merged. A product may set `automerge_require_current_base: false` to merge
+    a clean, mergeable PR at its already-approved exact head without rewriting it merely because
+    the base advanced. The queue still fetches GitHub again immediately before the merge, requires
+    successful checks and the same reviewed head, and sends that head SHA as an atomic merge guard;
+    a new conflict, unknown mergeability, pending/failed checks or a changed head stops the merge.
+    Candidates remain strictly serial so the next PR is checked against the base produced by the
+    preceding merge. With the default policy, a branch already on the base's tip is merged as it
     stands — not rebased or pushed. A rebase that has to move the branch restarts its rollup, so
     the head goes **in flight** (`merge_head`, holding its `automerge_ready_at`): the queue does
     not pick another head while one is in flight, and it merges the head the moment the rollup
@@ -677,6 +708,9 @@ hand a held reload's executable fields a route around the gate.
 
 Every automatic loop has a bound here: `max_attempts`, `max_revisions`,
 `review.max_rounds`, `timeout_minutes`, `idle_kill_minutes`, `budgets`, `stall.enabled`.
+`products.<name>.timeout_minutes` overrides the worker, revision and review execution budget
+for that product and otherwise inherits the top-level value. Check commands remain governed
+separately by `checks.timeout_seconds`.
 `review.max_rounds` defaults to two but accepts a positive cap or `null` for unlimited review
 rounds; its separate `review.friction_after` threshold emits one non-blocking loop record.
 Stall handling still stops unchanged paid attempts.

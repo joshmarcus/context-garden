@@ -27,7 +27,7 @@ from .. import gitops
 from ..events import EventLog
 from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, repo_slug_from_remote
 from ..harness import DIFFICULTIES
-from ..model import Status, Task
+from ..model import Status, Task, now_iso
 from ..notify import notify, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
@@ -190,9 +190,10 @@ class Scheduler(
             cfg["_product"] = task.product
         else:
             cfg = {}
-        cfg.setdefault("timeout_minutes", self.cfg.get("timeout_minutes", 90))
+        cfg["timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
         cfg["work_dir"] = str(self.cfg.work_dir)
         cfg["setup"] = self.cfg.product_setup(task.product)  # how this product prepares its env
+        cfg["checkout"] = self.cfg.product_checkout(task.product)
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         cfg["resources"] = dict(self.cfg.get("resources") or {})  # supervisor lease and cgroup boundary
         # A private class may be selected only from operator configuration.  Preserve the
@@ -267,10 +268,77 @@ class Scheduler(
         return gitops.ensure_repo(Path(repo), self.cfg.repos_dir, git_name, git_email)
 
     def worktree_for(self, task: Task) -> Path:
+        from ..canonical import configured_root
+
+        canonical = configured_root(self.cfg.product_checkout(task.product), self.store.root)
+        if canonical is not None:
+            return canonical
         override = self.state.get(task.id).get("worktree")
         if override:
             return Path(override)
         return self.cfg.worktree_path(task.id)
+
+    def prepare_canonical_run(self, task: Task, run: Run, runner: Runner, branch: str, base: str) -> Path | None:
+        """Claim and reconcile an in-place checkout for any execution mode."""
+        from ..canonical import claim, configured_root, preflight, reconcile
+        from ..runner.base import scrubbed_env
+
+        checkout = self.cfg.product_checkout(task.product)
+        if runner.remote and str(checkout.get("strategy") or "worktree") == "in_place":
+            # A process that exited is still an owner until its result has passed collection
+            # and fence/preservation processing.  ``active`` covers the former interval;
+            # ``unreaped`` covers a restart after finalize's terminal save but before the task
+            # transition completed.  The next remote claim may recover the durable lease only
+            # after neither source names its owner.
+            if runner.name == "ssh" and not run.host:
+                runner.assign(run, [item for item in self.active_runs() if item.run_id != run.run_id])
+                run.save()
+            protected_runs = {item.run_id: item for item in self.runs.active()}
+            unreaped_ids = self.unreaped_run_ids()
+            protected_runs.update(
+                (item.run_id, item) for item in self.runs.all_runs()
+                if item.run_id in unreaped_ids
+            )
+            identity = runner.canonical_checkout_identity(run)
+            if identity is not None:
+                run.env_snapshot["canonical_checkout_identity"] = identity
+                run.save()
+            run.env_snapshot["canonical_active_run_ids"] = sorted(
+                item.run_id for item in protected_runs.values()
+                if item.run_id != run.run_id
+                and (identity is None
+                     or item.env_snapshot.get("canonical_checkout_identity") == identity)
+            )
+            run.save()
+            return None
+        root = configured_root(checkout, self.store.root) if not runner.remote else None
+        if root is None:
+            return None
+        # Publish the concrete checkout identity before consulting the durable run store.
+        # Another scheduler may be preparing a run concurrently; without this save it sees
+        # an active owner with no path, mistakes the lease for stale, and reclaims it.
+        run.worktree = str(root)
+        run.save()
+        active_ids = {
+            item.run_id for item in self.runs.active()
+            if item.run_id != run.run_id and item.worktree
+            and Path(item.worktree).resolve() == root.resolve()
+        }
+        try:
+            claim(root, run.run_id, active_ids)
+            preflight(root, branch, base)
+            reconcile(root, checkout, scrubbed_env(runner.config, self.cfg.product_setup(task.product), worktree=root),
+                      run.path / "reconcile.log")
+            preflight(root, branch, base)
+        except Exception:
+            from ..canonical import release
+
+            release(root, run.run_id)
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.save()
+            raise
+        return root
 
     def check_ctx(self, task: Task, branch: str, base: str, worktree: Path | None = None) -> dict[str, Any]:
         """Context passed to check commands as GARDEN_* env vars. `exec_root` (GARDEN_EXEC_ROOT)
@@ -411,6 +479,7 @@ class Scheduler(
             # a decision on the Inbox, the Board or the task page.
             for k in ("needs_human", "pending_feedback"):
                 changed = st.pop(k, None) is not None or changed
+            changed = self._retire_terminal_review_recovery(task) or changed
             changed = self._retire_terminal_check(task) or changed
             changed = self._queue_leave(task) or changed
         elif status != Status.IN_REVIEW:

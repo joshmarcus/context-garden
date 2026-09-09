@@ -787,27 +787,55 @@ class HumanMixin:
             pr = self.github.get_pr(slug, pr_number)
         except (GitHubError, KeyError) as e:
             refuse(f"could not read external PR: {e}")
+        if pr.url.rstrip("/") != url.rstrip("/"):
+            refuse("external PR URL does not match the provider identity in the configured repository")
         if not run.branch or pr.head != run.branch:
             refuse(
                 f"external PR head {pr.head!r} does not match claimed branch {run.branch!r}; "
                 "claim it again with `garden take ID --pr URL`"
             )
+        claimed_repository = str(run.env_snapshot.get("external_repository") or "")
+        if claimed_repository and claimed_repository.lower() != slug.lower():
+            refuse("configured repository changed since the external PR was claimed")
+        claimed_base = str(run.env_snapshot.get("external_base") or "")
+        if claimed_base and pr.base != claimed_base:
+            refuse(f"external PR base moved from {claimed_base!r} to {pr.base!r}")
+        claimed_head = str(run.env_snapshot.get("external_head_sha") or "")
+        if claimed_head and pr.head_sha != claimed_head:
+            refuse("external PR head moved since it was claimed; take it again to authorize the new source")
+        if pr.base != self.final_base_for(task):
+            refuse(
+                f"external PR base {pr.base!r} does not match configured final base "
+                f"{self.final_base_for(task)!r}"
+            )
         if pr.state == "MERGED":
-            head = pr.head_sha or f"origin/{pr.head}"
+            head = pr.head_sha
+            merge_commit = pr.merge_commit_sha
+            if not head or not merge_commit:
+                refuse("merged external PR is missing immutable head or merge commit metadata")
             try:
                 repo = self.repo_for(task)
-                gitops.fetch(repo)
-                merged = gitops.is_ancestor(repo, head, gitops.base_ref(repo, self.final_base_for(task)))
+                if not gitops.fetch(repo):
+                    refuse("could not fetch the configured repository")
+                final_base = gitops.base_ref(repo, self.final_base_for(task))
+                merge_in_base = gitops.is_ancestor(repo, merge_commit, final_base)
+                source_in_merge = gitops.is_ancestor(repo, head, merge_commit)
+                equivalent = source_in_merge or self._rewritten_pr_is_equivalent(
+                    repo, head, merge_commit, final_base
+                )
             except gitops.GitError as e:
-                refuse(f"could not verify merged PR ancestry: {e}")
-            if not merged:
-                refuse(f"merged PR head {head} is not included in final base {self.final_base_for(task)}")
+                refuse(f"could not verify merged PR provenance: {e}")
+            if not merge_in_base:
+                refuse(f"merged PR commit {merge_commit} is not included in final base {self.final_base_for(task)}")
+            if not equivalent:
+                refuse(f"merged PR source {head} does not match the result at {merge_commit}")
         elif pr.state != "OPEN":
             refuse(f"external PR is {pr.state.lower()}, not open or merged")
         st = self.state.get(task.id)
         task.pr, task.branch = pr.url, pr.head
         st.update({"pr_number": pr.number, "pr_state": pr.state, "pr_base": pr.base,
-                   "head_sha": pr.head_sha, "checks": pr.checks,
+                   "head_sha": pr.head_sha, "merge_commit_sha": pr.merge_commit_sha,
+                   "checks": pr.checks,
                    "failed_checks": pr.failed_checks, "review_decision": pr.review_decision})
         ManualRunner.finish(run, {**result, "pr": pr.url})
         run.result = {**result, "pr": pr.url}
@@ -830,3 +858,23 @@ class HumanMixin:
             self._maybe_review(task, run, rep)
         self.state.save()
         return rep
+
+    @staticmethod
+    def _rewritten_pr_is_equivalent(repo: Path, head: str, merge_commit: str,
+                                    final_base: str) -> bool:
+        """Prove squash/rebase output has the same aggregate patch as the PR source."""
+        source_base = gitops.git("merge-base", head, final_base, cwd=repo).strip()
+        source_patch = gitops.patch_id_between(repo, source_base, head)
+        if not source_patch:
+            return False
+        # A squash has one rewritten commit. A rebase has as many first-parent commits as
+        # the source range; comparing both candidates also supports a one-commit rebase.
+        count = int(gitops.git("rev-list", "--count", f"{source_base}..{head}", cwd=repo).strip())
+        candidates = [f"{merge_commit}^", f"{merge_commit}~{count}"]
+        for base in dict.fromkeys(candidates):
+            try:
+                if gitops.patch_id_between(repo, base, merge_commit) == source_patch:
+                    return True
+            except gitops.GitError:
+                continue
+        return False

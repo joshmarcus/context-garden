@@ -22,6 +22,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
+from ..preflight import _is_ui_path as _is_preflight_ui_path
 from ..preflight import capture_infrastructure_reason, mechanical_results
 from ..review import validation_plan, visual_source_digest
 from ..runs import Run
@@ -35,9 +36,8 @@ _EVENT_STAGE = {"base_probe": "base_probe", "ci": "ci"}
 
 
 def _is_ui_path(path: str) -> bool:
-    """Files whose rendered result must be inspected before a PR opens."""
-    return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
-            or path.endswith((".css", ".scss")))
+    """Compatibility wrapper for the shared mechanical UI classifier."""
+    return _is_preflight_ui_path(path)
 
 
 class CheckRunMixin:
@@ -75,7 +75,7 @@ class CheckRunMixin:
     def _dispatch_check_run(self, task: Task, *, worktree: Path, branch: str, base: str,
                             specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport,
                             extra: dict[str, Any] | None = None, retries: int = 0,
-                            backend: str = "", provenance: str = "") -> Run:
+                            backend: str = "", provenance: str = "", source_head: str = "") -> Run:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
         reap resumes. The task shows it on its page, but it does not consume a worker slot.
         `extra` adds
@@ -92,6 +92,14 @@ class CheckRunMixin:
         run = (self.runs.new_run(task.id, runner_name, mode="check")
                if runner_name == "remote" else self._new_local_run(task.id, "check", f"{stage} check"))
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
+        if stage == "ci":
+            run.env_snapshot["ci_head"] = str(cont.get("head") or "")
+        # A base probe is about one exact merge-base commit, not whichever task branch a
+        # remote worker happens to have checked out. Keep that source identity durable so a
+        # retry/claim cannot substitute a moving ref.
+        run.source_head = source_head
+        run.env_snapshot.update({"product": task.product, "execution_timeout_minutes": 0,
+                                 "resource_weight": self.cfg.product_resource_weight(task.product)})
         run.save()
         evidence = self.state.get(task.id).setdefault("required_evidence", {})
         for item in required_evidence(task.body, task.extra.get("requires")):
@@ -136,6 +144,10 @@ class CheckRunMixin:
                    **(extra or {})}
         # A CI analyser may have no worktree; launch the process somewhere that exists.
         launch_cwd = worktree if worktree.exists() else run.path
+        canonical = self.prepare_canonical_run(task, run, runner, branch, base)
+        if canonical is not None:
+            launch_cwd = canonical
+            run.worktree = str(canonical)
         run.save()
         runner.start_checks(run, launch_cwd, payload)
         st = self.state.get(task.id)
@@ -340,11 +352,18 @@ class CheckRunMixin:
         """Whether the check runner failed before it produced a usable check verdict."""
         if run.status == "timeout" or not results:
             return True
-        return any("check did not finish (killed" in str(result.get("summary") or "")
-                   or "check run produced no results" in str(result.get("summary") or "")
-                   or "check execution timed out" in str(result.get("summary") or "")
-                   or "check execution did not complete" in str(result.get("summary") or "")
-                   for result in results)
+        for index, result in enumerate(results):
+            summary = str(result.get("summary") or "")
+            if ("check did not finish (killed" in summary
+                    or "check run produced no results" in summary
+                    or "check execution timed out" in summary
+                    or "check execution did not complete" in summary):
+                return True
+            # The branch controls ordinary check output, so recovery requires both the
+            # generated wrapper position and its wrapper-authored protocol metadata.
+            if CheckRunMixin._trusted_capture_protocol_mismatch(run, result, index):
+                return True
+        return False
 
     @staticmethod
     def _trusted_generated_ui_result(run: Run, index: int) -> bool:
@@ -353,6 +372,18 @@ class CheckRunMixin:
         return (isinstance(raw, list)
                 and index in {value for value in raw
                               if isinstance(value, int) and not isinstance(value, bool)})
+
+    @staticmethod
+    def _trusted_capture_protocol_mismatch(run: Run, result: dict[str, Any], index: int) -> bool:
+        """Whether the installed wrapper identified a legacy renderer handshake failure."""
+        infrastructure = result.get("capture_infrastructure")
+        return (
+            str(result.get("summary") or "") == "UI renderer protocol mismatch"
+            and CheckRunMixin._trusted_generated_ui_result(run, index)
+            and isinstance(infrastructure, dict)
+            and infrastructure.get("source") == "garden.walkthrough:ui_check"
+            and infrastructure.get("kind") == "capture_protocol_mismatch"
+        )
 
     @staticmethod
     def _capture_infrastructure_advisory(
@@ -391,7 +422,8 @@ class CheckRunMixin:
                                      branch=str(cont.get("branch") or run.branch),
                                      base=str(cont.get("base") or run.base), specs=specs, stage=stage,
                                      cont=cont, rep=rep, retries=retries + 1,
-                                     backend=backend, provenance=provenance)
+                                     backend=backend, provenance=provenance,
+                                     source_head=run.source_head)
             return
         note = f"check did not run ({run.run_id}): {cause}; retry also failed; needs human"
         # Keep the mechanical continuation, not merely its prose diagnostic.  A delegated
@@ -499,8 +531,16 @@ class CheckRunMixin:
             st["last_diff_hash"] = diff_h
         if body_h is not None:
             st["last_pr_body_hash"] = body_h
+        self._record_command_validation_head(task)
         result = worker_run.result if worker_run else self._last_worker_result(task)
         self._open_or_update_pr(task, worker_run, branch, base, result, rep, cont["cost"])
+
+    def _record_command_validation_head(self, task: Task) -> None:
+        """Bind a successful configured validation command to the checked-out source."""
+        if self.cfg.product_validation(task.product)["provider"] == "command":
+            self.state.get(task.id)["validation_head"] = gitops.rev_parse(
+                self.worktree_for(task), "HEAD"
+            )
 
     def _handle_failed_checks(self, task: Task, worker_run: Run | None, worktree: Path, branch: str, base: str,
                               failed: list[dict[str, Any]], rep: TickReport, cont: dict[str, Any]) -> None:
@@ -527,10 +567,26 @@ class CheckRunMixin:
         self._dispatch_check_run(
             task, worktree=probe, branch=branch, base=base, specs=specs, stage="base_probe", rep=rep,
             cont={**self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
-                  "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed})
+                  "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed},
+            source_head=base_sha)
 
     def _after_base_probe_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
-        base_failures = self._blocking_check_failures(run, results)
+        base_sha = str(cont["base_sha"])
+        # Local probes execute in the detached worktree materialised above. Remote probes
+        # need an explicit receipt because their clone is independent of that worktree.
+        source_matches = run.runner != "remote" or (
+            run.source_head == base_sha and run.start_head == base_sha and run.pushed_head == base_sha
+        )
+        if not source_matches:
+            summary = ("base probe provenance failure: advertised source "
+                       f"{base_sha} but worker started at {run.start_head or '(missing)'} "
+                       f"and returned {run.pushed_head or '(missing)'}")
+            results.append({"name": "base probe provenance", "status": "fail", "summary": summary, "details": ""})
+            run.result = {"checks": results}
+            run.error = summary
+            run.save()
+            self.events.emit("base_probe_provenance_failure", task.id, advertised=base_sha,
+                             start_head=run.start_head, pushed_head=run.pushed_head)
         probe = Path(cont["probe"])
         try:
             gitops.remove_worktree(self.repo_for(task), probe)
@@ -539,7 +595,13 @@ class CheckRunMixin:
         worker_run = self._run_by_id(task, cont.get("worker_run_id", ""))
         worktree = Path(cont["worktree"])
         branch, base, cost = cont["branch"], cont["base"], cont["cost"]
-        failed, base_sha, moved = cont["failed"], cont["base_sha"], cont["moved"]
+        failed, moved = cont["failed"], cont["moved"]
+        if not source_matches:
+            # The original branch failure remains intact, but an untrusted probe can never
+            # diagnose the base or cause a mechanical rebase of the author branch.
+            self._start_check_revise(task, failed, rep, cost, note=" (base probe source identity did not match)")
+            return
+        base_failures = self._blocking_check_failures(run, results)
         if not base_failures:
             # The base is clean: this branch owns the failure.
             self._start_check_revise(task, failed, rep, cost)
@@ -604,6 +666,7 @@ class CheckRunMixin:
             self._handle_failed_checks(task, worker_run, worktree, branch, base, failed, rep, cont)
             return
         st.pop("needs_human", None)
+        self._record_command_validation_head(task)
         self._queue_leave(task)
         self.events.emit("rebased_stale_base", task.id, base=base, base_sha=tip, resolved=True)
         task.log(f"base branch `{base}` recovered (moved to {tip[:12]}); rebased onto it and the pre-PR "
@@ -705,6 +768,7 @@ class CheckRunMixin:
         if failed:
             self._start_check_revise(task, failed, rep, "")
             return
+        self._record_command_validation_head(task)
         self._rebase_review_or_keep(task, worker_run or run, base, rep)
         if cont.get("merge_head"):
             st = self.state.get(task.id)

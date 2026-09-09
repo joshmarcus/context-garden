@@ -13,6 +13,7 @@ from garden import gitops
 from garden.events import EventLog
 from garden.events import metrics as _metrics
 from garden.model import Status
+from garden.scheduler.report import TickReport
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -101,6 +102,47 @@ def test_reviewed_merge_head_skips_before_a_conflicting_history_flatten(
     assert gitc("rev-list", "--parents", "-n", "1", "HEAD", cwd=wt).strip() == parents_before
     assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "rebase"]
     assert not (sched.cfg.garden_dir / "rebase-conflicts" / task.id).exists()
+
+
+def test_rebase_push_lease_rejects_an_author_move_after_the_recorded_head(
+        sched, fake_github, tmp_path, monkeypatch):
+    """The approval lineage's pre-head remains the push lease across the rebase's second fetch."""
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    branch = task.branch
+    wt = sched.worktree_for(task)
+    remote = tmp_path / "remote.git"
+    recorded_head = gitc("rev-parse", "HEAD", cwd=wt).strip()
+
+    attacker = tmp_path / "author-clone"
+    gitc("clone", "-q", str(remote), str(attacker), cwd=tmp_path)
+    gitc("config", "user.email", "author@example.test", cwd=attacker)
+    gitc("config", "user.name", "author", cwd=attacker)
+    gitc("checkout", "-q", "-b", branch, f"origin/{branch}", cwd=attacker)
+    original_sync = gitops.sync_and_rebase
+    author_head = ""
+
+    def move_remote_after_sync(*args, **kwargs):
+        nonlocal author_head
+        outcome = original_sync(*args, **kwargs)
+        # An empty author commit keeps the PR's patch-id identical: without the explicit old-head
+        # lease, the scheduler's second fetch would accept this exact approval-laundering shape.
+        gitc("commit", "-q", "--allow-empty", "-m", "author rewrites equivalent PR history",
+             cwd=attacker)
+        gitc("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=attacker)
+        author_head = gitc("rev-parse", "HEAD", cwd=attacker).strip()
+        return outcome
+
+    monkeypatch.setattr(gitops, "sync_and_rebase", move_remote_after_sync)
+    outcome = sched._rebase_and_record(task, "main", wt=wt)
+
+    assert outcome.status == "error"
+    assert outcome.run is not None and outcome.run.status == "failed"
+    assert outcome.run.env_snapshot["rebase_head_before"] == recorded_head
+    assert "lease" in outcome.run.error.lower()
+    remote_head = gitc("ls-remote", str(remote), f"refs/heads/{branch}", cwd=tmp_path).split()[0]
+    assert remote_head == author_head
 
 
 @pytest.mark.parametrize("change", [
@@ -365,6 +407,48 @@ def test_merge_queue_merges_eight_prs_each_rebased_once(sched, fake_github, tmp_
         assert sched.store.task(tid).status == Status.DONE, tid
 
 
+def test_clean_reviewed_heads_merge_serially_without_rebuild_and_recheck_next_conflict(
+        sched, fake_github, tmp_path, monkeypatch):
+    """The opt-out keeps one queue head, but a stale-base head with clean GitHub mergeability
+    and successful exact-head checks merges without a force-push. The next candidate is fetched
+    only afterward, so a conflict introduced by the first merge still stops it."""
+    assert sched.cfg.data["github"]["automerge_require_current_base"] is True
+    _independent_tasks(sched, 2)
+    sched.cfg.data["max_parallel"] = 2
+    sched.cfg.data["github"].update(
+        automerge=True, automerge_require_current_base=False,
+    )
+    sched.tick()
+    sched.tick()
+    b1, b2 = sched.store.task("DM-001").branch, sched.store.task("DM-002").branch
+    _advance_main(tmp_path, "moved")
+    for index, (task_id, branch) in enumerate((("DM-001", b1), ("DM-002", b2))):
+        _approve(sched, fake_github, task_id, branch, f"2026-09-05T03:0{index}:00+00:00")
+        task = sched.store.task(task_id)
+        head = gitc("rev-parse", "HEAD", cwd=sched.worktree_for(task)).strip()
+        sched.state.get(task_id).update(automerge_candidate=True, last_review_head=head)
+        fake_github.prs[branch].head_sha = head
+    sched.state.save()
+
+    original_merge = fake_github.merge_pr
+
+    def merge_then_conflict(slug, number, method="squash", delete_branch=True, expected_head=""):
+        original_merge(slug, number, method=method, delete_branch=delete_branch,
+                       expected_head=expected_head)
+        fake_github.prs[b2].mergeable = "CONFLICTING"
+
+    monkeypatch.setattr(fake_github, "merge_pr", merge_then_conflict)
+
+    sched._run_merge_queue(TickReport())
+    assert [row["number"] for row in fake_github.merged] == [fake_github.prs[b1].number]
+    assert not [run for run in sched.runs.runs_for("DM-001") if run.mode == "rebase"]
+
+    sched._run_merge_queue(TickReport())
+    assert [row["number"] for row in fake_github.merged] == [fake_github.prs[b1].number]
+    assert not [run for run in sched.runs.runs_for("DM-002") if run.mode == "rebase"]
+    assert "conflicting" in (sched.state.get("DM-002").get("automerge_blocked") or "")
+
+
 def test_pending_rollup_keeps_head_and_does_not_rotate(sched, fake_github, tmp_path):
     """After the pre-merge rebase, a still-running rollup keeps the same task as the queue head:
     the queue does not rebase another PR, and it merges the head once the rollup goes green."""
@@ -456,13 +540,19 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     _independent_tasks(sched, 1)
     sched.cfg.data["max_parallel"] = 1
     sched.cfg.data["github"]["automerge"] = True
+    sched.cfg.data["review"]["enabled"] = False
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "unit", "command": "true"}], "ci": []}
-    for _ in range(6):  # worker -> pre-PR check run -> PR (the check gates it, so an extra tick)
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "true",
+    }
+    for _ in range(10):  # worker -> command validation -> PR with an exact-head receipt
         sched.tick()
-        if sched.store.task("DM-001").status == Status.IN_REVIEW:
+        if (sched.store.task("DM-001").status == Status.IN_REVIEW
+                and sched.state.get("DM-001").get("validation_head")):
             break
     assert sched.store.task("DM-001").status == Status.IN_REVIEW
     b1 = sched.store.task("DM-001").branch
+    fake_github.prs[b1].head_sha = gitops.head_sha(sched.worktree_for(sched.store.task("DM-001")))
     _advance_main(tmp_path, "moved")  # the branch is behind: the merge needs a rebase first
     _approve(sched, fake_github, "DM-001", b1, "2026-09-05T03:00:00+00:00")
     sched.state.save()
@@ -470,6 +560,7 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
     # merge queue: rebase + force-push, then start the pre-PR check as a detached check run.
     rep = sched.tick()
     assert "DM-001(check:merge_rebase)" in rep.dispatched
+    fake_github.prs[b1].head_sha = gitops.head_sha(sched.worktree_for(sched.store.task("DM-001")))
     assert any(r.mode == "check" for r in sched.runs.runs_for("DM-001"))
     assert fake_github.prs[b1].state != "MERGED"  # not merged: the check has not been reaped yet
     assert not sched.state.get("DM-001").get("merge_head")  # the head is not held until checks pass
@@ -479,6 +570,7 @@ def test_pre_merge_rebase_runs_checks_as_a_detached_run(sched, fake_github, tmp_
         if fake_github.prs[b1].state == "MERGED":
             break
     assert fake_github.prs[b1].state == "MERGED"
+    assert sched.state.get("DM-001")["validation_head"] == fake_github.prs[b1].head_sha
     assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]) == 1
 
 

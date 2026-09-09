@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import shutil
 import socket
 import subprocess
 import sys
@@ -34,6 +35,28 @@ def _claim_slot(root: str, start, outcomes) -> None:
         outcomes.put("admitted")
     except ResourcePressureError:
         outcomes.put("deferred")
+
+
+def _add_product(sched, garden: Path, name: str, task_id: str, weight: int, timeout: int) -> None:
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"][name] = {"repo": "../repo", "base_branch": "main",
+                                 "timeout_minutes": timeout, "resources": {"weight": weight}}
+    config_path.write_text(yaml.safe_dump(config))
+    source = garden / "demo/p1/tasks/DM-001-first.md"
+    target = garden / name / "p1/tasks" / f"{task_id}-first.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(source.read_text().replace("DM-001", task_id))
+    shutil.copytree(garden / "demo/p1/specs", garden / name / "p1/specs")
+    (garden / name / "product.md").write_text(f"# {name}\n")
+    (garden / name / "p1/goals.md").write_text("# p1\n")
+    from garden.config import Config
+
+    sched.store.config = Config.load(garden)
+    sched.cfg = sched.store.config
+    sched.store.invalidate_tasks()
 
 
 def test_host_limit_counts_workers_reviews_and_checks_across_direct_launches(sched):
@@ -90,6 +113,100 @@ def test_concurrent_launchers_atomically_claim_the_last_host_slot(sched):
         assert process.exitcode == 0
 
     assert result == ["admitted", "deferred"]
+
+
+def test_weighted_capacity_is_atomic_and_reconciles_from_runs_after_restart(sched, garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    _set_resource_limit(sched, "max_parallel", 4)
+    _add_product(sched, garden, "heavy", "HV-001", 3, 180)
+    heavy = sched._new_local_run("HV-001", "work", "work")
+    assert heavy.env_snapshot["resource_weight"] == 3
+    # A cheap product still fits beside it.
+    cheap = sched._new_local_run("DM-001", "work", "work")
+    assert sched.resource_status().active == 4
+    with pytest.raises(ResourcePressureError, match="needs 1 capacity unit"):
+        sched._new_local_run("DM-002", "work", "work")
+
+    restarted = Scheduler(Store(garden), read_only=True)
+    restarted.set_override("resources.max_parallel", 4, by="test")
+    assert restarted.resource_status().active == 4
+    heavy.status = "done"
+    heavy.save()
+    assert restarted.resource_status().active == 1
+    cheap.status = "done"
+    cheap.save()
+
+
+def test_product_execution_timeout_is_snapshotted_and_checks_stay_distinct(sched, garden, monkeypatch):
+    _add_product(sched, garden, "heavy", "HV-001", 2, 180)
+    task = sched.store.task("HV-001")
+    assert sched.runner_for(task).config["timeout_minutes"] == 180
+    run = sched._new_local_run(task.id, "work", "work")
+    run.env_snapshot.update(product="heavy", execution_timeout_minutes=180)
+    monkeypatch.setattr(run, "elapsed_minutes", lambda: 100)
+    assert sched._finished_or_timed_out(run, sched.runner_for(task)) is False
+
+    check = sched._new_local_run(task.id, "check", "check")
+    check.env_snapshot.update(product="heavy", execution_timeout_minutes=0)
+    monkeypatch.setattr(check, "elapsed_minutes", lambda: 1000)
+    assert sched._finished_or_timed_out(check, sched.runner_for(task)) is False
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True])
+def test_product_resource_weight_requires_positive_integer(sched, value):
+    sched.cfg.data["products"]["demo"]["resources"] = {"weight": value}
+    with pytest.raises(ValueError, match="positive integer"):
+        sched.cfg.product_resource_weight("demo")
+
+
+def test_explicit_weight_is_reserved_before_taskless_aux_run_is_published(sched):
+    _set_resource_limit(sched, "max_parallel", 3)
+    occupied = sched._new_local_run("DM-001", "work", "work", resource_weight=2)
+
+    with pytest.raises(ResourcePressureError, match="needs 2 capacity unit"):
+        sched._new_local_run("_persona", "persona", "persona", resource_weight=2)
+
+    assert sched.resource_status().active == 2
+    assert not sched.runs.runs_for("_persona")
+    occupied.status = "done"
+    occupied.save()
+
+
+@pytest.mark.parametrize("kind", ["persona", "kickoff"])
+def test_taskless_product_aux_uses_product_weight_during_admission(sched, kind):
+    _set_resource_limit(sched, "max_parallel", 1)
+    sched.cfg.data["products"]["demo"]["resources"] = {"weight": 2}
+
+    with pytest.raises(ResourcePressureError, match="needs 2 capacity unit"):
+        sched.dispatch_aux(
+            kind, None, "brief", sched.store.root,
+            {"id": f"_{kind}-demo-p1", "product": "demo", "phase": "p1"},
+        )
+
+    assert not sched.runs.runs_for(f"_{kind}-demo-p1")
+
+
+def test_unschedulable_weight_does_not_starve_feasible_local_work(sched, garden, monkeypatch):
+    _set_resource_limit(sched, "max_parallel", 4)
+    _add_product(sched, garden, "oversized", "HV-001", 5, 180)
+    heavy = sched.store.task("HV-001")
+    cheap = sched.store.task("DM-001")
+    sched.state.get(heavy.id)["resource_bypasses"] = 3
+    sched.state.save()
+    monkeypatch.setattr(sched, "dispatch_queue", lambda: [
+        (heavy, "work", "older"), (cheap, "work", "newer"),
+    ])
+    monkeypatch.setattr(sched, "_try_reclaim_for_pending_local_launch", lambda: False)
+    monkeypatch.setattr(sched, "_drain_pending_reviews", lambda tasks, rep: None)
+    dispatched = []
+    monkeypatch.setattr(sched, "dispatch", lambda task, mode, runner: dispatched.append(task.id))
+
+    sched.dispatch_ready(type("Report", (), {"dispatched": [], "errors": []})())
+
+    assert dispatched == [cheap.id]
+    assert sched.state.get(heavy.id)["resource_bypasses"] == 3
 
 
 def test_memory_or_temp_pressure_records_environment_stop_and_recovers(sched, monkeypatch):

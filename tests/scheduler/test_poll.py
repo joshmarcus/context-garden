@@ -3,6 +3,7 @@
 
 from garden.github import Feedback
 from garden.model import Status
+from garden.scheduler.report import TickReport
 from tests.scheduler.conftest import statuses
 
 
@@ -133,6 +134,31 @@ def test_ci_failure_triggers_revise(sched, fake_github):
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(revise)"]
     assert "**CI** is failing" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
+
+
+def test_actions_disabled_and_alternate_provider_diagnostics_are_distinct(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.checks = ""
+    for provider, phrase in (("actions", "Actions returned no result"),
+                             ("status", "status provider returned no result")):
+        sched.cfg.data["products"]["demo"]["validation"] = provider
+        sched.poll(task, TickReport())
+        state = sched.state.get(task.id)
+        assert state["ci_missing"] is True
+        assert phrase in state["ci_diagnostic"]
+
+
+def test_no_external_ci_policy_does_not_treat_absent_rollup_as_missing(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    fake_github.prs["garden/dm-001-first-task"].checks = ""
+    sched.cfg.data["products"]["demo"]["validation"] = "none"
+    sched.poll(task, TickReport())
+    assert sched.state.get(task.id)["ci_missing"] is False
 
 
 def test_pr_closed_fails(sched, fake_github):

@@ -53,6 +53,7 @@ class PRInfo:
     updated_at: str = ""
     body: str = ""
     head_sha: str = ""
+    merge_commit_sha: str = ""
     is_draft: bool = False
     node_id: str = ""
 
@@ -82,7 +83,8 @@ class Feedback:
             if str(i.get("author", "")).endswith("[bot]"):
                 kind = f"{kind} from a bot"
             state = f" [{i['state']}]" if i.get("state") else ""
-            out.append(f"- **{i.get('author', '?')}** {kind}{state}{where}:\n\n  " + i.get("body", "").strip().replace("\n", "\n  "))
+            origin = f" (on commit `{i['commit_id']}`)" if i.get("commit_id") else ""
+            out.append(f"- **{i.get('author', '?')}** {kind}{state}{where}{origin}:\n\n  " + i.get("body", "").strip().replace("\n", "\n  "))
         return "\n\n".join(out)
 
 
@@ -233,6 +235,7 @@ class GitHubLike(Protocol):
     def me(self) -> str: ...
     def is_authenticated(self) -> bool: ...
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None: ...
+    def list_open_prs(self, slug: str) -> list[PRInfo]: ...
     def get_pr(self, slug: str, number: int) -> PRInfo: ...
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str,
                   draft: bool = ..., reviewers: list[str] | None = ...) -> PRInfo: ...
@@ -244,7 +247,8 @@ class GitHubLike(Protocol):
     def reopen_pr(self, slug: str, number: int) -> None: ...
     def branch_exists(self, slug: str, branch: str) -> bool: ...
     def base_ref_deleted(self, slug: str, number: int) -> bool: ...
-    def merge_pr(self, slug: str, number: int, method: str = ..., delete_branch: bool = ...) -> None: ...
+    def merge_pr(self, slug: str, number: int, method: str = ..., delete_branch: bool = ...,
+                 expected_head: str = ...) -> None: ...
     def delete_branch(self, slug: str, branch: str) -> None: ...
     def issue_comments(self, slug: str, number: int) -> list[str]: ...
     def comment(self, slug: str, number: int, body: str) -> None: ...
@@ -397,11 +401,54 @@ class GitHub:
         prs.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
         return self._pr_from_rest(prs[0])
 
+    def list_open_prs(self, slug: str) -> list[PRInfo]:
+        """Return open pull requests with whatever review/check state is available.
+
+        REST's list endpoint omits those details, so enrich its rows independently. A
+        missing permission for one PR's review or check must not make the repository
+        appear empty.
+        """
+        if self.gh:
+            out = self._gh(
+                "pr", "list", "-R", self._repo(slug), "--state", "open",
+                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,statusCheckRollup,updatedAt,isDraft",
+                "--limit", "1000",
+            )
+            return [
+                PRInfo(
+                    number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
+                    head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
+                    review_decision=p.get("reviewDecision") or "",
+                    checks=_rollup_state(p.get("statusCheckRollup") or []),
+                    failed_checks=_rollup_failed(p.get("statusCheckRollup") or []),
+                    updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
+                )
+                for p in json.loads(out or "[]")
+            ]
+        listed = []
+        page = 1
+        while True:
+            batch = self._rest(
+                "GET", f"/repos/{slug}/pulls", params={"state": "open", "per_page": 100, "page": page}
+            ) or []
+            listed.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        result: list[PRInfo] = []
+        for item in listed:
+            basic = self._pr_from_rest(item)
+            try:
+                result.append(self.get_pr(slug, basic.number))
+            except GitHubError:
+                result.append(basic)
+        return result
+
     def get_pr(self, slug: str, number: int) -> PRInfo:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,updatedAt,statusCheckRollup,isDraft,id",
+                "--json", "number,url,state,title,body,headRefName,headRefOid,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
             rollup = p.get("statusCheckRollup") or []
@@ -410,12 +457,15 @@ class GitHub:
                 head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                 review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
                 checks=_rollup_state(rollup), failed_checks=_rollup_failed(rollup), updated_at=p.get("updatedAt", ""),
-                body=p.get("body") or "", head_sha=p.get("headRefOid") or "", is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
+                body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
+                merge_commit_sha=(p.get("mergeCommit") or {}).get("oid", ""),
+                is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
             )
         p = self._rest("GET", f"/repos/{slug}/pulls/{number}")
         info = self._pr_from_rest(p)
         info.body = p.get("body") or ""
         info.head_sha = (p.get("head") or {}).get("sha", "")
+        info.merge_commit_sha = p.get("merge_commit_sha") or ""
         if info.head_sha:
             try:
                 runs = self._rest("GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs", params={"per_page": 100}) or {}
@@ -519,17 +569,20 @@ class GitHub:
             state = r.get("state", "")
             if state == "CHANGES_REQUESTED" and newer(created) and author not in exclude:
                 if not untrusted(author, created, body or "(changes requested)"):
-                    items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created})
+                    items.append({"kind": "review", "state": state, "author": author, "body": body or "(changes requested)", "created": created,
+                                  "id": r.get("id"), "commit_id": r.get("commit_id")})
             elif keep(author, created, body) and not untrusted(author, created, body):
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": created, "reason": "notice"})
                 else:
-                    items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created})
+                    items.append({"kind": "review", "state": state, "author": author, "body": body, "created": created,
+                                  "id": r.get("id"), "commit_id": r.get("commit_id")})
         for c in comments:
             author = c.get("user", {}).get("login", "")
             if keep(author, c.get("created_at", ""), c.get("body", "")) and not untrusted(author, c["created_at"], c["body"]):
                 # a comment on a diff line always points at code, notice or not
-                items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"]})
+                items.append({"kind": "line comment", "author": author, "body": c["body"], "path": c.get("path"), "line": c.get("line") or c.get("original_line"), "created": c["created_at"],
+                              "id": c.get("id"), "commit_id": c.get("commit_id") or c.get("original_commit_id")})
         for c in issue_comments:
             author = c.get("user", {}).get("login", "")
             body = c.get("body", "")
@@ -537,7 +590,8 @@ class GitHub:
                 if is_notice(author, body):
                     ignored.append({"author": author, "body": body, "created": c["created_at"], "reason": "notice"})
                 else:
-                    items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"]})
+                    items.append({"kind": "comment", "author": author, "body": body, "created": c["created_at"],
+                                  "id": c.get("id")})
         items.sort(key=lambda i: i.get("created", ""))
         ignored.sort(key=lambda i: i.get("created", ""))
         return Feedback(items=items, ignored=ignored)
@@ -617,18 +671,24 @@ class GitHub:
             return False
         return any(isinstance(e, dict) and e.get("event") == "base_ref_deleted" for e in events)
 
-    def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True) -> None:
+    def merge_pr(self, slug: str, number: int, method: str = "squash", delete_branch: bool = True,
+                 expected_head: str = "") -> None:
         """Merge an open PR. `method` is squash | merge | rebase. Raises GitHubError if GitHub
         refuses the merge (not mergeable, failing required checks, blocked by a review)."""
         if method not in ("squash", "merge", "rebase"):
             method = "squash"
         if self.gh:
             args = ["pr", "merge", str(number), "-R", self._repo(slug), f"--{method}"]
+            if expected_head:
+                args += ["--match-head-commit", expected_head]
             if delete_branch:
                 args.append("--delete-branch")
             self._gh(*args)
             return
-        self._rest("PUT", f"/repos/{slug}/pulls/{number}/merge", json={"merge_method": method})
+        payload = {"merge_method": method}
+        if expected_head:
+            payload["sha"] = expected_head
+        self._rest("PUT", f"/repos/{slug}/pulls/{number}/merge", json=payload)
         if delete_branch:
             try:
                 pr = self._rest("GET", f"/repos/{slug}/pulls/{number}")

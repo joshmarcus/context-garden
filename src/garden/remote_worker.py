@@ -241,8 +241,18 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             subprocess.run(["git", "clone", str(run["repo"]), str(repo)], check=True)
         subprocess.run(["git", "fetch", "--prune", "origin"], cwd=repo, check=True)
         branch, base = str(run["branch"]), str(run["base"])
-        remote_branch = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo).returncode == 0
-        subprocess.run(["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"], cwd=repo, check=True)
+        source_head = str(run.get("source_head") or "")
+        if source_head:
+            # Base probes must run on the immutable source advertised by the controller.
+            # A detached checkout also ensures a bad source cannot alter the author branch.
+            subprocess.run(["git", "checkout", "--detach", source_head], cwd=repo, check=True)
+            actual_source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                                           capture_output=True, text=True, check=True).stdout.strip()
+            if actual_source != source_head:
+                raise RuntimeError(f"advertised source {source_head} materialised as {actual_source}")
+        else:
+            remote_branch = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=repo).returncode == 0
+            subprocess.run(["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"], cwd=repo, check=True)
         env = _env(list(run.get("env_allowlist") or []), repo, run)
         runtime_dir = root / "runtime"
         runtime_dir.mkdir(mode=0o700, exist_ok=True)
@@ -321,12 +331,23 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 proc.stdin.close()
                 transcript_read_offset = 0
                 transcript_upload_offset = 0
+                timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
+                deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
                 while proc.poll() is None:
                     try:
                         heartbeat.ensure_not_failed()
                     except BaseException:
                         _stop_obsolete_process(proc)
                         raise
+                    if deadline is not None and time.monotonic() >= deadline:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        stderr_file.write(f"\nworker timed out after {timeout_minutes:g} minutes\n")
+                        break
                     time.sleep(0.1)
                     stdout_file.flush()
                     with open(stdout_file.name) as transcript_file:

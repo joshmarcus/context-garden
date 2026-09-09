@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import gitops
+from ..canonical import CanonicalCheckoutError, configured_root
 from ..checks import to_feedback
 from ..criteria import amend_criteria, apply_verification, parse_criteria
 from ..github import GitHubError, mark_garden_comment
@@ -179,7 +180,12 @@ class ReapMixin:
             return True
         if not runner.detached:
             return False
-        timeout_min = float(self.cfg.get("timeout_minutes", 90) or 0)
+        # The dispatch-time value survives config edits and scheduler restarts. Check
+        # commands have their own seconds-based timeout and never inherit this budget.
+        snapshot = run.env_snapshot or {}
+        timeout_min = float(snapshot.get("execution_timeout_minutes", 0 if run.mode == "check"
+                            else self.cfg.product_timeout_minutes(
+                                str(snapshot.get("product") or ""))) or 0)
         elapsed = run.execution_minutes() if run.runner == "remote" else run.elapsed_minutes()
         if timeout_min and elapsed > timeout_min + 5:
             run.kill()
@@ -354,6 +360,8 @@ class ReapMixin:
             st["session_host"] = run.host
             st["session_harness"] = run.harness
             st["question_run"] = run.run_id
+            # An immediate answer needs the question and its resume identity.
+            self.state.save()
             self.events.emit("waiting_human", task.id, question=question, run=run.run_id)
             self._transition(task, Status.WAITING_HUMAN, f"worker asks: {question}{cost}")
             rep.transitions.append(f"{task.id} -> waiting_human")
@@ -398,6 +406,9 @@ class ReapMixin:
             decision["result"].setdefault("summary", reason)
             st["decision"] = decision
             st.pop("question", None)
+            # Readers can observe the task status before this tick finishes.
+            # Persist its decision before publishing the waiting status.
+            self.state.save()
             self.events.emit("decision", task.id, decision=status, reason=reason, run=run.run_id)
             word = "won't do" if status == "wont_do" else "nothing to change"
             self._transition(task, Status.WAITING_HUMAN, f"worker says {word}: {reason}{cost}", needs_human=True)
@@ -438,7 +449,25 @@ class ReapMixin:
         repo = self.repo_for(task)
 
         if runner.remote or run.completion_mode == "pushed":
-            gitops.fetch(repo)
+            wt = self.worktree_for(task)
+            canonical = None
+            try:
+                # SSH/pull workers publish their result remotely, but checks may still use
+                # an explicitly provisioned local canonical checkout.  Claim and preflight
+                # that checkout before even fetching through it: the legacy materialisation
+                # path below must never reset operator work or a drifted branch.
+                if configured_root(self.cfg.product_checkout(task.product), self.store.root) is not None:
+                    local_runner = self.runner_for(task, "local")
+                    canonical = self.prepare_canonical_run(task, run, local_runner, branch, base)
+                    if canonical is not None:
+                        wt = canonical
+                gitops.fetch(repo)
+            except (gitops.GitError, CanonicalCheckoutError) as e:
+                run.status = "failed"
+                run.error = f"could not prepare local canonical checkout: {e}"
+                run.save()
+                self._retry_or_fail(task, run, rep, run.error)
+                return
             try:
                 if run.pushed_ref:
                     staged = f"refs/remotes/origin/{run.pushed_ref.removeprefix('refs/heads/')}"
@@ -472,7 +501,6 @@ class ReapMixin:
                 return
             run.status = "done"
             run.save()
-            wt = self.worktree_for(task)
             try:
                 if wt.exists():
                     gitops.git("fetch", "origin", cwd=wt)
@@ -578,8 +606,12 @@ class ReapMixin:
                 cmd = str(setup.get(name) or "").strip()
                 if cmd:
                     specs.append({"name": name, "command": cmd})
+        validation = self.cfg.product_validation(task.product)
+        if validation["provider"] == "command":
+            specs.append({"name": "validation", "command": validation["command"]})
         from ..checks import is_publishing_ci_helper
-        if setup.get("worker_push") is not True:
+        publishing_allowed = setup.get("worker_push") is True and validation["provider"] in ("legacy", "actions")
+        if not publishing_allowed:
             specs = [
                 {**spec, "requires_worker_push": True}
                 if is_publishing_ci_helper(str(spec.get("command") or ""))

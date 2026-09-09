@@ -370,6 +370,91 @@ def test_ui_check_launches_renderer_from_changed_worktree(tmp_path, monkeypatch)
     assert seen["argv"][1:3] == ["-m", "garden.walkthrough"]
 
 
+def test_ui_check_retries_a_quiet_legacy_renderer_with_its_three_argument_form(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    calls = []
+    outcomes = iter([
+        subprocess.CompletedProcess([], 2, "", ""),
+        subprocess.CompletedProcess([], 0, '{"status":"pass","pages":["now"]}\n', ""),
+    ])
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return next(outcomes)
+
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures"), "pages": ["now"]})
+
+    assert result["status"] == "pass"
+    assert result["renderer_protocol"] == "legacy"
+    assert "exit 2" in result["details"]
+    assert "<capture-dir> <page-selection>" in result["details"]
+    assert len(calls[0]) == 6
+    assert len(calls[1]) == 5
+
+
+def test_ui_check_exercises_the_new_wrapper_against_an_old_renderer_source(tmp_path):
+    worktree = tmp_path / "old-worktree"
+    package = worktree / "src" / "garden"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "walkthrough.py").write_text(
+        "import json, sys\n"
+        "if sys.argv == [sys.argv[0], '--ui-check', sys.argv[2]]:\n"
+        "    print(json.dumps({'status': 'pass', 'captures': ['legacy.png']}))\n"
+        "    raise SystemExit(0)\n"
+        "raise SystemExit(2)\n"
+    )
+
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures"), "pages": ["now"]})
+
+    assert result["status"] == "pass"
+    assert result["renderer_protocol"] == "legacy"
+    assert result["captures"] == ["legacy.png"]
+
+
+def test_ui_check_does_not_fallback_when_page_selecting_renderer_reports_an_error(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 2, "", "usage: renderer failed to load")
+
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(tmp_path / "captures")})
+
+    assert result["status"] == "error"
+    assert result["summary"] == "UI renderer did not return a result"
+    assert "usage: renderer failed to load" in result["details"]
+    assert "<capture-dir> <page-selection>" in result["details"]
+    assert len(calls) == 1
+
+
+def test_ui_check_reports_a_quiet_protocol_mismatch_with_retained_evidence(tmp_path, monkeypatch):
+    worktree = tmp_path / "proposed"
+    (worktree / "src").mkdir(parents=True)
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    evidence = captures / "now.html"
+    evidence.write_text("partial renderer output")
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **_kwargs:
+                        subprocess.CompletedProcess(argv, 2, "", ""))
+
+    result = ui_check({"worktree": str(worktree)}, {"out_dir": str(captures)})
+
+    assert result["status"] == "error"
+    assert result["summary"] == "UI renderer protocol mismatch"
+    assert "exit 2" in result["details"]
+    assert "empty stdout/stderr" in result["details"]
+    assert "<capture-dir> <page-selection>" in result["details"]
+    assert "<capture-dir>;" in result["details"]
+    assert result["captures"] == [str(evidence)]
+    assert result["capture_infrastructure"]["kind"] == "capture_protocol_mismatch"
+
+
 def test_ui_check_keeps_missing_proposed_source_blocking_in_advisory_mode(tmp_path):
     result = ui_check(
         {"worktree": str(tmp_path / "missing-worktree")},

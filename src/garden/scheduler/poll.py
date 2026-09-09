@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import json
 from typing import Any
 
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
-from ..github import GitHubError, PRInfo
+from ..github import Feedback, GitHubError, PRInfo
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..runs import Run
+from .feedback import merge_pending_feedback
 from .report import TickReport
 
 # Paths whose change makes a PR too sensitive to merge without a person: the garden's own
@@ -45,10 +48,20 @@ class PollMixin:
         st["pr_state"] = pr.state
         st["review_decision"] = pr.review_decision
         st["checks"] = pr.checks
-        # A configured CI analyser implies that a rollup is expected.  An absent rollup is
-        # an operator prerequisite, not an owner review decision; leave unconfigured CI
-        # alone so repositories that do not publish checks keep their normal review flow.
-        st["ci_missing"] = bool(self.cfg.get("checks.ci", []) and not pr.checks)
+        validation = self.cfg.product_validation(task.product)
+        provider = validation["provider"]
+        expects_rollup = provider in ("actions", "status") or (
+            provider == "legacy" and bool(self.cfg.get("checks.ci", []))
+        )
+        st["ci_missing"] = bool(expects_rollup and not pr.checks)
+        if st["ci_missing"]:
+            st["ci_diagnostic"] = (
+                "GitHub Actions returned no result; confirm Actions is enabled and the workflow triggers for this branch"
+                if provider == "actions" else
+                "the configured status provider returned no result; confirm its installation and repository permissions"
+            )
+        else:
+            st.pop("ci_diagnostic", None)
         st["failed_checks"] = list(pr.failed_checks)
         st["last_polled"] = now_iso()
         if pr.state == "MERGED":
@@ -96,7 +109,7 @@ class PollMixin:
         st["pr_updated_at"] = pr.updated_at
         st["head_sha"] = pr.head_sha
         ci_note = ""
-        if pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
+        if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != pr.updated_at:
             st["ci_failed_at"] = pr.updated_at
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
@@ -106,7 +119,7 @@ class PollMixin:
                 # tick never runs it in-process. The continuation (`_after_ci_check`) combines its
                 # verdict with the GitHub feedback and starts (or reruns instead of) a revise round.
                 self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
-                                         base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note},
+                                         base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
                                          extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
                 return
         fb = self.github.feedback_since(slug, number, task.last_dispatched_at)
@@ -114,18 +127,41 @@ class PollMixin:
             self._log_ignored_feedback(task, fb.ignored)
         self._apply_feedback(task, pr, fb, ci_note, rep)
 
-    def _apply_feedback(self, task: Task, pr: PRInfo, fb: Any, ci_note: str, rep: TickReport) -> None:
+    def _apply_feedback(self, task: Task, pr: PRInfo, fb: Any, ci_note: str, rep: TickReport,
+                        *, replace_ci: bool = False) -> None:
         """Turn new PR feedback and/or a CI note into a revise round (or a human hand-off at the
         cap). Shared by `poll` and the CI check continuation so both route a failure the same way."""
         st = self.state.get(task.id)
-        if not fb and not ci_note:
+        if not fb and not ci_note and not replace_ci:
             # Feedback processed, nothing actionable: another stable point to consider merging.
             self._maybe_automerge(task, pr, rep)
             return
-        pending = fb.to_markdown() + ("\n\n" + ci_note if ci_note else "")
-        st["pending_feedback"] = pending
+        before = str(st.get("pending_feedback") or "")
+        for item in fb.items:
+            # Comments are PR-scoped instructions, not CI attestations for this head.
+            # Their original commit is retained in the rendered feedback when available.
+            identity = ({"kind": item.get("kind"), "id": item["id"]} if item.get("id") else item)
+            key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
+            merge_pending_feedback(st, pr.head_sha, "github:" + key, Feedback(items=[item]).to_markdown())
+        if ci_note or replace_ci:
+            merge_pending_feedback(st, pr.head_sha, "ci", ci_note)
+        if not st.get("pending_feedback"):
+            if task.status == Status.CHANGES_REQUESTED and not st.get("needs_human"):
+                self._transition(task, Status.IN_REVIEW, "current checks resolved the pending CI feedback")
+            self.state.save()
+            return
+        if not bool(self.cfg.get("auto_revise", True)) and not st.get("needs_human"):
+            self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
+        if task.status == Status.CHANGES_REQUESTED and st.get("pending_feedback") == before:
+            self.state.save()
+            return
         st.pop("pending_feedback_easy", None)
         st.pop("pending_feedback_rebase", None)
+        # A concurrent producer already queued this revision. Enrich its brief without
+        # another transition, notification, or revision-cap decision.
+        if task.status == Status.CHANGES_REQUESTED:
+            self.state.save()
+            return
         n = len(fb.items)
         note = f"{n} new review item(s)" if n else "CI failure"
         if n and ci_note:
@@ -159,21 +195,39 @@ class PollMixin:
         except (GitHubError, KeyError):
             return
         st = self.state.get(task.id)
+        head = str((run.env_snapshot or {}).get("ci_head") or cont.get("head") or "")
+        if (run.task_id != task.id or run.mode != "check" or not head
+                or pr.state != "OPEN" or not task.status.pr_open
+                or (cont.get("head") and cont["head"] != head)
+                or pr.head_sha != head or str(st.get("head_sha") or "") != head):
+            self.log(f"{task.id}: ignored CI feedback from {run.run_id}: missing or obsolete head")
+            return
+        applied = st.get("applied_ci_feedback") or {}
+        applied_runs = list(applied.get("runs") or []) if applied.get("head") == head else []
+        if run.run_id in applied_runs:
+            return
         ci_note = str(cont.get("ci_note") or "")
         reran = [r for r in results if r.get("reran")]
         if reran:
-            # The detached job already reran CI (it held the flaky-rerun budget); record it here.
-            st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
-            task.log("CI failure judged flaky by checks; reran instead of dispatching a revise run")
-            self.store.save(task)
-            self.events.emit("ci_rerun", task.id, checks=[r.get("name") for r in reran])
+            ci_note = ""
+        elif pr.checks == "SUCCESS":
             ci_note = ""
         elif check_failures(results):
             ci_note += "\n\n" + to_feedback(results, "CI check")
         fb = self.github.feedback_since(slug, number, task.last_dispatched_at)
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)
-        self._apply_feedback(task, pr, fb, ci_note, rep)
+        # Save the consumed run and rerun accounting in the same state write as the
+        # composed feedback. A crash after that write cannot charge/reapply this run.
+        st["applied_ci_feedback"] = {"head": head, "runs": [*applied_runs, run.run_id]}
+        if reran:
+            st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
+        self._apply_feedback(task, pr, fb, ci_note, rep, replace_ci=True)
+        self.state.save()
+        if reran:
+            task.log("CI failure judged flaky by checks; reran instead of dispatching a revise run")
+            self.store.save(task)
+            self.events.emit("ci_rerun", task.id, checks=[r.get("name") for r in reran])
 
     def _log_ignored_feedback(self, task: Task, ignored: list[dict[str, Any]]) -> None:
         """One task-log line and one event per skipped comment (a bot notice, or an author
@@ -259,6 +313,14 @@ class PollMixin:
         rev = st.get("last_review") or {}
         if str(rev.get("verdict") or "") != "approve":
             return False, f"the automated review verdict is {rev.get('verdict') or 'not in yet'}, not approve"
+        require_current_base = bool(
+            self._github_cfg("automerge_require_current_base", task.product, True)
+        )
+        reviewed_head = self._effective_approved_head(task, st)
+        if not require_current_base and not pr.head_sha:
+            return False, "GitHub did not report the current PR head"
+        if not require_current_base and reviewed_head != pr.head_sha:
+            return False, "the approved review is not for the current PR head"
         min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
         if hard_tier:
             min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
@@ -290,10 +352,25 @@ class PollMixin:
                 return False, "a run is in flight"
         elif any(r.task_id == task.id for r in self.active_runs()):
             return False, "a run is in flight"
-        if self.cfg.product_setup(task.product).get("worker_push") is True and not pr.checks:
-            return False, "worker CI is enabled but the PR has no CI result yet"
-        if pr.checks not in ("SUCCESS", ""):
-            return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
+        validation = self.cfg.product_validation(task.product)
+        provider = validation["provider"]
+        if provider in ("actions", "status"):
+            if not pr.checks:
+                if provider == "actions":
+                    return False, "GitHub Actions has no result (disabled, unavailable, or not triggered)"
+                return False, "the configured status provider has no result (unavailable or insufficient permission)"
+            if pr.checks != "SUCCESS":
+                return False, f"the required {provider} validation is {pr.checks.lower()}"
+        elif provider == "command":
+            if not pr.head_sha or st.get("validation_head") != pr.head_sha:
+                return False, "the configured validation command has no passing result for the exact PR head"
+        elif provider == "legacy":
+            if self.cfg.product_setup(task.product).get("worker_push") is True and not pr.checks:
+                return False, "worker CI is enabled but the PR has no CI result yet"
+            if pr.checks not in ("SUCCESS", ""):
+                return False, f"the PR checks rollup is {pr.checks.lower() or 'pending'}"
+            if not require_current_base and pr.checks != "SUCCESS":
+                return False, "the exact-head PR checks have not reported success"
         if pr.mergeable != "MERGEABLE":
             return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
         if pr.review_decision == "CHANGES_REQUESTED":

@@ -77,6 +77,31 @@ def test_worker_amendment_round_trip_reaches_review_brief(sched, fake_github, mo
     assert "Judge each amended line against its stated outcome" in brief
 
 
+def test_mismatched_base_probe_receipt_cannot_park_the_base(sched, fake_github, tmp_path):
+    """A remote probe with the wrong source is a provenance failure, not a main failure."""
+    task = sched.store.task("DM-001")
+    advertised = "a" * 40
+    run = sched.runs.new_run(task.id, "remote", mode="check")
+    run.start_head, run.pushed_head = advertised, "b" * 40
+    run.save()
+    failed = [{"name": "guard", "status": "fail", "summary": "branch guard failed", "details": ""}]
+
+    sched._after_base_probe_check(
+        task, run, [{"name": "guard", "status": "fail", "summary": "probe failed", "details": ""}],
+        {"probe": str(tmp_path / "missing-probe"), "worktree": str(tmp_path / "branch"),
+         "branch": task.default_branch(), "base": "main", "cost": "", "failed": failed,
+         "base_sha": advertised, "moved": False}, TickReport(),
+    )
+
+    saved = sched.runs.latest(task.id)
+    assert "base probe provenance failure" in saved.error
+    assert [item["name"] for item in saved.result["checks"]] == ["guard", "base probe provenance"]
+    assert sched.state.get(task.id).get("needs_human", {}).get("kind") != "base_broken"
+    assert "branch guard failed" in sched.state.get(task.id)["pending_feedback"]
+    events = sched.events.read(task_id=task.id, kinds=["base_probe_provenance_failure"])
+    assert events and events[-1]["advertised"] == advertised
+
+
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
     """CG-083: a crash between the run record's final-status write and the task
     transition / push / PR step must not strand the finished run. Simulate the
@@ -301,6 +326,9 @@ def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_gith
     the PR opens with no worker run dispatched, no person, and no revise round spent."""
     sched.cfg.data["stack"] = False
     sched.cfg.data["checks"] = {"pre_pr": [{"name": "guard", "command": "grep -qx ok sentinel.txt"}], "ci": []}
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "command": "true",
+    }
     _seed_base_guard(sched, "bad")  # red base the branch is cut from
 
     sched.tick()  # dispatch DM-001 from the red base (the in-process worker finishes here)
@@ -328,6 +356,7 @@ def test_base_broken_task_continues_itself_when_base_goes_green(sched, fake_gith
     # the rebased branch picked up the now-green base file
     wt = sched.worktree_for(sched.store.task("DM-001"))
     assert (wt / "sentinel.txt").read_text().strip() == "ok"
+    assert sched.state.get("DM-001")["validation_head"] == gitops.head_sha(wt)
     # a rebased_stale_base event records the automatic continuation
     assert any(e.get("resolved") for e in sched.events.read(task_id="DM-001", kinds=["rebased_stale_base"]))
 
@@ -569,6 +598,34 @@ def test_empty_collected_check_parks_once_without_fabricating_success(sched):
     for _ in range(3):
         assert sched.reap_check(sched.store.task(task.id), TickReport()) is False
     assert len(sched.events.read(task_id=task.id, kinds=["needs_human"])) == event_count == 1
+
+
+def test_only_a_generated_ui_check_treats_a_renderer_protocol_mismatch_as_recovery(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    result = {
+        "name": "ui", "status": "error", "summary": "UI renderer protocol mismatch",
+        "capture_infrastructure": {
+            "source": "garden.walkthrough:ui_check", "kind": "capture_protocol_mismatch",
+        },
+    }
+
+    run.env_snapshot["generated_ui_check_indices"] = [0]
+    assert sched._check_did_not_run(run, [result])
+
+    run.env_snapshot["generated_ui_check_indices"] = []
+    assert not sched._check_did_not_run(run, [result])
+
+
+def test_child_summary_cannot_turn_a_renderer_failure_into_recovery(sched):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    child_result = {
+        "name": "ui", "status": "error", "summary": "UI renderer protocol mismatch",
+    }
+
+    run.env_snapshot["generated_ui_check_indices"] = [0]
+    assert not sched._check_did_not_run(run, [child_result])
 
 
 def test_auxiliary_reapers_do_not_dispatch_work_directly():

@@ -114,6 +114,7 @@ class Run:
     branch: str = ""
     base: str = ""
     start_head: str = ""  # origin/<branch>'s sha this run started from, for a lease-protected push (CG-220)
+    source_head: str = ""  # immutable source revision a detached check must materialise
     exit_code: int | None = None
     diff_stat: str = ""  # `git diff --stat base...branch` at finalize, for attention/triage evidence
     patch_id_before: str = ""  # rebase mode only: patch id of the branch's diff before the rebase

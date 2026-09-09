@@ -65,6 +65,11 @@ def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
         for name, p in (data.get("products") or {}).items()
         if isinstance(p, dict) and (p.get("setup") or {}).get("command")
     }
+    sig["validation"] = {
+        name: deepcopy(p.get("validation"))
+        for name, p in (data.get("products") or {}).items()
+        if isinstance(p, dict) and p.get("validation") is not None
+    }
     sig["harnesses"] = {
         name: {"bin": h.get("bin"), "command": h.get("command")}
         for name, h in (data.get("harnesses") or {}).items() if isinstance(h, dict)
@@ -104,6 +109,7 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
     products = out.setdefault("products", {})
     if isinstance(products, dict):
         commands = signature.get("setup.command") or {}
+        validations = signature.get("validation") or {}
         for name, product in products.items():
             if not isinstance(product, dict):
                 continue
@@ -115,6 +121,10 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
                 setup["command"] = deepcopy(commands[name])
             else:
                 setup.pop("command", None)
+            if name in validations:
+                product["validation"] = deepcopy(validations[name])
+            else:
+                product.pop("validation", None)
 
     harnesses = out.setdefault("harnesses", {})
     if isinstance(harnesses, dict):
@@ -149,7 +159,9 @@ DEFAULTS: dict[str, Any] = {
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
     "resources": {               # host-wide local admission; thresholds of 0 disable sensing
-        "max_parallel": None,     # workers + reviews + checks; None preserves the queue limits
+        "max_parallel": None,     # capacity units shared by workers + reviews + checks
+        "weight": 1,              # default reservation per run, in capacity units
+        "max_bypasses": 3,        # cheap claims allowed past an older heavy run before reserving room
         "heavy_test_parallel": 1, # per-user supported setup/check/validation capacity
         # A detached check can wait for the host-wide heavy-validation lease without looking
         # like a silent worker.  This is deliberately separate from idle_kill_minutes: the
@@ -200,6 +212,8 @@ DEFAULTS: dict[str, Any] = {
         "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
         "ladder": [],              # weakest-to-strongest `harness:model` PR reviewer route
         "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
+        "recovery_attempts": 2,   # bounded retries for a review that never yields a verdict
+        "recovery_backoff_seconds": 30,  # linear delay before each recovered review admission
     },
     "retro": {
         "difficulty": "hard",     # tier for persona reviews (phase and PR), the retro reconciliation and
@@ -231,6 +245,7 @@ DEFAULTS: dict[str, Any] = {
                                   # default, so no review app is trusted until its login is named here
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
+        "automerge_require_current_base": True,  # rebase onto the latest base before merging
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
         "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge under the plain policy
         "automerge_hard_tier": True,             # also merge hard-tier PRs, after two approving review
@@ -448,6 +463,47 @@ class Config:
         s = self.product(name).get("setup")
         return dict(s) if isinstance(s, dict) else {}
 
+    def product_validation(self, name: str) -> dict[str, str]:
+        """Return the product's merge-validation policy."""
+        value = self.product(name).get("validation")
+        if value is None:
+            return {"provider": "legacy", "command": ""}
+        if isinstance(value, str):
+            return {"provider": value, "command": ""}
+        if not isinstance(value, dict):
+            raise ValueError(f"products.{name}.validation must be a string or mapping")
+        return {"provider": str(value.get("provider") or ""),
+                "command": str(value.get("command") or "")}
+
+    def product_checkout(self, name: str) -> dict[str, Any]:
+        """Opt-in checkout policy for a product.
+
+        The default is the historical per-task linked worktree.  ``in_place`` names an
+        explicitly provisioned canonical checkout and a command which is run before every
+        use (unlike ``setup.command``, which is stamped and normally runs once).
+        """
+        value = self.product(name).get("checkout")
+        return dict(value) if isinstance(value, dict) else {}
+    def product_timeout_minutes(self, name: str) -> float:
+        """Worker/revision wall-clock budget, inherited from the garden default.
+
+        Check commands intentionally use ``checks.timeout_seconds`` instead.
+        """
+        value = self.product(name).get("timeout_minutes", self.get("timeout_minutes", 90))
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"products.{name}.timeout_minutes must be a non-negative number")
+        return float(value)
+
+    def product_resource_weight(self, name: str) -> int:
+        """Capacity units reserved by one run, inherited from ``resources.weight``."""
+        resources = self.product(name).get("resources") or {}
+        if not isinstance(resources, dict):
+            raise ValueError(f"products.{name}.resources must be a mapping")
+        value = resources.get("weight", self.get("resources.weight", 1))
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"products.{name}.resources.weight must be a positive integer (capacity units)")
+        return value
+
     def harness(self, name: str):
         from .harness import DEFAULT_HARNESSES, Harness
 
@@ -573,6 +629,23 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         paths = product.get("protected_paths", [])
         if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
             raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
+        validation = product.get("validation")
+        if validation is not None:
+            if isinstance(validation, str):
+                provider, validation_command = validation, ""
+            elif isinstance(validation, dict):
+                provider = validation.get("provider")
+                validation_command = validation.get("command", "")
+            else:
+                raise ValueError(f"products.{name}.validation must be a string or mapping")
+            if provider not in ("actions", "status", "command", "none"):
+                raise ValueError(
+                    f"products.{name}.validation.provider must be 'actions', 'status', 'command', or 'none'"
+                )
+            if provider == "command" and (not isinstance(validation_command, str) or not validation_command.strip()):
+                raise ValueError(f"products.{name}.validation.command is required for the command provider")
+            if provider != "command" and validation_command:
+                raise ValueError(f"products.{name}.validation.command is only valid with the command provider")
 
 
 def find_root(start: Path | None = None) -> Path:

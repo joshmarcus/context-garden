@@ -28,6 +28,7 @@ def _synthetic_child_env(
     inherited_execution = {
         "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
         "GARDEN_OWNER_SCOPED", "GARDEN_EXECUTION_TIMEOUT_SECONDS",
+        "GARDEN_VALIDATION_INHERITS_LEASE",
     }
     child = dict(os.environ if env is None else env)
     for key in inherited_execution:
@@ -380,6 +381,24 @@ def test_local_runner_doctor_windows():
         runner = LocalRunner({}, None)
         errors = runner.doctor()
     assert len(errors) == 1 and "WSL" in errors[0]
+
+
+def test_local_runner_preserves_fractional_timeout_minutes(tmp_path):
+    from garden.harness import Harness
+
+    runner = LocalRunner({"timeout_minutes": 0.5}, Harness("tiny", {"command": ["true"]}))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    brief.write_text("")
+    run = Run(task_id="T-1", run_id="fractional", dir=str(run_dir), runner="local")
+
+    runner.launch(run, tmp_path, brief, _synthetic_child_env(
+        GARDEN_HEAVY_TEST_PARALLEL="1", XDG_RUNTIME_DIR=str(tmp_path),
+    ))
+    os.waitpid(run.pid, 0)
+
+    assert "timeout 30 " in (run.path / "command.txt").read_text()
 
 
 def test_local_runner_harness_shell_resolves_bin(tmp_path):
@@ -967,6 +986,9 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
     monkeypatch.setenv("GARDEN_EXECUTION_RUN_DIR", str(outer))
     monkeypatch.setenv("GARDEN_EXECUTION_OWNER", "owned-run")
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "731")
+    monkeypatch.delenv("GARDEN_HEAVY_EXECUTION", raising=False)
+    monkeypatch.delenv("GARDEN_OWNER_SCOPED", raising=False)
+    monkeypatch.delenv("GARDEN_VALIDATION_INHERITS_LEASE", raising=False)
     monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "true"])
     captured = {}
 
@@ -985,6 +1007,34 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
 
     monkeypatch.setenv("GARDEN_VALIDATION_TIMEOUT_SECONDS", "9999")
     assert validation.bounded_validation_timeout_seconds() == 900
+
+
+def test_nested_validation_inherits_an_enclosing_validation_lease(tmp_path):
+    """A full suite can run a supported validation without waiting on itself."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    inner_status = tmp_path / "inner-status.json"
+    child = (
+        "import json; from pathlib import Path; "
+        f"Path({str(inner_status)!r}).write_text(json.dumps({{'ok': True}}))"
+    )
+    nested = (
+        f"{shlex.quote(sys.executable)} -m garden.validation -- "
+        f"{shlex.quote(sys.executable)} -c "
+        f"{shlex.quote(child)}"
+    )
+    env = _supervisor_test_env(tmp_path)
+    env.pop("GARDEN_HEAVY_EXECUTION")
+    result = subprocess.run(
+        _supervisor_command(outer, [sys.executable, "-m", "garden.validation", "--", "sh", "-c", nested]),
+        env=env, capture_output=True, text=True, timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(inner_status.read_text()) == {"ok": True}
+    statuses = list((outer / "validations").glob("*/execution.json"))
+    assert len(statuses) == 2
+    assert any(json.loads(path.read_text()).get("inherited_lease") is True for path in statuses)
 
 
 def test_runtime_leases_use_private_fallback_and_reject_hostile_files(tmp_path, monkeypatch):
@@ -1220,6 +1270,18 @@ def test_ssh_runner_uses_bare_bin(sched, fake_github):
     remote_sh = (run.path / "remote.sh").read_text()
     # SSH runner must not resolve the binary path: the remote host may have it elsewhere
     assert "/resolved/claude" not in remote_sh
+
+
+@pytest.mark.needs_remote_clone
+def test_ssh_runner_preserves_fractional_timeout_minutes(sched, fake_github):
+    sched.cfg.data["products"]["demo"]["timeout_minutes"] = 0.5
+    task = sched.store.task("DM-001")
+    task.runner = "ssh"
+    sched.store.save(task)
+
+    sched.tick()
+
+    assert "timeout 30 " in (sched.runs.latest("DM-001").path / "command.txt").read_text()
 
 
 @pytest.mark.needs_remote_clone

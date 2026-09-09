@@ -31,13 +31,15 @@
 </div>
 {% endif %}
 {% if not inbox_count %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
+<form method="get" action="/inbox" class="actions" style="margin:0 0 12px"><label class="muted" for="owner-filter">My work</label><input id="owner-filter" name="owner" value="{{ owner_filter or '' }}" placeholder="logical owner id"><button class="quiet">Filter</button>{% if owner_filter is not none %}<a class="btn quiet" href="/inbox">All work</a>{% endif %}</form>
+{% if owner_filter is not none and not owner_task_items %}<div class="inbox-zero"><b>No work assigned to {{ owner_filter or 'unassigned' }}</b>Task cards for other owners are hidden by this filter.</div>{% endif %}
 {% for group, gtitle, gdesc, gkind in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
 <section class="group {{ 'notice' if gkind == 'notice' else '' }}">
   <header><span class="stamp">{{ group }}</span><h2>{{ gtitle }}{% if gkind == 'notice' %} · {{ gitems|length }}, no action needed{% endif %}</h2><p>{{ gdesc }}</p></header>
   {% for it in gitems %}
   <div class="item {{ 'q-open' if it.group == 'question' else '' }}">
     <div>{% if it.status %}{{ stage(it.status, 26) }}{% endif %}</div>
-    <div class="who">{% if it.task %}<a class="id" href="/tasks/{{ it.task }}">{{ it.task }}</a>{% endif %}{% if it.status %}<span class="state s-{{ it.status }}">{{ it.status.replace('_',' ') }}</span>{% endif %}<span class="age">{{ stage_word(it.status) if it.status else '' }}{% if it.difficulty %} · {{ it.difficulty }}{% endif %} · {{ it.age }}</span></div>
+    <div class="who">{% if it.task %}<a class="id" href="/tasks/{{ it.task }}">{{ it.task }}</a>{% endif %}{% if it.status %}<span class="state s-{{ it.status }}">{{ it.status.replace('_',' ') }}</span>{% endif %}<span class="age">{{ stage_word(it.status) if it.status else '' }}{% if it.difficulty %} · {{ it.difficulty }}{% endif %}{% if it.task %} · owner {{ it.get('owner') or 'unassigned' }}{% endif %} · {{ it.age }}</span></div>
     <div class="what decision-content">
       {% if it.task or it.group != 'question' %}<div class="t">{% if it.task %}<a href="/tasks/{{ it.task }}" style="text-decoration:none">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</div>{% endif %}
       {% if not it.get('decision_card') and it.why != it.get('question') %}<div class="why">{{ it.why }}</div>{% endif %}

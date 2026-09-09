@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -8,7 +9,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from garden.github import GitHubError, PRInfo
 from garden.gitops import head_sha
+from garden.model import Status
 from garden.runs import Run, RunStore
 from garden.scheduler import Scheduler
 from garden.scheduler.snapshot import _safe
@@ -169,6 +172,44 @@ def test_shared_rail_keeps_the_active_build_out_of_the_inbox(garden, monkeypatch
     assert "Serving build" not in inbox
     assert "Garden tool update" in inbox
     assert '<form method="post" action="/upgrade"><button class="primary">Upgrade</button></form>' in inbox
+
+def test_owner_inheritance_reassignment_and_inbox_filter(garden):
+    goals = garden / "demo" / "p1" / "goals.md"
+    goals.write_text("---\nowner: platform-team\n---\n\n# p1\n")
+    c = client(garden)
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["effective_owner"] == "platform-team" and task["owner_source"] == "phase"
+    response = c.post("/tasks/DM-001/owner", data={"note": "feature-team"},
+                      headers={"Origin": "http://testserver"}, follow_redirects=False)
+    assert response.status_code == 303
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["owner"] == task["effective_owner"] == "feature-team"
+    assert "owner feature-team" in c.get("/tasks/DM-001").text
+    # Both teams can own work in one product; the Inbox limits task cards to the selected ID.
+    store = Store(garden)
+    other = store.task("DM-002")
+    other.status = Status.DRAFT
+    store.save(other)
+    page = c.get("/inbox?owner=platform-team").text
+    assert 'href="/tasks/DM-002"' in page and 'href="/tasks/DM-001"' not in page
+    assert c.post("/tasks/DM-001/owner", data={"note": ""}, headers={"Origin": "http://testserver"},
+                  follow_redirects=False).status_code == 303
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["owner"] == "unassigned"
+    assert task["effective_owner"] == "" and task["owner_source"] == "unassigned"
+    phase_page = c.get("/phases/demo/p1").text
+    assert re.search(r'href="/tasks/DM-001".*?</td><td>.*?</td><td>unassigned</td>', phase_page, re.DOTALL)
+    assert c.post("/tasks/DM-001/owner", data={"note": "inherit"}, headers={"Origin": "http://testserver"},
+                  follow_redirects=False).status_code == 303
+    task = next(row for row in c.get("/api/tasks").json() if row["id"] == "DM-001")
+    assert task["effective_owner"] == "platform-team" and task["owner_source"] == "phase"
+
+
+def test_owner_filtered_empty_inbox_has_consistent_count_and_message(garden):
+    c = client(garden)
+    page = c.get("/inbox?owner=no-such-owner").text
+    assert "<div class=\"v\">0</div><div class=\"l\">need you</div>" in page
+    assert "No work assigned to no-such-owner" in page
 
 
 def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
@@ -583,6 +624,64 @@ def test_board_columns_and_list_views(garden):
     assert 'class="board-list"' in c.get("/partials/board?view=list").text
     # The switch and filters carry the chosen view so navigation keeps it.
     assert "view=list" in lst.text
+
+
+def test_board_prs_lists_open_linked_and_unlinked_prs(garden):
+    from garden.model import Status
+    from tests.conftest import FakeGitHub
+
+    github = FakeGitHub()
+    listed_slugs = []
+    original_list = github.list_open_prs
+
+    def list_open_prs(slug):
+        listed_slugs.append(str(slug))
+        return original_list(slug)
+
+    github.list_open_prs = list_open_prs
+    github.prs = {
+        "linked": PRInfo(1, "https://github.com/test/demo/pull/1", "OPEN", "Linked change", review_decision="APPROVED", checks="SUCCESS"),
+        "unlinked": PRInfo(2, "https://github.com/test/demo/pull/2", "OPEN", "Outside Garden", review_decision="", checks=""),
+        "closed-task": PRInfo(3, "https://github.com/test/demo/pull/3", "OPEN", "Already finished", checks="FAILURE"),
+    }
+    store = Store(garden)
+    linked = store.task("DM-001")
+    linked.pr = "https://github.com/test/demo/pull/1"
+    store.save(linked)
+    closed = store.task("DM-002")
+    closed.pr = "https://github.com/test/demo/pull/3"
+    closed.status = Status.DONE
+    store.save(closed)
+    c = TestClient(create_app(Store(garden), watch=False, github=github, host="testserver"))
+
+    page = c.get("/board?view=prs")
+    assert page.status_code == 200
+    assert ">PRs<" in page.text and "Loading pull requests" in page.text
+    partial = c.get("/partials/board?view=prs").text
+    assert listed_slugs == ["test/demo", "test/demo"]
+    assert "#1" in partial and "Linked change" in partial and "approved" in partial and "success" in partial
+    assert 'href="/tasks/DM-001"' in partial
+    assert "#2" in partial and "Outside Garden" in partial and "unlinked" in partial and "not reported" in partial
+    assert 'target="_blank" rel="noopener noreferrer"' in partial
+    assert "Already finished" not in partial
+
+
+def test_board_prs_handles_empty_and_github_errors(garden):
+    from tests.conftest import FakeGitHub
+
+    github = FakeGitHub()
+    store = Store(garden)
+    store.config.data["products"]["demo"]["validation"] = {"provider": "command", "command": "check"}
+    c = TestClient(create_app(store, watch=False, github=github, host="testserver"))
+    assert "No open pull requests in demo." in c.get("/partials/board?view=prs").text
+
+    def unavailable(slug):
+        raise GitHubError("authentication failed")
+
+    github.list_open_prs = unavailable
+    error = c.get("/partials/board?view=prs")
+    assert error.status_code == 200
+    assert "Could not fetch pull requests: authentication failed" in error.text
 
 
 def test_board_list_surfaces_a_waiting_question(garden, monkeypatch):

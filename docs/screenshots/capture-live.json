@@ -1,0 +1,91 @@
+{
+  "browser": "152.0.4191.66",
+  "colorScheme": "light",
+  "source": "Live context-garden development garden",
+  "pages": [
+    {
+      "name": "now-light",
+      "route": "/now?window=24h",
+      "capturedAt": "2026-09-09T14:14:32.883Z",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "widths": {
+        "client": 1440,
+        "scroll": 1440
+      },
+      "errors": []
+    },
+    {
+      "name": "now-run-costs-light",
+      "route": "/now?window=24h",
+      "capturedAt": "2026-09-09T14:14:33.011Z",
+      "selector": "#period-body .tiers",
+      "index": 0,
+      "bounds": {
+        "x": 268,
+        "y": 312.171875,
+        "width": 1140,
+        "height": 376.5625
+      },
+      "errors": []
+    },
+    {
+      "name": "now-outcomes-light",
+      "route": "/now?window=24h",
+      "capturedAt": "2026-09-09T14:14:33.115Z",
+      "selector": "#period-body .tiers",
+      "index": 1,
+      "bounds": {
+        "x": 268,
+        "y": 335.734375,
+        "width": 1140,
+        "height": 664.078125
+      },
+      "errors": []
+    },
+    {
+      "name": "board-backlog-light",
+      "route": "/board?view=backlog&product=context-garden",
+      "capturedAt": "2026-09-09T14:14:34.614Z",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "widths": {
+        "client": 1440,
+        "scroll": 1440
+      },
+      "errors": []
+    },
+    {
+      "name": "board-list-light",
+      "route": "/board?view=list&product=context-garden&phase=phase-06",
+      "capturedAt": "2026-09-09T14:14:36.406Z",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "widths": {
+        "client": 1440,
+        "scroll": 1440
+      },
+      "errors": []
+    },
+    {
+      "name": "board-columns-light",
+      "route": "/board?product=context-garden",
+      "capturedAt": "2026-09-09T14:14:37.919Z",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "widths": {
+        "client": 1440,
+        "scroll": 1440
+      },
+      "errors": []
+    }
+  ]
+}

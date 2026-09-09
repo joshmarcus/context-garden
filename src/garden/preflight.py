@@ -34,6 +34,7 @@ _TRUSTED_CAPTURE_FAILURES = {
     "browser_unavailable",
     "capture_path_unavailable",
     "capture_result_unavailable",
+    "capture_protocol_mismatch",
 }
 
 # A regular unified diff prefixes newly-added source lines with ``+``.  Match both
@@ -43,6 +44,11 @@ _CONFLICT = re.compile(r"^(?:\+)?(?:<<<<<<<|>>>>>>>)(?:[ \t]|$)", re.MULTILINE)
 
 
 def _is_ui_path(path: str) -> bool:
+    # The JSON API is served from the web package but does not render a page.  It has
+    # functional coverage rather than screenshot coverage when a legacy preflight
+    # caller has no frozen validation plan to consult.
+    if path == "src/garden/web/pages/api.py":
+        return False
     return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
             or path.endswith((".css", ".scss")))
 

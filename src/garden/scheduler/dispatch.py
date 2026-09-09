@@ -10,8 +10,9 @@ from typing import Any
 
 from .. import gitops
 from ..brief import build_brief
+from ..canonical import configured_root
 from ..criteria import parse_criteria
-from ..github import is_safe_pr_url
+from ..github import GitHubError, is_safe_pr_url
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -33,6 +34,8 @@ class DispatchMixin:
         for task in self.store.tasks().values():
             if task.status not in (Status.DONE, Status.CANCELLED) or task.id in active_task_ids:
                 continue
+            if str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place":
+                continue  # canonical checkouts are provisioned assets, never disposable caches
             worktree = self.worktree_for(task)
             if not worktree.exists():
                 continue
@@ -99,6 +102,8 @@ class DispatchMixin:
         # check.  Give queued validation its priority-ordered turn before this ready
         # queue can fill a slot again.
         self._drain_pending_reviews(tasks, rep)
+        blocked_local: list[Task] = []
+        max_bypasses = max(0, int(self.cfg.get("resources.max_bypasses", 3)))
         for task, mode, _why in queue:
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
@@ -112,8 +117,22 @@ class DispatchMixin:
                 continue  # manual tasks are taken by a human, not auto-dispatched
             if self.slots_free() <= 0:
                 break
-            if not runner.remote and self.local_slots_free() <= 0:
-                continue  # remote candidates may still run while the operator host drains
+            if runner.name == "local":
+                resource = self.resource_status()
+                weight = self.resource_weight(task.id)
+                if resource.pressured:
+                    continue  # remote candidates may still run while the operator host drains
+                if resource.active + weight > resource.limit:
+                    # An impossible reservation can never benefit from starvation
+                    # protection and must not strand feasible work behind it.
+                    if weight <= resource.limit:
+                        blocked_local.append(task)
+                    continue
+                # Once an older heavy task has been bypassed enough times, hold the
+                # remaining units for it. Remote work uses another host and may proceed.
+                if any(int(self.state.get(old.id).get("resource_bypasses", 0)) >= max_bypasses
+                       for old in blocked_local):
+                    continue
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             if self.capture_required(task) and not self.browser_ready_for(task):
@@ -123,6 +142,13 @@ class DispatchMixin:
             try:
                 self.dispatch(task, mode=mode, runner=runner)
                 rep.dispatched.append(f"{task.id}({mode})")
+                if runner.name == "local":
+                    self.state.get(task.id).pop("resource_bypasses", None)
+                    for old in blocked_local:
+                        old_state = self.state.get(old.id)
+                        old_state["resource_bypasses"] = int(old_state.get("resource_bypasses", 0)) + 1
+                    if blocked_local:
+                        self.state.save()
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 self._transition(task, Status.FAILED, f"dispatch failed: {e}")
@@ -349,6 +375,7 @@ class DispatchMixin:
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
+        claimed_pr = None
         # An external claim names an operator-owned branch (and sometimes a PR) before
         # there is anything to finish. Keep that identity on the task as well as the
         # run, so a restart and every task-facing surface describe the claimed work
@@ -367,6 +394,23 @@ class DispatchMixin:
                 if external_pr_number is None:
                     match = re.search(r"/pull/(\d+)/?$", external_pr)
                     external_pr_number = int(match.group(1)) if match else None
+                if completion_mode == "external":
+                    slug = self.slug_for(task)
+                    if not slug or not self.github.available:
+                        raise RuntimeError("external claim needs an accessible configured repository")
+                    if external_pr_number is None:
+                        raise RuntimeError("external claim needs an identifiable PR number")
+                    try:
+                        claimed_pr = self.github.get_pr(slug, external_pr_number)
+                    except (GitHubError, KeyError) as exc:
+                        detail = exc.args[0] if exc.args else exc
+                        raise RuntimeError(f"could not read external PR: {detail}") from exc
+                    if claimed_pr.head != branch:
+                        raise RuntimeError(
+                            f"external PR head {claimed_pr.head!r} does not match claimed branch {branch!r}"
+                        )
+                    if not claimed_pr.head_sha or not claimed_pr.base:
+                        raise RuntimeError("external PR is missing immutable head or base metadata")
             task.branch = branch
             if external_pr:
                 task.pr = external_pr
@@ -411,8 +455,8 @@ class DispatchMixin:
         # quota env_error on this very run can put it back (see reap._handle_quota_env_error):
         # the point is not to burn the round's context on the harness's own account trouble.
         if mode == "revise":
-            run.env_snapshot = {"pending_feedback": feedback, "pending_feedback_easy": revise_easy,
-                                "pending_feedback_rebase": bool(st.get("pending_feedback_rebase"))}
+            run.env_snapshot.update({"pending_feedback": feedback, "pending_feedback_easy": revise_easy,
+                                     "pending_feedback_rebase": bool(st.get("pending_feedback_rebase"))})
             from ..suggestions import pending_suggestions
 
             pend = pending_suggestions(task.body)
@@ -422,7 +466,7 @@ class DispatchMixin:
                           + "\n".join(f"- {s.text}" for s in pend))
                 feedback = f"{feedback}\n\n{sug_fb}".strip() if feedback else sug_fb
         elif mode == "rebase":
-            run.env_snapshot = {"rebase_pending": True}
+            run.env_snapshot.update({"rebase_pending": True})
         qa = list(st.get("qa") or [])
         # List any commits already on the branch in the brief, so a re-dispatched worker
         # builds on the prior attempt instead of reverse-engineering it from git. This
@@ -432,10 +476,15 @@ class DispatchMixin:
         # (CG-125). A truly clean start has no commits ahead of base, so the section is
         # omitted and nothing changes.
         wt_path = worktree_override or self.worktree_for(task)
+        checkout_config = self.cfg.product_checkout(task.product)
+        canonical_root = configured_root(checkout_config, self.store.root) if not runner.remote else None
+        prepared_root = self.prepare_canonical_run(task, run, runner, branch, base)
+        if prepared_root is not None:
+            canonical_root = prepared_root
         # A killed worker's leftover uncommitted edits are stashed (not swept into the sync
         # below as a commit) before anything else touches the worktree, so they are recovered
         # by `git stash apply`, not buried in a backup branch's synthetic commit.
-        if worktree and not runner.remote:
+        if worktree and not runner.remote and canonical_root is None:
             self._stash_dirty_worktree(task, wt_path, run)
         # A revise, rebase or resume run writes to a branch another writer may have just moved
         # (a prior revise round's push, the merge queue's own rebase): sync the worktree to
@@ -443,7 +492,7 @@ class DispatchMixin:
         # local copy toward a rejected push (CG-220). Any commits sitting only in the worktree —
         # a killed prior run's progress — are kept on `backup/<run-id>`, never silently dropped.
         # run_id was reserved above, alongside the run itself (see RunStore.next_run_id).
-        if run_id and worktree and not runner.remote:
+        if run_id and worktree and not runner.remote and canonical_root is None:
             backed_up = gitops.sync_to_origin_head(wt_path, branch, f"backup/{run_id}")
             if backed_up:
                 note = (f"kept {len(backed_up)} local-only commit(s) on `backup/{run_id}` before "
@@ -465,7 +514,8 @@ class DispatchMixin:
         # build_brief's product_dirs prefers this worktree once it exists.
         wt: Path | None = None
         if worktree and not runner.remote:
-            wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
+            wt = (canonical_root if canonical_root is not None else
+                  gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base))
             from .snapshot import write_snapshot
             write_snapshot(self, task, wt)
         # The head this run starts from, for a lease-protected push once it finishes (CG-220):
@@ -511,11 +561,20 @@ class DispatchMixin:
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.completion_mode = completion_mode
         run.external_pr = external_pr
+        if claimed_pr is not None:
+            run.env_snapshot.update({
+                "external_repository": self.slug_for(task),
+                "external_base": claimed_pr.base,
+                "external_head_sha": claimed_pr.head_sha,
+            })
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
+        run.env_snapshot["product"] = task.product
+        run.env_snapshot["execution_timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
+        run.env_snapshot.setdefault("resource_weight", self.cfg.product_resource_weight(task.product))
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
         run.env_snapshot["criteria"] = criteria_snapshot
@@ -569,6 +628,7 @@ class DispatchMixin:
             else:
                 st["revisions"] = int(st.get("revisions", 0)) + 1
             st["pending_feedback"] = ""
+            st.pop("pending_feedback_sources", None)
             st.pop("pending_feedback_easy", None)
         elif mode == "rebase":
             # A rebase round has its own counter and never touches max_revisions.

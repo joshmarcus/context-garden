@@ -289,6 +289,9 @@ class FakeGitHub:
     def find_pr(self, slug, head_branch):
         return self.prs.get(head_branch)
 
+    def list_open_prs(self, slug):
+        return [pr for pr in self.prs.values() if pr.state == "OPEN"]
+
     def set_checks(self, branch, state, latency=None):
         """Arm a PR's checks rollup the way a push does on real GitHub: report PENDING for
         `latency` polls (default `check_latency`), then settle to `state` (SUCCESS/FAILURE).
@@ -341,11 +344,15 @@ class FakeGitHub:
                 pr.state = "CLOSED"
                 self.closed.append(number)
 
-    def merge_pr(self, slug, number, method="squash", delete_branch=True):
+    def merge_pr(self, slug, number, method="squash", delete_branch=True, expected_head=""):
         for pr in self.prs.values():
             if pr.number == number:
+                if expected_head and pr.head_sha != expected_head:
+                    from garden.github import GitHubError
+                    raise GitHubError("head changed before merge")
                 pr.state = "MERGED"
-                self.merged.append({"number": number, "method": method, "delete_branch": delete_branch})
+                self.merged.append({"number": number, "method": method,
+                                    "delete_branch": delete_branch})
                 if delete_branch:
                     self.delete_branch(slug, pr.head)
                 return

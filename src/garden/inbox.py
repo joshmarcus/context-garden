@@ -10,7 +10,7 @@ from typing import Any
 from .brief import brief_gaps
 from .criteria import required_evidence, required_evidence_rows
 from .graph import effective_status, ready
-from .model import Status, Task, phase_refusal
+from .model import Status, Task, effective_owner, phase_refusal
 from .runs import RunStore
 from .store import Store
 
@@ -99,6 +99,7 @@ ATTENTION_KINDS = {
     "check_did_not_run": ("A check could not run", "The check continuation and its PR identity are preserved. A delegated operator may retry it once without changing the task's outcome."),
     "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
     "deployment": ("Deployment prerequisite", "An operator must complete the named deployment or recovery step before the scheduler can continue. This is operational work, not an unanswered product question."),
+    "review_recovery_exhausted": ("Automatic review recovery exhausted", "The scheduler preserved and retried the review request, but its bounded repair budget is spent. Repair review capacity or the reviewer environment, then request one more review."),
 }
 
 
@@ -423,12 +424,22 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 next_open_phase[ph.key] = f"{prod.name}/{nxt.name}"
 
     def add(group: str, t: Task, why: str, actions: list[dict[str, str]], **extra: Any) -> None:
+        owner, owner_source = effective_owner(t, store.phase(t.product, t.phase))
         items.append({"group": group, "group_title": titles[group], "task": t.id, "title": t.title, "phase": t.key,
                       "status": t.status.value, "pr": t.pr, "why": why, "actions": actions, "age": _age(t.updated),
-                      "difficulty": t.difficulty, **extra})
+                      "difficulty": t.difficulty, "owner": owner, "owner_source": owner_source, **extra})
 
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
         st = state.get(t.id)
+        recovery = st.get("review_recovery") or {}
+        if recovery and st.get("pending_reviews") and not st.get("needs_human"):
+            add("operator", t,
+                f"automatic review recovery {recovery.get('attempts', 0)}/{recovery.get('limit', 0)} queued · scheduler owns the retry",
+                [{"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"}],
+                kind="review_recovery", kind_title="Automatic review recovery",
+                kind_blurb="The scheduler retained the current-head review request and will retry after admission and backoff permit it.",
+                reason=str(recovery.get("reason") or "review did not produce a verdict"), evidence=[])
+
         # `build_inbox` also feeds lightweight reader facades in CLI/tests. Resolve the
         # configured runner from the task/store rather than requiring a live Scheduler.
         is_manual = (t.runner or store.config.product_runner(t.product)) == "manual"
@@ -516,12 +527,13 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             ], review=rev, diff_stat=diff_summary)
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
             if st.get("ci_missing"):
-                add("operator", t, "CI has not reported a status for this PR head", [
+                diagnostic = str(st.get("ci_diagnostic") or "CI has not reported a status for this PR head")
+                add("operator", t, diagnostic, [
                     {"label": "Open PR", "kind": "link", "href": t.pr,
                      "detail": "inspect or re-run the configured CI provider; the PR and its feedback remain unchanged"},
                 ], kind="ci_missing", kind_title="CI status missing",
                     kind_blurb="This is an operational prerequisite, not approval of the product outcome.",
-                    reason="No CI rollup has arrived for the current PR head.", evidence=_evidence_lines(t, st, runs))
+                    reason=diagnostic, evidence=_evidence_lines(t, st, runs))
                 continue
             # A current approval is actionable only after every automated review of this
             # head has finished.  A queued or running follow-up remains scheduler-owned.

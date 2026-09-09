@@ -254,8 +254,17 @@ class ResourceMixin:
         """Every process launched on this host, regardless of scheduler queue or CLI path."""
         return [r for r in self.active_runs() if r.is_local_execution]
 
+    def resource_weight(self, task_id: str) -> int:
+        task = self.store.tasks().get(task_id)
+        return self.cfg.product_resource_weight(task.product) if task is not None else 1
+
+    def run_resource_weight(self, run: Any) -> int:
+        """Read the dispatch-time reservation; legacy runs consume one unit."""
+        value = (run.env_snapshot or {}).get("resource_weight", 1)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 1
+
     def resource_status(self) -> ResourceStatus:
-        active = len(self.local_runs_active())
+        active = sum(self.run_resource_weight(run) for run in self.local_runs_active())
         limit = self.resource_parallel_limit()
         memory_min = int(self.effective("resources.min_memory_available_mb", 0) or 0)
         temp_min = int(self.effective("resources.min_temp_free_mb", 0) or 0)
@@ -408,11 +417,12 @@ class ResourceMixin:
         self._record_resource_status(status)
         return status
 
-    def local_slots_free(self) -> int:
+    def local_slots_free(self, task_id: str = "") -> int:
         status = self.resource_status()
         if status.admission_blocked:
             return 0
-        return max(0, status.limit - status.active)
+        free = max(0, status.limit - status.active)
+        return free if not task_id or free >= self.resource_weight(task_id) else 0
 
     def _try_reclaim_for_pending_local_launch(self) -> bool:
         """Give queued local work one serialized reclaim attempt without admitting it."""
@@ -420,12 +430,13 @@ class ResourceMixin:
             status = self.refresh_resource_pressure()
             return status.pressured and self._start_reclaim_if_eligible(status)
 
-    def _admit_local_launch(self, kind: str) -> None:
+    def _admit_local_launch(self, kind: str, weight: int = 1) -> None:
         status = self.refresh_resource_pressure()
-        if status.admission_blocked:
-            if status.capacity_full and not status.pressured:
+        if status.pressured or status.active + weight > status.limit:
+            if not status.pressured:
                 raise ResourcePressureError(
-                    f"{kind} waits for a local execution slot ({status.active}/{status.limit} busy); "
+                    f"{kind} needs {weight} capacity unit(s) and waits for a local execution slot "
+                    f"({status.active}/{status.limit} in use); "
                     "eligible work dispatches automatically when one finishes"
                 )
             if status.pressured:
@@ -436,10 +447,13 @@ class ResourceMixin:
             )
 
     def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "",
-                       runner_name: str = "local") -> Any:
+                       runner_name: str = "local", resource_weight: int | None = None) -> Any:
         """Atomically admit and publish a running local run across all launchers."""
         with self._local_admission_lock():
-            self._admit_local_launch(kind)
+            weight = self.resource_weight(task_id) if resource_weight is None else resource_weight
+            self._admit_local_launch(kind, weight)
             run = self.runs.new_run(task_id, runner_name, mode=mode, run_id=run_id)
             run.execution_remote = False
+            run.env_snapshot["resource_weight"] = weight
+            run.save()
             return run

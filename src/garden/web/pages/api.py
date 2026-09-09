@@ -20,6 +20,7 @@ from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
 from ...graph import effective_status
+from ...model import effective_owner
 from ...runs import Run
 from ..common import Site
 
@@ -69,10 +70,21 @@ def register(app: FastAPI, site: Site) -> None:
     def leased(run: Any) -> bool:
         return bool(run.lease_expires_at and run.lease_expires_at > dt.datetime.now(dt.UTC).isoformat())
 
+    def execution_timeout_minutes(run: Any) -> float:
+        """Return the snapshotted execution budget, keeping checks independently bounded."""
+        snapshot = run.env_snapshot or {}
+        if "execution_timeout_minutes" in snapshot:
+            return float(snapshot["execution_timeout_minutes"] or 0)
+        elif run.mode == "check":
+            return 0
+        product = str(snapshot.get("product") or "")
+        return (hub.store.config.product_timeout_minutes(product) if product
+                else float(hub.store.config.get("timeout_minutes", 90) or 0))
+
     def execution_deadline(run: Any) -> dt.datetime | None:
         """Fixed controller deadline; heartbeats renew liveness, never execution budget."""
         started = run.execution_started_at or run.claimed_at
-        timeout = float(hub.store.config.get("timeout_minutes", 90) or 0)
+        timeout = execution_timeout_minutes(run)
         if not started or not timeout:
             return None
         return dt.datetime.fromisoformat(started) + dt.timedelta(minutes=timeout + 5)
@@ -157,7 +169,10 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         tasks = s.tasks()
         stack = bool(s.config.get("stack", True))
-        return JSONResponse([{**t.to_frontmatter(), "effective_status": effective_status(t, tasks, stack)} for t in tasks.values()])
+        return JSONResponse([{**t.to_frontmatter(), "effective_status": effective_status(t, tasks, stack),
+                              "effective_owner": effective_owner(t, s.phase(t.product, t.phase))[0],
+                              "owner_source": effective_owner(t, s.phase(t.product, t.phase))[1]}
+                             for t in tasks.values()])
 
     @app.get("/api/operations/{task_id}/{run_id}")
     def api_operation(task_id: str, run_id: str):
@@ -199,6 +214,7 @@ def register(app: FastAPI, site: Site) -> None:
         offered = {str(x) for x in (body.get("harnesses") or [])}
         tiers = {str(x) for x in (body.get("tiers") or [])}
         capacity = min(max(1, int(body.get("capacity") or 1)), int(host_cfg.get("max_parallel") or 1))
+        in_place = bool(host_cfg.get("in_place"))
         with hub.action_lock:
             from ...runner.base import pass_env_patterns
             from ...runs import RunStore
@@ -207,7 +223,10 @@ def register(app: FastAPI, site: Site) -> None:
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))
                      and not r.process_finished()]
-            if len(owned) >= capacity:
+            if in_place and owned:
+                return Response(status_code=204)
+            used = sum(int((r.env_snapshot or {}).get("resource_weight") or 1) for r in owned)
+            if not in_place and used >= capacity:
                 return Response(status_code=204)
             now = dt.datetime.now(dt.UTC)
             for run in runs:
@@ -224,6 +243,19 @@ def register(app: FastAPI, site: Site) -> None:
                 if run.mode != "check" and (not run.harness or run.harness not in offered):
                     continue
                 if run.difficulty and tiers and run.difficulty not in tiers:
+                    continue
+                weight = int((run.env_snapshot or {}).get("resource_weight") or 1)
+                if not in_place and used + weight > capacity:
+                    # First-fit admission lets a cheap product use remaining capacity while
+                    # a heavier queued product waits. Bound those bypasses so a steady stream
+                    # of cheap claims eventually reserves the next opening for old heavy work.
+                    if weight <= capacity:
+                        bypasses = int((run.env_snapshot or {}).get("admission_bypasses") or 0)
+                        max_bypasses = max(0, int(hub.store.config.get("resources.max_bypasses", 3)))
+                        if bypasses >= max_bypasses:
+                            return Response(status_code=204)
+                        run.env_snapshot["admission_bypasses"] = bypasses + 1
+                        run.save()
                     continue
                 run.host = str(body["host"])
                 claim_time = now.isoformat()
@@ -263,16 +295,21 @@ def register(app: FastAPI, site: Site) -> None:
                 run.claim_history.append({"claimed_at": claim_time, "host": run.host,
                                           "lease_token_sha256": hashlib.sha256(run.lease_token.encode()).hexdigest(),
                                           "pushed_ref": run.pushed_ref})
-                try:
-                    source = str(configured_repo)
-                    scheduler_repo = gitops.ensure_repo(
-                        source if is_git_remote_url(source) else repo_path,
-                        hub.store.config.repos_dir,
-                    )
-                    gitops.fetch(scheduler_repo)
-                    run.start_head = gitops.remote_head(scheduler_repo, run.branch)
-                except (AttributeError, gitops.GitError):
-                    run.start_head = ""
+                if run.source_head:
+                    # The scheduler recorded this immutable base-probe source before the
+                    # lease. Do not replace it with the task branch's moving head.
+                    run.start_head = run.source_head
+                else:
+                    try:
+                        source = str(configured_repo)
+                        scheduler_repo = gitops.ensure_repo(
+                            source if is_git_remote_url(source) else repo_path,
+                            hub.store.config.repos_dir,
+                        )
+                        gitops.fetch(scheduler_repo)
+                        run.start_head = gitops.remote_head(scheduler_repo, run.branch)
+                    except (AttributeError, gitops.GitError):
+                        run.start_head = ""
                 persist_host_facts(run, body.get("host_facts"))
                 run.save()
                 setup = hub.store.config.product_setup(product) or {}
@@ -288,7 +325,7 @@ def register(app: FastAPI, site: Site) -> None:
                         + int(hub.store.config.get("workers.recovery_seconds", 300))
                     ),
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
-                    "branch": run.branch, "base": run.base,
+                    "branch": run.branch, "base": run.base, "source_head": run.source_head,
                     "push_ref": run.pushed_ref,
                     "repo": repo_value,
                     # The product command is trusted executable configuration. Values from
@@ -308,6 +345,8 @@ def register(app: FastAPI, site: Site) -> None:
                     "harness_config": {k: v for k, v in ((harness.cfg if harness else {}) or {}).items()
                                        if k in {"bin", "max_turns", "output_format", "permission_mode"}},
                     "turn_cap": harness.max_turns_for(run.difficulty) if harness else 0,
+                    "execution_timeout_minutes": execution_timeout_minutes(run),
+                    "resource_weight": weight,
                 }
                 checks = run.path / "checks_input.json"
                 if checks.exists():

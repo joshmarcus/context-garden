@@ -18,6 +18,18 @@ runner instead uses HTTPS and shares no filesystem with the scheduler.
 | worker to scheduler | the **worktree** | commits on the task branch; publication is handled by the configured transport |
 | worker to scheduler | one **file**, `exit_code` | the completion signal |
 
+## Concurrent review and CI feedback
+
+A revision waits for already-running review and CI analysis to finish. Their feedback is
+stored separately for the target PR head and combined into the worker's saved brief, so a
+late CI result cannot replace review findings or vice versa. A fresh review replaces its
+own contribution; recovered CI clears only CI feedback. Operator-edited handoffs remain
+intact, and GitHub comments retain their original commit context when available.
+
+CI analysis records its target head before starting. Results for a moved head or closed PR
+are retained as run evidence but cannot queue feedback for the new revision. Replaying a
+collected CI result after a restart does not create another revision or duplicate comments.
+Original verdicts, finding identities and repeated-finding stops remain part of the record.
 ## Independent hosts
 
 With `runner: remote`, dispatch queues a run without launching a process. An independent
