@@ -258,6 +258,8 @@ def test_deployment_prerequisite_is_an_operator_recovery_card(garden):
     it = next(item for item in build_inbox(store, sched)
               if item["group"] == "operator" and item["task"] == "DM-001")
     assert it["kind_title"] == "Deployment prerequisite"
+    assert it["category"] == "Operational prerequisite"
+    assert it["owner"] == "operator" and it["user_decision"] is False
     assert "deploy the verified build" in it["reason"]
     assert "operational work" in it["kind_blurb"]
     assert next(a for a in it["actions"] if a["kind"] == "resume")["label"] == "Deployment completed — continue"
@@ -447,8 +449,20 @@ def test_explicit_hold_and_real_question_name_the_correct_owner(garden):
     _set_state(garden, "DM-001", needs_human={"kind": "deployment", "reason": "owner hold: wait for launch approval"})
     _set_task(store, "DM-002", Status.WAITING_HUMAN)
     _set_state(garden, "DM-002", question="Should this public API remain compatible?")
-    html = TestClient(create_app(Store(garden), watch=False)).get("/").text
-    assert "Complete the named deployment step" in html
-    assert "Your decision</dt><dd>Not required" in html
+    card = _attention(garden, "DM-001")
+    assert card["kind"] == "explicit_hold"
+    assert card["owner"] == "you" and card["user_decision"] is True
+    action = next(action for action in card["actions"] if action["kind"] == "resume")
+    assert action["label"] == "Authorize held step and continue"
+    client = TestClient(create_app(Store(garden), watch=False))
+    html = client.get("/").text
+    assert "Needs your decision: Owner authorization required" in html
+    assert "Authorize the held step, or leave it paused" in html
+    assert "Your decision</dt><dd>Required" in html
+    assert "Authorize held step and continue" in html
     assert "Should this public API remain compatible?" in html
     assert "Answer and resume" in html
+    response = client.post("/tasks/DM-001/resume", follow_redirects=False)
+    assert response.status_code == 303
+    assert not State(garden / ".garden" / "state.json").get("DM-001").get("needs_human")
+    assert Store(garden).task("DM-001").status == Status.IN_REVIEW
