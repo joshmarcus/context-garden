@@ -188,6 +188,12 @@ td.title { min-width:200px; }
 .prose pre code { background:none; padding:0; }
 .prose table { font-size:13px; }
 .actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.config-editor { display:grid; gap:10px; }
+.config-setting { border-top:1px solid var(--line); padding:14px 0 4px; }
+.config-setting-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+.config-setting-head h3, .config-setting-head p { margin:0; }
+.config-setting-form textarea { max-width:680px; }
+.config-setting-form input[type=text], .config-setting-form input[type=password], .config-setting-form input[type=number] { width:min(100%, 520px); }
 .kv { display:grid; grid-template-columns: 112px 1fr; gap:6px 12px; font-size:13px; }
 .kv dt { color:var(--muted); font:11px/1.6 var(--mono); letter-spacing:.06em; text-transform:uppercase; } .kv dd { margin:0; min-width:0; overflow-wrap:anywhere; }
 details > summary { cursor:pointer; color:var(--muted); list-style:none; font-family:var(--mono); font-size:12.5px; }

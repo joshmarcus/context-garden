@@ -15,6 +15,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from garden.config import Config
 from garden.github import GitHubError, PRInfo
 from garden.gitops import head_sha
 from garden.model import Status
@@ -2414,6 +2415,82 @@ def test_config_page_renders(garden):
     assert "Rounds and loop friction" in r.text
     assert "null</code> for unlimited automated rounds" in r.text
     assert "review_parallel" in r.text
+
+
+def test_config_editor_covers_metadata_and_saves_global_and_project_values(garden):
+    from garden.configuration import CONFIG_FIELDS, ConfigScope
+
+    c = client(garden)
+    page = c.get("/config").text
+    for key, field in CONFIG_FIELDS.items():
+        if ConfigScope.DERIVED not in field.scopes:
+            assert f'id="setting-{key.replace(".", "-")}"' in page
+            assert field.help in page
+
+    import re
+
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "review.ladder", "value": "[easy, hard]", "revision": token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).get("review.ladder") == ["easy", "hard"]
+
+    project_page = c.get("/config?product=demo").text
+    token = re.search(r'name="revision" value="([^"]+)"', project_page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "3", "product": "demo", "revision": token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).setting("max_parallel", "demo").value == 3
+    assert "Reset to inherited" in c.get("/config?product=demo").text
+
+
+def test_config_editor_rejects_stale_invalid_and_locked_edits_without_partial_save(garden):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["products"]["demo"]["configuration"] = {
+        "locks": {"max_parallel": {"reason": "Protect shared capacity", "value": 2}},
+    }
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+    page = c.get("/config?product=demo").text
+    assert "Locked by project policy" in page and "Protect shared capacity" in page
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+
+    before = path.read_text()
+    locked = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "4", "product": "demo", "revision": token},
+        follow_redirects=False,
+    )
+    assert locked.status_code == 303 and path.read_text() == before
+    assert "Protect+shared+capacity" in locked.headers["location"]
+
+    invalid = c.post(
+        "/config/save",
+        data={"key": "review.ladder", "value": "[easy", "revision": token},
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 303 and path.read_text() == before
+
+    changed = yaml.safe_load(path.read_text())
+    changed["auto_revise"] = False
+    path.write_text(yaml.safe_dump(changed, sort_keys=False))
+    stale = c.post(
+        "/config/save",
+        data={"key": "auto_dispatch", "value": "false", "revision": token},
+        follow_redirects=False,
+    )
+    assert stale.status_code == 303
+    assert "changed+since" in stale.headers["location"]
+    assert Config.load(garden).get("auto_dispatch") is True
 
 
 def test_task_page_names_the_review_ladder_rung(garden):

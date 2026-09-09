@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import yaml
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from ...config import RESTART_KEYS
+from ...config import RESTART_KEYS, Config
+from ...configuration import CONFIG_FIELDS, ApplyMode, ConfigScope, product_configuration, revision
 from ...observe import BUILTIN_PROFILES
 from ...profiles import describe as describe_stop
 from ...scheduler import WORKER_MODES, State
@@ -19,6 +21,7 @@ def register(app: FastAPI, site: Site) -> None:
     def config_page(request: Request):
         s = hub.fresh()
         cfg = s.config
+        saved_cfg = Config.load(s.root, cfg.env)
         sched = hub.reader()
         observe_cfg = dict(cfg.get("observe") or {})
         effective = {
@@ -54,6 +57,37 @@ def register(app: FastAPI, site: Site) -> None:
         stop_rows = [{"name": name, "active": name == active, "meaning": describe_stop(stop),
                      **{f: stop.get(f) for f in ("workers", "reviews", "review_difficulty", "retro_difficulty", "observe")}}
                     for name, stop in stops.items()]
+        selected_product = request.query_params.get("product", "")
+        products = sorted((saved_cfg.data.get("products") or {}).keys())
+        if selected_product not in products:
+            selected_product = ""
+        project_overrides, _ = product_configuration(saved_cfg.data, selected_product) if selected_product else ({}, {})
+        editor_rows = []
+        for field in CONFIG_FIELDS.values():
+            if ConfigScope.DERIVED in field.scopes:
+                continue
+            provenance = saved_cfg.setting(field.key, selected_product or None)
+            can_project = ConfigScope.PROJECT in field.scopes
+            editable = not selected_product or (can_project and not provenance.locked)
+            saved_value = provenance.value
+            if field.secret:
+                rendered = ""
+                display = "••••••••" if saved_value not in (None, "", [], {}) else "not set"
+            else:
+                rendered = yaml.safe_dump(saved_value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip()
+                display = rendered or "empty"
+            effective_value = sched.effective(field.key, field.default, product=selected_product or None)
+            effective_display = ("protected" if field.secret and effective_value not in (None, "", [], {})
+                                 else yaml.safe_dump(effective_value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip())
+            editor_rows.append({
+                "field": field, "editable": editable, "rendered": rendered,
+                "display": display, "effective": effective_display,
+                "source": provenance.source, "locked": provenance.locked,
+                "reason": provenance.reason, "policy_source": provenance.policy_source,
+                "overridden": field.key in project_overrides,
+                "structured": field.value_type.removeprefix("optional_") in {"list", "mapping", "string_or_list", "any"},
+                "choices": field.choices,
+            })
         return templates.TemplateResponse(request, "config.html", ctx(
             request, page="config", sources=cfg.sources, effective=effective, budgets=budgets,
             budget_overrides=sorted(overrides), restart_keys=RESTART_KEYS, config_hold=config_hold,
@@ -70,4 +104,6 @@ def register(app: FastAPI, site: Site) -> None:
             maintenance=maintenance,
             operating_profile_override=sched.overrides().get("operating_profile"),
             operating_profile_active=active, operating_profile_stop_names=list(stops),
-            operating_profile_rows=stop_rows))
+            operating_profile_rows=stop_rows, editor_rows=editor_rows, configuration_products=products,
+            selected_product=selected_product, config_revision=revision(saved_cfg.data),
+            saved_pending=revision(saved_cfg.data) != revision(cfg.data), apply_mode=ApplyMode))
