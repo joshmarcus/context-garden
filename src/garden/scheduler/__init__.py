@@ -764,7 +764,11 @@ class Scheduler(
         with self._step(rep, "reap"):
             self._reap_all(rep)
         self.refresh_resource_pressure()
-        self.store.invalidate_tasks()
+        # Reaping commonly only inspects run records.  Keep its stable task-tree snapshot for
+        # the rest of this pass when it did not write a task, but do not let a worker, action,
+        # or another controller leave us with stale task state: the discovery fingerprint makes
+        # those edits start a fresh scan at this operation boundary.
+        self.store.refresh_tasks_if_changed()
         tasks = self.store.tasks()
         with self._step(rep, "poll"):
             observed, suppressed_products = (
