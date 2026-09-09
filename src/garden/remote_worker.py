@@ -389,7 +389,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         heartbeat.ensure_current()
         heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
                           "final_text": final, "result": parsed, "usage": usage,
-                          "cost_usd": cost, "error": error, "pushed_head": head})
+                          "cost_usd": cost, "error": error, "pushed_head": head,
+                          "validation_receipts": receipts})
     finally:
         heartbeat.stop()
 
