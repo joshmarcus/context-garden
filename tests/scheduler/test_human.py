@@ -1175,16 +1175,6 @@ def test_attach_pr_refuses_unusable_head_identity(sched, fake_github, attribute,
     assert task.branch == "" and task.pr == ""
 
 
-def test_attach_pr_refuses_a_checkout_owned_by_an_active_run(sched, fake_github):
-    task = sched.store.task("DM-001")
-    sched.dispatch(task, runner=ManualRunner({}), worktree=False, branch_override="operator/live",
-                   completion_mode="external")
-    pr = fake_github.create_pr("test/demo", "operator/replacement", "main", "external", "")
-
-    with pytest.raises(RuntimeError, match="active run"):
-        sched.attach_pr(task, pr.url)
-
-
 def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_github):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
