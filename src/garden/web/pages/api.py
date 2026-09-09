@@ -72,7 +72,13 @@ def register(app: FastAPI, site: Site) -> None:
     def execution_deadline(run: Any) -> dt.datetime | None:
         """Fixed controller deadline; heartbeats renew liveness, never execution budget."""
         started = run.execution_started_at or run.claimed_at
-        timeout = float(hub.store.config.get("timeout_minutes", 90) or 0)
+        snapshot = run.env_snapshot or {}
+        # New runs snapshot their product's budget at dispatch.  Runs created before that
+        # field existed retain the historical garden-wide timeout, while an explicit zero
+        # (notably for check runs) continues to mean no model-execution deadline.
+        timeout = float(snapshot["execution_timeout_minutes"] if
+                        "execution_timeout_minutes" in snapshot else
+                        hub.store.config.get("timeout_minutes", 90) or 0)
         if not started or not timeout:
             return None
         return dt.datetime.fromisoformat(started) + dt.timedelta(minutes=timeout + 5)

@@ -416,6 +416,48 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
 
 
+def test_remote_deadline_uses_snapshotted_product_budget_and_preserves_zero_and_legacy(
+    garden, monkeypatch,
+):
+    client, store = remote_client(garden, monkeypatch)
+    auth = {"Authorization": "Bearer secret-token"}
+
+    product_run = queued_run(store)
+    product_run.env_snapshot["execution_timeout_minutes"] = 180
+    product_run.save()
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers=auth)
+    deadline = dt.datetime.fromisoformat(response.json()["execution_deadline_at"])
+    claimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert deadline == dt.datetime.fromisoformat(claimed.execution_started_at) + dt.timedelta(minutes=185)
+    claimed.execution_started_at = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=2)).isoformat()
+    claimed.save()
+    heartbeat = client.post(f"/api/runs/{claimed.run_id}/heartbeat",
+                            json={"lease_token": response.json()["lease_token"]}, headers=auth)
+    assert heartbeat.status_code == 200
+
+    product_run.status = "done"
+    product_run.finished_at = dt.datetime.now(dt.UTC).isoformat()
+    product_run.save()
+    no_deadline = queued_run(store)
+    no_deadline.env_snapshot["execution_timeout_minutes"] = 0
+    no_deadline.save()
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers=auth)
+    assert response.json()["execution_deadline_at"] == ""
+
+    no_deadline.status = "done"
+    no_deadline.finished_at = dt.datetime.now(dt.UTC).isoformat()
+    no_deadline.save()
+    legacy = queued_run(store)
+    legacy.save()
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                           headers=auth)
+    deadline = dt.datetime.fromisoformat(response.json()["execution_deadline_at"])
+    claimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert deadline == dt.datetime.fromisoformat(claimed.execution_started_at) + dt.timedelta(minutes=6)
+
+
 def test_claim_and_heartbeat_persist_only_bounded_host_facts(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)

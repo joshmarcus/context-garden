@@ -1147,6 +1147,44 @@ def test_two_validations_from_one_worker_are_serialized(tmp_path):
     assert all(json.loads(path.read_text())["owner_scoped"] is True for path in statuses)
 
 
+def test_local_runner_preserves_fractional_execution_timeout(tmp_path, monkeypatch):
+    from garden.harness import Harness
+
+    monkeypatch.setattr("garden.runner.local.shutil.which", lambda _binary: "/usr/bin/timeout")
+    runner = LocalRunner({"timeout_minutes": 0.5}, Harness("tiny", {"command": ["true"]}))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    brief.write_text("")
+    run = Run(task_id="T-1", run_id="fractional", dir=str(run_dir), runner="local")
+    runner.launch(run, tmp_path, brief, _synthetic_child_env(XDG_RUNTIME_DIR=str(tmp_path)))
+    os.waitpid(run.pid, 0)
+
+    assert "timeout 30 " in (run.path / "command.txt").read_text()
+
+
+def test_ssh_runner_preserves_fractional_execution_timeout(tmp_path, monkeypatch):
+    from garden.harness import Harness
+    from garden.runner.ssh import SSHRunner
+
+    class Process:
+        pid = 123
+
+    monkeypatch.setattr("garden.runner.ssh.shutil.which", lambda _binary: "/usr/bin/timeout")
+    monkeypatch.setattr("garden.runner.ssh.subprocess.Popen", lambda *args, **kwargs: Process())
+    runner = SSHRunner({
+        "_product": "demo", "timeout_minutes": 0.5,
+        "hosts": [{"name": "host-1", "host": "example.test", "repos": {"demo": "/repo"}}],
+    }, Harness("tiny", {"command": ["true"]}))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    run = Run(task_id="T-1", run_id="fractional", dir=str(run_dir), runner="ssh",
+              host="host-1", branch="garden/t-1", base="main")
+    runner.start(run, tmp_path, "brief")
+
+    assert "timeout 30 " in (run.path / "command.txt").read_text()
+
+
 def test_waiting_supervisor_can_be_cancelled_without_leaking_lease(tmp_path):
     from garden.harness import Harness
     from garden.runs import Run
