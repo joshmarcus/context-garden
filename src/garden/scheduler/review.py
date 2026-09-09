@@ -923,6 +923,11 @@ class ReviewMixin:
             run.exit_code = run.read_exit_code()
             run.finished_at = now_iso()
             collected = runner.collect(run)
+        run.usage = collected.get("usage") or {}
+        run.cost_usd = collected.get("cost_usd")
+        run.model = str(collected.get("model") or run.model)
+        run.error = ((collected.get("error") or run.error) if run.status == "timeout"
+                     else (collected.get("error") or ""))
         if collected.get("env_error"):
             # The reviewer's own account, not the PR: pause the harness, give back the
             # round this dispatch counted (see dispatch_review's count_round, snapshotted
@@ -948,11 +953,6 @@ class ReviewMixin:
                 notify(self.cfg.data, task.id, "awaiting_triage", note, task.pr or "")
             rep.transitions.append(f"{task.id} review paused (env_error)")
             return True
-        run.usage = collected.get("usage") or {}
-        run.cost_usd = collected.get("cost_usd")
-        run.model = str(collected.get("model") or run.model)
-        run.error = ((collected.get("error") or run.error) if run.status == "timeout"
-                     else (collected.get("error") or ""))
         final = collected.get("final_text") or ""
         if final and not (run.path / "final.md").exists():
             (run.path / "final.md").write_text(final)
