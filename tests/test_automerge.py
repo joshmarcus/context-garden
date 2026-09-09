@@ -10,7 +10,6 @@ import pytest
 from garden import gitops
 from garden.events import EventLog, digest
 from garden.model import Status, Task
-from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -248,30 +247,16 @@ def test_merge_call_atomically_rejects_a_head_changed_after_the_gate(
     assert any("head changed before merge" in error for error in rep.errors)
 
 
-def test_gate_legacy_global_min_review_rounds_is_ignored(sched, fake_github):
+def test_gate_min_review_rounds(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     st["review_rounds"] = 1
     sched.cfg.data["github"]["automerge_min_review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
-    assert ok, reason
+    assert not ok and "review round" in reason
 
 
-def test_hard_task_ignores_the_configured_review_minimum(sched, fake_github):
-    t, st, pr = _in_review(sched, fake_github)
-    t.difficulty = "hard"
-    sched.cfg.data["github"]["automerge_hard_tier"] = True
-    st["scratch_merge"] = {"ok": True, "diff": st.get("last_diff_hash", "")}
-
-    ok, reason = sched._automerge_gate(t, pr)
-    assert ok, reason
-
-    sched.cfg.data["github"]["automerge_min_review_rounds"] = 3
-    st["review_rounds"] = 2
-    ok, reason = sched._automerge_gate(t, pr)
-    assert ok, reason
-
-
-def test_self_product_uses_one_current_head_approval(sched, fake_github):
+def test_self_product_uses_independent_second_opinion(sched, fake_github):
+    """A self-product PR gets one automated approval and an independent current-head opinion."""
     sched.cfg.data["products"]["demo"]["self"] = True
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
     sched.cfg.data["github"]["automerge"] = True
@@ -289,35 +274,52 @@ def test_self_product_uses_one_current_head_approval(sched, fake_github):
     pr.checks = "SUCCESS"
     sched.tick()  # an ordinary follow-up tick must not schedule a same-product second pass
     assert len([r for r in sched.runs.runs_for(t.id) if r.mode == "review"]) == 1
+    pr.review_decision = "APPROVED"
+    # Current-head human approval supplies the independent second opinion.
+    ok, reason = sched._automerge_gate(t, pr)
+    assert ok, reason
     pr.review_decision = ""
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "second review" in reason
+
+    # Two automated approvals alone remain insufficient, even if an old implementation has
+    # left that state behind.
+    st["review_rounds"] = 2
+    ok, reason = sched._automerge_gate(t, pr)
+    assert not ok and "second review" in reason
+
+    # A human approval remains the other independent path when the old state has two rounds.
+    pr.review_decision = "APPROVED"
     ok, reason = sched._automerge_gate(t, pr)
     assert ok, reason
 
 
-def test_gate_provides_tool_product_needs_one_round(sched, fake_github):
+def test_gate_provides_tool_product_needs_two_rounds_by_default(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["provides_tool"] = True
     st["review_rounds"] = 1
     ok, reason = sched._automerge_gate(t, pr)
-    assert ok, reason
+    assert not ok and "review round" in reason
 
 
-def test_gate_self_product_accepts_legacy_per_product_floor(sched, fake_github):
+def test_gate_self_product_two_round_default_is_overridable_per_product(sched, fake_github):
+    """An explicit per-product `automerge_min_review_rounds` overrides the self/tool default."""
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["self"] = True
-    sched.cfg.data["products"]["demo"]["automerge_min_review_rounds"] = 4
+    sched.cfg.data["products"]["demo"]["automerge_min_review_rounds"] = 1
     st["review_rounds"] = 1
     ok, reason = sched._automerge_gate(t, pr)
     assert ok, reason
 
 
-def test_gate_self_product_ignores_a_stricter_global(sched, fake_github):
+def test_gate_self_product_honours_a_stricter_global(sched, fake_github):
+    """A global setting above the self/tool floor still wins (max, not replace)."""
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["self"] = True
     sched.cfg.data["github"]["automerge_min_review_rounds"] = 3
     st["review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
-    assert ok, reason
+    assert not ok and "need 3" in reason
 
 
 def test_gate_normal_product_still_needs_one_round(sched, fake_github):
@@ -475,18 +477,15 @@ def test_automerge_waits_out_a_pending_rollup(sched, fake_github):
     assert pr.state == "MERGED"
 
 
-# ---- a failing gate leaves the merge queue and starts a bounded revision -----
-def test_red_ci_leaves_the_merge_queue_and_starts_revision(sched, fake_github):
+# ---- a failing gate records the reason and leaves the PR in review -----------
+def test_red_ci_holds_the_merge_with_reason_on_the_task(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     pr.checks = "FAILURE"
     sched.tick()
     assert fake_github.merged == []
-    assert sched.store.task("DM-001").status == Status.RUNNING
-    st = sched.state.get("DM-001")
-    assert not st.get("automerge_candidate")
-    revise = sched.runs.latest("DM-001")
-    assert revise.mode == "revise"
-    assert "**CI** is failing" in (revise.path / "brief.md").read_text()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+    blocked = sched.state.get("DM-001").get("automerge_blocked")
+    assert blocked and "checks" in blocked
 
 
 # ---- guarded-path hold (CG-194) ---------------------------------------------
@@ -577,7 +576,7 @@ def test_command_validation_requires_durable_receipt_for_exact_pr_head(sched, fa
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["github"]["automerge_require_current_base"] = False
     sched.cfg.data["products"]["demo"]["validation"] = {
-        "provider": "command", "command": "pytest -q"
+        "provider": "command", "command": "make validate"
     }
     pr.head_sha = gitops.head_sha(sched.worktree_for(t))
     # Command validation does not require a duplicate GitHub checks rollup.
@@ -587,28 +586,13 @@ def test_command_validation_requires_durable_receipt_for_exact_pr_head(sched, fa
 
     evidence = sched.cfg.garden_dir / "runs" / t.id / "remote-work" / "validations" / "1"
     evidence.mkdir(parents=True)
-    execution = {
-        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
-        "pid": 123, "owner_scoped": True, "owner": "run:test",
-        "execution_started_at": "2026-09-10T01:00:00+00:00",
-        "timeout_seconds": 900, "deadline_at": "2026-09-10T01:15:00+00:00",
-    }
-    for name, value in (("execution.json", json.dumps(execution)),
-                        ("exit_code", "0"), ("stderr.log", "")):
+    for name, value in (("execution.json", "{}"), ("exit_code", "0"), ("stderr.log", "")):
         (evidence / name).write_text(value)
-    requested = ["pytest", "-q"]
-    effective = [*requested, *POLICY_ADDOPTS]
     (evidence / "result.json").write_text(json.dumps({
-        "version": 1, "source_sha": pr.head_sha, "command": "pytest -q",
-        "selection": effective, "exit_code": 0,
+        "source_sha": pr.head_sha,
+        "command": "make validate",
+        "selection": ["make", "validate"],
+        "exit_code": 0,
         "log_location": str(evidence),
-        "source_dirty": "", "source_changed": False,
-        "policy": {
-            "version": 1, "source_sha": POLICY_SOURCE_SHA, "kind": "pytest",
-            "stress_opt_in": False, "excluded_nodes": list(STRESS_NODES),
-            "requested_selection": requested, "effective_selection": effective,
-        },
     }))
     assert sched._automerge_gate(t, pr)[0]
-     ok, reason = sched._automerge_gate(t, pr)
-     assert ok, reason

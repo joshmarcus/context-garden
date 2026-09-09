@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import fnmatch
 import hashlib
 import json
@@ -13,7 +12,6 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
-from ..ci_status import CIStatus, resolve_status, status_reason
 from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
 from ..ci_status import CIStatus, resolve_status, status_reason
 from ..model import Status, Task, now_iso, phase_refusal
@@ -41,14 +39,6 @@ class PollMixin:
     _PR_OBSERVATIONS = "__open_prs__"
 
     @staticmethod
-    def _ci_failure_identity(pr: PRInfo) -> str:
-        return json.dumps({
-            "head": pr.head_sha,
-            "state": pr.checks,
-            "failed_checks": sorted(pr.failed_checks),
-        }, sort_keys=True)
-
-    @staticmethod
     def _feedback_key(item: dict[str, Any]) -> str:
         identity = str(item.get("id") or "")
         if identity and not identity.endswith(":"):
@@ -56,16 +46,6 @@ class PollMixin:
         stable = "\0".join(str(item.get(k) or "") for k in
                            ("kind", "author", "created", "path", "line", "state", "body"))
         return hashlib.sha256(stable.encode()).hexdigest()
-
-    @staticmethod
-    def _advance_feedback_cursor(cursor: str, high_water: str) -> str:
-        """Keep the durable feedback timestamp from moving backwards.
-
-        A cursor-scoped response can contain only older reviews while both comment
-        endpoints are empty.  Its response-local high water is therefore not
-        necessarily the PR's durable high water.
-        """
-        return max(cursor, high_water)
 
     def _new_feedback(self, record: dict[str, Any], feedback: Feedback) -> Feedback:
         seen = set(record.get("feedback_seen") or [])
@@ -126,16 +106,15 @@ class PollMixin:
                 continue
             slug = RepositorySlug(route["slug"], route["host"])
             try:
-                prs = self.github.list_open_prs(slug, self.cfg.product_project_users(product))
+                prs = self.github.list_open_prs(slug)
                 old_rows = {int(row["number"]): row for row in prior.get("prs", [])}
                 rows = []
                 for pr in prs:
                     old = dict(old_rows.get(pr.number) or {})
-                    # The persisted timestamp narrows routine provider reads. Stable IDs are
-                    # still retained because a same-timestamp comment must survive a restart.
-                    cursor = str(old.get("feedback_since") or "")
-                    fb = (self.github.incremental_feedback_since(slug, pr.number, cursor)
-                          if cursor else self.github.feedback_since(slug, pr.number, ""))
+                    # Identity-based deduplication deliberately rereads provider pages. A
+                    # timestamp cursor alone can skip a comment sharing the cursor timestamp.
+                    # This makes equal timestamps, repeated pages, and restarts safe.
+                    fb = self.github.feedback_since(slug, pr.number, "")
                     linked_task = linked.get((product, pr.number))
                     if linked_task is not None and "feedback_seen" not in old and linked_task.last_dispatched_at:
                         # Existing tasks used last_dispatched_at as their feedback cursor before
@@ -152,8 +131,9 @@ class PollMixin:
                     fresh = self._new_feedback(old, fb)
                     if (product, pr.number) not in linked:
                         self._remember_feedback(old, fresh)
-                    if fb.high_water:
-                        old["feedback_since"] = self._advance_feedback_cursor(cursor, fb.high_water)
+                    timestamps = [str(i.get("created") or "") for i in [*fb.items, *fb.ignored]]
+                    if timestamps:
+                        old["feedback_since"] = max(timestamps)
                     old.update(asdict(pr))
                     old["number"] = pr.number
                     old["new_feedback"] = len(fresh.items)
@@ -174,11 +154,7 @@ class PollMixin:
     def _ci_status(self, task: Task, pr: PRInfo) -> CIStatus:
         policy = self.cfg.product_ci_policy(task.product)
         provider = str(policy.get("status_provider") or "github")
-        status_pr = pr
-        if not pr.head_sha:
-            status_pr = copy.copy(pr)
-            status_pr.head_sha = str(self.state.get(task.id).get("head_sha") or "")
-        return resolve_status(provider, self.cfg.garden_dir, task.id, status_pr, policy)
+        return resolve_status(provider, self.cfg.garden_dir, task.id, pr, policy)
 
     # ---- poll --------------------------------------------------------------
     def poll(self, task: Task, rep: TickReport, observed: tuple[PRInfo, Feedback] | None = None) -> None:
@@ -302,42 +278,15 @@ class PollMixin:
             return
         st["pr_updated_at"] = pr.updated_at
         ci_note = ""
-        # Check rollups change independently of the PR timestamp. Process a new terminal
-        # failure before the timestamp shortcut below or an approved PR can sit in review,
-        # visibly red but never routed back to revision. Persisting the head and failure
-        # shape keeps repeated observations idempotent across ticks and controller restarts;
-        # analyser run IDs separately deduplicate the bounded retry attempts they initiate.
-        ci_identity = self._ci_failure_identity(pr)
-        # Reaping a flaky analyser and polling happen in the same tick. Give the requested
-        # external rerun that one observation boundary to replace the old failed rollup;
-        # otherwise this poll immediately analyses the same attempt again and spends the
-        # bounded retry before the provider can publish its result. A changed failure shape
-        # is a new failure and remains immediately actionable.
-        waiting_identity = st.get("ci_rerun_waiting_for")
-        waiting_for_rerun = waiting_identity == ci_identity
-        if waiting_identity:
-            st.pop("ci_rerun_waiting_for", None)
-        if waiting_for_rerun:
-            st.pop("ci_failed_at", None)
         failure_key = (
             f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}:"
             f"{','.join(ci_status.failures)}:{pr.updated_at}"
         )
-        github_ci_failure = (provider in ("actions", "status", "legacy")
-                             and pr.checks == "FAILURE"
-                             and not waiting_for_rerun
-                             and st.get("ci_failed_at") != ci_identity)
-        exact_ci_failure = (ci_status.provider != "github"
-                            and ci_status.state == "failure"
-                            and st.get("ci_failed_at") not in (failure_key, pr.updated_at)
-                            and not waiting_for_rerun)
-        if github_ci_failure or exact_ci_failure:
-            # GitHub retains its existing rollup identity; exact-source providers use
-            # the queried source identity without reclassifying the same GitHub failure.
-            failure_identity = ci_identity if github_ci_failure else failure_key
-            names = ", ".join(
-                pr.failed_checks if github_ci_failure else ci_status.failures
-            ) or "unknown"
+        ci_identity = failure_key
+        if ci_status.state == "failure" and st.get("ci_failed_at") != failure_key:
+            st["ci_failed_at"] = failure_key
+            names = ", ".join(ci_status.failures or pr.failed_checks) or "unknown"
+            ci_identity = failure_key
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
             phase_hold = phase_refusal(self.store.phase(task.product, task.phase), task)
@@ -346,7 +295,7 @@ class PollMixin:
                 # spend a detached analyser run until the phase is released.
                 st["deferred_ci_check"] = {"specs": specs, "ci_note": ci_note, "head": pr.head_sha}
             else:
-                st["ci_failed_at"] = failure_identity
+                st["ci_failed_at"] = ci_identity
             if specs:
                 # The CI analyser runs as a detached check run, reaped a tick later (CG-182): the
                 # tick never runs it in-process. The continuation (`_after_ci_check`) combines its
@@ -354,16 +303,8 @@ class PollMixin:
                 if not phase_hold:
                     self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
                                              base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
-                                             extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1},
-                                             source_head=pr.head_sha)
+                                             extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1})
                     return
-        if pr.updated_at and pr.updated_at == st.get("pr_updated_at") and not observed_feedback and not ci_note:
-            # No PR metadata, feedback, or terminal CI result changed. A check rollup can
-            # still flip to green without bumping updated_at, so re-evaluate merge gates.
-            self._maybe_automerge(task, pr, rep)
-            return
-        st["pr_updated_at"] = pr.updated_at
-        st["head_sha"] = pr.head_sha
         fb = observed_feedback if observed_feedback is not None else self.github.feedback_since(slug, number, task.last_dispatched_at)
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)
@@ -393,7 +334,7 @@ class PollMixin:
                 self._transition(task, Status.IN_REVIEW, "current checks resolved the pending CI feedback")
             self.state.save()
             return
-        if not bool(self.effective("auto_revise", True, task.product)) and not st.get("needs_human"):
+        if not bool(self.cfg.get("auto_revise", True)) and not st.get("needs_human"):
             self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
         if task.status == Status.CHANGES_REQUESTED and st.get("pending_feedback") == before:
             self.state.save()
@@ -410,7 +351,7 @@ class PollMixin:
         if n and ci_note:
             note += " + CI failure"
         self.events.emit("feedback", task.id, items=n, ci=bool(ci_note))
-        if not bool(self.effective("auto_revise", True, task.product)):
+        if not bool(self.cfg.get("auto_revise", True)):
             self._transition(task, Status.CHANGES_REQUESTED, f"{note} (auto_revise off; dispatch by hand)", needs_human=True)
             rep.transitions.append(f"{task.id} -> changes_requested")
             return
@@ -460,12 +401,7 @@ class PollMixin:
         repository = self.state.get(self._PR_OBSERVATIONS).get(task.product) or {}
         record = next((row for row in repository.get("prs", [])
                        if int(row.get("number") or 0) == number), {})
-        cursor = str(record.get("feedback_since") or "")
-        fetched = (self.github.incremental_feedback_since(slug, number, cursor)
-                   if cursor else self.github.feedback_since(slug, number, ""))
-        fb = self._new_feedback(record, fetched)
-        if fetched.high_water:
-            record["feedback_since"] = self._advance_feedback_cursor(cursor, fetched.high_water)
+        fb = self._new_feedback(record, self.github.feedback_since(slug, number, ""))
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)
         # Save the consumed run and rerun accounting in the same state write as the
@@ -474,10 +410,10 @@ class PollMixin:
         if reran:
             st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
             # The provider may continue reporting the same head and FAILURE after the
-            # requested rerun. Suppress the poll later in this tick, then let a subsequent
-            # observation through the analyser once more. The ci_reruns limit prevents
-            # another flaky rerun, while the head checks reject obsolete commits.
-            st["ci_rerun_waiting_for"] = self._ci_failure_identity(pr)
+            # requested rerun. Let that result through the analyser once more; the
+            # ci_reruns limit prevents another flaky rerun, while the head checks above
+            # still reject results for obsolete commits.
+            st.pop("ci_failed_at", None)
         self._apply_feedback(task, pr, fb, ci_note, rep, replace_ci=True)
         self.state.save()
         if reran:
@@ -515,6 +451,16 @@ class PollMixin:
             return prod[key]
         return self.cfg.get(f"github.{key}", default)
 
+    def _needs_second_review_round(self, product: str) -> bool:
+        """Whether a PR against `product` needs a second approving round before automerge.
+
+        A product with `self: true` (the garden's own repo) or `provides_tool: true` (the
+        product that ships the `garden` binary) can change the loop that merges it, so one LLM
+        review is not enough: it takes two approving rounds by default, or a person merging by
+        hand. An explicit per-product `automerge_min_review_rounds` overrides this default."""
+        p = self.cfg.product(product)
+        return bool(self.cfg.product_self(product) or p.get("provides_tool"))
+
     def _automerge_enabled(self, task: Task) -> bool:
         if self.external_stack_owner(task):
             return False  # a stack owner, not garden, decides whether its branch may merge
@@ -523,12 +469,10 @@ class PollMixin:
         return bool(self._github_cfg("automerge", task.product, False))
 
     def _hard_tier_automerge(self, task: Task) -> bool:
-        """Whether this hard-tier PR may merge under the scratch-merge policy.
-
-        Only the hard tier is affected; easy and medium keep following `automerge_tiers`.
-        Hard tasks use the configured review minimum and also require the garden's own
-        scratch-merge check.
-        """
+        """Whether this hard-tier PR may merge under the two-round + scratch-merge policy
+        (config `github.automerge_hard_tier`, default on). Only the hard tier is affected;
+        easy and medium keep following `automerge_tiers`. When on, a hard-tier PR merges after
+        two approving review rounds and the garden's own scratch-merge check (CG-191)."""
         if task.difficulty != "hard":
             return False
         return bool(self._github_cfg("automerge_hard_tier", task.product, True))
@@ -540,14 +484,6 @@ class PollMixin:
         st = self.state.get(task.id)
         sm = st.get("scratch_merge") or {}
         return bool(sm.get("ok")) and str(sm.get("diff") or "") == str(st.get("last_diff_hash") or "")
-
-    def _automerge_min_review_rounds(self, task: Task) -> int:
-        """Return the fixed review-count minimum.
-
-        Historical configuration may still name a larger value, but review count is no
-        longer a policy lever. Other gates independently require a current-head approval.
-        """
-        return 1
 
     def _automerge_gate(self, task: Task, pr: PRInfo, require_scratch: bool = True) -> tuple[bool, str]:
         """Whether every gate the loop already has is green, and the first reason it is not.
@@ -584,9 +520,25 @@ class PollMixin:
             return False, "GitHub did not report the current PR head"
         if not require_current_base and reviewed_head != pr.head_sha:
             return False, "the approved review is not for the current PR head"
-        min_rounds = self._automerge_min_review_rounds(task)
+        min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
+        if hard_tier:
+            min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
+        self_product_default = (self.cfg.product_self(task.product)
+                                and "automerge_min_review_rounds" not in self.cfg.product(task.product))
+        if self_product_default:
+            # The second opinion is supplied by a current-head persona or a human, so only
+            # one automated review round is required by the default self-product policy.
+            min_rounds = max(min_rounds, 1)
+        elif (self._needs_second_review_round(task.product)
+              and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
+            min_rounds = max(min_rounds, 2)
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
+        if (self_product_default and int(st.get("review_rounds", 0)) >= 1
+                and pr.review_decision != "APPROVED"
+                and not any(str(item.get("head") or "") == str(pr.head_sha or "")
+                            for item in st.get("persona_reviews", []) if isinstance(item, dict))):
+            return False, "the second review must be a persona review or human approval"
         if str(st.get("pending_feedback") or "").strip():
             return False, "feedback is pending a revise run"
         review_run = st.get("review_run")
@@ -617,9 +569,6 @@ class PollMixin:
                 return False, "the exact-head PR checks have not reported success"
         ci_status = self._ci_status(task, pr)
         if ci_status.state != "not_required" and not ci_status.green:
-            if (ci_status.provider == "github" and ci_status.state == "missing"
-                    and self.cfg.product_setup(task.product).get("worker_push") is True):
-                return False, "worker CI is enabled but the PR has no CI result yet"
             return False, status_reason(ci_status)
         if pr.mergeable != "MERGEABLE":
             return False, f"GitHub reports the PR {pr.mergeable.lower() or 'mergeability unknown'}"
@@ -756,16 +705,6 @@ class PollMixin:
                 gitops.fetch(repo)
                 target = parent_ref or gitops.base_ref(repo, final_base)
                 ancestor = gitops.is_ancestor(repo, sha, target)
-                # GitHub normally reports the parent's final head on its merged PR, but a
-                # provider can leave that field stale while its branch still exists.  The
-                # fetched branch is the authoritative revision in that case: only accept it
-                # when it contains the recorded child revision, never merely because it is
-                # present.
-                if not ancestor and parent.branch:
-                    branch_target = gitops.base_ref(repo, parent.branch)
-                    if branch_target != target and gitops.is_ancestor(repo, sha, branch_target):
-                        target = branch_target
-                        ancestor = True
             except gitops.GitError:
                 ancestor = False
         if not ancestor:
