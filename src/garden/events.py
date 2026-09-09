@@ -18,10 +18,13 @@ from typing import Any
 
 from .model import now_iso
 from .outcomes import base_acceptance
-
-# Keep the established table API for existing callers. The Now page's acceptance cohorts
-# have different attribution, units and cell shapes, so expose them separately.
 from .outcomes import difficulty_by_model as windowed_difficulty_by_model
+
+# Context growth needs enough observations on both sides of the comparison before it
+# is actionable.  A 20% increase is deliberately a signal, not a verdict: models and
+# task mixes still need a human reading the grouped row.
+BRIEF_REGRESSION_MIN_SAMPLES = 5
+BRIEF_REGRESSION_RATIO = 1.20
 
 
 class Event(dict):
@@ -469,6 +472,71 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                           "share": round(operator_spend / total_spend, 4) if total_spend else None},
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
+
+
+def brief_context_metrics(run_records: Iterable[Any], tasks: dict[str, Any]) -> dict[str, Any]:
+    """Summarise stored brief estimates and measured startup usage by run route.
+
+    This deliberately consumes ``RunStore.all_runs()`` rather than event history or
+    transcripts.  The indexed store returns each active or archived run once, so a
+    restored archive record and a continuation's duplicate event cannot inflate a
+    request-time aggregate.  Older records without a brief estimate or usage remain
+    unknown rather than being interpreted as zero.
+    """
+    unique: dict[tuple[str, str], Any] = {}
+    for run in run_records:
+        key = (str(run.task_id), str(run.run_id))
+        unique.setdefault(key, run)
+    grouped: dict[tuple[str, str, str, str, str], list[Any]] = defaultdict(list)
+    for run in unique.values():
+        task = tasks.get(run.task_id)
+        if task is None:
+            continue
+        grouped[(str(getattr(task, "product", "") or "unknown"),
+                 str(getattr(task, "phase", "") or "unknown"),
+                 str(run.mode or "unknown"), str(run.model or "unknown"),
+                 str(run.difficulty or getattr(task, "difficulty", "") or "unknown"))].append(run)
+
+    def summary(values: list[int]) -> dict[str, int | float | None]:
+        if not values:
+            return {"known": 0, "mean": None, "p50": None, "p95": None, "max": None}
+        ordered = sorted(values)
+        def percentile(percent: int) -> int:
+            return ordered[max(0, (len(ordered) * percent + 99) // 100 - 1)]
+
+        return {"known": len(ordered), "mean": round(sum(ordered) / len(ordered), 1),
+                "p50": percentile(50), "p95": percentile(95), "max": ordered[-1]}
+
+    rows = []
+    for dimensions, records in sorted(grouped.items()):
+        ordered = sorted(records, key=lambda r: (r.started_at or r.finished_at or "", r.run_id))
+        estimates = [int(r.brief_tokens) for r in ordered if int(r.brief_tokens or 0) > 0]
+        measured_input = [int(r.usage["input_tokens"]) for r in ordered
+                          if isinstance(r.usage, dict) and r.usage.get("input_tokens") is not None]
+        measured_cache = [int(r.usage["cache_read_input_tokens"]) for r in ordered
+                          if isinstance(r.usage, dict) and r.usage.get("cache_read_input_tokens") is not None]
+        # Split only known estimates.  Missing older records must not make one time
+        # window look smaller or turn an unknown estimate into a zero.  For an odd
+        # count, leave the central observation out so both windows are comparable.
+        window_size = len(estimates) // 2
+        baseline = estimates[:window_size]
+        recent = estimates[-window_size:] if window_size else []
+        baseline_mean = round(sum(baseline) / len(baseline), 1) if baseline else None
+        recent_mean = round(sum(recent) / len(recent), 1) if recent else None
+        enough = len(baseline) >= BRIEF_REGRESSION_MIN_SAMPLES and len(recent) >= BRIEF_REGRESSION_MIN_SAMPLES
+        rows.append({"product": dimensions[0], "phase": dimensions[1], "mode": dimensions[2],
+                     "model": dimensions[3], "tier": dimensions[4], "runs": len(ordered),
+                     "estimated_tokens": summary(estimates),
+                     "measured_input_tokens": summary(measured_input),
+                     "measured_cache_read_tokens": summary(measured_cache),
+                     "comparison": {"baseline_runs": len(baseline), "recent_runs": len(recent),
+                                    "baseline_mean_estimated_tokens": baseline_mean,
+                                    "recent_mean_estimated_tokens": recent_mean,
+                                    "minimum_samples": BRIEF_REGRESSION_MIN_SAMPLES,
+                                    "regression": bool(enough and baseline_mean and recent_mean
+                                                       and recent_mean >= baseline_mean * BRIEF_REGRESSION_RATIO)}})
+    return {"groups": rows, "minimum_samples": BRIEF_REGRESSION_MIN_SAMPLES,
+            "regression_ratio": BRIEF_REGRESSION_RATIO}
 
 
 # The difficulty-by-model tables (the owner's ask, 2026-09-06 02:30Z), in the order they are
