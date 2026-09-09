@@ -456,6 +456,8 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 add("manual_waiting", t, f"waiting: {phase_hold}", [], kind="frozen")
             elif any(run.task_id == t.id for run in runs.active()):
                 add("manual_waiting", t, "claimed already; waiting for the existing manual session to finish", [], kind="claimed")
+            elif int(st.get("revisions", 0)) >= int(store.config.get("max_revisions", 3)):
+                add("manual_waiting", t, "paused: revision limit reached; an Inbox decision is required before this task can resume", [], kind="paused")
             elif str(st.get("pending_feedback") or "").strip():
                 add("manual", t, "paused for a person · revision feedback is ready to resume manually", [
                     {"label": "Resume task", "kind": "take", "command": f"garden take {t.id}"},

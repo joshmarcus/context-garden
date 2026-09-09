@@ -18,6 +18,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from garden.model import Status
 from garden.qa.sandbox import make_garden
 from garden.runs import RunStore
+from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.walkthrough import _serve
 
@@ -46,6 +47,11 @@ def _request(opener: object, base_url: str, method: str, path: str, data: dict[s
             return response.status
     except HTTPError as error:
         return error.code
+
+
+def _page(opener: object, base_url: str, path: str) -> str:
+    with opener.open(Request(base_url + path)) as response:  # type: ignore[attr-defined]
+        return response.read().decode()
 
 
 def main() -> int:
@@ -86,6 +92,27 @@ def main() -> int:
                  "observed": "frozen manual task page offers no Take action"}
             )
             store.set_phase_frozen(store.phase("demo", "p1"), "")
+            # A capped revision with feedback is a paused card, not an action that the
+            # authoritative take path would reject.  Free the synthetic automated slots
+            # first so the card's waiting reason is the revision cap itself.
+            for full_run in runs.active():
+                full_run.status = "finished"
+                full_run.save()
+            blocked.status = Status.CHANGES_REQUESTED
+            store.save(blocked)
+            sched = Scheduler(store)
+            capped_state = sched.state.get(blocked.id)
+            capped_state["pending_feedback"] = "- revise the packet"
+            capped_state["revisions"] = int(store.config.get("max_revisions", 3))
+            sched.state.save()
+            capped_inbox = _page(opener, base_url, "/inbox")
+            if "revision limit reached" not in capped_inbox or "Resume task" in capped_inbox:
+                raise RuntimeError("revision-capped manual task was offered an unsafe Inbox resume")
+            events.append(
+                {"kind": "http_request", "state": "paused", "outcome": "safe_waiting", "method": "GET",
+                 "url": "/inbox", "status_code": 200,
+                 "observed": "revision-capped manual work is shown as paused with no Resume action"}
+            )
             events.append(
                 {"kind": "http_request", "state": "affected", "outcome": "success", "method": "POST",
                  "url": "/tasks/DM-001/take", "status_code": _request(opener, base_url, "POST", "/tasks/DM-001/take"),
