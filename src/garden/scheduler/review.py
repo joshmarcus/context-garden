@@ -436,6 +436,8 @@ class ReviewMixin:
         wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         diff = gitops.diff(wt, base)
         review_head = gitops.head_sha(wt)
+        review_base_head = gitops.rev_parse(wt, gitops.base_ref(wt, base))
+        review_diff_hash = gitops.diff_hash(wt, base)
         changed = gitops.diff_names(wt, base)
         pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None
         author_interaction: dict[str, Any] | None = None
@@ -602,6 +604,7 @@ class ReviewMixin:
             required_pages = set(capture_pages)
         run.env_snapshot = {"count_round": count_round, "capture_pages": sorted(required_pages),
                             "review_head": review_head, "interaction_required": needs_interaction,
+                            "review_base_head": review_base_head, "review_diff_hash": review_diff_hash,
                             "scalability_required": needs_scalability,
                             "validation_check_current": current_check is not None or (not stale_validation_check and not plan["pages"]),
                             "interaction_replay_manifest": str(replay_manifest) if needs_interaction else "",
@@ -939,6 +942,11 @@ class ReviewMixin:
             return True
         st["last_review"] = review
         st["last_review_run"] = run.run_id
+        st["last_review_head"] = str((run.env_snapshot or {}).get("review_head") or "")
+        st["last_review_base_head"] = str((run.env_snapshot or {}).get("review_base_head") or "")
+        reviewed_diff = str((run.env_snapshot or {}).get("review_diff_hash") or "")
+        if reviewed_diff:
+            st["last_diff_hash"] = reviewed_diff
         verdict = str(review.get("verdict", ""))
         criteria_met, criteria_total = criteria_counts(review.get("criteria"))
         self.events.emit("review", task.id, run=run.run_id, verdict=verdict, summary=str(review.get("summary", "")),
