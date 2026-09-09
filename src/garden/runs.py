@@ -227,15 +227,19 @@ class Run:
         """The most recent sign of life from the worker: its captured output growing or
         any file in its worktree changing. A worker's edits and commits touch the
         worktree, and streamed output grows stdout.json, so the newest of these mtimes
-        stands in for "is it doing anything". Returns None when nothing is measurable
-        yet (e.g. a remote run with no local worktree and no output)."""
+        stands in for "is it doing anything".
+
+        A pull-based remote run's saved worktree is a controller-side checkout, not the
+        checkout executing the claim.  For those runs only streamed output is local
+        activity evidence; a lease heartbeat proves ownership, but not productive work.
+        Returns None when nothing is measurable yet."""
         times: list[float] = []
         for name in ("stdout.json", "stderr.log"):
             try:
                 times.append((self.path / name).stat().st_mtime)
             except OSError:
                 pass
-        if self.worktree:
+        if self.worktree and self.runner != "remote":
             m = _newest_mtime(Path(self.worktree))
             if m:
                 times.append(m)
@@ -244,17 +248,27 @@ class Run:
         return dt.datetime.fromtimestamp(max(times), dt.UTC)
 
     def idle_minutes(self) -> float:
-        """Minutes since the last sign of life, never before this run started.
+        """Minutes since the last sign of life, never before execution started.
 
         A newly launched check commonly shares a checkout whose files predate the run.  Those
         mtimes describe the checkout, not this run's silence, so they must not make a new run
-        immediately eligible for an idle timeout.
+        immediately eligible for an idle timeout. Pull-based remote runs use their first
+        execution claim (with ``claimed_at`` as the legacy fallback) instead of queue entry;
+        an unclaimed remote run therefore has no execution-idle age.
         """
         last = self.last_activity_at()
-        if last is None:
+        if self.runner == "remote":
+            start_text = self.execution_started_at or self.claimed_at
+            if not start_text:
+                return 0.0
+            started = dt.datetime.fromisoformat(start_text)
+        elif self.started_at:
+            started = dt.datetime.fromisoformat(self.started_at)
+        elif last is not None:
+            started = last
+        else:
             return 0.0
-        started = dt.datetime.fromisoformat(self.started_at) if self.started_at else last
-        activity = max(last, started)
+        activity = max(last, started) if last is not None else started
         return max(0.0, (dt.datetime.now(dt.UTC) - activity).total_seconds() / 60)
 
     def supervisor_waiting_reason(self) -> str | None:
