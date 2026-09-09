@@ -484,7 +484,6 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-<<<<<<< HEAD
                 "--json", "number,url,state,title,body,author,headRefName,headRefOid,headRepository,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)

@@ -1016,7 +1016,7 @@ def test_external_open_pr_uses_claimed_identity_and_review_without_managed_workt
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     coincidental_path = sched.worktree_for(task)
     coincidental_path.mkdir(parents=True)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -1039,7 +1039,7 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
 
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
 
@@ -1274,6 +1274,7 @@ def test_attach_pr_adopts_verified_identity_and_keeps_feedback_history(sched, fa
 @pytest.mark.parametrize("attribute, value, message", [
     ("head", "", "resolved head branch and SHA"),
     ("head_sha", "", "resolved head branch and SHA"),
+    ("head_repo", "", "verified head repository"),
     ("head_repo", "another/fork", "fork head"),
 ])
 def test_attach_pr_refuses_unusable_head_identity(sched, fake_github, attribute, value, message):
@@ -1363,7 +1364,7 @@ def test_external_completion_records_a_moved_head_on_the_same_pr(sched, fake_git
 def test_external_completion_pr_lookup_failure_is_audited(sched, fake_github, monkeypatch, error_type):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
     def unavailable(*_):
@@ -1399,6 +1400,7 @@ def test_external_merged_pr_completes_without_rechecks_after_final_base_verifica
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "verified-head", "verified-merge"
+    pr.head_repo = "test/demo"
     monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -1445,6 +1447,7 @@ def _merged_external_topology(sched, fake_github, method: str, *, mismatch: bool
     gitops.git("push", "-q", "origin", "main", cwd=repo)
     pr = fake_github.create_pr("test/demo", branch, "main", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", head, merge_commit
+    pr.head_repo = "test/demo"
     return pr, head, merge_commit
 
 
@@ -1543,6 +1546,7 @@ def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
     child = sched.store.task("DM-002")
     pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "verified-head", "verified-merge"
+    pr.head_repo = "test/demo"
     sched.state.get(child.id)["stack_parent"] = parent.id
     restacked: list[str] = []
     monkeypatch.setattr(gitops, "fetch", lambda _: True)
@@ -1560,6 +1564,7 @@ def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/stacked", "parent-branch", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "stacked-head", "stacked-merge"
+    pr.head_repo = "test/demo"
     monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: False)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -1581,7 +1586,7 @@ def test_external_completion_git_guard_violation_is_refused_and_failed(sched, fa
     """External completion must not skip the metadata guard captured at dispatch."""
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     created_before = len(fake_github.created)
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
