@@ -7,6 +7,7 @@ immutable revision passed; analysers may still turn a known failure into useful 
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -59,8 +60,9 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             row = json.loads(path.read_text())
             receipt_sha = str(row["source_sha"])
             command = str(row["command"])
+            selection = row["selection"]
             exit_code = int(row["exit_code"])
-            log = str(row["log_location"])
+            log = Path(str(row["log_location"]))
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             malformed = True
             continue
@@ -69,9 +71,28 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             continue
         if required_command and command != required_command:
             continue
+        if (not isinstance(selection, list) or not selection
+                or any(not isinstance(arg, str) or not arg for arg in selection)
+                or shlex.join(selection) != command):
+            malformed = True
+            continue
+        # A receipt is only authoritative while its Garden-owned supervisor evidence
+        # remains alongside it.  A caller-supplied path or result JSON alone cannot pass.
+        if log != path.parent or not all((log / name).is_file() for name in (
+            "execution.json", "exit_code", "stderr.log",
+        )):
+            malformed = True
+            continue
+        try:
+            if int((log / "exit_code").read_text().strip()) != exit_code:
+                malformed = True
+                continue
+        except (OSError, ValueError):
+            malformed = True
+            continue
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
         run_id = path.parents[2].name
-        evidence_url = f"/runs/{task_id}/{run_id}" if run_id else log
+        evidence_url = f"/runs/{task_id}/{run_id}" if run_id else str(log)
         return CIStatus("success" if exit_code == 0 else "failure", sha,
                         exists_for_sha=True, evidence_url=evidence_url, failures=failures,
                         provider="worker_check")

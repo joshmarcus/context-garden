@@ -378,7 +378,14 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             except (OSError, json.JSONDecodeError):
                 continue
             if isinstance(receipt, dict):
-                receipts.append(receipt)
+                artifacts = {}
+                for name in ("execution.json", "exit_code", "stderr.log", "validation_timeout.json"):
+                    artifact = receipt_path.parent / name
+                    if artifact.is_file():
+                        # Supervisor metadata and logs are text and bounded by the outer
+                        # run's execution budget.  Retain them with the controller receipt.
+                        artifacts[name] = artifact.read_text(errors="replace")
+                receipts.append({**receipt, "artifacts": artifacts})
         heartbeat.ensure_current()
         heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
                           "final_text": final, "result": parsed, "usage": usage,
