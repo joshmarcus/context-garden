@@ -9,6 +9,13 @@ from typing import Any
 
 import yaml
 
+from .configuration import (
+    CONFIG_FIELDS,
+    ApplyMode,
+    ConfigProvenance,
+    resolve_value,
+    validate_configuration,
+)
 from .github import is_git_remote_url
 
 CONFIG_NAME = "garden.yaml"
@@ -18,11 +25,7 @@ CONFIG_NAME = "garden.yaml"
 # garden.yaml reload (see Store.reload_config_if_changed). Changing one needs a restart;
 # everything else takes effect on the next tick. The Configuration page names both sets.
 RESTART_KEYS: list[str] = [
-    "work_dir",        # fixes the .garden state/run/worktree/repo paths at construction
-    "tick_interval",   # garden watch / serve reads it once when the loop starts
-    "github.use_gh", "github.bot_logins", "github.bot_notice_patterns",
-    "github.trusted_authors", "github.trusted_bots", "github.reviewers",  # baked into the GitHub client at construction
-    "upgrade.package", "upgrade.pip",  # baked into the pinned-tool installer at construction
+    field.key for field in CONFIG_FIELDS.values() if field.apply == ApplyMode.RESTART
 ]
 
 NO_LIVE_GARDEN = "no-live-garden"  # subdirectory name used to build a GARDEN_ROOT that can't resolve
@@ -332,6 +335,7 @@ class Config:
                 data = _merge(data, raw)
                 sources.append(name)
         _validate_product_policies(data)
+        validate_configuration(data)
         return cls(root=root, data=data, sources=sources, env=env)
 
     def source_names(self) -> list[str]:
@@ -391,6 +395,10 @@ class Config:
 
     def product(self, name: str) -> dict[str, Any]:
         return dict(self.data.get("products", {}).get(name, {}) or {})
+
+    def setting(self, key: str, product: str | None = None) -> ConfigProvenance:
+        """A configuration value with its global/project/policy provenance."""
+        return resolve_value(self.data, key, product)
 
     def product_github(self, name: str) -> dict[str, str]:
         """Return the product's explicitly scoped GitHub route.
