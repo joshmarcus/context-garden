@@ -13,8 +13,8 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback
-from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
 from ..ci_status import CIStatus, resolve_status, status_reason
+from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
 from ..model import Status, Task, now_iso, phase_refusal
 from ..notify import notify
 from ..runs import Run
