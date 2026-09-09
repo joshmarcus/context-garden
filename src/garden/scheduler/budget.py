@@ -259,7 +259,6 @@ class BudgetMixin:
             if project_value.source != "global":
                 return project_value.value
         return value
-
     def effective(self, key: str, default: Any = None, product: str | None = None) -> Any:
         """The live override for `key` if one is set, else the active operating profile's
         value for it (see operating_profile) if the profile sets that facet, else the

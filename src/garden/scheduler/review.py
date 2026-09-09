@@ -1358,7 +1358,7 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb:
+                if fb and bool(self.effective("auto_revise", True, task.product)):
                     st.setdefault("review_feedback_history", []).append(fb)
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = review_is_description_only(review) and not already_queued
@@ -1388,7 +1388,7 @@ class ReviewMixin:
                 changed = self._criteria_changed_note(task, run)
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
-                if fb:
+                if fb and bool(self.effective("auto_revise", True, task.product)):
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = not already_queued
                     st.pop("pending_feedback_rebase", None)
