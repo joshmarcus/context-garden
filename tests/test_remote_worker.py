@@ -624,7 +624,10 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
                        "usage": {"input_tokens": 2}, "cost_usd": 0.1, "pushed_head": "abc",
                        "validation_receipts": [{"source_sha": "abc", "command": "pytest -q",
                                                 "selection": ["pytest", "-q"], "exit_code": 0,
-                                                "log_location": "/remote/path"}]}, headers=auth)
+                                                "log_location": "/remote/path",
+                                                "durable_execution": {"state": "finished"},
+                                                "durable_exit_code": 0,
+                                                "durable_stderr": ""}]}, headers=auth)
     assert done.status_code == 200
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.host == "build-1" and saved.pushed_head == "abc"
@@ -632,6 +635,11 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     receipt = json.loads((saved.path / "validations" / "remote-0" / "result.json").read_text())
     assert receipt["source_sha"] == "abc" and receipt["exit_code"] == 0
     assert receipt["log_location"].endswith("validations/remote-0")
+    assert json.loads((saved.path / "validations/remote-0/execution.json").read_text()) == {
+        "state": "finished",
+    }
+    assert (saved.path / "validations/remote-0/exit_code").read_text().strip() == "0"
+    assert (saved.path / "validations/remote-0/stderr.log").read_text() == ""
     saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
     saved.save()
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
@@ -1730,6 +1738,10 @@ def test_remote_harness_receives_working_owned_validation(
     assert str(host_root / "runs") in evidence["outer"]
     assert evidence["owner"] != "wrong-owner"
     assert not (tmp_path / "wrong-run").exists()
+    transported = next(saved.path.glob("validations/remote-*/result.json"))
+    assert json.loads((transported.parent / "execution.json").read_text())["state"] == "finished"
+    assert int((transported.parent / "exit_code").read_text()) == validation_exit
+    assert (transported.parent / "stderr.log").exists()
 
 def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, tmp_path, fake_github):
     isolated_execution_runtime(tmp_path, monkeypatch)
