@@ -25,6 +25,8 @@ GROUPS = [
     ("triage", "Triage a draft PR", "A worker finished and opened a draft. Your first look decides: ready for review, or send it back.", "decision"),
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
     ("operator", "Operator recovery", "A bounded operational repair is available or an infrastructure prerequisite needs attention. It does not ask for a product decision.", "notice"),
+    ("automated_review", "Automated review", "The scheduler owns this review state. It records the queue, resource wait, and most recent verdict without asking a person to clear it.", "notice"),
+    ("deferred", "Deferred work", "This draft is intentionally frozen by phase policy. Move it deliberately when the policy changes; it never needs approval or cancellation merely to clear a badge.", "notice"),
     ("attention", "Needs a decision", "The loop stopped on purpose: a stall, a cap, a closed PR, a failed worker.", "decision"),
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
@@ -94,6 +96,7 @@ ATTENTION_KINDS = {
     "env_error": ("The garden hit an environment error", "Dispatch, push or git failed on the garden's side; the worker never got a fair run."),
     "check_did_not_run": ("A check could not run", "The check continuation and its PR identity are preserved. A delegated operator may retry it once without changing the task's outcome."),
     "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
+    "deployment": ("Deployment prerequisite", "An operator must complete the named deployment or recovery step before the scheduler can continue. This is operational work, not an unanswered product question."),
 }
 
 
@@ -152,6 +155,39 @@ def _latest_diff_summary(t: Task, runs: RunStore) -> str:
         if r.diff_stat:
             return _diff_summary(r.diff_stat)
     return ""
+
+
+def _automated_review_is_current(st: Any) -> bool:
+    """Whether the recorded automated approval examined the PR head now in state.
+
+    A verdict without its reviewed head is deliberately treated as stale.  Older state files
+    therefore wait for one fresh review rather than inviting a person to act on an unknown
+    revision.
+    """
+    review = st.get("last_review") or {}
+    return (str(review.get("verdict") or "") == "approve"
+            and bool(st.get("head_sha"))
+            and str(st.get("last_review_head") or "") == str(st.get("head_sha") or ""))
+
+
+def _automated_review_wait(t: Task, st: Any, sched: Any) -> str:
+    """A concise operational explanation for a review the scheduler still owns."""
+    pending = list(st.get("pending_reviews") or [])
+    review = st.get("last_review") or {}
+    verdict = str(review.get("verdict") or "")
+    prior = ""
+    if verdict:
+        detail = str(review.get("summary") or "").strip()
+        prior = f"; prior automated verdict: {verdict.replace('_', ' ')}" + (f" — {detail}" if detail else "")
+    if st.get("review_run"):
+        return "automated review running" + prior
+    if pending:
+        _, reason = sched.review_wait_reason(t)
+        return f"automated review queued: {reason}" + prior
+    if verdict:
+        detail = str(review.get("summary") or "").strip()
+        return f"last automated verdict: {verdict.replace('_', ' ')}" + (f" — {detail}" if detail else "") + "; a fresh review is required for this head"
+    return "automated review not recorded yet; the scheduler will queue one"
 
 
 def _evidence_lines(t: Task, st: Any, runs: RunStore | None) -> list[str]:
@@ -242,7 +278,8 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         actions.append({"label": "Run delegated recovery", "kind": "recover", "command": f"garden recover {t.id}",
                         "detail": "queues one bounded continuation with the existing feedback and PR; repeated unchanged failures stop for an owner"})
     if can_resume and not reviewer_owned:
-        actions.append({"label": "Nothing to fix, resume", "kind": "resume", "command": f"garden resume {t.id}",
+        label = "Deployment completed, resume" if info["kind"] == "deployment" else "Nothing to fix, resume"
+        actions.append({"label": label, "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
     if info["kind"] == "review_cap" and t.pr:
         actions.append({"label": "One more automated review", "kind": "review-again", "command": f"garden review {t.id}",
@@ -311,7 +348,10 @@ def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[s
         }
     attention = attention_view(t, st, runs)
     if attention is not None:
-        return {"type": "attention", "title": f"Needs a decision: {attention['kind_title']}",
+        title = (f"Operator recovery: {attention['kind_title']}"
+                 if attention["kind"] == "deployment"
+                 else f"Needs a decision: {attention['kind_title']}")
+        return {"type": "attention", "title": title,
                 "reason": attention["reason"], "blurb": attention["kind_blurb"], "final": "",
                 "evidence": attention["evidence"], "attention": attention}
     return None
@@ -404,6 +444,15 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                     card["attention"]["actions"], kind="state_mismatch", kind_title="Waiting state is incomplete",
                     kind_blurb=card["blurb"], reason=card["reason"], resume_to="", evidence=card["evidence"],
                     discuss="", decision_card=card, card_task=t)
+        elif t.status == Status.IN_REVIEW and (st.get("review_run") or st.get("pending_reviews")):
+            # A queued review owns the next step even when an earlier stop remains in state.
+            # The scheduler's fresh review is the authority for this head; showing the old
+            # stop as a human action would invite a person to bypass that workflow.
+            add("automated_review", t, _automated_review_wait(t, st, sched), [],
+                prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
+                review_head=str(st.get("last_review_head") or ""),
+                current_head=str(st.get("head_sha") or ""))
+            continue
         elif t.status == Status.AWAITING_TRIAGE:
             rev = st.get("last_review") or {}
             why = "draft PR open"
@@ -428,21 +477,30 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                     kind_blurb="This is an operational prerequisite, not approval of the product outcome.",
                     reason="No CI rollup has arrived for the current PR head.", evidence=_evidence_lines(t, st, runs))
                 continue
-            if st.get("review_run"):
-                why = "review queued"
+            # A current approval is actionable only after every automated review of this
+            # head has finished.  A queued or running follow-up remains scheduler-owned.
+            if st.get("review_run") or st.get("pending_reviews"):
+                add("automated_review", t, _automated_review_wait(t, st, sched), [],
+                    prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
+                    review_head=str(st.get("last_review_head") or ""),
+                    current_head=str(st.get("head_sha") or ""))
+            elif _automated_review_is_current(st):
+                why = "automated review approved this PR head"
+                if st.get("checks"):
+                    why += f" · CI {st['checks'].lower()}"
+                if st.get("automerge_blocked"):
+                    why += f" · automerge held: {st['automerge_blocked']}"
+                add("review", t, why, [{"label": "Open PR", "kind": "link", "href": t.pr}],
+                    automerge_blocked=str(st.get("automerge_blocked") or ""))
             else:
-                why = (st.get("review_decision") or "no review yet").lower().replace("_", " ")
-            if st.get("checks"):
-                why += f" · CI {st['checks'].lower()}"
-            if st.get("automerge_blocked"):
-                why += f" · automerge held: {st['automerge_blocked']}"
-            add("review", t, why, [{"label": "Open PR", "kind": "link", "href": t.pr},
-                                   {"label": "Mark done", "kind": "done", "command": f"garden set-status {t.id} done"}],
-                automerge_blocked=str(st.get("automerge_blocked") or ""))
+                add("automated_review", t, _automated_review_wait(t, st, sched), [],
+                    prior_verdict=str((st.get("last_review") or {}).get("verdict") or ""),
+                    review_head=str(st.get("last_review_head") or ""),
+                    current_head=str(st.get("head_sha") or ""))
         if (st.get("needs_human") and not t.status.terminal) or t.status == Status.FAILED:
             att = attention_view(t, st, runs)
             if att:
-                add("operator" if att.get("delegated") else "attention", t,
+                add("operator" if att.get("delegated") or att["kind"] == "deployment" else "attention", t,
                     f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
                     **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "resume_to", "evidence", "discuss")},
                     decision_card=decision_card_view(t, st, runs), card_task=t)
@@ -465,7 +523,16 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 actions.append({"label": f"Move to {move_to.split('/', 1)[1]}", "kind": "move",
                                 "command": f"garden move {t.id} {move_to}"})
             actions.append({"label": "Drop", "kind": "cancel", "command": f"garden cancel {t.id}"})
-            add("approve", t, why, actions, attempts=t.attempts, last_log=last, move_to=move_to,
+            group = "deferred" if t.key in frozen_phases else "approve"
+            if group == "deferred":
+                why = "deferred by the phase freeze"
+                if last:
+                    why += f" · policy: {last}"
+                elif move_to:
+                    why += f" · move deliberately to {move_to.split('/', 1)[1]} when ready"
+                actions = ([{"label": f"Move to {move_to.split('/', 1)[1]}", "kind": "move",
+                             "command": f"garden move {t.id} {move_to}"}] if move_to else [])
+            add(group, t, why, actions, attempts=t.attempts, last_log=last, move_to=move_to,
                 move_label=move_to.split("/", 1)[1] if move_to else "",
                 phase_name=t.phase, approve_phases=approve_phase_options(store, t), gaps=gaps)
         if t.attempts > 0 and not st.get("needs_human") and not t.status.terminal and t.status in (Status.READY, Status.RUNNING) and not (t.status == Status.RUNNING and t.attempts <= 1):

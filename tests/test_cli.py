@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 
 import pytest
@@ -48,6 +49,137 @@ def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garde
     assert "host identities" in result.output
     assert "ssh.hosts[0].host" in result.output
     assert target not in result.output
+
+
+def test_inbox_only_counts_current_automated_approval_as_pr_action(garden):
+    """CLI and web consume the shared ownership model for queued, stale, and approved PRs."""
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+    from garden.web.app import create_app
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    st = state.get("DM-001")
+    st.update({"head_sha": "new-head", "last_review_head": "old-head",
+               "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+               "pending_reviews": [{"kind": "review"}]})
+    state.save()
+
+    queued = run(garden, "inbox")
+    assert queued.exit_code == 0
+    assert "inbox zero" in queued.output
+    assert "Automated review" in queued.output
+    assert "prior automated verdict: request changes" in queued.output
+    assert "set-status DM-001 done" not in queued.output
+
+    st["last_review"] = {"verdict": "approve", "summary": "ready"}
+    st["last_review_head"] = "new-head"
+    state.save()
+    still_queued = run(garden, "inbox")
+    assert "inbox zero" in still_queued.output
+    assert "prior automated verdict: approve" in still_queued.output
+    assert "Review and merge" not in still_queued.output
+
+    st.pop("pending_reviews")
+    st["review_run"] = "review-72"
+    state.save()
+    running = run(garden, "inbox")
+    assert "inbox zero" in running.output
+    assert "automated review running" in re.sub(r"\s+", " ", running.output)
+
+    st.pop("review_run")
+    state.save()
+    approved = run(garden, "inbox")
+    assert "1 need you" in approved.output
+    assert "Review and merge" in approved.output
+    page = TestClient(create_app(Store(garden), watch=False, host="testserver")).get("/inbox").text
+    assert "automated review approved this PR head" in page
+    assert 'action="/tasks/DM-001/done"' not in page
+
+
+def test_cli_and_web_inbox_show_the_scheduler_review_wait_reason(garden):
+    """Queued reviews use the scheduler's first applicable gate in both renderers."""
+    from fastapi.testclient import TestClient
+
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.scheduler import State
+    from garden.store import Store
+    from garden.web.app import create_app
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    st = state.get("DM-001")
+    st.update({"head_sha": "head", "last_review_head": "head",
+               "last_review": {"verdict": "request_changes", "summary": "add a boundary test"},
+               "pending_reviews": [{"kind": "review"}]})
+
+    def assert_wait(expected: str) -> None:
+        state.save()
+        cli = run(garden, "inbox")
+        web = TestClient(create_app(Store(garden), watch=False, host="testserver")).get("/inbox")
+        cli_text = re.sub(r"\s+", " ", cli.output)
+        assert cli.exit_code == 0, cli.output
+        assert "inbox zero" in cli.output
+        assert expected in cli_text
+        assert expected in web.text
+        assert "prior automated verdict: request changes" in cli_text
+        assert "Review and merge" not in cli.output
+
+    control = state.get("_control")
+    control["dispatch"] = "paused"
+    assert_wait("dispatch paused: reviews start again with dispatch")
+
+    control.pop("dispatch")
+    control["paused_harnesses"] = {"claude": {"reason": "quota", "at": "now"}}
+    assert_wait("claude harness paused")
+
+    control.pop("paused_harnesses")
+    state.save()
+    runs = RunStore(garden / ".garden")
+    for index in range(2):
+        review = runs.new_run(f"OTHER-{index}", "local", mode="review")
+        review.status = "running"
+        review.save()
+    assert_wait("no review slot (2 of 2 busy)")
+
+
+
+def test_queued_review_outranks_an_old_human_stop(garden):
+    """A new automated review owns the current head, even if an old stop remains recorded."""
+    from garden.model import Status
+    from garden.scheduler import State
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://github.com/test/demo/pull/71"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001").update({
+        "pending_reviews": [{"kind": "review"}],
+        "needs_human": {"kind": "review_cap", "reason": "prior review cap", "at": "now"},
+    })
+    state.save()
+
+    page = run(garden, "inbox")
+
+    assert page.exit_code == 0
+    assert "inbox zero" in page.output
+    assert "automated review queued: queued: the next tick starts it" in re.sub(r"\s+", " ", page.output)
+    assert "Automated review rounds used" not in page.output
 
 
 def test_status_shows_retro_waiting_for_personas(garden):
