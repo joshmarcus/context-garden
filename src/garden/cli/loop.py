@@ -191,7 +191,7 @@ def return_automation(task_id: str):
         raise typer.Exit(1)
     try:
         sched.return_to_automation(task, reservation_id=str(reservation["id"]),
-                                   expected_head=str(sched.state.get(task_id).get("head_sha") or ""))
+                                   expected=sched.manual_return_guard(task))
     except RuntimeError as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
