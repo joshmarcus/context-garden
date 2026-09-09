@@ -458,6 +458,7 @@ def test_attach_new_pr_after_old_closed_follows_new_pr(sched, fake_github):
     assert statuses(sched)["DM-001"] == "failed"
 
     new = fake_github.create_pr("test/demo", "garden/dm-001-first-task", "main", "reopened", "")
+    new.head_sha, new.head_repo = "reopened-head", "test/demo"
     t = sched.store.task("DM-001")
     sched.attach_pr(t, new.url)
     assert t.status == Status.IN_REVIEW and t.pr == new.url
