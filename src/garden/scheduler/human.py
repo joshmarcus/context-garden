@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from ..runner.manual import ManualRunner
 from ..runs import Run
 from ..stabilization import ACTORS
 from .report import TickReport
-from .state import _TaskState
+from .state import State, _TaskState
 
 
 class HumanMixin:
@@ -37,6 +38,57 @@ class HumanMixin:
                 "actor must be one of " + ", ".join(sorted(ACTORS))
             )
         return actor
+
+    def reserve_manual(self, task: Task, *, actor: str = "operator", note: str = "") -> dict[str, Any]:
+        """Reserve future lifecycle actions without interrupting work already in flight."""
+        if actor not in {"operator", "human_owner"}:
+            raise RuntimeError("manual reservation actor must be operator or human_owner")
+        return self._set_manual_reservation(task.id, actor=actor, note=note)
+
+    def return_to_automation(self, task: Task, *, reservation_id: str, expected_head: str | None = None) -> None:
+        """Remove the current reservation at a safe boundary, rejecting stale forms."""
+        self._set_manual_reservation(
+            task.id, actor="", note="", reservation_id=reservation_id, expected_head=expected_head
+        )
+
+    def _set_manual_reservation(
+        self, task_id: str, *, actor: str, note: str, reservation_id: str = "", expected_head: str | None = None
+    ) -> dict[str, Any]:
+        with self._controller_lock():
+            self.store.invalidate_tasks()
+            self.state = State(self.state.path)
+            current = self.store.task(task_id)
+            ensure_open(current)
+            st = self.state.get(task_id)
+            existing = self.manual_reservation(current)
+            if actor:
+                if existing:
+                    if existing.get("actor") == actor and existing.get("note", "") == note.strip():
+                        return existing
+                    raise RuntimeError(f"{task_id} is already reserved in Manual mode")
+                reservation = {"id": uuid.uuid4().hex, "actor": actor, "note": note.strip()[:240], "at": now_iso()}
+                st["manual_reservation"] = reservation
+                active = [run.run_id for run in self.runs.active() if run.task_id == task_id]
+                self.events.emit("manual_reserved", task_id, actor=actor, note=reservation["note"], active_runs=active)
+                suffix = f": {reservation['note']}" if reservation["note"] else ""
+                current.log(f"Manual mode reserved by {actor}{suffix}")
+                self.store.save(current)
+                self.state.save()
+                return reservation
+            if not existing or existing.get("id") != reservation_id:
+                raise RuntimeError("stale Manual mode request; reload the task and try again")
+            active = [run.run_id for run in self.runs.active() if run.task_id == task_id]
+            if active:
+                raise RuntimeError("automatic work is still active; wait for its safe boundary or stop it separately")
+            current_head = str(st.get("head_sha") or "")
+            if expected_head is not None and current_head != expected_head:
+                raise RuntimeError("the observed PR head changed; reload before returning to automation")
+            st.pop("manual_reservation", None)
+            self.events.emit("manual_returned", task_id, actor=existing.get("actor"), head=current_head)
+            current.log("returned from Manual mode to automation")
+            self.store.save(current)
+            self.state.save()
+            return {}
 
     def _last_review_source_head(self, task: Task, st: _TaskState) -> str:
         """Return immutable review provenance, backfilling pre-upgrade state from its run."""

@@ -37,8 +37,14 @@ def register(app: FastAPI, site: Site) -> None:
             sched.state,
             [event for event in all_events if event.get("kind") == "merge_head"],
         )
+        manual_reservations = {
+            task_id: sched.state.get(task_id).get("manual_reservation")
+            for task_id in tasks
+            if sched.state.get(task_id).get("manual_reservation")
+        }
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, prs_open=sum(1 for t in open_tasks if t.pr),
             spent_24h=spent_24h, suggestions_pending=suggestions_pending, merge_queue=merge_queue,
             burnup=burnup_svg(all_events, len(in_scope), done_ids={t.id for t in in_scope if t.status.value == 'done'}),
-            tiers=tier_bars_svg(tier_rows(s, tasks, all_events)), history=all_events))
+            tiers=tier_bars_svg(tier_rows(s, tasks, all_events)), history=all_events,
+            manual_reservations=manual_reservations))
