@@ -430,10 +430,11 @@ def test_stale_successful_check_stop_can_be_cleared_without_rerunning(garden):
     sched = Scheduler(Store(garden), github=FakeGitHub(), log=lambda _message: None)
     card = next(item for item in build_inbox(sched.store, sched) if item["task"] == "DM-001")
     assert card["category"] == "Stale bookkeeping"
-    assert next(action for action in card["actions"] if action["kind"] == "recover-check")["label"] == "Clear resolved stop"
+    recover = next(action for action in card["actions"] if action["kind"] == "recover-check")
+    assert recover["label"] == "Recover check and resume pipeline"
     client = TestClient(create_app(Store(garden), watch=False))
     page = client.get("/").text
-    assert "Clear resolved stop" in page and "stale" in page.lower()
+    assert "Recover check and resume pipeline" in page and "stale" in page.lower()
 
     response = client.post("/tasks/DM-001/recover-check", follow_redirects=False)
 

@@ -1016,11 +1016,31 @@ class HumanMixin:
         if active:
             raise RuntimeError(f"{task.id} already has active work; recovery was not duplicated")
         expected_head = str(check.get("source_head") or "")
-        current_head = str(st.get("head_sha") or "")
-        if kind == "check_did_not_run" and expected_head and current_head and expected_head != current_head:
-            raise RuntimeError(
-                f"{task.id} moved to a different PR head; the interrupted check was not retried"
-            )
+        if kind == "check_did_not_run" and str(check.get("stage") or "") == "ci":
+            if not expected_head:
+                raise RuntimeError(
+                    f"{task.id} interrupted CI check has no recorded source head; it was not retried"
+                )
+            slug = self.slug_for(task)
+            number = self._pr_number(task)
+            if not self.github.available or not slug or not number:
+                raise RuntimeError(
+                    f"{task.id} current PR head could not be established; the interrupted check was not retried"
+                )
+            try:
+                current_head = str(self.github.get_pr(slug, number).head_sha or "")
+            except (GitHubError, KeyError, OSError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{task.id} current PR head could not be established; the interrupted check was not retried"
+                ) from exc
+            if not current_head:
+                raise RuntimeError(
+                    f"{task.id} current PR head could not be established; the interrupted check was not retried"
+                )
+            if expected_head != current_head:
+                raise RuntimeError(
+                    f"{task.id} moved to a different PR head; the interrupted check was not retried"
+                )
         rep = rep or TickReport()
         if kind == "revision_cap":
             if not feedback:
