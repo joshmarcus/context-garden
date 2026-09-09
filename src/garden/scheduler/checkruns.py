@@ -22,6 +22,7 @@ from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
 from ..model import Status, Task, now_iso
+from ..preflight import _is_ui_path as _is_preflight_ui_path
 from ..preflight import capture_infrastructure_reason, mechanical_results
 from ..review import validation_plan, visual_source_digest
 from ..runs import Run
@@ -35,9 +36,8 @@ _EVENT_STAGE = {"base_probe": "base_probe", "ci": "ci"}
 
 
 def _is_ui_path(path: str) -> bool:
-    """Files whose rendered result must be inspected before a PR opens."""
-    return (path.startswith(("src/garden/web/", "templates/", "static/")) or "/templates/" in path
-            or path.endswith((".css", ".scss")))
+    """Compatibility wrapper for the shared mechanical UI classifier."""
+    return _is_preflight_ui_path(path)
 
 
 class CheckRunMixin:

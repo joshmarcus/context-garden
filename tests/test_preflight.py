@@ -147,6 +147,23 @@ def test_mechanical_preflight_uses_the_validation_plan_not_the_web_path(garden, 
     assert next(row for row in results if row["name"] == "UI captures")["status"] == "pass"
 
 
+def test_mechanical_preflight_does_not_require_captures_for_json_api_changes(garden, monkeypatch):
+    """The API endpoint module is backend-only even without a frozen plan."""
+    worktree = garden / "json-api-change"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs:
+                        "+claim source revision\n" if "--name-only" not in args
+                        else "src/garden/web/pages/api.py\n")
+
+    results = mechanical_results(worktree, "main", "Description", require_description=True,
+                                ui_changed=False, captures=[])
+
+    assert next(row for row in results if row["name"] == "UI captures")["status"] == "pass"
+
+
 def test_capture_infrastructure_policy_defaults_required_and_validates(sched):
     assert sched.cfg.capture_infrastructure_policy() == "require"
     sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"
