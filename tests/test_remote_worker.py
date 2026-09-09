@@ -574,6 +574,7 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
     import httpx
     import uvicorn
 
+    isolated_execution_runtime(tmp_path, monkeypatch)
     _, store = remote_client(garden, monkeypatch)
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["products"]["demo"]["setup"] = {
