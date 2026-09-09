@@ -13,10 +13,13 @@ def _configure_pool(sched) -> None:
     ]}
 
 
-def test_weighted_tier_pool_spreads_ten_choices_and_skips_a_paused_harness(sched):
+def test_weighted_tier_pool_spreads_ten_choices_and_skips_a_paused_harness(sched, monkeypatch):
     task = sched.store.task("DM-001")
     _configure_pool(sched)
     task.difficulty = "medium"
+    # This test deliberately creates ten live run records to inspect routing.  Local
+    # resource admission is covered separately and would otherwise cap that sample.
+    monkeypatch.setattr(sched, "_admit_local_launch", lambda _kind: None)
 
     runs = [sched.dispatch(task) for _ in range(10)]
     labels = [run.pool_member for run in runs]
