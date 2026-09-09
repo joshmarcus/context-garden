@@ -198,6 +198,75 @@ def test_review_audit_preserves_the_round_of_a_lost_started_review(sched):
     assert rep.transitions == ["DM-001 review recovery queued (1/2)"]
 
 
+@pytest.mark.parametrize(
+    ("approval_proven", "effective_head", "recovery_expected"),
+    [
+        (True, "derived-head", False),
+        (False, "derived-head", True),
+        (True, "", True),
+    ],
+)
+def test_review_audit_validates_a_mechanically_derived_approved_head(
+        sched, monkeypatch, approval_proven, effective_head, recovery_expected):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 2})
+    st = sched.state.get(task.id)
+    st.update({
+        "head_sha": "derived-head",
+        "last_review": {"verdict": "approve"},
+        "last_review_head": "original-reviewed-head",
+        "review_rounds": 1,
+    })
+    reviewed = sched.runs.new_run(task.id, "local", mode="review")
+    reviewed.status = "done"
+    reviewed.result = {"verdict": "approve"}
+    reviewed.env_snapshot = {"review_head": "original-reviewed-head"}
+    reviewed.save()
+    st["last_review_run"] = reviewed.run_id
+    monkeypatch.setattr(sched, "_review_approval_is_proven", lambda *_: approval_proven)
+    monkeypatch.setattr(sched, "_effective_approved_head", lambda *_: effective_head)
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    if recovery_expected:
+        assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
+        assert st["review_recovery"]["head"] == "derived-head"
+        assert rep.transitions == ["DM-001 missing review continuation restored"]
+    else:
+        assert not st.get("pending_reviews")
+        assert not st.get("review_recovery")
+        assert rep.transitions == []
+
+
+def test_review_audit_keeps_an_authentic_same_head_rejection_without_rereview(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    sched.cfg.data["review"].update({"enabled": True, "max_rounds": 2})
+    st = sched.state.get(task.id)
+    st.update({
+        "head_sha": "current-head",
+        "last_review": {"verdict": "request_changes"},
+        "review_rounds": 1,
+    })
+    reviewed = sched.runs.new_run(task.id, "local", mode="review")
+    reviewed.status = "done"
+    reviewed.result = {"verdict": "request_changes"}
+    reviewed.env_snapshot = {"review_head": "current-head"}
+    reviewed.save()
+    st["last_review_run"] = reviewed.run_id
+
+    rep = TickReport()
+    sched._audit_review_continuations(sched.store.tasks(), rep)
+
+    assert not st.get("pending_reviews")
+    assert not st.get("review_recovery")
+    assert rep.transitions == []
+
+
 @pytest.mark.parametrize("event_already_emitted", [False, True])
 def test_review_audit_applies_a_lost_terminal_result_once(
         sched, event_already_emitted):

@@ -435,9 +435,18 @@ class ReviewMixin:
                 continue
             review_runs = [run for run in self.runs.runs_for(task.id) if run.mode == "review"]
             applied_run = str(st.get("last_review_run") or "")
+            approved_head = self._effective_approved_head(task, st) if head else ""
             current_verdict = (bool(st.get("last_review")) and any(
                 run.run_id == applied_run
-                and str((run.env_snapshot or {}).get("review_head") or "") == head
+                and (
+                    str((run.env_snapshot or {}).get("review_head") or "") == head
+                    or (
+                        str((run.env_snapshot or {}).get("review_head") or "")
+                        == str(st.get("last_review_head") or "")
+                        and self._review_approval_is_proven(task, st)
+                        and approved_head == head
+                    )
+                )
                 for run in review_runs
             )) if head else bool(st.get("last_review"))
             product = self.cfg.product(task.product)
