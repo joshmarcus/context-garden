@@ -15,18 +15,23 @@ def _git(*args: str, cwd: Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=True).stdout.strip()
 
 
-def test_report_html_escapes_untrusted_diagnostics(tmp_path: Path) -> None:
+def test_report_redacts_secrets_and_renders_safe_clickable_html(tmp_path: Path) -> None:
     report = {
-        "evidence": ["log: <script>alert('secret')</script>"], "source_identities": ["run-1"],
+        "evidence": ["log: <script>alert('secret')</script>", "token=ghp_abcdefghijklmnopqrstuvwxyz1234",
+                     "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature"],
+        "source_identities": ["run-1"],
         "observed_behavior": "failed", "intended_behavior": "pass", "likely_cause": "bad input",
         "confidence": "high", "unknowns": [], "impact": "blocked", "attempted_checks": ["pytest"],
-        "corrective_action": "filed task", "links": [], "recommendation": "change scope/approach",
+        "corrective_action": "filed task", "links": ["https://example.test/task/1"],
+        "recommendation": "change scope/approach",
     }
     md, rendered = save_report(tmp_path, "deep-1", "why?", report)
-    assert "<script>" in md.read_text()
+    assert "ghp_" not in md.read_text() and "eyJhbGci" not in md.read_text() and "[REDACTED]" in md.read_text()
     html = rendered.read_text()
     assert "<script>alert" not in html
-    assert "&lt;script&gt;alert" in html
+    assert "<h2>Timeline and evidence</h2>" in html
+    assert '<a href="https://example.test/task/1">' in html
+    assert "ghp_" not in html
     assert report_html(md.read_text(), "deep-1") == html
 
 
@@ -69,3 +74,25 @@ def test_task_deep_dive_action_and_durable_report_routes(garden: Path) -> None:
     assert client.get(f"/investigations/DM-001/{run.run_id}/report.md").text == "# safe source\n"
     rendered = client.get(f"/investigations/DM-001/{run.run_id}/report.html")
     assert rendered.status_code == 200 and "default-src 'none'" in rendered.headers["content-security-policy"]
+
+
+def test_task_independent_incident_creates_durable_investigation_anchor(garden: Path) -> None:
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    page = client.get("/inbox")
+    assert "Garden incident deep dive" in page.text
+    response = client.post("/investigations", data={
+        "scope": "demo/p1", "question": "Why did several scheduler events disappear?",
+        "references": "event 42; run external-7",
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    task_id = response.headers["location"].removeprefix("/tasks/")
+    store = Store(garden)
+    task = store.task(task_id)
+    assert task.kind == "investigation" and "event 42" in task.body
+    inv = client.app.state.hub.reader().state.get(task_id)["investigation"]
+    assert inv["owner"] == "agent" and inv["origins"]["references"] == "event 42; run external-7"
+    repeated = client.post("/investigations", data={
+        "scope": "demo/p1", "question": "Why did several scheduler events disappear?",
+        "references": "event 42; run external-7",
+    }, follow_redirects=False)
+    assert repeated.headers["location"] == response.headers["location"]

@@ -92,6 +92,7 @@ class DiscoveredMixin:
             match = self._match_existing_discovery(title, item, candidates)
             if match is not None:
                 self._attach_discovery(match, task, run, title)
+                result.setdefault("_linked_tasks", []).append(match.id)
                 continue
             blocking = bool(item.get("blocking"))
             body = body_in.strip() or f"## Goal\n\n{title}\n"
@@ -131,6 +132,7 @@ class DiscoveredMixin:
             self.store.save(t)
             candidates.append(t)
             created.append(t)
+            result.setdefault("_linked_tasks", []).append(t.id)
             self.events.emit("discovered", task.id, new_task=t.id, title=title, blocking=blocking, status=t.status.value)
             tag = " [blocking, ready]" if t.status == Status.READY else (" [blocking, held: incomplete brief]" if gaps else "")
             self.log(f"{task.id}: discovered {t.id} {title!r}" + tag)
