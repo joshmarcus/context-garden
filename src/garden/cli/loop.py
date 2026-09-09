@@ -400,32 +400,18 @@ def take(
             raise typer.Exit(1)
         try:
             sched._refuse_attachment_run_conflict(t)
-            info = sched.resolve_pr_attachment(t, pr_url)
         except RuntimeError as e:
             err.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
-        if branch and branch != info.head:
-            err.print(f"[red]--branch {branch} does not match PR head {info.head}[/red]")
-            raise typer.Exit(1)
-        branch = info.head
-        # Persist the provider's exact observed identity before dispatch creates a
-        # revision run.  Dispatch then has no reason to manufacture task.default_branch.
-        t.branch, t.pr = info.head, info.url
-        st = sched.state.get(t.id)
-        st.update({"pr_number": info.number, "head_sha": info.head_sha, "pr_state": info.state,
-                   "pr_base": info.base, "pr_draft": info.is_draft, "checks": info.checks,
-                   "failed_checks": list(info.failed_checks), "review_decision": info.review_decision})
-        sched.store.save(t)
-        sched.state.save()
-    if external and not branch:
+    if external and not branch and not pr_url:
         err.print("[red]external work needs --branch or --pr[/red]")
         raise typer.Exit(1)
     try:
         run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree,
                              branch_override=branch, worktree_override=external_worktree,
                              completion_mode="pushed" if pushed_result else ("external" if external else "managed"),
-                             external_pr=info.url if pr_url else "",
-                             external_pr_number=info.number if pr_url else None)
+                             external_pr=pr_url,
+                             external_pr_number=pr_number if pr_url else None)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
