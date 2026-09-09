@@ -868,7 +868,6 @@ class ReviewMixin:
                      f"for `{ci_status.get('queried_sha', '')}`. Evidence: "
                      f"{ci_status.get('evidence_url') or 'not available'}. Treat a different review head "
                      "as stale and do not approve it.\n")
->>>>>>> 36845c4d (Add pluggable exact-head CI status gate)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
