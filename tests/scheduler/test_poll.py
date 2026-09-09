@@ -187,7 +187,8 @@ def test_manual_reservation_observes_merged_pr_and_parks_transition(sched, fake_
     assert not rep.transitions
 
     sched.return_to_automation(
-        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=pr.head_sha
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     rep = sched.tick(dispatch=False)
     assert statuses(sched)[task.id] == "done"
@@ -208,7 +209,8 @@ def test_manual_reservation_observes_closed_pr_and_parks_transition(sched, fake_
     assert sched.state.get(task.id)["pr_state"] == "CLOSED"
 
     sched.return_to_automation(
-        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=pr.head_sha
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     sched.tick(dispatch=False)
     assert statuses(sched)[task.id] == "failed"

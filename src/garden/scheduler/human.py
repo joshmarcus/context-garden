@@ -45,14 +45,28 @@ class HumanMixin:
             raise RuntimeError("manual reservation actor must be operator or human_owner")
         return self._set_manual_reservation(task.id, actor=actor, note=note)
 
-    def return_to_automation(self, task: Task, *, reservation_id: str, expected_head: str | None = None) -> None:
+    def manual_return_guard(self, task: Task) -> dict[str, Any]:
+        """Return the task/PR state a guarded Manual-mode return must still match."""
+        st = self.state.get(task.id)
+        return {
+            "status": task.status.value,
+            "pr": task.pr or "",
+            "pr_number": int(st.get("pr_number") or 0),
+            "pr_state": str(st.get("pr_state") or ""),
+            "head_sha": str(st.get("head_sha") or ""),
+        }
+
+    def return_to_automation(
+        self, task: Task, *, reservation_id: str, expected: dict[str, Any]
+    ) -> None:
         """Remove the current reservation at a safe boundary, rejecting stale forms."""
         self._set_manual_reservation(
-            task.id, actor="", note="", reservation_id=reservation_id, expected_head=expected_head
+            task.id, actor="", note="", reservation_id=reservation_id, expected=expected
         )
 
     def _set_manual_reservation(
-        self, task_id: str, *, actor: str, note: str, reservation_id: str = "", expected_head: str | None = None
+        self, task_id: str, *, actor: str, note: str, reservation_id: str = "",
+        expected: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._controller_lock():
             self.store.invalidate_tasks()
@@ -80,11 +94,23 @@ class HumanMixin:
             active = [run.run_id for run in self.runs.active() if run.task_id == task_id]
             if active:
                 raise RuntimeError("automatic work is still active; wait for its safe boundary or stop it separately")
-            current_head = str(st.get("head_sha") or "")
-            if expected_head is not None and current_head != expected_head:
-                raise RuntimeError("the observed PR head changed; reload before returning to automation")
+            current_guard = self.manual_return_guard(current)
+            try:
+                normalized_expected = {
+                    "status": str((expected or {}).get("status") or ""),
+                    "pr": str((expected or {}).get("pr") or ""),
+                    "pr_number": int((expected or {}).get("pr_number") or 0),
+                    "pr_state": str((expected or {}).get("pr_state") or ""),
+                    "head_sha": str((expected or {}).get("head_sha") or ""),
+                }
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    "invalid Manual mode return guard; reload the task and try again"
+                ) from None
+            if normalized_expected != current_guard:
+                raise RuntimeError("the observed task or PR state changed; reload before returning to automation")
             st.pop("manual_reservation", None)
-            self.events.emit("manual_returned", task_id, actor=existing.get("actor"), head=current_head)
+            self.events.emit("manual_returned", task_id, actor=existing.get("actor"), head=current_guard["head_sha"])
             current.log("returned from Manual mode to automation")
             self.store.save(current)
             self.state.save()

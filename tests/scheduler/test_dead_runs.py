@@ -98,7 +98,8 @@ def test_dead_run_failure_is_parked_during_manual_reservation(sched):
     assert not sched.runs.active()
 
     sched.return_to_automation(
-        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=""
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     rep = TickReport()
     assert sched.reap(sched.store.task(task.id), rep)
