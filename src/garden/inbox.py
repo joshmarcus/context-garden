@@ -99,6 +99,7 @@ ATTENTION_KINDS = {
     "check_did_not_run": ("A check could not run", "The check continuation and its PR identity are preserved. A delegated operator may retry it once without changing the task's outcome."),
     "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
     "deployment": ("Deployment prerequisite", "An operator must complete the named deployment or recovery step before the scheduler can continue. This is operational work, not an unanswered product question."),
+    "explicit_hold": ("Owner authorization required", "An explicit hold reserves this step for the owner. The garden will not treat approval as routine operator recovery."),
     "review_recovery_exhausted": ("Automatic review recovery exhausted", "The scheduler preserved and retried the review request, but its bounded repair budget is spent. Repair review capacity or the reviewer environment, then request one more review."),
 }
 
@@ -106,7 +107,8 @@ ATTENTION_OWNERS = {
     "check_did_not_run": ("Interrupted check", "operator", "Retry the interrupted check"),
     "env_error": ("Interrupted infrastructure", "operator", "Repair the environment, then retry"),
     "base_broken": ("Normal pending work", "scheduler", "Wait for the base branch check"),
-    "deployment": ("Explicit hold", "operator", "Complete the named deployment step"),
+    "deployment": ("Operational prerequisite", "operator", "Complete the named deployment step"),
+    "explicit_hold": ("Explicit hold", "you", "Authorize the held step, or leave it paused"),
     "worker_failed": ("Source or worker failure", "implementation worker", "Send the failure to the worker"),
     "revision_cap": ("Source or CI failure", "implementation worker", "Send the preserved failures to the worker"),
     "parent_closed": ("Source conflict", "implementation worker", "Send the conflict to the worker"),
@@ -148,6 +150,22 @@ def _failed_info(t: Task) -> dict[str, str]:
     low = reason.lower()
     kind = "env_error" if any(s in low for s in ("dispatch failed", "push failed", "git error")) else "worker_failed"
     return {"kind": kind, "reason": reason, "prior_status": "", "at": ""}
+
+
+def _classify_explicit_hold(info: dict[str, str]) -> dict[str, str]:
+    """Separate owner authorization from routine work recorded as a deployment stop.
+
+    Older producers use the broad ``deployment`` kind for both cases, so retain their
+    reason and derive the narrower presentation from explicit authorization language.
+    """
+    if info["kind"] != "deployment":
+        return info
+    reason = info["reason"].lower()
+    owner_terms = ("owner", "user", "human")
+    decision_terms = ("approval", "approve", "authorization", "authorize", "decision", "go-ahead")
+    if any(term in reason for term in owner_terms) and any(term in reason for term in decision_terms):
+        return {**info, "kind": "explicit_hold"}
+    return info
 
 
 def _resume_target(t: Task, st: Any, info: dict[str, str]) -> str:
@@ -318,6 +336,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         if t.status != Status.FAILED:
             return None
         info = _failed_info(t)
+    info = _classify_explicit_hold(info)
     kind_title, kind_blurb = ATTENTION_KINDS.get(info["kind"], ("Needs a decision", ""))
     category, owner, recommendation = ATTENTION_OWNERS.get(
         info["kind"], ("Unclassified stop", "you", "Inspect the task before continuing"))
@@ -345,8 +364,9 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         label = "Retry the interrupted check" if info["kind"] == "check_did_not_run" else "Send failures to the worker"
         actions.append({"label": label, "kind": "recover", "command": f"garden recover {t.id}",
                         "detail": "runs one guarded continuation with the current PR, head, feedback, and counters preserved; repeat clicks cannot duplicate it"})
-    if can_resume and info["kind"] == "deployment":
-        label = "Deployment completed — continue"
+    if can_resume and info["kind"] in {"deployment", "explicit_hold"}:
+        label = ("Authorize held step and continue" if info["kind"] == "explicit_hold"
+                 else "Deployment completed — continue")
         actions.append({"label": label, "kind": "resume", "command": f"garden resume {t.id}",
                         "detail": f"clears the stop and returns the task to {resume_to.replace('_', ' ')}; no run starts"})
     if info["kind"] == "review_cap" and t.pr:
@@ -358,7 +378,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         actions.append({"label": "One more automated review", "kind": "review-again",
                         "command": f"garden review {t.id}",
                         "detail": "clears this reviewer-owned stop and requests another review; no author revision is queued"})
-    if not reviewer_owned and not delegated and not stale_check_stop and info["kind"] not in {"base_broken", "deployment"}:
+    if not reviewer_owned and not delegated and not stale_check_stop and info["kind"] not in {"base_broken", "deployment", "explicit_hold"}:
         if info["kind"] == "revision_cap":
             retry_label = "Authorize one more revision"
         else:
@@ -641,7 +661,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
         if (st.get("needs_human") and not t.status.terminal) or t.status == Status.FAILED:
             att = attention_view(t, st, runs)
             if att:
-                add("operator" if att.get("delegated") or att["kind"] == "deployment" else "attention", t,
+                add("operator" if att.get("delegated") else "attention", t,
                     f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
                     **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "category",
                                            "owner", "recommendation", "happened", "effect", "user_decision",
