@@ -1,6 +1,6 @@
 # context-garden
 
-**Turn a backlog into pull requests you can review.** Write down what your software needs to do; context-garden breaks the work into tasks, runs coding agents in separate worktrees, checks their changes, and sends review feedback back for revision. You can follow every task from its brief to its PR, answer questions when a worker gets stuck, and decide what ships.
+**Drive autonomous agent development by tending a context garden.** You maintain principles, product overviews, phase goals, and specs as Markdown; context-garden turns that context into plans, working code, and reviewed pull requests. As your project grows, you refine the documents that guide the agents, and the agents carry the work through implementation, checks, review, and revision. Your job is to shape the goals, make decisions, and choose what ships.
 
 Built for developers and small teams working on existing projects. Use Claude Code, Codex, or a custom CLI harness with your project's own setup, test, and lint commands. Run the loop locally, on prepared remote hosts, or alongside an interactive coding session.
 
