@@ -45,11 +45,11 @@ def _safe(value: Any, key: str = "", config: dict[str, Any] | None = None) -> An
     return value
 
 
-def write_snapshot(scheduler: Any, task: Any, worktree: Path) -> None:
-    """Write live garden facts into a design task's checkout, without secrets or paths."""
+def write_snapshot(scheduler: Any, task: Any, run_dir: Path) -> Path | None:
+    """Write sanitized live garden facts beside the run, never into source control."""
     text = f"{task.title}\n{task.body}".lower()
     if not any(word in text for word in ("design", "ui", "mock", "capture")):
-        return
+        return None
     store = scheduler.store
     runs = RunStore(store.config.garden_dir)
     state = scheduler.state.data if hasattr(scheduler.state, "data") else {}
@@ -86,6 +86,7 @@ def write_snapshot(scheduler: Any, task: Any, worktree: Path) -> None:
         "events": EventLog(store.config.garden_dir / "events.jsonl").read(since=parse_since("24h")),
         "metrics": metrics(EventLog(store.config.garden_dir / "events.jsonl").read(), store.tasks()),
     }
-    out = worktree / "docs" / "design" / "snapshot.json"
+    out = run_dir / "design-context.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(_safe(payload, config=store.config.data), indent=2, sort_keys=True) + "\n")
+    return out
