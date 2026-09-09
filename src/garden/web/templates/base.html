@@ -144,6 +144,16 @@ label.check { display:inline-flex; gap:6px; align-items:center; color:var(--mute
 .autosave-mark.err { color:var(--bad); }
 .autosave-mark .undo { min-height:auto; padding:1px 8px; font-size:11px; }
 
+/* ---- operating profile: one discrete, compact rail control ------------------------ */
+.profile-slider { display:flex; flex-direction:column; gap:7px; }
+.profile-slider .profile-current { display:flex; align-items:baseline; justify-content:space-between; gap:8px; font:12px/1.25 var(--mono); }
+.profile-slider output { color:var(--ink); font-weight:700; text-transform:capitalize; }
+.profile-slider input[type=range] { width:100%; height:44px; margin:0; accent-color:var(--accent); cursor:pointer; }
+.profile-stops { display:flex; justify-content:space-between; gap:4px; font:10.5px/1.2 var(--mono); color:var(--muted); }
+.profile-stops span { min-width:0; text-align:center; overflow-wrap:anywhere; }
+.profile-stops span:first-child { text-align:left; }.profile-stops span:last-child { text-align:right; }
+.profile-note { display:block; margin-top:3px; font:11.5px/1.4 var(--mono); color:var(--faint); }
+
 /* ---- surfaces -------------------------------------------------------------------- */
 .panel { background:var(--label); border:1px solid var(--line); padding:14px 16px; }
 .panel + .panel, .stack > * + * { margin-top:14px; }
@@ -369,15 +379,19 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
   <div>
     <h4>Operating profile</h4>
-    <form method="post" action="/config/operating-profile" data-autosave style="display:flex; flex-direction:column; gap:4px">
-      <select name="value" onchange="this.form.requestSubmit()" style="width:100%; font:12.5px/1.4 var(--mono)" aria-label="Operating profile">
-        <option value="" {% if not operating_profile %}selected{% endif %}>plain garden.yaml values</option>
-        {% for name in operating_profile_names %}<option value="{{ name }}" {% if operating_profile == name %}selected{% endif %}>{{ name }}</option>{% endfor %}
-      </select>
-      <noscript><button type="submit" class="quiet">Switch</button></noscript>
+    {% set selected_profile = operating_profile if operating_profile in operating_profile_names else ("balanced" if "balanced" in operating_profile_names else operating_profile_names[0]) %}
+    {% set selected_index = operating_profile_names.index(selected_profile) %}
+    <form method="post" action="/config/operating-profile" class="profile-slider" data-profile-slider data-selected="{{ selected_profile }}" data-profile-names='{{ operating_profile_names|tojson }}'>
+      <div class="profile-current"><span>Selected</span><output for="operating-profile-slider">{{ selected_profile }}</output></div>
+      <input id="operating-profile-slider" type="range" min="0" max="{{ operating_profile_names|length - 1 }}" step="1" value="{{ selected_index }}" aria-label="Operating profile: {{ selected_profile }}" aria-valuetext="{{ selected_profile|capitalize }} operating profile">
+      <input type="hidden" name="value" value="{{ selected_profile }}">
+      <div class="profile-stops" aria-hidden="true">{% for name in operating_profile_names %}<span>{{ name|capitalize }}</span>{% endfor %}</div>
+      <noscript><select name="value" aria-label="Operating profile">{% for name in operating_profile_names %}<option value="{{ name }}" {% if name == selected_profile %}selected{% endif %}>{{ name|capitalize }}</option>{% endfor %}</select><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
-    {% if operating_profile_meaning %}<span class="faint" style="display:block; margin-top:2px">{{ operating_profile_meaning }}</span>{% endif %}
+    {% if operating_profile %}<span class="profile-note">{{ operating_profile_source }} requests {{ operating_profile_meaning }}.</span>{% else %}<span class="profile-note">No profile requested; using plain garden.yaml values.</span>{% endif %}
+    {% if operating_profile_overrides %}<span class="profile-note">Specific overrides still apply: {{ operating_profile_overrides|join(', ') }}.</span>{% endif %}
+    <span class="profile-note">Profile changes do not resume dispatch or raise resource caps.</span>
     {% if operating_profile_spend_rate %}<span class="faint" style="display:block">${{ '%.2f' % operating_profile_spend_rate }}/hr last hour</span>{% endif %}
   </div>
   <div class="notify" id="notify">
@@ -533,6 +547,54 @@ document.querySelectorAll("form[data-autosave]").forEach(form => {
     const current = serialize();
     if (current === form.dataset.saved) return;
     post(new URLSearchParams(current), form.dataset.saved);
+  });
+});
+// ---- operating-profile slider: range input is discrete and only saves on `change`, which
+// fires after a pointer drag settles. Saves are serial: while one request is in flight, keep
+// only the newest stop. That prevents a slow earlier response from restoring an older value.
+document.querySelectorAll("form[data-profile-slider]").forEach(form => {
+  const slider = form.querySelector('input[type="range"]');
+  const value = form.elements.namedItem("value");
+  const output = form.querySelector("output");
+  const mark = form.querySelector(".autosave-mark");
+  const names = JSON.parse(form.dataset.profileNames || "[]");
+  let saved = form.dataset.selected || value.value;
+  let queued = null;
+  let saving = false;
+
+  function setVisible(name) {
+    value.value = name;
+    output.textContent = name;
+    slider.setAttribute("aria-label", "Operating profile: " + name);
+    slider.setAttribute("aria-valuetext", name.charAt(0).toUpperCase() + name.slice(1) + " operating profile");
+  }
+  async function save(name) {
+    saving = true;
+    if (mark) { mark.className = "autosave-mark"; mark.textContent = "saving…"; }
+    try {
+      const res = await fetch(form.action, {method: "POST", headers: {Accept: "application/json"}, body: new URLSearchParams({value: name})});
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setVisible(saved); slider.value = String(names.indexOf(saved));
+        if (mark) { mark.className = "autosave-mark err"; mark.textContent = data.detail || "save failed"; }
+      } else {
+        saved = name;
+        if (mark) { mark.className = "autosave-mark ok"; mark.textContent = "saved ✓"; }
+      }
+    } catch (e) {
+      setVisible(saved); slider.value = String(names.indexOf(saved));
+      if (mark) { mark.className = "autosave-mark err"; mark.textContent = "save failed (offline?)"; }
+    } finally {
+      saving = false;
+      if (queued !== null && queued !== saved) { const next = queued; queued = null; save(next); }
+      else queued = null;
+    }
+  }
+  slider.addEventListener("change", () => {
+    const name = names[Number(slider.value)];
+    if (!name || name === saved) return;
+    setVisible(name);
+    if (saving) queued = name; else save(name);
   });
 });
 // ---- brief repair: validate the proposed criteria and reading list through the same gate as

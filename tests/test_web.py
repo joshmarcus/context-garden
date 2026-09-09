@@ -2388,9 +2388,7 @@ def test_observe_profile_override_from_config_page(garden):
 
 
 def test_operating_profile_switch_from_the_rail_and_config_page(garden):
-    """CG-221: the rail slider and the Config page both post to the same live override, no
-    Set button, a plain select and form post — and the switch is visible everywhere within
-    a tick: dispatch's worker count, the review tier and the observe feed."""
+    """The rail's discrete slider and Config page use the same live profile override."""
     from garden.observe import resolve
     from garden.scheduler import Scheduler
     from garden.store import Store
@@ -2398,10 +2396,12 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     c = client(garden)
     home = c.get("/").text
     assert "Operating profile" in home
-    assert "plain garden.yaml values" in home
+    assert 'data-profile-slider' in home
+    assert 'type="range"' in home
+    assert 'action="/config/operating-profile"' in home
+    assert "Profile changes do not resume dispatch or raise resource caps." in home
     for name in ("economy", "balanced", "fast"):
-        assert f'value="{name}"' in home and f'>{name}</option>' in home
-    assert "<button>Set</button>" not in home and ">Set<" not in home
+        assert f">{name.capitalize()}</span>" in home
 
     config_page = c.get("/config").text
     assert "no live override" in config_page
@@ -2412,7 +2412,8 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     config_page = c.get("/config").text
     assert "live override: <strong>fast</strong>" in config_page
     home = c.get("/").text
-    assert 'value="fast" selected' in home or 'selected>fast<' in home
+    assert '<output for="operating-profile-slider">fast</output>' in home
+    assert "live override requests 7 workers" in home
 
     # the Parallelism and observe-profile panels say the *stop*, not garden.yaml, answers
     # max_parallel and observe.profile now — the "which values come from the stop" criterion
@@ -2433,6 +2434,76 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     r = c.post("/config/operating-profile", data={"value": ""}, follow_redirects=False)
     assert r.status_code == 303
     assert "no live override" in c.get("/config").text
+
+
+def test_operating_profile_slider_supports_extra_stops_and_json_errors(garden):
+    import yaml
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["profiles"] = {"turbo": {"workers": 9, "reviews": 4}}
+    config_path.write_text(yaml.safe_dump(config))
+
+    c = client(garden)
+    home = c.get("/").text
+    assert ">Turbo</span>" in home
+    assert 'max="3"' in home
+    assert c.post("/config/operating-profile", data={"value": "invalid"},
+                  headers={"Accept": "application/json"}).status_code == 400
+
+
+def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_path):
+    """The rail control changes a real isolated app, retains its pause state, and reloads."""
+    import socket
+    import threading
+
+    import uvicorn
+    from playwright.sync_api import sync_playwright
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    store = Store(garden)
+    Scheduler(store).pause(by="test")
+    app = create_app(store, watch=False, host="127.0.0.1", port=port)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{port}/"
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(url, wait_until="networkidle")
+            slider = page.locator("#operating-profile-slider")
+            slider.click(position={"x": 4, "y": 22})
+            page.get_by_text("saved ✓").wait_for()
+            slider.focus()
+            slider.press("End")
+            page.get_by_text("saved ✓").wait_for()
+            assert slider.get_attribute("aria-valuetext") == "Fast operating profile"
+            assert "fast" in page.locator(".profile-current").inner_text().lower()
+            page.screenshot(path=str(tmp_path / "profile-slider-1280-light.png"), full_page=True)
+            page.route("**/config/operating-profile", lambda route: route.fulfill(
+                status=400, content_type="application/json", body='{"detail":"profile locked by policy"}'))
+            slider.press("Home")
+            page.get_by_text("profile locked by policy").wait_for()
+            assert slider.get_attribute("aria-valuetext") == "Fast operating profile"
+            page.unroute("**/config/operating-profile")
+            page.reload(wait_until="networkidle")
+            assert "fast" in page.locator(".profile-current").inner_text().lower()
+            assert "dispatch paused" in page.locator(".rail .foot").inner_text().lower()
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.screenshot(path=str(tmp_path / "profile-slider-390-light.png"), full_page=True)
+            page.emulate_media(color_scheme="dark")
+            page.screenshot(path=str(tmp_path / "profile-slider-390-dark.png"), full_page=True)
+            page.set_viewport_size({"width": 1280, "height": 900})
+            page.screenshot(path=str(tmp_path / "profile-slider-1280-dark.png"), full_page=True)
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
 
 
 def test_operating_profile_spend_rate_shown_on_the_rail(garden):
@@ -2495,7 +2566,7 @@ def test_editable_values_apply_on_change_with_a_saved_mark(garden):
     an autosave-mark slot for the JS-driven saved/undo behaviour."""
     import re
 
-    autosave_form_re = re.compile(r"<form\b[^>]*\bdata-autosave\b")
+    autosave_form_re = re.compile(r"<form\b[^>]*\bdata-(?:autosave|profile-slider)\b")
     for url in ("/config", "/tasks/DM-001", "/phases/demo/p1"):
         page = client(garden).get(url).text
         forms = autosave_form_re.findall(page)

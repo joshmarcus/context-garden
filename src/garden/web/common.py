@@ -252,6 +252,10 @@ class Site:
         ctrl = sched.control()
         stops = sched.operating_profile_stops()
         active = sched.operating_profile_name()
+        profile_overrides = sched.overrides()
+        profile_facets = ("max_parallel", "review_parallel", "models", "review.difficulty",
+                          "retro.difficulty", "observe.profile")
+        overridden_facets = [key for key in profile_facets if key in profile_overrides]
         run_store = sched.runs
         totals = run_store.totals()
         resources = sched.resource_status()
@@ -286,7 +290,12 @@ class Site:
             "flash_note": request.query_params.get("flash_note", ""),
             "operating_profile_names": list(stops),
             "operating_profile": active,
+            "operating_profile_source": (
+                "live override" if "operating_profile" in profile_overrides
+                else ("garden.yaml" if active else "plain garden.yaml values")
+            ),
             "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
+            "operating_profile_overrides": overridden_facets,
             "operating_profile_spend_rate": run_store.spend_since(parse_since("1h")),
             "rail_metrics": rail_metrics,
             # The installed revision is useful when diagnosing a served garden, but it is
