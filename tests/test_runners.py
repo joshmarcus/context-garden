@@ -1023,19 +1023,28 @@ def test_nested_validation_inherits_an_enclosing_validation_lease(tmp_path):
     outer = tmp_path / "outer"
     outer.mkdir()
     inner_status = tmp_path / "inner-status.json"
-    child = (
-        "import json; from pathlib import Path; "
-        f"Path({str(inner_status)!r}).write_text(json.dumps({{'ok': True}}))"
+    inner_test = tmp_path / "test_inner.py"
+    inner_test.write_text(
+        "import json\n"
+        "from pathlib import Path\n\n"
+        "def test_inner():\n"
+        f"    Path({str(inner_status)!r}).write_text(json.dumps({{'ok': True}}))\n"
     )
-    nested = (
-        f"{shlex.quote(sys.executable)} -m garden.validation -- "
-        f"{shlex.quote(sys.executable)} -c "
-        f"{shlex.quote(child)}"
+    outer_test = tmp_path / "test_outer.py"
+    outer_test.write_text(
+        "import subprocess, sys\n\n"
+        "def test_outer():\n"
+        "    subprocess.run([sys.executable, '-m', 'garden.validation', '--', "
+        f"sys.executable, '-m', 'pytest', {str(inner_test)!r}, '-q'], check=True)\n"
     )
     env = _supervisor_test_env(tmp_path)
     env.pop("GARDEN_HEAVY_EXECUTION")
     result = subprocess.run(
-        _supervisor_command(outer, [sys.executable, "-m", "garden.validation", "--", "sh", "-c", nested]),
+        _supervisor_command(
+            outer,
+            [sys.executable, "-m", "garden.validation", "--",
+             sys.executable, "-m", "pytest", str(outer_test), "-q"],
+        ),
         env=env, capture_output=True, text=True, timeout=5,
     )
 

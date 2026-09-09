@@ -789,8 +789,6 @@ class ReviewMixin:
                             criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan,
                             author_interaction=author_interaction,
                             clarify_unverified=clarify_unverified)
-                            author_interaction=author_interaction,
-                            clarify_unverified=clarify_unverified)
         ci_status = self.state.get(task.id).get("ci_status") or {}
         if ci_status:
             text += ("\n\n## Exact-head CI evidence\n\nThe controller admitted this review with "
