@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="680" viewBox="0 0 1440 680" role="img" aria-labelledby="title desc">
+  <title id="title">The context-garden development loop</title>
+  <desc id="desc">Maintain principles, product context, goals, and specs. Plan and approve tasks. Agents build and run checks. Review and merge changes, returning feedback for revision when needed. Retrospectives and cost evidence inform the documents for the next phase. People approve scope, answer questions, and decide what ships.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#3c6e56" stroke-width="1.5"/></marker>
+    <marker id="revise" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#ae6146" stroke-width="1.5"/></marker>
+    <style>
+      text { fill:#22382d; font-family:Georgia, 'Times New Roman', serif; }
+      .label { font-family:'Courier New',monospace; font-size:14px; letter-spacing:1.5px; }
+      .heading { font-size:26px; }
+      .body { font-size:19px; fill:#52645a; }
+      .route { fill:none; stroke:#3c6e56; stroke-width:2.5; marker-end:url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1440" height="680" rx="12" fill="#f3f5ee"/>
+  <path d="M42 55h27m-14 9V37m0 13c-12 0-15-8-15-8 12-3 15 8 15 8m0-5c10 0 14-10 14-10-12 0-14 10-14 10" fill="none" stroke="#3c6e56" stroke-width="2"/>
+  <text class="label" x="84" y="54">CONTEXT-GARDEN / THE DEVELOPMENT LOOP</text>
+  <text x="42" y="106" font-size="34">From maintained context to shipped changes</text>
+
+  <rect x="42" y="154" width="252" height="324" rx="4" fill="#e2ecdf" stroke="#98ad97"/>
+  <text class="label" x="64" y="185">MAINTAIN THE GARDEN</text>
+  <text class="heading" x="64" y="226">Shared context</text>
+  <path d="M64 249h208" stroke="#a4b8a3"/>
+  <text x="64" y="282" font-size="22">Principles</text>
+  <text x="64" y="323" font-size="22">Product overviews</text>
+  <text x="64" y="364" font-size="22">Phase goals</text>
+  <text x="64" y="405" font-size="22">Specs and designs</text>
+  <text class="body" x="64" y="451">Markdown + Git</text>
+
+  <rect x="344" y="154" width="286" height="164" rx="4" fill="#fffefa" stroke="#bfc9bc"/>
+  <text class="label" x="366" y="185">01 / PLAN &amp; APPROVE</text>
+  <text class="heading" x="366" y="226">Choose the next work</text>
+  <text class="body" x="366" y="265">Tasks, criteria, reading lists,</text>
+  <text class="body" x="366" y="291">dependencies, and approval</text>
+
+  <rect x="680" y="154" width="286" height="164" rx="4" fill="#fffefa" stroke="#bfc9bc"/>
+  <text class="label" x="702" y="185">02 / BUILD &amp; CHECK</text>
+  <text class="heading" x="702" y="226">Agents implement</text>
+  <text class="body" x="702" y="265">Dedicated worktrees,</text>
+  <text class="body" x="702" y="291">product tests, and lint</text>
+
+  <rect x="1016" y="154" width="382" height="164" rx="4" fill="#fffefa" stroke="#bfc9bc"/>
+  <text class="label" x="1038" y="185">03 / REVIEW &amp; MERGE</text>
+  <text class="heading" x="1038" y="226">Inspect what ships</text>
+  <text class="body" x="1038" y="265">Automated review, PR evidence,</text>
+  <text class="body" x="1038" y="291">CI, and your merge policy</text>
+
+  <path class="route" d="M294 236h47"/>
+  <path class="route" d="M630 236h47"/>
+  <path class="route" d="M966 236h47"/>
+  <path d="M1120 318v62q0 16-16 16H839q-16 0-16-16v-59" fill="none" stroke="#ae6146" stroke-width="2.5" marker-end="url(#revise)"/>
+  <text x="842" y="430" font-size="18" style="fill:#98543c">Revise from checks and review feedback</text>
+
+  <rect x="344" y="458" width="682" height="122" rx="4" fill="#e9eadb" stroke="#b8bba0"/>
+  <text class="label" x="366" y="490">04 / RETROSPECT &amp; REFINE</text>
+  <text class="heading" x="366" y="529">Use what happened to shape the next phase</text>
+  <text class="body" x="366" y="559">Outcomes, friction, follow-up work, model performance, and cost</text>
+  <path class="route" d="M1290 318v181q0 20-20 20h-241"/>
+  <text class="label" x="1306" y="429">MERGED</text>
+  <path class="route" d="M344 519H188q-20 0-20-20v-18"/>
+  <text x="63" y="555" font-size="17" style="fill:#3c6e56">You refine the documents</text>
+
+  <path d="M42 612h1356" stroke="#c6cebf"/>
+  <text x="42" y="644" font-size="19">You approve scope, answer questions, and decide what ships.</text>
+  <text x="760" y="644" font-size="18" style="fill:#52645a">The Python scheduler coordinates the loop without model tokens.</text>
+</svg>
