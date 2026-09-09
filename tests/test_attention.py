@@ -80,10 +80,33 @@ def test_revision_cap_card(garden):
     _set_state(garden, "DM-001", needs_human={"kind": "revision_cap", "reason": "3 revision rounds used",
                                               "prior_status": "in_review", "at": "2026-09-04T00:00:00+00:00"})
     it = next(item for item in build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub()))
-              if item["task"] == "DM-001" and item["group"] == "operator")
+              if item["task"] == "DM-001" and item["group"] == "attention")
     assert it["kind"] == "revision_cap"
     assert it["kind_title"] == "Revision cap reached"
     assert "3 revision rounds used" in it["why"]
+    assert it["owner"] == "you" and it["user_decision"] is True
+    assert it["recommendation"] == "Authorize one more bounded revision"
+    assert next(action for action in it["actions"] if action["kind"] == "retry")["label"] == "Authorize one more revision"
+    html = TestClient(create_app(Store(garden), watch=False)).get("/").text
+    assert "Needs your decision: Revision cap reached" in html
+    assert "Your decision</dt><dd>Required" in html
+    assert "Authorize one more revision" in html
+
+
+def test_delegated_revision_cap_card_is_operator_owned(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001", needs_human={"kind": "revision_cap", "reason": "3 revision rounds used",
+                                              "delegated_recovery": True})
+
+    it = next(item for item in build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub()))
+              if item["task"] == "DM-001" and item["group"] == "operator")
+
+    assert it["owner"] == "implementation worker" and it["user_decision"] is False
+    assert next(action for action in it["actions"] if action["kind"] == "recover")["label"] == "Send failures to the worker"
+    html = TestClient(create_app(Store(garden), watch=False)).get("/").text
+    assert "Operator recovery: Revision cap reached" in html
+    assert "Your decision</dt><dd>Not required" in html
 
 
 def test_parent_closed_card(garden):
