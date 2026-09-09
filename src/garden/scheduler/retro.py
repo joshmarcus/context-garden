@@ -220,7 +220,10 @@ class RetroMixin:
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         difficulty = str(self.effective("retro.difficulty") or "hard")
-        run = self._new_local_run(probe.id, "retro", "retro")
+        run = self._new_local_run(
+            probe.id, "retro", "retro",
+            resource_weight=self.cfg.product_resource_weight(probe.product),
+        )
         run.model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
         run.difficulty = difficulty
         base = self.final_base_for(probe)
