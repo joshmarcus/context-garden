@@ -119,7 +119,8 @@ def test_manual_reservation_parks_finished_edit_until_return(sched):
     assert has_pending(sched.store.task(task.id).body)
 
     sched.return_to_automation(
-        sched.store.task(task.id), reservation_id=reservation["id"], expected_head=""
+        sched.store.task(task.id), reservation_id=reservation["id"],
+        expected=sched.manual_return_guard(sched.store.task(task.id)),
     )
     sched.tick(dispatch=False)
     assert not sched.state.get(task.id).get("edit_run")

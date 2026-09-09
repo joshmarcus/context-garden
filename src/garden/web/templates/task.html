@@ -52,7 +52,7 @@
   <div class="eyebrow" style="color:var(--warn)">Manual mode</div>
   <p style="margin:6px 0 10px">Reserved by <b>{{ manual_reservation.actor.replace('_', ' ') }}</b>{% if manual_reservation.note %}: {{ manual_reservation.note }}{% endif %}. Garden observes active work, PRs, and checks but starts no automatic lifecycle action.</p>
   {% if latest_run and latest_run.status in ('requested','preparing','running') %}<p class="muted">Active work {{ latest_run.run_id }} continues to its safe boundary; this reservation does not stop or cancel it.</p>{% endif %}
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/return-automation" onsubmit="return confirm('Return this task to normal automation using its current observed state?');"><input type="hidden" name="applies_to" value="{{ manual_reservation.id }}"><input type="hidden" name="note" value="{{ state.head_sha or '' }}"><button class="primary">Return to automation</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/return-automation" onsubmit="return confirm('Return this task to normal automation using its current observed state?');"><input type="hidden" name="applies_to" value="{{ manual_reservation.id }}"><input type="hidden" name="note" value="{{ manual_return_guard|tojson|forceescape }}"><button class="primary">Return to automation</button></form>
 </div>
 {% endif %}
 
