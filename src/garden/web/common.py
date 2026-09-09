@@ -6,6 +6,7 @@ All logic lives in store/graph/scheduler; the web package only renders and forwa
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import threading
 from contextvars import ContextVar, Token
@@ -98,10 +99,15 @@ class Hub:
         self.tick_seq = 0
         self.tick_record: dict[str, Any] = {}
         self.watch = watch
+        self._embedded_state = "starting" if watch else "off"
+        self._embedded_heartbeat = ""
+        self._embedded_error = ""
+        self._watch_thread: threading.Thread | None = None
         self.planning: dict[str, str] = {}  # "product/phase" -> status text
         self._stop = threading.Event()
         if watch:
-            threading.Thread(target=self._loop, daemon=True, name="garden-watch").start()
+            self._watch_thread = threading.Thread(target=self._loop, daemon=True, name="garden-watch")
+            self._watch_thread.start()
 
     def scheduler(self) -> Scheduler:
         # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
@@ -171,10 +177,47 @@ class Hub:
     def scheduler_health(self) -> dict[str, Any]:
         """Report embedded-watch state separately from effective scheduler health."""
         standalone = scheduler_health(self.store.config.garden_dir)
-        effective = ({"kind": "healthy", "label": "embedded watcher healthy"}
-                     if self.watch else standalone)
-        return {"embedded": "on" if self.watch else "off", "effective": effective,
+        embedded = self._embedded_health()
+        effective = embedded if self.watch else standalone
+        if self.watch and standalone["kind"] != "missing":
+            if standalone["kind"] in {"failed", "stale"}:
+                effective = standalone
+            elif embedded["kind"] in {"failed", "stale"}:
+                effective = embedded
+            else:
+                effective = {"kind": "duplicated", "label": "embedded and standalone watchers both enabled"}
+        return {"embedded": embedded["state"], "embedded_health": embedded, "effective": effective,
                 "standalone": standalone}
+
+    def _embedded_health(self, now: dt.datetime | None = None) -> dict[str, Any]:
+        """Derive embedded health from bounded pass evidence and thread liveness."""
+        if not self.watch:
+            return {"kind": "off", "label": "embedded watcher off", "state": "off"}
+        thread = self._watch_thread
+        if thread is not None and not thread.is_alive():
+            return {"kind": "failed", "label": "embedded watcher stopped", "state": "failed",
+                    "heartbeat_at": self._embedded_heartbeat, "error": self._embedded_error}
+        kind = self._embedded_state
+        if self._embedded_heartbeat:
+            checked = now or dt.datetime.now(dt.UTC)
+            heartbeat = dt.datetime.fromisoformat(self._embedded_heartbeat)
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=dt.UTC)
+            if (checked - heartbeat).total_seconds() > max(75, self.tick_interval() * 2 + 15):
+                kind = "stale"
+        labels = {
+            "starting": "embedded watcher starting",
+            "healthy": "embedded watcher healthy",
+            "failed": "embedded watcher failed",
+            "stale": "embedded watcher stale",
+        }
+        return {"kind": kind, "label": labels[kind], "state": self._embedded_state,
+                "heartbeat_at": self._embedded_heartbeat, "error": self._embedded_error}
+
+    def _record_embedded(self, state: str, error: str = "") -> None:
+        self._embedded_state = state
+        self._embedded_heartbeat = now_iso()
+        self._embedded_error = error[:500]
 
     def _loop(self) -> None:
         interval = int(self.store.config.get("tick_interval", 60))
@@ -183,11 +226,15 @@ class Hub:
                 self.scheduler().reap_on_start()  # reap runs the last process finished but never reaped
         except Exception as e:  # noqa: BLE001
             self._log(f"start-up reap error: {e}")
+            self._record_embedded("failed", str(e))
         while not self._stop.is_set():
             try:
                 self.tick()
             except Exception as e:  # noqa: BLE001
                 self._log(f"tick error: {e}")
+                self._record_embedded("failed", str(e))
+            else:
+                self._record_embedded("healthy")
             self._stop.wait(interval)
 
     def fresh(self) -> Store:

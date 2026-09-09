@@ -97,6 +97,80 @@ def test_web_reports_standalone_health_separately_from_embedded_watch(garden):
     heartbeat.remove()
 
 
+def test_embedded_watch_health_requires_pass_evidence_and_preserves_standalone_failure(
+    garden, monkeypatch
+):
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    hub = Hub(Store(garden), watch=False)
+    hub.watch = True
+    hub._embedded_state = "starting"
+    hub._watch_thread = LiveThread()
+
+    assert hub.scheduler_health()["effective"]["kind"] == "starting"
+    hub._record_embedded("failed", "tick crashed")
+    assert hub.scheduler_health()["effective"]["label"] == "embedded watcher failed"
+    hub._record_embedded("healthy")
+    assert hub.scheduler_health()["effective"]["label"] == "embedded watcher healthy"
+    stale_at = dt.datetime.fromisoformat(hub._embedded_heartbeat) + dt.timedelta(seconds=136)
+    assert hub._embedded_health(now=stale_at)["label"] == "embedded watcher stale"
+
+    heartbeat = WatchHeartbeat(Store(garden).config.garden_dir, 60)
+    heartbeat.write("failed", error="standalone crashed")
+    status = hub.scheduler_health()
+    assert status["effective"]["label"] == "standalone watcher failed"
+    assert status["embedded_health"]["label"] == "embedded watcher healthy"
+    heartbeat.remove()
+
+    hub._watch_thread = type("StoppedThread", (), {"is_alive": lambda self: False})()
+    assert hub.scheduler_health()["effective"]["label"] == "embedded watcher stopped"
+
+
+def test_embedded_loop_failure_and_recovery_update_displayed_health(garden, monkeypatch):
+    class LiveThread:
+        def is_alive(self):
+            return True
+
+    class TwoPassStop:
+        def __init__(self):
+            self.passes = 0
+
+        def is_set(self):
+            return self.passes >= 2
+
+        def wait(self, interval):
+            self.passes += 1
+            if self.passes == 1:
+                assert hub.scheduler_health()["effective"]["label"] == "embedded watcher failed"
+
+    class StartupScheduler:
+        def reap_on_start(self):
+            return None
+
+    hub = Hub(Store(garden), watch=False)
+    hub.watch = True
+    hub._embedded_state = "starting"
+    hub._watch_thread = LiveThread()
+    hub._stop = TwoPassStop()
+    outcomes = iter([RuntimeError("tick crashed"), "ok"])
+
+    monkeypatch.setattr(hub, "scheduler", lambda: StartupScheduler())
+
+    def tick_once():
+        result = next(outcomes)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(hub, "tick", tick_once)
+    hub._loop()
+
+    assert hub.scheduler_health()["effective"]["label"] == "embedded watcher healthy"
+    assert any(event["msg"] == "tick error: tick crashed" for event in hub.events)
+
+
 def test_manual_and_standalone_ticks_share_the_process_wide_tick_lock(garden, monkeypatch):
     """A web tick and standalone scheduler pass cannot enter their pass bodies together."""
     entered = threading.Event()
