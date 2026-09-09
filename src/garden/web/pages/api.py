@@ -9,6 +9,7 @@ import math
 import os
 import re
 import secrets
+import shlex
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -437,9 +438,30 @@ def register(app: FastAPI, site: Site) -> None:
             for index, receipt in enumerate(body.get("validation_receipts") or []):
                 if not isinstance(receipt, dict):
                     continue
+                artifacts = receipt.get("artifacts")
+                selection = receipt.get("selection")
+                command = str(receipt.get("command") or "")
+                expected_command = str(hub.store.config.get("ci.worker_check.command", "") or "").strip()
+                if (str(receipt.get("source_sha") or "") != run.pushed_head
+                        or not isinstance(selection, list) or not selection
+                        or any(not isinstance(arg, str) or not arg for arg in selection)
+                        or shlex.join(selection) != command
+                        or (expected_command and command != expected_command)
+                        or not isinstance(artifacts, dict)
+                        or any(not isinstance(artifacts.get(name), str) for name in (
+                            "execution.json", "exit_code", "stderr.log",
+                        ))
+                        or str(artifacts.get("exit_code", "")).strip()
+                        != str(receipt.get("exit_code", ""))):
+                    continue
                 target = run.path / "validations" / f"remote-{index}" / "result.json"
                 target.parent.mkdir(parents=True, exist_ok=True)
-                durable = {**receipt, "log_location": str(target.parent)}
+                for name in ("execution.json", "exit_code", "stderr.log", "validation_timeout.json"):
+                    content = artifacts.get(name)
+                    if isinstance(content, str):
+                        (target.parent / name).write_text(content)
+                durable = {key: value for key, value in receipt.items() if key != "artifacts"}
+                durable["log_location"] = str(target.parent)
                 target.write_text(json.dumps(durable, sort_keys=True) + "\n")
             if run.mode == "check":
                 (run.path / "checks.json").write_text(json.dumps((body.get("result") or {}).get("checks") or []))
