@@ -1,3 +1,4 @@
+import datetime as dt
 import math
 import os
 import re
@@ -643,6 +644,37 @@ def test_board_columns_and_list_views(garden):
     assert 'class="board-list"' in c.get("/partials/board?view=list").text
     # The switch and filters carry the chosen view so navigation keeps it.
     assert "view=list" in lst.text
+
+
+def test_board_labels_remote_queue_and_claim_age_without_claiming_liveness(garden):
+    from garden.model import Status
+    from garden.runs import RunStore
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.RUNNING
+    store.save(task)
+    run = RunStore(store.config.garden_dir).new_run(task.id, "remote", "work")
+    run.queued_at = run.started_at
+    run.save()
+
+    columns = client(garden).get("/partials/board?view=columns").text
+    listed = client(garden).get("/partials/board?view=list").text
+    assert "queued; waiting for a remote worker to claim it" in columns
+    assert "queued; waiting for a remote worker to claim it" in listed
+    assert "queued</span>" in columns and "queued</span>" in listed
+    assert "no process" not in columns
+
+    run.claimed_at = dt.datetime.now(dt.UTC).replace(tzinfo=None).isoformat()
+    run.execution_started_at = run.claimed_at
+    run.lease_expires_at = '2099-01-01T00:00:00+00:00<img src=x onerror="alert(1)">'
+    run.save()
+    claimed = client(garden).get("/partials/board?view=list").text
+    assert "remote claim recorded" in claimed
+    assert "worker liveness is not known" in claimed
+    assert "since claim" in claimed
+    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in claimed
+    assert "<img src=x" not in claimed
 
 
 def test_board_prs_lists_open_linked_and_unlinked_prs(garden):

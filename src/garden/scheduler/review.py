@@ -283,8 +283,15 @@ class ReviewMixin:
             return "paused", "dispatch paused: reviews start again with dispatch"
         run = self._worker_holding_reviews(task)
         if run is not None:
+            lifecycle = run.presentation_lifecycle
+            if lifecycle == "finished; awaiting collection":
+                return "worker", f"its {run.mode} run finished and awaits collection"
             if run.no_process:
-                return "worker", f"its {run.mode} record has no process; the tick that reaps it starts the review"
+                return "worker", f"its {run.mode} local launch was not recorded; the tick that reaps it starts the review"
+            if not run.is_local_execution and not (run.claimed_at or run.host):
+                return "worker", f"its {run.mode} run is queued for a remote worker to claim"
+            if not run.is_local_execution:
+                return "worker", f"waits for its {run.mode} remote run; a claim is recorded but liveness is not known"
             return "worker", f"waits for its {run.mode} run to finish"
         if self.state.get(task.id).get("check_run"):
             return "check", "waits for its validation check to finish"
