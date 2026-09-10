@@ -1350,6 +1350,43 @@ def test_transcript_replay_is_ordered_and_idempotent(garden, monkeypatch):
     assert RunStore(store.config.garden_dir).latest("DM-001").stdout_text() == "héllo\n"
 
 
+def test_canonical_transcript_upload_finalizes_with_integrity_metadata(garden, monkeypatch):
+    import base64
+    import hashlib
+
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    content = b'{"schema_version":1,"sequence":0,"channel":"stderr","data":"oops\\n"}\n'
+    chunk = client.post(f"/api/runs/{run.run_id}/transcript", json={
+        "lease_token": claim["lease_token"], "offset": 0,
+        "data": base64.b64encode(content).decode(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }, headers=auth)
+    assert chunk.status_code == 200
+    replay = client.post(f"/api/runs/{run.run_id}/transcript", json={
+        "lease_token": claim["lease_token"], "offset": 0,
+        "data": base64.b64encode(content).decode(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }, headers=auth)
+    assert replay.json()["offset"] == len(content)
+
+    finished = client.post(f"/api/runs/{run.run_id}/transcript/finish", json={
+        "lease_token": claim["lease_token"], "byte_count": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(), "event_count": 1,
+        "redactions": 0, "capture_limits": ["unexposed events unavailable"],
+        "harness_schema": "test-v1",
+    }, headers=auth)
+    assert finished.status_code == 200
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved.transcript_status == "complete"
+    assert saved.transcript_events()[0]["channel"] == "stderr"
+    export = client.get(f"/runs/DM-001/{run.run_id}/transcript.jsonl")
+    assert export.status_code == 200 and export.content == content
+
+
 def test_finish_acknowledgement_replay_collects_one_result(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)

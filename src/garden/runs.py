@@ -95,6 +95,10 @@ class Run:
     execution_started_at: str = ""  # first claim; execution timeout never includes queue age
     lease_updated_at: str = ""  # latest claim/heartbeat accepted by the controller
     final_received_at: str = ""  # authenticated remote result receipt
+    transcript_status: str = ""  # missing | partial | complete | failed
+    transcript_attempt_id: str = ""  # accepted lease generation, never a bearer token
+    transcript_bytes: int = 0
+    transcript_sha256: str = ""
     claim_history: list[dict[str, Any]] = field(default_factory=list)
     # One idle-poll identity and its exact response. Retransmission is valid only while
     # this claim generation remains recoverable; the web boundary enforces that fence.
@@ -403,6 +407,23 @@ class Run:
     def stderr_text(self) -> str:
         p = self.path / "stderr.log"
         return p.read_text() if p.exists() else ""
+
+    def transcript_events(self) -> list[dict[str, Any]]:
+        """Return canonical observable events as inert data for authorized analysis."""
+        if not self.transcript_attempt_id:
+            return []
+        path = self.path / "transcripts" / self.transcript_attempt_id / "events.jsonl"
+        events: list[dict[str, Any]] = []
+        if not path.exists():
+            return events
+        for line in path.read_text(errors="replace").splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                events.append(value)
+        return events
 
 
 def _newest_mtime(root: Path) -> float:
