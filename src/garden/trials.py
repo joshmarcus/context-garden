@@ -52,8 +52,10 @@ def parse_contender(spec: str, default_harness: str) -> tuple[str, str, str]:
 
 
 def compare_brief(store: Store, task: Task, contenders: list[dict[str, Any]], diffs: dict[str, str], base: str,
-                  max_diff_chars: int) -> str:
+                  max_diff_chars: int, reference_files: dict[str, str] | None = None) -> str:
     tb = build_brief(store, task, include_rules=False)
+    if reference_files is not None:
+        reference_files.update(tb.files)
     parts = [f"# Trial comparison for task {task.id} ({task.title})\n",
              COMPARE_RULES.format(first=contenders[0]["label"], marker=COMPARE_MARKER),
              "## Task brief (what every worker was given)\n\n" + tb.text,
@@ -61,11 +63,7 @@ def compare_brief(store: Store, task: Task, contenders: list[dict[str, Any]], di
     for c in contenders:
         d = diffs.get(c["label"], "")
         parts.append(f"## PR description: {c['label']}\n\n{c.get('pr_body') or '(empty)'}\n")
-        if d and len(d) <= max_diff_chars:
-            fence = "````" if "```" in d else "```"
-            parts.append(f"## Diff: {c['label']} ({base}...HEAD)\n\n{fence}diff\n{d.rstrip()}\n{fence}\n")
-        else:
-            parts.append(f"## Diff: {c['label']}\n\nToo large to inline ({len(d):,} chars); run `git -C {c['worktree']} diff {base}...HEAD`.\n")
+        parts.append(f"## Source: {c['label']}\n\nInspect `git -C {c['worktree']} diff {base}...HEAD` and relevant history ({len(d):,} diff characters at dispatch).\n")
     return "\n".join(parts)
 
 

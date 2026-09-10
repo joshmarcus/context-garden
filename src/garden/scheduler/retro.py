@@ -237,8 +237,12 @@ class RetroMixin:
             gitops.fetch(repo)
             gitops.prepare_worktree(repo, wt, branch, base)
         friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
+        references: dict[str, str] = {}
         text = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
-                               reports, task_rows, merged, entry["next_phase"])
+                               reports, task_rows, merged, entry["next_phase"], references)
+        from ..reference_snapshot import write_reference_files
+
+        write_reference_files(run.path, references)
         run.worktree = str(wt)
         run.brief_tokens = max(1, len(text) // 4)
         run.save()

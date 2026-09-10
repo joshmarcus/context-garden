@@ -517,9 +517,12 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
                  interaction_manifest: str = "", criteria_snapshot: list[str] | None = None,
                  pre_flight: Any = None, plan: dict[str, Any] | None = None,
                  author_interaction: Any = None, clarify_unverified: list[str] | None = None,
-                 author_source_run: str = "", author_source_head: str = "") -> str:
+                 author_source_run: str = "", author_source_head: str = "",
+                 reference_files: dict[str, str] | None = None) -> str:
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     task_brief = build_brief(store, task, include_rules=False, criteria_snapshot=frozen)
+    if reference_files is not None:
+        reference_files.update(task_brief.files)
     amendments = {int(a["index"]): a for a in task.extra.get("criteria_amended", [])
                   if isinstance(a, dict) and isinstance(a.get("index"), int)}
     criteria_note = ""
@@ -535,7 +538,7 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
         EVIDENCE_GUIDANCE,
         preflight_section(str((plan or {}).get("capture_infrastructure_policy") or "require")),
-        "## Task brief (what the author was given)\n\n" + task_brief.text,
+        "## Task contract\n\nOpen the task and immutable context references in the launch note below.\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]
     if clarify_unverified:
@@ -609,11 +612,7 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         parts.append("## Follow-up required\n\nYour previous review had blocking findings without concrete fixes. "
                      "Return the same review with a `fix` for every blocking finding; do not discover new issues "
                      "unless needed to make those fixes accurate.\n")
-    if diff and len(diff) <= max_diff_chars:
-        fence = "````" if "```" in diff else "```"
-        parts.append(f"## Diff ({base}...HEAD)\n\n{fence}diff\n{diff.rstrip()}\n{fence}\n")
-    else:
-        parts.append(f"## Diff\n\nThe diff is {len(diff):,} characters; read it with `git diff {base}...HEAD` (and `git log {base}..HEAD`).\n")
+    parts.append(f"## Proposed source\n\nInspect the exact checkout with `git diff {base}...HEAD` and `git log {base}..HEAD` ({len(diff):,} diff characters at dispatch).\n")
     return "\n".join(parts)
 
 

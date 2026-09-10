@@ -298,7 +298,8 @@ def _read(p: Path | None) -> str:
         return ""
 
 
-def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict[str, Any]]) -> str:
+def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict[str, Any]],
+                reference_files: dict[str, str] | None = None) -> str:
     cfg = store.config
     body, sections = persona_sections(load_persona(store, name))
     frag, note = _sections_fragment(sections)
@@ -306,15 +307,16 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
              PHASE_RULES.format(phase=phase.name, product=phase.product, base=base, marker=PERSONA_MARKER, name=name,
                                 sections=frag, sections_note=note)]
     digest = store.root / str(cfg.get("principles_digest"))
+    refs = reference_files if reference_files is not None else {}
     if digest.exists():
-        parts.append("## Principles (digest)\n\n" + _read(digest))
+        refs["context/principles.md"] = _read(digest) + "\n"
     prod = store.product(phase.product)
     if prod.overview_path:
-        parts.append(f"## Product: {phase.product}\n\n" + _read(prod.overview_path))
+        refs["context/product.md"] = _read(prod.overview_path) + "\n"
     if phase.goals_path:
-        parts.append("## Phase goals\n\n" + _read(phase.goals_path))
+        refs["context/phase-goals.md"] = _read(phase.goals_path) + "\n"
     for spec in phase.specs:
-        parts.append(f"## Spec: {store.rel(spec)}\n\n" + _read(spec))
+        refs[f"context/specs/{spec.name}"] = _read(spec) + "\n"
     from .walkthrough import walkthrough_section
 
     section = walkthrough_section(phase)
@@ -323,27 +325,32 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
     lines = []
     for pr in prs:
         lines.append(f"### {pr['id']} — {pr['title']} [{pr['status']}]\n\nPR: {pr.get('pr') or '(none)'}\n\n{pr.get('body') or '(no description)'}\n")
-    parts.append("## Body of work: the phase's pull requests\n\n" + ("\n".join(lines) if lines else "(no PRs yet)"))
+    refs["evidence/pull-requests.md"] = ("\n".join(lines) if lines else "(no PRs yet)") + "\n"
+    parts.append("## Explore the phase\n\nStart with `$GARDEN_CONTEXT_DIR/context/phase-goals.md` and "
+                 "`$GARDEN_CONTEXT_DIR/evidence/pull-requests.md`. The reference snapshot also contains "
+                 "principles, product context, and phase specifications; inspect additional checkout history "
+                 "and evidence relevant to this persona's questions.\n")
     return "\n\n".join(parts) + "\n"
 
 
 def pr_brief(store: Store, task: Task, name: str, branch: str, base: str, pr_title: str, pr_body: str, diff: str,
-             max_diff_chars: int, captures: list[str] | None = None) -> str:
+             max_diff_chars: int, captures: list[str] | None = None,
+             reference_files: dict[str, str] | None = None) -> str:
     tb = build_brief(store, task, include_rules=False)
+    if reference_files is not None:
+        reference_files.update(tb.files)
     body, sections = persona_sections(load_persona(store, name))
     frag, note = _sections_fragment(sections)
     parts = [f"# Persona review: {name} on PR for {task.id}\n", body.strip() + "\n",
              PR_RULES.format(task_id=task.id, branch=branch, base=base, marker=PERSONA_MARKER, name=name,
                              sections=frag, sections_note=note),
-             "## Task brief (what the author was given)\n\n" + tb.text,
+             "## Task contract and context references\n\n" + tb.text,
              f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n"]
     if captures:
         parts.append("## Rendered UI captures\n\nOpen every image below and judge what a person sees at "
                      "desktop/mobile widths and in light/dark mode.\n\n" +
                      "\n".join(f"- `{path}`" for path in captures))
-    if diff and len(diff) <= max_diff_chars:
-        fence = "````" if "```" in diff else "```"
-        parts.append(f"## Diff ({base}...HEAD)\n\n{fence}diff\n{diff.rstrip()}\n{fence}\n")
+    parts.append(f"## Proposed source\n\nInspect `git diff {base}...HEAD` and relevant history in this exact checkout ({len(diff):,} diff characters at dispatch).\n")
     return "\n".join(parts)
 
 

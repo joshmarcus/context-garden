@@ -745,6 +745,9 @@ class DispatchMixin:
                                 stack=stack, qa=qa, commits_ahead=commits_ahead,
                                 criteria_snapshot=criteria_snapshot, validation_plan=plan,
                                 generated_context=generated_context)
+            from ..reference_snapshot import write_reference_files
+
+            write_reference_files(run.path, brief.files)
             text = prompt_override or brief.text
         prompt_bytes = len(text.encode("utf-8", "replace"))
         if prompt_bytes > MAX_SERIALIZED_PROMPT_BYTES:
