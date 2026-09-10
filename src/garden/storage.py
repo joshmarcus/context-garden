@@ -66,7 +66,7 @@ def _windows_backing_free(path: str) -> StorageVolume:
         f"$p='{escaped}'; "
         "if (-not $p) {$n=$env:WSL_DISTRO_NAME; $k=Get-ChildItem HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss | "
         "Where-Object {(Get-ItemProperty $_.PSPath).DistributionName -eq $n} | Select-Object -First 1; "
-        "if ($k) {$p=(Get-ItemProperty $k.PSPath).BasePath}}; "
+        "if ($k) {$p=[Environment]::ExpandEnvironmentVariables((Get-ItemProperty $k.PSPath).BasePath)}}; "
         "if (-not $p) {throw 'WSL backing volume could not be resolved'}; "
         "$i=Get-Item -LiteralPath $p -ErrorAction Stop; $d=$i.PSDrive; "
         "@{free=[int64]$d.Free}|ConvertTo-Json -Compress"
