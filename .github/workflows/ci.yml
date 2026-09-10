@@ -1,6 +1,9 @@
 # CI for the context-garden repository itself. The garden tool does not depend on GitHub
 # Actions; at work, an environment overlay (garden.work.yaml) points the CI analyser elsewhere.
 name: ci
+permissions:
+  actions: read
+  contents: read
 on:
   push:
     branches: [main, "garden/**", "codex/**"]
@@ -10,13 +13,80 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      # Assigned garden branches are pushed before their PR is opened. Reuse
+      # that exact-head push result, but keep the required `test` check
+      # fail-closed until it is available and successful. Fork PRs cannot
+      # reference a push run in this repository, so they retain full PR CI.
+      - name: Verify exact-head push CI
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.event.pull_request.head.ref, 'garden/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CI_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 900))
+          while (( SECONDS < deadline )); do
+            runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+              --commit "$CI_HEAD_SHA" --branch "$CI_HEAD_BRANCH" --event push --limit 20 \
+              --json databaseId,headSha,headBranch,event,status,conclusion)"
+            run="$(jq -c --arg sha "$CI_HEAD_SHA" --arg branch "$CI_HEAD_BRANCH" \
+              '[.[] | select(.headSha == $sha and .headBranch == $branch and .event == "push")] | max_by(.databaseId) // empty' \
+              <<<"$runs")"
+            if [[ -n "$run" ]]; then
+              status="$(jq -r '.status' <<<"$run")"
+              conclusion="$(jq -r '.conclusion // empty' <<<"$run")"
+              if [[ "$status" == completed ]]; then
+                [[ "$conclusion" == success ]] || {
+                  echo "Exact-head push CI did not pass: $conclusion" >&2
+                  exit 1
+                }
+                echo "Exact-head push CI passed: $(jq -r '.databaseId' <<<"$run")"
+                exit 0
+              fi
+            fi
+            sleep 15
+          done
+          echo "Exact-head push CI did not register or finish before the gate timed out" >&2
+          exit 1
+      - if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository ||
+          !startsWith(github.event.pull_request.head.ref, 'garden/')
+        uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository ||
+          !startsWith(github.event.pull_request.head.ref, 'garden/')
         with:
           python-version: "3.12"
-      - run: python -m pip install -e ".[dev]"
+      - if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository ||
+          !startsWith(github.event.pull_request.head.ref, 'garden/')
+        run: python -m pip install -e ".[dev]"
       - name: Ignore runner Chrome apt source for Playwright system dependencies
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository ||
+          !startsWith(github.event.pull_request.head.ref, 'garden/')
         run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
-      - run: python -m playwright install --with-deps chromium
-      - run: ruff check src tests scripts
-      - run: pytest -q --durations=40 --timeout=120 --timeout-method=thread
+      - if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository ||
+          !startsWith(github.event.pull_request.head.ref, 'garden/')
+        run: python -m playwright install --with-deps chromium
+      - if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository ||
+          !startsWith(github.event.pull_request.head.ref, 'garden/')
+        run: ruff check src tests scripts
+      - if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name != github.repository ||
+          !startsWith(github.event.pull_request.head.ref, 'garden/')
+        run: pytest -q --durations=40 --timeout=120 --timeout-method=thread
