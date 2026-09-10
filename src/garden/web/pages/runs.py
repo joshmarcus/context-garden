@@ -131,6 +131,18 @@ def register(app: FastAPI, site: Site) -> None:
         headers = {"Content-Security-Policy": "sandbox"} if media else {}
         return Response(path.read_bytes(), media_type=media, headers=headers)
 
+    @app.get("/runs/{task_id}/{run_id}/transcript.jsonl")
+    def run_transcript(task_id: str, run_id: str):
+        run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
+                    if r.run_id == run_id), None)
+        path = (run.path / "transcripts" / run.transcript_attempt_id / "events.jsonl"
+                if run and run.transcript_attempt_id else None)
+        if path is None or not path.is_file():
+            raise HTTPException(404)
+        return Response(path.read_bytes(), media_type="application/x-ndjson",
+                        headers={"Content-Disposition": f'attachment; filename="{run_id}-transcript.jsonl"',
+                                 "X-Content-Type-Options": "nosniff"})
+
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):
         s = hub.fresh()
