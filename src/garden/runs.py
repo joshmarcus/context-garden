@@ -39,6 +39,16 @@ _INDEXES_LOCK = threading.Lock()
 _MAX_SHARED_INDEXES = 32
 
 
+def _empty_totals() -> dict[str, Any]:
+    return {
+        "runs": 0,
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
+
 @dataclass
 class _RunIndex:
     """One process-wide, short-lived view of run metadata for a garden.
@@ -61,7 +71,7 @@ class _RunIndex:
     archived: tuple[Run, ...] = ()
     archived_by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
     active: tuple[Run, ...] = ()
-    totals: dict[str, Any] = field(default_factory=dict)
+    totals: dict[str, Any] = field(default_factory=_empty_totals)
     task_fingerprints: dict[str, tuple[int, int]] = field(default_factory=dict)
     archive_fingerprint: tuple[int, int, int] | None = None
     archive_dirty: bool = False
@@ -1171,16 +1181,6 @@ def _totals(runs: list[Run]) -> dict[str, Any]:
     return {key: rollup[key] for key in (
         "runs", "cost_usd", "input_tokens", "output_tokens", "cache_read_input_tokens"
     )}
-
-
-def _empty_totals() -> dict[str, Any]:
-    return {
-        "runs": 0,
-        "cost_usd": 0.0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-    }
 
 
 def _adjust_totals(

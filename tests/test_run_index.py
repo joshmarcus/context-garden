@@ -84,6 +84,25 @@ def test_run_save_invalidates_index_and_results_are_isolated(tmp_path: Path):
     assert rs.totals()["cost_usd"] == 2.5
 
 
+def test_empty_store_totals_keep_complete_zero_shape_across_refreshes(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    expected = {
+        "runs": 0,
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
+    assert rs.totals() == expected
+
+    rs.invalidate()
+    assert rs.totals() == expected
+
+    monkeypatch.setattr(RunStore, "MAX_INDEX_AGE_SECONDS", -1)
+    assert RunStore(tmp_path).totals() == expected
+
+
 def test_claim_request_index_tracks_history_and_refreshes_changed_bucket(tmp_path: Path):
     rs = RunStore(tmp_path)
     run = rs.new_run("CG-001", "remote", run_id="claim-generation")
