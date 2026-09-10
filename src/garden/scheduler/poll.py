@@ -303,12 +303,17 @@ class PollMixin:
                              and pr.checks == "FAILURE"
                              and not waiting_for_rerun
                              and st.get("ci_failed_at") != ci_identity)
-        exact_ci_failure = (ci_status.state == "failure"
+        exact_ci_failure = (ci_status.provider != "github"
+                            and ci_status.state == "failure"
                             and st.get("ci_failed_at") not in (failure_key, pr.updated_at)
                             and not waiting_for_rerun)
         if github_ci_failure or exact_ci_failure:
-            failure_identity = failure_key if exact_ci_failure else ci_identity
-            names = ", ".join(ci_status.failures if exact_ci_failure else pr.failed_checks) or "unknown"
+            # GitHub retains its existing rollup identity; exact-source providers use
+            # the queried source identity without reclassifying the same GitHub failure.
+            failure_identity = ci_identity if github_ci_failure else failure_key
+            names = ", ".join(
+                pr.failed_checks if github_ci_failure else ci_status.failures
+            ) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
             phase_hold = phase_refusal(self.store.phase(task.product, task.phase), task)
