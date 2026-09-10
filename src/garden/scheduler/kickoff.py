@@ -5,6 +5,7 @@ document rendering."""
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -42,16 +43,52 @@ class KickoffMixin:
         repo = self.repo_for(probe)
         base = self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_kickoff-{product}-{phase.name}")
-        gitops.fetch(repo)
-        if wt.exists():
-            gitops.git("checkout", "-q", "--detach", gitops.base_ref(wt, base), cwd=wt)
-        else:
-            wt.parent.mkdir(parents=True, exist_ok=True)
-            gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
-        text = kickoff_brief(self.store, phase)
         difficulty = str(self.cfg.get("retro.difficulty") or "hard")
-        return self.dispatch_aux("kickoff", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name},
-                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=difficulty)
+        harness_name = str(self.cfg.get("review.harness") or "")
+        runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
+        prepared_run = None
+        if runner_name == "local":
+            prepared_run = self._new_local_run(
+                probe.id,
+                "kickoff",
+                "kickoff",
+                resource_weight=self.cfg.product_resource_weight(product),
+            )
+            prepared_run.branch, prepared_run.base = base, base
+            prepared_run.save()
+        try:
+            if prepared_run is not None:
+                self._recheck_local_materialization(
+                    prepared_run,
+                    "phase kickoff checkout materialization",
+                )
+                staging = None
+            else:
+                staging = self._local_staging_admission("phase kickoff checkout materialization")
+            with staging or nullcontext():
+                repo = self.repo_for(probe)
+                gitops.fetch(repo)
+                if wt.exists():
+                    gitops.git("checkout", "-q", "--detach", gitops.base_ref(wt, base), cwd=wt)
+                else:
+                    wt.parent.mkdir(parents=True, exist_ok=True)
+                    gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
+            text = kickoff_brief(self.store, phase)
+            return self.dispatch_aux(
+                "kickoff",
+                None,
+                text,
+                wt,
+                {"id": probe.id, "product": product, "phase": phase.name},
+                harness_name=harness_name,
+                difficulty=difficulty,
+                prepared_run=prepared_run,
+            )
+        except Exception:
+            if prepared_run is not None and prepared_run.status == "running":
+                prepared_run.status = "failed"
+                prepared_run.save()
+            raise
 
     # ---- filing what the review raised ---------------------------------------
     def _file_kickoff_design(self, phase: Phase, item: dict[str, Any]) -> dict[str, Any]:
