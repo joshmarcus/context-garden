@@ -449,6 +449,12 @@ candidate is skipped when no worker slot is free (`max_parallel` minus active wo
 review and persona runs use their separate `review_parallel` pool), when its phase is over budget, or when
 its runner is `manual` (a person takes those with `garden take`).
 
+`phase_execution: sequential` adds one product-scoped admission gate to that same queue and
+to direct work, revision, review, trial, and persona dispatch. The first phase in the product's
+existing discovery order without a durable `closed` marker owns new model admission. Empty
+readiness and merged implementation tasks do not advance it; normal phase closure does. Active
+runs continue to be collected, renewed, recovered, and published when the setting changes.
+
 When configured, local admission is also host-wide: `resources.max_parallel` is a capacity-unit budget shared
 by workers, reviews, personas and checks, including automatic base probes and direct CLI
 dispatches. The default `null` preserves the separate worker and review pools described above.

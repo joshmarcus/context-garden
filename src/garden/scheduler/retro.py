@@ -179,6 +179,10 @@ class RetroMixin:
                                "open the retro PR; see docs/architecture.md")
         # The persona briefs inline the newest walkthrough. Capture it before dispatching any
         # persona so every review sees the same page set and empty/error states.
+        probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
+                     product=phase.product, phase=phase.name)
+        self._refuse_if_phase_not_admitted(probe)
+
         from datetime import date
 
         from ..walkthrough import capture
