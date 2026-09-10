@@ -3,6 +3,7 @@
 import json
 
 from garden.github import GARDEN_MARKER, GitHub, PRInfo, mark_garden_comment
+from garden.scheduler.poll import PollMixin
 
 
 def _stub(monkeypatch, gh: GitHub, reviews, comments, issue_comments, login="josh"):
@@ -220,6 +221,93 @@ def test_incremental_feedback_uses_cursor_queries_and_keeps_equal_timestamps(mon
     assert feedback_calls[0][:2] == ("api", "graphql")
     assert all("--paginate" in call for call in feedback_calls[1:])
     assert all("since=2026-09-04T09%3A59%3A59Z" in call[1] for call in feedback_calls[1:])
+
+
+def test_incremental_feedback_uses_half_the_provider_pages_for_unchanged_history(monkeypatch):
+    """A cursor avoids the second page each complete endpoint would otherwise fetch."""
+    gh = GitHub(use_gh=False, token="test")
+    gh._me = "josh"
+    calls = []
+    old = "2026-09-04T09:00:00Z"
+    cursor = "2026-09-04T10:00:00Z"
+
+    def rest(method, path, **kwargs):
+        params = kwargs.get("params") or {}
+        calls.append((path, params.get("page"), params.get("since")))
+        if path == "/graphql":
+            return {"data": {"repository": {"pullRequest": {"reviews": {
+                "pageInfo": {"hasPreviousPage": False, "startCursor": None},
+                "nodes": [{
+                    "databaseId": 1, "author": {"login": "josh"}, "submittedAt": old,
+                    "state": "COMMENTED", "body": "old review", "commit": {"oid": "old"},
+                }],
+            }}}}}
+        if params.get("since"):
+            return []
+        page = params["page"]
+        rows = [{"id": i, "user": {"login": "josh"}, "created_at": old,
+                 "body": f"old {i}"} for i in range(100)]
+        return rows if page == 1 else [{"id": 100, "user": {"login": "josh"},
+                                         "created_at": old, "body": "old last"}]
+
+    monkeypatch.setattr(gh, "_rest", rest)
+    gh.feedback_since("o/r", 7, cursor)
+    complete_pages = list(calls)
+    calls.clear()
+
+    assert gh.incremental_feedback_since("o/r", 7, cursor).items == []
+    incremental_pages = list(calls)
+
+    assert len(complete_pages) == 6  # two pages for each of reviews, lines, and discussion
+    assert len(incremental_pages) == 3  # one review query and one filtered page per comment endpoint
+    assert all(page == 1 for path, page, _ in incremental_pages if path != "/graphql")
+    assert all(since == "2026-09-04T09:59:59Z"
+               for path, _, since in incremental_pages if path != "/graphql")
+
+
+def test_incremental_feedback_keeps_a_new_review_across_a_page_boundary_once(monkeypatch):
+    """A new review shifts an equal-timestamp review into the next page after restart."""
+    gh = GitHub(use_gh=False, token="test")
+    gh._me = "josh"
+    cursor = "2026-09-04T10:00:00Z"
+    graphql_calls = []
+
+    def review(identifier, submitted_at):
+        return {"databaseId": identifier, "author": {"login": "josh"},
+                "submittedAt": submitted_at, "state": "COMMENTED", "body": f"review {identifier}",
+                "commit": {"oid": "head"}}
+
+    def rest(method, path, **kwargs):
+        if path != "/graphql":
+            return []
+        before = (kwargs["json"]["variables"] or {}).get("before")
+        graphql_calls.append(before)
+        if before is None:
+            # The arrival of 102 pushes the existing equal-timestamp review 1 into page two.
+            return {"data": {"repository": {"pullRequest": {"reviews": {
+                "pageInfo": {"hasPreviousPage": True, "startCursor": "older"},
+                "nodes": [review(102, "2026-09-04T10:01:00Z"),
+                          *[review(i, cursor) for i in range(101, 1, -1)]],
+            }}}}}
+        assert before == "older"
+        return {"data": {"repository": {"pullRequest": {"reviews": {
+            "pageInfo": {"hasPreviousPage": False, "startCursor": None},
+            "nodes": [review(1, cursor), review(0, "2026-09-04T09:59:59Z")],
+        }}}}}
+
+    monkeypatch.setattr(gh, "_rest", rest)
+    record = {"feedback_seen": [f"review:{identifier}" for identifier in range(1, 102)]}
+    first = gh.incremental_feedback_since("o/r", 7, cursor)
+    fresh = PollMixin._new_feedback(PollMixin(), record, first)
+    PollMixin._remember_feedback(PollMixin(), record, fresh)
+
+    restarted_record = {"feedback_seen": list(record["feedback_seen"])}
+    second = gh.incremental_feedback_since("o/r", 7, cursor)
+    after_restart = PollMixin._new_feedback(PollMixin(), restarted_record, second)
+
+    assert graphql_calls == [None, "older", None, "older"]
+    assert [item["id"] for item in fresh.items] == ["review:102"]
+    assert after_restart.items == []
 
 
 def test_complete_feedback_reads_all_pages_and_keeps_old_unresolved_thread(monkeypatch):
