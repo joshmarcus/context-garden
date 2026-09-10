@@ -11,6 +11,7 @@ from garden import gitops
 from garden.events import EventLog, digest
 from garden.model import Status, Task
 from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
+from tests.reference_context import agent_context
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -486,7 +487,7 @@ def test_red_ci_leaves_the_merge_queue_and_starts_revision(sched, fake_github):
     assert not st.get("automerge_candidate")
     revise = sched.runs.latest("DM-001")
     assert revise.mode == "revise"
-    assert "**CI** is failing" in (revise.path / "brief.md").read_text()
+    assert "**CI** is failing" in agent_context(revise)
 
 
 # ---- guarded-path hold (CG-194) ---------------------------------------------

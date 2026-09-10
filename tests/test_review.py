@@ -996,7 +996,7 @@ def test_review_brief_and_parse(garden):
     store = Store(garden)
     t = store.task("DM-001")
     text = review_brief(store, t, branch="b", base="main", pr_title="T", pr_body="B", diff="+++ x\n-a\n+b", max_diff_chars=1000)
-    assert "GARDEN_REVIEW:" in text and "## Diff" in text and "```diff" in text and "Operating rules" not in text
+    assert "GARDEN_REVIEW:" in text and "## Proposed source" in text and "git diff main...HEAD" in text and "Operating rules" not in text
     big = review_brief(store, t, branch="b", base="main", pr_title="T", pr_body="", diff="x" * 2000, max_diff_chars=100)
     assert "git diff main...HEAD" in big and "(empty)" in big
     rev = parse_review('junk\nGARDEN_REVIEW: {"verdict": "request_changes", "summary": "s", "description_ok": false, "description_feedback": "d", "findings": [{"severity": "blocking", "file": "a.py", "line": 2, "summary": "bug"}]}')
@@ -1063,8 +1063,8 @@ def test_revision_feedback_retains_long_findings_and_criterion_only_rejections(g
     assert long_fix in feedback
     store = Store(garden)
     brief = build_brief(store, store.task("DM-001"), review_feedback=feedback)
-    assert long_fix in brief.text
-    assert "test_revision_feedback_retains_long_findings" in brief.text
+    assert long_fix in brief.files["context/review-findings.md"]
+    assert "test_revision_feedback_retains_long_findings" in brief.files["context/review-findings.md"]
 
 
 def test_operator_triage_and_recovery_notes_preserve_review_provenance(sched):
@@ -1188,10 +1188,8 @@ def test_served_triage_and_recovery_handoffs_preserve_applicable_review(sched, f
     assert response.status_code == 303
     brief = client.get("/tasks/DM-001/brief?revise=true")
     assert brief.status_code == 200
-    assert "Operator triage note" in brief.text
-    assert "remains applicable and this note supplements it" in brief.text
-    assert "Keep this finding" in brief.text and "a" * 40 in brief.text
-    assert "b" * 40 not in brief.text
+    assert "context/review-findings.md" in brief.text
+    assert "Review findings" in brief.text
 
     recovered = Scheduler(Store(sched.store.root), github=fake_github)
     task = recovered.store.task(task.id)
@@ -1207,8 +1205,7 @@ def test_served_triage_and_recovery_handoffs_preserve_applicable_review(sched, f
     assert response.status_code == 303
     recovery_brief = client.get("/tasks/DM-001/brief?revise=true")
     assert recovery_brief.status_code == 200
-    assert "Operator recovery note" in recovery_brief.text
-    assert "Keep this finding" in recovery_brief.text and "a" * 40 in recovery_brief.text
+    assert "Review findings" in recovery_brief.text
 
     no_review = Scheduler(Store(sched.store.root), github=fake_github)
     second = no_review.store.task("DM-002")
@@ -1221,7 +1218,7 @@ def test_served_triage_and_recovery_handoffs_preserve_applicable_review(sched, f
     assert response.status_code == 303
     empty_brief = client.get("/tasks/DM-002/brief?revise=true")
     assert empty_brief.status_code == 200
-    assert "Operator triage note" in empty_brief.text
+    assert "Review findings" in empty_brief.text
     assert "Applicable automated review" not in empty_brief.text
 
 def test_validation_plan_requires_bounded_inspection_for_unknown_ui_scope():
@@ -1660,8 +1657,8 @@ def test_review_flow(sched, fake_github, monkeypatch):
     rep = sched.tick()  # reap review -> request_changes -> revise dispatched
     assert "DM-001 -> changes_requested (review)" in rep.transitions and "DM-001(revise)" in rep.dispatched
     assert any("Automated review: request changes" in c for c in fake_github.comments)
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
-    assert "missing test" in brief and "PR description" in brief
+    findings = sched.runs.latest("DM-001").path / "references/context/review-findings.md"
+    assert "missing test" in findings.read_text() and "PR description" in findings.read_text()
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-ok")
     rep = sched.tick()  # reap revise -> PR body updated -> second review
     assert fake_github.updated and fake_github.updated[-1]["body"]

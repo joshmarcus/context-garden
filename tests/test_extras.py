@@ -226,8 +226,8 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     rep = sched.tick()  # reap it: real failure -> revise
     assert "DM-001(revise)" in rep.dispatched
     revise = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "revise")
-    brief = (revise.path / "brief.md").read_text()
-    assert "failed checks: build" in brief and "test_x.py::test_y" in brief
+    feedback = (revise.path / "references/context/review-findings.md").read_text()
+    assert "failed checks: build" in feedback and "test_x.py::test_y" in feedback
 
 
 def test_frozen_pr_defers_ci_analysis_until_the_phase_unfreezes(sched, fake_github):
@@ -274,6 +274,15 @@ def test_trial_end_to_end(sched, fake_github, monkeypatch):
     assert len(fake_github.created) == 2 and all(c["title"].startswith("[trial ") for c in fake_github.created)
     trial = sched.state.get("DM-001")["trial"]
     assert trial["status"] == "comparing" and all(c["status"] == "pr" for c in trial["contenders"])
+    comparison = sched.runs.latest("DM-001")
+    comparison_brief = (comparison.path / "brief.md").read_text()
+    for index, contender in enumerate(trial["contenders"], start=1):
+        source_dir = comparison.path / "references" / "evidence" / "contenders" / f"{index:02d}"
+        assert (source_dir / "diff.patch").read_text()
+        assert (source_dir / "history.txt").read_text()
+        assert (source_dir / "pr-description.md").read_text()
+        assert contender["worktree"] not in comparison_brief
+        assert f"$GARDEN_CONTEXT_DIR/evidence/contenders/{index:02d}/diff.patch" in comparison_brief
     rep = sched.tick()  # comparison reaped -> winner kept, loser closed
     assert "DM-001 -> in_review (trial winner claude:opus)" in rep.transitions
     t = sched.store.task("DM-001")
@@ -572,6 +581,22 @@ def test_phase_persona_runs_are_keyed_by_phase(sched):
     assert first.path.parent != second.path.parent
 
 
+def test_phase_persona_reference_snapshot_scrubs_controller_secrets(sched):
+    from tests.conftest import write
+
+    target = "operator@private-builder.internal"
+    sched.cfg.data["ssh"] = {"hosts": [{"name": "build-a", "host": target}]}
+    goals = sched.store.root / "demo" / "p1" / "goals.md"
+    write(goals, f"# p1\n\nInvestigate {target} with token=phase-secret.\n")
+    sched.store.invalidate()
+
+    run = sched.dispatch_persona_phase(sched.store.phase("demo", "p1"), "security")
+    snapshot = (run.path / "references" / "context" / "phase-goals.md").read_text()
+
+    assert target not in snapshot and "phase-secret" not in snapshot
+    assert "build-a" in snapshot and "token=<redacted>" in snapshot
+
+
 def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_PERSONA_SEVERITY", "high")
     sched.tick()
@@ -579,7 +604,9 @@ def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkey
     ph = sched.store.phase("demo", "p1")
     run = sched.dispatch_persona_phase(ph, "usability-expert", file_tasks=True)
     brief = (run.path / "brief.md").read_text()
-    assert "# Persona: Usability expert" in brief and "Body of work" in brief and "DM-001" in brief and "A fake change" in brief
+    evidence = (run.path / "references/evidence/pull-requests.md").read_text()
+    assert "# Persona: Usability expert" in brief and "Explore the phase" in brief
+    assert "DM-001" in evidence and "A fake change" in evidence
     rep = sched.tick()
     reports = list((ph.path / "docs" / "reviews").glob("usability-expert-*.md"))
     assert len(reports) == 1 and "First run needs a config file" in reports[0].read_text()
@@ -735,7 +762,8 @@ def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, 
     sched.dispatch_persona_pr(sched.store.task("DM-001"), "security", request_changes=True)
     rep = sched.tick()
     assert "DM-001 -> changes_requested (persona security)" in rep.transitions and "DM-001(revise)" in rep.dispatched
-    assert "security persona" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    feedback = sched.runs.latest("DM-001").path / "references/context/review-findings.md"
+    assert "security persona" in feedback.read_text()
 
 
 def test_persona_reviews_resolve_model_from_retro_difficulty_not_review_difficulty(sched, fake_github):

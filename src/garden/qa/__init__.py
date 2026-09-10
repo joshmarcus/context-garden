@@ -259,6 +259,13 @@ def run_qa(
     (out / "findings.json").write_text(json.dumps(findings, indent=1))
     garden: Path | None = box.garden
     if not keep:
+        # Reference snapshots are deliberately read-only to the worker. Restore directory
+        # ownership permissions before removing this trusted disposable fixture.
+        for reference_root in (box.root / "garden" / ".garden" / "runs").glob("*/*/references"):
+            for directory, _, files in os.walk(reference_root):
+                Path(directory).chmod(0o700)
+                for name in files:
+                    (Path(directory) / name).chmod(0o600)
         shutil.rmtree(box.root / "garden", ignore_errors=True)
         shutil.rmtree(box.root / "repo", ignore_errors=True)
         shutil.rmtree(box.root / "remote.git", ignore_errors=True)

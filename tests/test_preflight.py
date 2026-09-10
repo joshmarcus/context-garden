@@ -7,6 +7,7 @@ from garden.preflight import (
 )
 from garden.review import review_brief
 from garden.store import Store
+from tests.reference_context import agent_context
 
 
 def test_mechanical_preflight_checks_pass_a_clean_diff(garden, monkeypatch):
@@ -167,7 +168,7 @@ def test_criteria_edit_after_dispatch_is_a_note_in_the_revise_brief(sched, monke
 
     sched.tick()  # reap work, open PR, and dispatch review
     sched.tick()  # reap review and dispatch revise
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    brief = agent_context(sched.runs.latest("DM-001"))
     assert "### Criteria changed after dispatch" in brief
     assert "Added: The later criterion is met." in brief
     assert "Removed: The original criterion is met." in brief
@@ -216,7 +217,7 @@ def test_scheduler_turns_changed_path_inspection_failure_into_revise_feedback(sc
     assert "DM-001 -> changes_requested (checks)" in report.transitions
     revise = sched.runs.latest(task.id)
     assert revise.mode == "revise"
-    assert "could not inspect candidate diff: cannot inspect paths" in (revise.path / "brief.md").read_text()
+    assert "could not inspect candidate diff: cannot inspect paths" in agent_context(revise)
 
 def test_mechanical_preflight_checks_each_failure_shape(garden, monkeypatch):
     worktree = garden / "work"
@@ -254,10 +255,12 @@ def test_review_brief_uses_frozen_criteria_and_marks_delta(garden):
     task = store.task("DM-001")
     frozen = ["The original criterion is met."]
     task.body += "\n## Acceptance criteria\n\n- [ ] The later criterion is met.\n"
+    references: dict[str, str] = {}
     text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="",
                         max_diff_chars=1000, criteria_snapshot=frozen,
-                        verified=[{"criterion": frozen[0], "evidence": "test_original"}])
-    assert "Criteria frozen for this dispatch" in text
+                        verified=[{"criterion": frozen[0], "evidence": "test_original"}],
+                        reference_files=references)
+    assert "Criteria frozen for this dispatch" in "\n".join(references.values())
     assert "## Optional review pre-flight" in text
     assert "Lint is clean" in text
     assert frozen[0] in text

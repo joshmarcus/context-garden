@@ -12,6 +12,7 @@ from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler.report import TickReport
 from tests.conftest import write
+from tests.reference_context import agent_context
 
 
 def statuses(sched):
@@ -82,8 +83,8 @@ def test_answer_without_resume_support_redispatches_with_qa(sched, monkeypatch):
     sched.tick()
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
     run = sched.answer(sched.store.task("DM-001"), "Use SQLite.")
-    assert run.session_id == "" and "## Answers from the human" in (run.path / "brief.md").read_text()
-    assert "Use SQLite." in (run.path / "brief.md").read_text()
+    assert run.session_id == "" and "## Binding owner answers" in agent_context(run)
+    assert "Use SQLite." in agent_context(run)
 
 
 def test_answer_waits_for_a_concurrent_tick_before_reloading_task(sched, monkeypatch):

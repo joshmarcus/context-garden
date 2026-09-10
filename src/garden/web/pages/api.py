@@ -469,7 +469,11 @@ def register(app: FastAPI, site: Site) -> None:
                         or not response_token:
                     raise HTTPException(409, "claim request identity cannot be replayed")
                 claimed_run(replay.run_id, host_cfg, response_token)
-                return JSONResponse(replay.claim_response)
+                response = dict(replay.claim_response)
+                from ...reference_snapshot import read_reference_files
+
+                response["references"] = read_reference_files(replay.path)
+                return JSONResponse(response)
             # Provider warnings fence only new work. An already leased run keeps claim
             # replay, heartbeat and finish authority so transcript, checks, commits and
             # result upload can reach the controller before lifecycle retirement.
@@ -605,6 +609,9 @@ def register(app: FastAPI, site: Site) -> None:
                     "execution_timeout_minutes": execution_timeout_minutes(run),
                     "resource_weight": weight,
                 }
+                from ...reference_snapshot import read_reference_files
+
+                payload["references"] = read_reference_files(run.path)
                 checks = run.path / "checks_input.json"
                 if checks.exists():
                     check_payload = json.loads(checks.read_text())
@@ -625,7 +632,10 @@ def register(app: FastAPI, site: Site) -> None:
                         }},
                         **({"ci_rerun": True} if check_payload.get("ci_rerun") else {}),
                     }
-                run.claim_response = payload
+                # Reference bodies already live in the immutable run snapshot. Keep only
+                # their transport-independent source there rather than duplicating them in
+                # run.json for every claim/replay generation.
+                run.claim_response = {key: value for key, value in payload.items() if key != "references"}
                 persist_host_facts(run, body.get("host_facts"), host_cfg)
                 try:
                     run.save()

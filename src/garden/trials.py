@@ -21,8 +21,8 @@ COMPARE_RULES = """\
 ## Your job
 
 Several independent workers implemented the same task, each on its own branch. Compare the
-results and rank them. You are in a worktree of contender **{first}**; every contender's
-worktree path is listed below so you can run the project's checks in each. Do NOT modify
+results and rank them. You are in a worktree of contender **{first}**; immutable source
+references for every contender are available under `$GARDEN_CONTEXT_DIR`. Do NOT modify
 any file.
 
 Judge each contender on, in order: (1) acceptance criteria met, with evidence; (2)
@@ -51,21 +51,26 @@ def parse_contender(spec: str, default_harness: str) -> tuple[str, str, str]:
     return label, harness, model
 
 
-def compare_brief(store: Store, task: Task, contenders: list[dict[str, Any]], diffs: dict[str, str], base: str,
-                  max_diff_chars: int) -> str:
+def compare_brief(store: Store, task: Task, contenders: list[dict[str, Any]], diffs: dict[str, str],
+                  histories: dict[str, str], base: str, max_diff_chars: int,
+                  reference_files: dict[str, str] | None = None) -> str:
     tb = build_brief(store, task, include_rules=False)
+    if reference_files is not None:
+        reference_files.update(tb.files)
     parts = [f"# Trial comparison for task {task.id} ({task.title})\n",
              COMPARE_RULES.format(first=contenders[0]["label"], marker=COMPARE_MARKER),
              "## Task brief (what every worker was given)\n\n" + tb.text,
-             "## Contenders\n\n" + "\n".join(f"- **{c['label']}** — branch `{c['branch']}`, worktree `{c['worktree']}`, PR {c.get('pr') or '(none)'}" for c in contenders) + "\n"]
-    for c in contenders:
+             "## Contenders\n\n" + "\n".join(f"- **{c['label']}** — branch `{c['branch']}`, PR {c.get('pr') or '(none)'}" for c in contenders) + "\n"]
+    for index, c in enumerate(contenders, start=1):
         d = diffs.get(c["label"], "")
-        parts.append(f"## PR description: {c['label']}\n\n{c.get('pr_body') or '(empty)'}\n")
-        if d and len(d) <= max_diff_chars:
-            fence = "````" if "```" in d else "```"
-            parts.append(f"## Diff: {c['label']} ({base}...HEAD)\n\n{fence}diff\n{d.rstrip()}\n{fence}\n")
-        else:
-            parts.append(f"## Diff: {c['label']}\n\nToo large to inline ({len(d):,} chars); run `git -C {c['worktree']} diff {base}...HEAD`.\n")
+        prefix = f"evidence/contenders/{index:02d}"
+        if reference_files is not None:
+            reference_files[f"{prefix}/diff.patch"] = d
+            reference_files[f"{prefix}/history.txt"] = histories.get(c["label"], "")
+            reference_files[f"{prefix}/pr-description.md"] = c.get("pr_body") or "(empty)"
+        parts.append(f"## Source: {c['label']}\n\nInspect `$GARDEN_CONTEXT_DIR/{prefix}/diff.patch` "
+                     f"and `$GARDEN_CONTEXT_DIR/{prefix}/history.txt`; the proposed PR description is at "
+                     f"`$GARDEN_CONTEXT_DIR/{prefix}/pr-description.md` ({len(d):,} diff characters at dispatch).\n")
     return "\n".join(parts)
 
 

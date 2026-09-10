@@ -20,6 +20,8 @@ garden.yaml:
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import posixpath
@@ -27,9 +29,11 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from typing import Any
 
+from ..reference_snapshot import REFERENCE_DIR
 from ..runs import Run
 from .base import (
     Runner,
@@ -110,6 +114,18 @@ mkdir -p "$GARDEN_RUN_DIR"
 cat > "$GARDEN_RUN_DIR/brief.md" <<'GARDEN_BRIEF_EOF'
 {brief}
 GARDEN_BRIEF_EOF
+if [ {has_references} = 1 ]; then
+  cat > "$GARDEN_RUN_DIR/references.tar.b64" <<'GARDEN_REFERENCES_EOF'
+{references_archive}
+GARDEN_REFERENCES_EOF
+  if base64 --decode < "$GARDEN_RUN_DIR/references.tar.b64" > "$GARDEN_RUN_DIR/references.tar" 2>/dev/null; then :
+  elif base64 -d < "$GARDEN_RUN_DIR/references.tar.b64" > "$GARDEN_RUN_DIR/references.tar" 2>/dev/null; then :
+  elif base64 -D < "$GARDEN_RUN_DIR/references.tar.b64" > "$GARDEN_RUN_DIR/references.tar" 2>/dev/null; then :
+  else echo "could not decode garden reference snapshot" >&2; exit 4
+  fi
+  tar -xf "$GARDEN_RUN_DIR/references.tar" -C "$GARDEN_RUN_DIR"
+  rm -f "$GARDEN_RUN_DIR/references.tar" "$GARDEN_RUN_DIR/references.tar.b64"
+fi
 # The worker (harness) and its setup command run in an allowlisted environment, the same scrub
 # the local runner applies (runner.base.PASS_ENV plus worker_env.pass and setup.env): every
 # other variable of the remote login environment is dropped, so a remote host's ambient tokens
@@ -166,6 +182,7 @@ garden_scrub() {{
 {config_dirs}
 {config_files}
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
+  if [ -d "$GARDEN_RUN_DIR/{reference_dir}" ]; then export GARDEN_CONTEXT_DIR="$GARDEN_RUN_DIR/{reference_dir}"; fi
 {setup_env}
   export GARDEN_VALIDATION_TIMEOUT_SECONDS={validation_timeout}
 }}
@@ -204,6 +221,7 @@ else
 fi
 RC=$?
 set -e
+chmod -R u+w "$GARDEN_RUN_DIR" 2>/dev/null || :
 rm -rf "$GARDEN_RUN_DIR"
 if [ -n "$(git status --porcelain)" ]; then git add -A >&2; git -c user.name=garden -c user.email=garden@localhost commit -q -m "{task}: leftover changes from run {run_id}" >&2 || true; fi
 if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then git push -u --force-with-lease origin "HEAD:refs/heads/$BRANCH" >&2; fi
@@ -303,6 +321,14 @@ class SSHRunner(Runner):
               if variable not in {"CLAUDE_CONFIG_DIR", "CODEX_HOME"}],
         ])
         env_allow = shlex.quote(" ".join(pass_env_patterns(self.config)))
+        archive = io.BytesIO()
+        references = d / REFERENCE_DIR
+        if references.is_dir():
+            with tarfile.open(fileobj=archive, mode="w") as bundle:
+                for path in sorted(references.rglob("*")):
+                    bundle.add(path, arcname=(Path(REFERENCE_DIR) / path.relative_to(references)).as_posix(),
+                               recursive=False)
+        references_archive = base64.b64encode(archive.getvalue()).decode() if archive.tell() else ""
         script = REMOTE_SCRIPT.format(
             api_key_value="__GARDEN_HARNESS_API_KEY_VALUE__",
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
@@ -320,6 +346,9 @@ class SSHRunner(Runner):
             active_run_ids=shlex.quote(" ".join(str(item) for item in
                                                 run.env_snapshot.get("canonical_active_run_ids", []))),
             api_key_env=api_key_env,
+            references_archive=references_archive,
+            has_references="1" if references_archive else "0",
+            reference_dir=REFERENCE_DIR,
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")

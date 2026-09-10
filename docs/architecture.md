@@ -120,7 +120,7 @@ of the loop touch different files.
 
 | module | what it holds |
 |---|---|
-| `model.py`, `store.py`, `graph.py`, `brief.py` | task frontmatter and statuses; discovery of products, phases and tasks on disk; the dependency graph and ready set; the worker brief and `GARDEN_RESULT` parsing |
+| `model.py`, `store.py`, `graph.py`, `brief.py`, `reference_snapshot.py` | task frontmatter and statuses; discovery of products/phases/tasks; the dependency graph and ready set; concise worker briefs and `GARDEN_RESULT` parsing; immutable, scrubbed run-scoped reference bundles |
 | `scheduler/__init__.py` | `Scheduler`: construction, the shared helpers (runner, model, repo, worktree, slots), `tick()` (which times each phase into the report and warns over `tick.warn_seconds`) and `_transition()`; `WORKER_MODES`, `REVIEW_MODES`, `CHECK_MODES` |
 | `scheduler/state.py`, `scheduler/report.py`, `scheduler_health.py` | `State` (the `state.json` side-store with dirty-key merging), `TickReport` (per-pass duration and slowest step), and bounded standalone-watch heartbeat/process health |
 | `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |

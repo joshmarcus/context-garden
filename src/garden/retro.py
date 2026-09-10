@@ -156,15 +156,16 @@ def persona_reports(phase: Phase, names: list[str]) -> dict[str, Path]:
 def reconcile_brief(store: Store, phase: Phase, base: str, friction: list[tuple[Any, str, str]],
                     reported: str, comment_friction: list[tuple[Any, list[str]]],
                     reports: dict[str, Path], task_rows: list[dict[str, Any]], merged_prs: list[dict[str, Any]],
-                    next_phase: str) -> str:
+                    next_phase: str, reference_files: dict[str, str] | None = None) -> str:
     cfg = store.config
     parts = [f"# Retrospective: {phase.key}\n",
              RECONCILE_RULES.format(phase=phase.name, product=phase.product, marker=RETRO_MARKER)]
+    refs = reference_files if reference_files is not None else {}
     digest = store.root / str(cfg.get("principles_digest"))
     if digest.exists():
-        parts.append("## Principles (digest)\n\n" + _read(digest))
+        refs["context/principles.md"] = _read(digest) + "\n"
     if phase.goals_path:
-        parts.append("## Phase goals\n\n" + _read(phase.goals_path))
+        refs["context/phase-goals.md"] = _read(phase.goals_path) + "\n"
 
     if friction:
         lines = []
@@ -173,11 +174,11 @@ def reconcile_brief(store: Store, phase: Phase, base: str, friction: list[tuple[
             if pr_url:
                 head += f"  (PR {pr_url})"
             lines.append(head + "\n\n" + text.strip())
-        parts.append("## Harvested friction (from PR bodies)\n\n" + "\n\n".join(lines))
+        refs["evidence/harvested-friction.md"] = "\n\n".join(lines) + "\n"
     else:
-        parts.append("## Harvested friction (from PR bodies)\n\n(none)")
+        refs["evidence/harvested-friction.md"] = "(none)\n"
 
-    parts.append("## Reported friction (friction.md '## Reported' log)\n\n" + (reported.strip() or "(none)"))
+    refs["evidence/reported-friction.md"] = (reported.strip() or "(none)") + "\n"
 
     if comment_friction:
         lines = []
@@ -186,23 +187,24 @@ def reconcile_brief(store: Store, phase: Phase, base: str, friction: list[tuple[
             if getattr(task, "pr", ""):
                 head += f"  (PR {task.pr})"
             lines.append(head + "\n\n" + "\n".join(f"- {i}" for i in items))
-        parts.append("## Friction reported in PR comments\n\n" + "\n\n".join(lines))
+        refs["evidence/comment-friction.md"] = "\n\n".join(lines) + "\n"
     else:
-        parts.append("## Friction reported in PR comments\n\n(none)")
+        refs["evidence/comment-friction.md"] = "(none)\n"
 
     if reports:
         lines = []
         for name, path in reports.items():
-            lines.append(f"### Persona: {name} ({store.rel(path)})\n\n" + _read(path))
-        parts.append("## Persona reviews\n\n" + "\n\n".join(lines))
+            refs[f"evidence/personas/{name}.md"] = _read(path) + "\n"
     else:
-        parts.append("## Persona reviews\n\n(none)")
+        refs["evidence/personas/README.md"] = "No persona reports were available for this snapshot.\n"
 
     rows = "\n".join(f"- {r['id']} [{r['status']}] {r['title']}" for r in task_rows) or "(none)"
-    parts.append("## Phase task list with statuses\n\n" + rows)
+    refs["evidence/tasks.md"] = rows + "\n"
 
     prs = "\n".join(f"- {p['id']} — {p['title']} ({p['pr']})" for p in merged_prs) or "(none)"
-    parts.append("## Merged pull requests\n\n" + prs)
+    refs["evidence/merged-prs.md"] = prs + "\n"
+
+    parts.append("## Evidence index\n\nBegin with `$GARDEN_CONTEXT_DIR/context/phase-goals.md`, then inspect the friction, persona reports, task status, merged PR, checkout source and history that bear on each question. Full preserved reports live under `$GARDEN_CONTEXT_DIR/evidence/`; do not assume an absent optional source is empty.\n")
 
     parts.append(f"## Next phase\n\nDraft the goals for **{next_phase}** of **{phase.product}**.")
     return "\n\n".join(parts) + "\n"

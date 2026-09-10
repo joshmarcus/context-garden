@@ -1576,8 +1576,11 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
     dump = tmp_path / "worker-env.txt"
+    context_dump = tmp_path / "worker-context.txt"
     monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(dump))
+    monkeypatch.setenv("FAKE_CLAUDE_CONTEXT_DUMP", str(context_dump))
     t = sched.store.task("DM-001")
+    t.body += "\n\n## Acceptance criteria\n\n- [ ] The remote contract is readable.\n"
     t.runner = "ssh"
     sched.store.save(t)
     sched.tick()
@@ -1590,12 +1593,41 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
     assert seen["LC_ALL"] == "C.UTF-8"  # allowlisted locale survives
     assert seen["GARDEN_TASK_ID"] == "DM-001" and seen["GARDEN_RUN_ID"] == run.run_id
     assert seen["GARDEN_ROOT"].endswith(".garden-no-live-garden")
+    assert seen["GARDEN_CONTEXT_DIR"].endswith("/.garden-run/references")
+    # The fake worker opened the transported snapshot rather than relying on launch-note text.
+    explored = context_dump.read_text()
+    assert "Do the first thing" in explored
+    assert "# Criteria frozen for this dispatch" in explored
+    assert "The remote contract is readable" in explored
     # HOME is an isolated scratch home, not the remote login's, so the worker cannot read the
     # host's gh token, git credentials or ssh keys out of ~.
     assert seen["HOME"].endswith(".garden-home-DM-001") and seen["HOME"] != os.environ.get("HOME")
     # Harness homes are rebuilt under the scratch HOME, not passed through from the host.
     assert Path(seen["CLAUDE_CONFIG_DIR"]).parent == Path(seen["HOME"])
     assert Path(seen["CODEX_HOME"]).parent == Path(seen["HOME"])
+
+
+@pytest.mark.needs_remote_clone
+def test_ssh_revision_worker_can_read_exact_findings(sched, tmp_path, monkeypatch):
+    context_dump = tmp_path / "revision-context.txt"
+    monkeypatch.setenv("FAKE_CLAUDE_CONTEXT_DUMP", str(context_dump))
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.branch = task.default_branch()
+    task.pr = "https://github.com/test/demo/pull/1"
+    task.runner = "ssh"
+    sched.store.save(task)
+    sched.state.get(task.id)["pending_feedback"] = "- retain this exact adverse finding"
+    sched.state.save()
+
+    report = sched.tick()
+    assert "DM-001(revise)" in report.dispatched
+    run = sched.runs.latest(task.id)
+    _wait_for_child(run)
+    assert (run.path / "exit_code").read_text().strip() == "0", (run.path / "stderr.log").read_text()
+    explored = context_dump.read_text()
+    assert "Do the first thing" in explored
+    assert "retain this exact adverse finding" in explored
 
 
 @pytest.mark.needs_remote_clone

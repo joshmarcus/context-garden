@@ -2340,6 +2340,7 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     auth = {"Authorization": "Bearer secret-token"}
     payload = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy", "medium", "hard"]}, headers=auth).json()
     assert payload["repo"].endswith("remote.git")
+    assert "Do the first thing" in payload["references"]["context/task.md"]
 
     # A standalone scheduler process takes its observation before the authenticated
     # finish, then attempts the obsolete lifecycle write after finish commits.
@@ -2384,6 +2385,7 @@ run.save()
     )
     dumped_env = env_dump.read_text()
     assert "SERVICE_TOKEN=synthetic-secret-" in dumped_env
+    assert "GARDEN_CONTEXT_DIR=" in dumped_env
     stale_release.write_text("save")
     assert stale_writer.wait(timeout=5) == 0
     saved = RunStore(store.config.garden_dir).latest("DM-001")

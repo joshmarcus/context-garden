@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
@@ -21,6 +22,7 @@ from ...graph import dependency_after, dependents, deps_in_later_phase
 from ...inbox import approve_phase_options, decision_card_view, split_log
 from ...model import effective_owner, phase_refusal
 from ...outcomes import base_acceptance
+from ...reference_snapshot import REFERENCE_DIR
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
@@ -293,6 +295,14 @@ def register(app: FastAPI, site: Site) -> None:
         packet = run.path / "brief.md" if run and run.runner == "manual" else None
         if packet is None or not packet.exists():
             raise HTTPException(404, "no assigned manual packet")
+        references = run.path / REFERENCE_DIR
+        if references.is_dir():
+            context = shlex.quote(str(references.resolve()))
+            return (
+                "# Manual reference snapshot\n\n"
+                f"Set `GARDEN_CONTEXT_DIR` before starting: `export GARDEN_CONTEXT_DIR={context}`.\n\n"
+                + packet.read_text()
+            )
         return packet.read_text()
 
     @app.get("/tasks/{task_id}/log", response_class=PlainTextResponse)

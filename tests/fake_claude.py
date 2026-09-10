@@ -77,7 +77,22 @@ class Call:
 
     @property
     def revise(self) -> bool:
-        return "Revision round" in self.brief
+        return "Revision round" in self.context
+
+    @property
+    def context(self) -> str:
+        """Text the fake agent can discover by opening its run-scoped references."""
+        root = self.env.get("GARDEN_CONTEXT_DIR", "")
+        if not root:
+            return self.brief
+        reference_root = Path(root)
+        try:
+            referenced = "\n".join(
+                path.read_text() for path in sorted(reference_root.rglob("*")) if path.is_file()
+            )
+        except OSError:
+            referenced = ""
+        return self.brief + "\n" + referenced
 
 
 def result_json(final: str, usage: dict, cost: float, **extra) -> str:
@@ -167,11 +182,15 @@ def persona(call: Call) -> None:
 
 
 def retro(call: Call) -> None:
-    fsec = re.search(r"## Harvested friction.*?(?=\n## |\Z)", call.brief, flags=re.S)
+    context_dir = Path(call.env.get("GARDEN_CONTEXT_DIR", "."))
+    friction_text = (context_dir / "evidence" / "harvested-friction.md").read_text()
+    tasks_text = (context_dir / "evidence" / "tasks.md").read_text()
+    merged_text = (context_dir / "evidence" / "merged-prs.md").read_text()
+    fsec = re.search(r".*", friction_text, flags=re.S)
     friction_ids = re.findall(r"^### (\S+):", fsec.group(0), flags=re.M) if fsec else []
-    msec = re.search(r"## Merged pull requests.*?(?=\n## |\Z)", call.brief, flags=re.S)
+    msec = re.search(r".*", merged_text, flags=re.S)
     merged_ids = re.findall(r"^- (\S+) —", msec.group(0), flags=re.M) if msec else []
-    tsec = re.search(r"## Phase task list with statuses.*?(?=\n## |\Z)", call.brief, flags=re.S)
+    tsec = re.search(r".*", tasks_text, flags=re.S)
     task_titles = re.findall(r"^- \S+ \[\S+\] (.+)$", tsec.group(0), flags=re.M) if tsec else []
     cycle = ["fixed", "still_true", "outdated", "disputed"]
     recon = []
@@ -311,7 +330,7 @@ def brief_criteria(brief: str) -> list[str]:
 def verified_for(call: Call, skip: bool = False) -> list[dict]:
     """One `verified` entry per acceptance criterion, each with evidence. With `skip`, the
     first criterion is left out of the list entirely (a silently skipped criterion)."""
-    crits = brief_criteria(call.brief)
+    crits = brief_criteria(call.context)
     out = []
     for i, c in enumerate(crits):
         if skip and i == 0:
@@ -643,6 +662,9 @@ def done_result(call: Call) -> dict:
 
 
 def run_worker(call: Call, worker: Worker) -> None:
+    context_dump = call.env.get("FAKE_CLAUDE_CONTEXT_DUMP", "")
+    if context_dump:
+        Path(context_dump).write_text(call.context)
     if call.resumed:
         (call.cwd / "resumed.txt").write_text(call.brief)  # the resume prompt (contains the answer)
     if worker.early and worker.early(call):

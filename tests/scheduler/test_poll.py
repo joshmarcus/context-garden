@@ -6,6 +6,7 @@ from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status
 from garden.scheduler.report import TickReport
 from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
+from tests.reference_context import agent_context
 from tests.scheduler.conftest import statuses
 
 
@@ -83,7 +84,7 @@ def test_feedback_triggers_revise_round(sched, fake_github):
     assert rep.dispatched == ["DM-001(revise)"]
     run = sched.runs.latest("DM-001")
     assert run.mode == "revise"
-    brief = (run.path / "brief.md").read_text()
+    brief = agent_context(run)
     assert "Revision round" in brief and "rename this" in brief and "`a.py`:3" in brief
     fake_github.feedback.clear()
     rep = sched.tick()
@@ -336,7 +337,7 @@ def test_ci_failure_triggers_revise(sched, fake_github):
     pr.updated_at, pr.checks = "t2", "FAILURE"
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(revise)"]
-    assert "**CI** is failing" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "**CI** is failing" in agent_context(sched.runs.latest("DM-001"))
 
 
 def test_ci_failure_without_pr_timestamp_change_triggers_one_revise(sched, fake_github):
@@ -354,7 +355,7 @@ def test_ci_failure_without_pr_timestamp_change_triggers_one_revise(sched, fake_
     rep = sched.tick()
     assert pr.updated_at == original_updated_at
     assert rep.dispatched == ["DM-001(revise)"]
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    brief = agent_context(sched.runs.latest("DM-001"))
     assert "failed checks: tests" in brief
 
     sched.tick()

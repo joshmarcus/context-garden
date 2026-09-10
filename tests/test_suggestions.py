@@ -21,6 +21,7 @@ from garden.suggestions import (
     spec_body,
 )
 from garden.web.app import create_app
+from tests.reference_context import agent_context
 
 
 # ---- pure body helpers -----------------------------------------------------
@@ -170,7 +171,7 @@ def test_suggestion_on_running_task_waits_and_rides_revise(sched, fake_github, m
     sched.tick()  # dispatch the revise run
     run = sched.runs.latest("DM-001")
     assert run.mode == "revise"
-    brief = (run.path / "brief.md").read_text()
+    brief = agent_context(run)
     assert "Suggestions on this task" in brief and "also handle the empty input list" in brief
 
 

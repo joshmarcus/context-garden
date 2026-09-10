@@ -2,6 +2,7 @@
 
 from garden.github import Feedback
 from garden.inbox import build_inbox, counts
+from tests.reference_context import agent_context
 
 
 def statuses(sched):
@@ -40,7 +41,7 @@ def test_triage_changes_go_to_revise(sched, fake_github):
     assert statuses(sched)["DM-001"] == "changes_requested"
     rep = sched.tick()
     assert "DM-001(revise)" in rep.dispatched
-    assert "rename the flag" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "rename the flag" in agent_context(sched.runs.latest("DM-001"))
     rep = sched.tick()
     assert statuses(sched)["DM-001"] == "awaiting_triage"  # still a draft after the revision
 
