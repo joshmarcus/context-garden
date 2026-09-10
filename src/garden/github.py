@@ -20,6 +20,15 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
+from .source_control import (
+    AuthenticationFailure,
+    CertificateFailure,
+    ConnectionPolicy,
+    ProviderUnavailable,
+    ProxyFailure,
+    SourceControlError,
+)
+
 API = "https://api.github.com"
 
 # A bot comment matching one of these (case-insensitive substring) is a notice, not a
@@ -36,7 +45,7 @@ DEFAULT_BOT_NOTICE_PATTERNS = [
 FINDING_MARKER_RE = re.compile(r"\[P\d+\]")
 
 
-class GitHubError(Exception):
+class GitHubError(SourceControlError):
     pass
 
 
@@ -289,6 +298,7 @@ class GitHub:
         host: str = "github.com",
         api_base: str = "",
         token_env: str = "",
+        connection_policy: ConnectionPolicy | None = None,
     ):
         self.host = host.lower().rstrip(".")
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", self.host):
@@ -302,6 +312,11 @@ class GitHub:
             or parsed_api.query or parsed_api.fragment or parsed_api.port not in (None, 443)
         ):
             raise ValueError("github api_base must be an HTTPS URL for the configured GitHub host")
+        self.connection_policy = connection_policy or ConnectionPolicy(
+            web_url=f"https://{self.host}", api_url=self.api_base,
+        )
+        if self.connection_policy.authority != parsed_api.hostname:
+            raise ValueError("connection policy authority does not match github api_base")
         # A product that names a token environment has deliberately scoped its
         # credential. Do not fall through to a public/default token if it is missing.
         self.token = token or (os.environ.get(token_env) if token_env else (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")))
@@ -354,11 +369,25 @@ class GitHub:
         if path == "/graphql" and self.host != "github.com":
             # Enterprise GraphQL is a sibling of the REST v3 endpoint.
             base = base.removesuffix("/v3")
-        r = httpx.request(method, base + path, headers=headers, timeout=30, **kw)
+        try:
+            r = httpx.request(
+                method, base + path, headers=headers, timeout=30,
+                **self.connection_policy.request_options(), **kw,
+            )
+        except httpx.ProxyError as exc:
+            raise ProxyFailure("source-control proxy connection failed") from exc
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            message = str(exc).lower()
+            if "certificate" in message or "ssl" in message:
+                raise CertificateFailure("source-control certificate verification failed") from exc
+            raise ProviderUnavailable("source-control provider unavailable") from exc
+        self.connection_policy.validate_response(r)
         if r.status_code >= 400:
             reset = r.headers.get("x-ratelimit-reset", "")
             suffix = f"; rate_limit_reset={reset}" if reset else ""
-            raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}{suffix}")
+            if r.status_code in (401, 403):
+                raise AuthenticationFailure(f"source-control authentication failed ({r.status_code})")
+            raise GitHubError(f"source-control request failed ({r.status_code}){suffix}")
         return r.json() if r.content else None
 
     def _rest_pages(self, path: str, *, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
