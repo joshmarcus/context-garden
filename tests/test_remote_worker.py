@@ -29,6 +29,7 @@ from garden.remote_worker import (
     _LeaseHeartbeat,
     _persist_active_claim,
     _persist_pending_result,
+    _process_birth_identity,
     _validation_receipts,
     _wait_for_process,
     deliver_pending_results,
@@ -507,6 +508,56 @@ def test_replacement_daemon_quarantines_reused_pid_without_signalling_or_replay(
         "recovery_outcome": "quarantined_without_process_signal",
         "operator_action": "inspect preserved active claim and supervisor logs",
     })
+
+
+def test_process_birth_identity_fails_closed_without_procfs(tmp_path, monkeypatch):
+    """A non-Linux host never substitutes a second-resolution process start time."""
+    real_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if str(path).startswith("/proc/"):
+            raise FileNotFoundError(path)
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    ps_calls = []
+    monkeypatch.setattr(
+        "garden.remote_worker.subprocess.run",
+        lambda *args, **kwargs: ps_calls.append((args, kwargs)),
+    )
+
+    assert _process_birth_identity(os.getpid()) is None
+    assert ps_calls == []
+
+
+def test_same_second_ps_identity_cannot_authorize_reused_pid(tmp_path, monkeypatch):
+    """A legacy macOS lstart value cannot authorize signals after same-second PID reuse."""
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-stale"
+    execution_dir.mkdir(parents=True)
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 30, "recovery_seconds": 1, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    active = _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", os.getpid(),
+    )
+    state = json.loads(active.read_text())
+    state["supervisor_birth"] = "ps:Wed Sep 10 10:00:00 2026"
+    active.write_text(json.dumps(state))
+    monkeypatch.setattr("garden.remote_worker._process_birth_identity", lambda _pid: None)
+    signals = []
+    monkeypatch.setattr("garden.remote_worker.os.kill", lambda pid, sig: signals.append((pid, sig)))
+
+    class Client:
+        events = None
+
+    assert recover_active_claims(root, Client()) == 0
+    assert signals == []
+    assert (active.parent / "quarantine" / active.name).exists()
 
 
 class HealthyHeartbeatClient:

@@ -293,6 +293,10 @@ surviving supervisor, and collects and publishes its result before requesting mo
 not relaunch the harness. The handoff records the supervisor's process-birth identity as well as
 its PID. Recovery verifies both before waiting or sending a signal; a missing or mismatched identity
 is quarantined without touching that process, so PID reuse cannot transfer execution ownership.
+Linux uses boot identity plus kernel process start ticks. On platforms where the worker cannot
+obtain an equally strong incarnation identity, including macOS, an unfinished handoff fails
+closed and is quarantined without signalling its recorded PID. A completed handoff remains
+collectible from its durable exit record.
 Completed finish payloads are written mode 0600 under
 `pending-results/` before transmission;
 on restart they are delivered before another claim and removed only after the controller's
