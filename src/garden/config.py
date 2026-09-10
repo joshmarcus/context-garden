@@ -104,7 +104,7 @@ def _normalize_review_count_policy(data: dict[str, Any]) -> None:
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
-    "notify.command", "notify.recipient", "checks", "worker_env.pass",
+    "notify.command", "notify.recipient", "notify.destinations", "checks", "worker_env.pass",
     "worker_env.config_files", "runner_adapters",
 )
 
@@ -340,6 +340,7 @@ DEFAULTS: dict[str, Any] = {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
         "timeout_seconds": 30,    # timeout for the command
         "recipient": "",          # fixed calling user included in GARDEN_NOTIFICATION_JSON; never task text
+        "destinations": {},         # trusted logical destination -> typed adapter configuration
     },
     "worker_env": {
         "pass": [],               # extra environment variable names or globs a worker and its setup
