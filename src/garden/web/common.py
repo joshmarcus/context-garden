@@ -137,6 +137,14 @@ class _DiscoveryWatch:
             self.fd = -1
             self._libc = None
 
+    def __del__(self) -> None:
+        """Release the raw inotify descriptor when a short-lived app is discarded."""
+        try:
+            self.close()
+        except (AttributeError, OSError):
+            # Interpreter shutdown can tear down ``os`` before an abandoned app is collected.
+            pass
+
 
 def product_checkout(store: Store, product: str) -> Path:
     """Return the configured local checkout, falling back to its garden metadata."""
