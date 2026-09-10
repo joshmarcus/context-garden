@@ -170,9 +170,30 @@ def test_ci_reap_is_restart_safe_deduplicated_and_charges_one_revision(sched, fa
 
     assert restarted.state.get(task.id)["pending_feedback"] == rendered
     assert rendered.count("six focused tests failed") == 1
+    routes = restarted.state.get(task.id)["implementation_failure_escalations"]
+    assert len(routes) == 1
+    assert routes[0]["signal"] == "failed_final_verification"
+    assert routes[0]["identity"] == f"{pr.head_sha}:test"
     assert second.transitions == []
     restarted.dispatch(restarted_task, mode="revise", runner=restarted.runner_for(restarted_task))
     assert restarted.state.get(task.id)["revisions"] == 1
+
+
+def test_ci_infrastructure_failure_does_not_escalate_implementation(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    check = _ci_run(sched, task, pr.head_sha)
+    results = [{
+        "name": "actions", "status": "fail", "summary": "exit 127", "details": "",
+        "exit_code": 127, "unavailable": True,
+    }]
+
+    sched._after_ci_check(
+        task, check, results,
+        {"head": pr.head_sha, "ci_note": "- **CI** failed, but its analyser is unavailable."},
+        TickReport(),
+    )
+
+    assert not sched.state.get(task.id).get("implementation_failure_escalations")
 
 
 def test_ci_preserves_an_operator_resolved_or_superseded_feedback_record(sched, fake_github):
