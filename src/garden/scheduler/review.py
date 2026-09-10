@@ -1401,6 +1401,17 @@ class ReviewMixin:
                           f"automated review: {verdict} (description rewritten){cost}", task.pr or "")
                 return True
             if verdict == "request_changes":
+                unmet = criteria_total > criteria_met
+                blocking = any(
+                    isinstance(finding, dict) and finding.get("severity") == "blocking"
+                    for finding in review.get("findings") or []
+                )
+                if unmet or blocking:
+                    signal = "unmet_acceptance_criteria" if unmet else "verification_rejected"
+                    self._record_implementation_failure(
+                        task, signal, run.run_id,
+                        str(review.get("summary") or "automated review rejected the implementation"),
+                    )
                 fb = feedback_from_review(
                     review, run_id=run.run_id,
                     source_head=str(run.env_snapshot.get("review_head") or ""),

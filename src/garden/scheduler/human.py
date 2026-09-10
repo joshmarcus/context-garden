@@ -408,6 +408,66 @@ class HumanMixin:
         self.store.save(task)
         self.events.emit("difficulty_escalated", task.id, **event)
 
+    def _record_implementation_failure(
+        self, task: Task, signal: str, identity: str, reason: str
+    ) -> bool:
+        """Raise the next eligible run one tier for one objective failure identity.
+
+        Producers call this only after they have established that the task's implementation,
+        rather than its environment or an obsolete observation, owns the failure.  The durable
+        identity makes repeated polls and controller restarts harmless.  An exact task model is
+        an override, so it is recorded but never replaced.
+        """
+        st = self.state.get(task.id)
+        key = f"{signal}:{identity}"
+        seen = list(st.get("implementation_failure_identities") or [])
+        if key in seen:
+            return False
+
+        levels = ("easy", "medium", "hard")
+        floor = str(st.get("difficulty_floor") or "")
+        current = task.difficulty if task.difficulty in levels else "medium"
+        runner = self.runner_for(task)
+        prior_model = self.model_for(task, runner)
+        effective = current
+        if floor in levels and levels.index(floor) > levels.index(effective):
+            effective = floor
+        new = effective
+        protected = bool(task.model)
+        if not protected and effective != "hard":
+            new = levels[levels.index(effective) + 1]
+        if not protected:
+            task.difficulty = new
+            st["difficulty_floor"] = new
+        model = self.model_for(task, runner)
+        event = {
+            "signal": signal,
+            "identity": identity,
+            "reason": reason,
+            "prior_tier": current,
+            "new_tier": new,
+            "prior_model": prior_model,
+            "model": model,
+            "protected_model": protected,
+            "at": now_iso(),
+        }
+        seen.append(key)
+        st["implementation_failure_identities"] = seen
+        st.setdefault("implementation_failure_escalations", []).append(event)
+        if not protected and new != current:
+            st.setdefault("difficulty_escalations", []).append({
+                "from": current, "to": new, "prior_model": prior_model, "model": model,
+                "trigger": signal, "reason": reason, "at": event["at"],
+            })
+            task.log(
+                f"difficulty {current} -> {new} after {signal}: {reason}; "
+                f"model {prior_model or '(runner default)'} -> {model or '(runner default)'}"
+            )
+            self.store.save(task)
+        self.events.emit("implementation_failure_escalation", task.id, **event)
+        self.state.save()
+        return not protected and new != current
+
     def pause_for_investigation(self, task: Task, reason: str, requester: str = "operator",
                                 owner: str = "operator", scope: str = "read-only diagnosis",
                                 budget: str = "one bounded investigation",
