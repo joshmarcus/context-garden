@@ -640,15 +640,18 @@ class _FinalOutput:
             sys.stdout.write(safe)
             sys.stdout.flush()
 
-    def drain(self) -> None:
-        """Consume all bytes currently available from the original FIFO inode."""
-        while True:
+    def drain(self, *, byte_budget: int = 1024 * 1024, time_budget: float = 0.01) -> None:
+        """Consume currently available FIFO bytes without monopolising supervision."""
+        drained = 0
+        deadline = time.monotonic() + time_budget
+        while drained < byte_budget and time.monotonic() < deadline:
             try:
-                chunk = os.read(self.fd, 64 * 1024)
+                chunk = os.read(self.fd, min(64 * 1024, byte_budget - drained))
             except BlockingIOError:
                 return
             if not chunk:
                 return
+            drained += len(chunk)
             self._write(self.decoder.decode(chunk))
 
     def finish(self) -> None:
@@ -710,6 +713,17 @@ def main() -> int:
     if len(sys.argv) != 3:
         return 2
     run_dir, script = Path(sys.argv[1]), sys.argv[2]
+    # These are supervisor control inputs, not ambient descendant authority. Consume
+    # them before setup and admit them only when their durable destination belongs to
+    # this invocation. The raw path may live in the runner's supported sandbox output
+    # root, but only this run_dir may receive its redacted contents.
+    raw_final_value = os.environ.pop("GARDEN_RAW_FINAL_PATH", "")
+    final_path_value = os.environ.pop("GARDEN_FINAL_PATH", "")
+    final_routing_owned = bool(
+        raw_final_value
+        and final_path_value
+        and Path(final_path_value).resolve() == (run_dir / "final.md").resolve()
+    )
     _become_subreaper()
     _enter_execution_cgroup(run_dir)
     os.environ.setdefault("GARDEN_EXECUTION_OWNER", f"{os.getpid()}:{run_dir.resolve()}")
@@ -791,16 +805,16 @@ def main() -> int:
         (run_dir / "identity_error.json").write_text(json.dumps({"error": str(exc)}))
         (run_dir / "exit_code").write_text("1")
         return 1
-    raw_final_value = os.environ.get("GARDEN_RAW_FINAL_PATH", "")
-    final_path_value = os.environ.get("GARDEN_FINAL_PATH", "")
     raw_final = Path(raw_final_value)
     final_path = Path(final_path_value)
     final_output = None
-    if raw_final_value and final_path_value:
+    if final_routing_owned:
         raw_final.unlink(missing_ok=True)
         os.mkfifo(raw_final, 0o600)
 
         final_output = _FinalOutput(raw_final, final_path, authority_redactor)
+        child_env["GARDEN_RAW_FINAL_PATH"] = raw_final_value
+        child_env["GARDEN_FINAL_PATH"] = final_path_value
     # Keep the workload in a group separate from the supervisor. The supervisor can then
     # signal and observe that whole group after its shell leader exits, on both Linux and
     # Darwin, without signalling itself. Linux's subreaper additionally retains children

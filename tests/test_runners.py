@@ -28,6 +28,8 @@ _EXECUTION_LEASE_ENV = frozenset({
     "GARDEN_OWNER_SCOPED",
     "GARDEN_EXECUTION_TIMEOUT_SECONDS",
     "GARDEN_VALIDATION_INHERITS_LEASE",
+    "GARDEN_RAW_FINAL_PATH",
+    "GARDEN_FINAL_PATH",
 })
 
 
@@ -919,6 +921,45 @@ def test_supervisor_drains_final_held_by_descendant_and_keeps_child_failure(tmp_
     assert result.returncode == 7
     assert (run_dir / "exit_code").read_text() == "7"
     assert final.read_text() == "descendant final"
+
+
+def test_nested_supervisor_cannot_mutate_enclosing_final_routing(tmp_path):
+    """Final control paths inherited from another owner are consumed without mutation."""
+    outer = tmp_path / "outer"
+    inner = tmp_path / "inner"
+    outer.mkdir()
+    inner.mkdir()
+    outer_raw = outer / ".final.raw"
+    outer_final = outer / "final.md"
+    outer_raw.write_text("original raw evidence")
+    outer_final.write_text("original final evidence")
+    env = _standalone_supervisor_env(
+        GARDEN_RAW_FINAL_PATH=str(outer_raw), GARDEN_FINAL_PATH=str(outer_final),
+    )
+    child_receipt = inner / "child-env.json"
+    script = (
+        f"{shlex.quote(sys.executable)} -c "
+        + shlex.quote(
+            "import json, os, pathlib, sys; "
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+            "k: os.environ.get(k) for k in "
+            "('GARDEN_RAW_FINAL_PATH', 'GARDEN_FINAL_PATH')}))"
+        )
+        + f" {shlex.quote(str(child_receipt))}"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(inner), script],
+        env=env, capture_output=True, text=True, timeout=3,
+    )
+
+    assert result.returncode == 0
+    assert outer_raw.read_text() == "original raw evidence"
+    assert outer_final.read_text() == "original final evidence"
+    assert json.loads(child_receipt.read_text()) == {
+        "GARDEN_RAW_FINAL_PATH": None, "GARDEN_FINAL_PATH": None,
+    }
+    assert not (inner / "final.md").exists()
 
 
 def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
