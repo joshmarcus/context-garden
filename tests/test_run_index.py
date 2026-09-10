@@ -360,6 +360,68 @@ def test_archive_commit_rejects_source_changed_during_preparation(tmp_path: Path
     assert artifact.read_bytes() == b"updated concurrently" * 1000
 
 
+@pytest.mark.parametrize("boundary", ["move", "index", "marker"])
+def test_archive_commit_recovers_visibility_at_every_durable_boundary(
+    tmp_path: Path, monkeypatch, boundary: str,
+):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    (run.path / "stdout.json").write_bytes(b"preserved transcript" * 1000)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+    prepared = rs.prepare_terminal_archive(before, limit=1)
+    method_name = {
+        "move": "_durable_move",
+        "index": "_write_archive_index",
+        "marker": "_clear_archive_pending",
+    }[boundary]
+    original = getattr(rs, method_name)
+
+    def interrupt_after(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError(f"interrupted after {boundary}")
+
+    monkeypatch.setattr(rs, method_name, interrupt_after)
+    with pytest.raises(RuntimeError, match=f"after {boundary}"):
+        rs.commit_terminal_archive(prepared, before)
+
+    fresh = RunStore(tmp_path)
+    if (fresh.archive_dir / "pending.json").exists():
+        assert fresh.repair_pending_archive()
+        fresh = RunStore(tmp_path)
+    archived = fresh.all_runs()
+    assert [(item.run_id, item.cost_usd) for item in archived] == [("run-1", 7.0)]
+    assert archived[0].read_bytes("stdout.json") == b"preserved transcript" * 1000
+
+
+def test_each_archive_move_is_indexed_before_its_marker_is_retired(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    for number in range(2):
+        run = _finished(rs, f"CG-00{number}", f"run-{number}", number + 1.0)
+        (run.path / "stdout.json").write_bytes(bytes([number]) * 5000)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+    prepared = rs.prepare_terminal_archive(before)
+    original = rs._clear_archive_pending
+    clears = 0
+
+    def interrupt_second_marker():
+        nonlocal clears
+        clears += 1
+        if clears == 2:
+            raise RuntimeError("interrupted before second marker retirement")
+        original()
+
+    monkeypatch.setattr(rs, "_clear_archive_pending", interrupt_second_marker)
+    with pytest.raises(RuntimeError, match="second marker"):
+        rs.commit_terminal_archive(prepared, before)
+
+    fresh = RunStore(tmp_path)
+    assert fresh.repair_pending_archive()
+    assert [(run.run_id, run.cost_usd) for run in RunStore(tmp_path).all_runs()] == [
+        ("run-0", 1.0),
+        ("run-1", 2.0),
+    ]
+
+
 def test_archive_preparation_respects_target_volume_headroom(tmp_path: Path, monkeypatch):
     rs = RunStore(tmp_path)
     run = _finished(rs, "CG-001", "run-1", 2.0)

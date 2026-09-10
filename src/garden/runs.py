@@ -1208,9 +1208,11 @@ class RunStore:
                                 "run_id": run.run_id, "source": str(run.path),
                                 "target": str(target)}).encode(),
                 )
-                os.replace(run.path, target)
+                self._durable_move(run.path, target)
                 self._compact_archived_run(target)
                 self._index.dirty_tasks.add(run.task_id)
+                self._write_archive_index()
+                self._clear_archive_pending()
                 moved += 1
             # Resume compaction after a crash between the directory move and manifest
             # commit, and migrate legacy archived directories in bounded per-file steps.
@@ -1218,7 +1220,6 @@ class RunStore:
             for run_json in legacy[:limit] if limit is not None else legacy:
                 self._compact_archived_run(run_json.parent)
             self._write_archive_index()
-            (self.archive_dir / "pending.json").unlink(missing_ok=True)
             return moved
 
     def prepare_terminal_archive(
@@ -1283,15 +1284,15 @@ class RunStore:
                                 "run_id": plan.run_id, "source": str(source),
                                 "target": str(target)}).encode(),
                 )
-                os.replace(source, target)
+                self._durable_move(source, target)
                 manifest = {"version": self.ARCHIVE_VERSION, "files": plan.files, "repair": None}
                 self._durable_replace(
                     target / "archive.json", json.dumps(manifest, indent=2, sort_keys=True).encode()
                 )
                 self._index.dirty_tasks.add(plan.task_id)
+                self._write_archive_index()
+                self._clear_archive_pending()
                 moved += 1
-            self._write_archive_index()
-            (self.archive_dir / "pending.json").unlink(missing_ok=True)
         return moved
 
     def retire_prepared_archive(self, prepared: list[ArchivePreparation]) -> None:
@@ -1424,8 +1425,7 @@ class RunStore:
                 self._verify_archived_run(target)
                 self._index.dirty_tasks.add(task_id)
             self._write_archive_index()
-            pending_path.unlink()
-            self._fsync_directory(self.archive_dir)
+            self._clear_archive_pending()
             return True
 
     def archive_preview(self, before: dt.datetime, protected_run_ids: set[str] | None = None,
@@ -1493,8 +1493,8 @@ class RunStore:
     def _blob_path(self, sha256: str) -> Path:
         return self.archive_dir / "blobs" / sha256[:2] / f"{sha256}.gz"
 
-    @staticmethod
-    def _durable_replace(path: Path, data: bytes) -> None:
+    @classmethod
+    def _durable_replace(cls, path: Path, data: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}-", delete=False) as staged:
             staged.write(data)
@@ -1502,11 +1502,19 @@ class RunStore:
             os.fsync(staged.fileno())
             staged_path = Path(staged.name)
         os.replace(staged_path, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        cls._fsync_directory(path.parent)
+
+    def _durable_move(self, source: Path, target: Path) -> None:
+        """Move a run and flush both directory entries before publishing its index row."""
+        os.replace(source, target)
+        self._fsync_directory(source.parent)
+        if target.parent != source.parent:
+            self._fsync_directory(target.parent)
+
+    def _clear_archive_pending(self) -> None:
+        """Retire the recovery marker only after the archive index is durable."""
+        (self.archive_dir / "pending.json").unlink(missing_ok=True)
+        self._fsync_directory(self.archive_dir)
 
     def _compact_archived_run(self, run_dir: Path) -> None:
         """Transactionally replace large immutable files with verified CAS references."""
@@ -1674,8 +1682,10 @@ class RunStore:
             stat = bucket.stat()
             task_fingerprints[task] = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
         tmp = self.archive_dir / "index.json.tmp"
-        tmp.write_text(json.dumps({"version": 2, "tasks": task_fingerprints}, indent=2))
-        os.replace(tmp, self.archive_dir / "index.json")
+        self._durable_replace(
+            self.archive_dir / "index.json",
+            json.dumps({"version": 2, "tasks": task_fingerprints}, indent=2).encode(),
+        )
         return len(rows)
 
     def update_archived(self, run: Run) -> None:
