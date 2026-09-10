@@ -45,7 +45,7 @@ class DeadlineEnforcer(Protocol):
 class EC2Provider:
     name = "ec2"
     contract_version = CONTRACT_VERSION
-    capabilities = ProviderCapabilities(stop_start=True, persistent_disks=True, spot=False)
+    capabilities = ProviderCapabilities(stop_start=True, persistent_disks=True, spot=True)
     ALLOWED_OPTIONS = {
         "instance_type",
         "subnet_id",
@@ -53,6 +53,8 @@ class EC2Provider:
         "instance_profile_arn",
         "availability_zone",
         "hourly_usd",
+        "spot_hourly_usd",
+        "spot_max_price_usd",
         "delete_root_on_termination",
         "cpu_credits",
         "bootstrap_path",
@@ -83,9 +85,14 @@ class EC2Provider:
 
     def estimate_hourly_usd(self, declaration: HostDeclaration) -> float:
         options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
-        if "hourly_usd" not in options:
-            raise ValueError("ec2.hourly_usd is required for a reviewable, current cost plan")
-        return float(options["hourly_usd"])
+        price_key = "spot_hourly_usd" if declaration.pool.purchase_policy == "spot" else "hourly_usd"
+        if price_key not in options:
+            raise ValueError(f"ec2.{price_key} is required for a reviewable, current cost plan")
+        if declaration.pool.on_demand_fallback and "hourly_usd" not in options:
+            raise ValueError("ec2.hourly_usd is required to price on-demand fallback")
+        # Admission uses the expensive path when fallback is allowed, so the spend
+        # envelope remains safe even if Spot has no capacity.
+        return float(options["hourly_usd"] if declaration.pool.on_demand_fallback else options[price_key])
 
     def discover(self, owner: str, pool: str) -> list[HostFacts]:
         response = self.client.describe_instances(
@@ -99,11 +106,27 @@ class EC2Provider:
                 },
             ]
         )
-        return [
+        hosts = [
             self._facts(instance)
             for reservation in response.get("Reservations", [])
             for instance in reservation.get("Instances", [])
         ]
+        status_method = getattr(self.client, "describe_instance_status", None)
+        if status_method and hosts:
+            statuses = status_method(InstanceIds=[host.provider_id for host in hosts], IncludeAllInstances=True)
+            interrupted = {
+                row["InstanceId"]: event
+                for row in statuses.get("InstanceStatuses", [])
+                for event in row.get("Events", [])
+                if event.get("Code") in {"instance-stop", "instance-terminate", "instance-retirement"}
+            }
+            hosts = [
+                replace(host, state=HostState.INTERRUPTED,
+                        detail=json.dumps({"provider_event": interrupted[host.provider_id]}, sort_keys=True))
+                if host.provider_id in interrupted else host
+                for host in hosts
+            ]
+        return hosts
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
@@ -169,6 +192,12 @@ class EC2Provider:
         if shutdown not in {"stop", "terminate"}:
             raise ValueError("shutdown_behavior must be stop or terminate")
         args["InstanceInitiatedShutdownBehavior"] = shutdown
+        if declaration.pool.purchase_policy == "spot":
+            spot: dict[str, Any] = {"SpotInstanceType": "one-time",
+                                    "InstanceInterruptionBehavior": "terminate"}
+            if options.get("spot_max_price_usd") is not None:
+                spot["MaxPrice"] = str(options["spot_max_price_usd"])
+            args["InstanceMarketOptions"] = {"MarketType": "spot", "SpotOptions": spot}
         if str(options["instance_type"]).startswith(("t2.", "t3.", "t3a.", "t4g.")):
             credits = options.get("cpu_credits", "standard")
             if credits not in ("standard", "unlimited"):
@@ -188,7 +217,28 @@ class EC2Provider:
         except ConnectionError as exc:
             raise TransientProviderError(f"temporary EC2 connection failure: {exc}") from exc
         except Exception as exc:
-            raise ProviderError(f"EC2 launch failed: {exc}") from exc
+            code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+            no_spot_capacity = code in {
+                "InsufficientInstanceCapacity",
+                "InsufficientFreeAddressesInSubnet",
+                "MaxSpotInstanceCountExceeded",
+                "SpotMaxPriceTooLow",
+            }
+            if (
+                declaration.pool.purchase_policy == "spot"
+                and declaration.pool.on_demand_fallback
+                and no_spot_capacity
+            ):
+                args.pop("InstanceMarketOptions", None)
+                args["ClientToken"] = f"{declaration.operation_id}-ondemand"
+                try:
+                    response = self.client.run_instances(**args)
+                except Exception as fallback_exc:
+                    raise ProviderError(f"EC2 on-demand fallback failed: {fallback_exc}") from fallback_exc
+            elif no_spot_capacity:
+                raise ProviderError("EC2 Spot capacity is unavailable and fallback is disabled") from exc
+            else:
+                raise ProviderError(f"EC2 launch failed: {exc}") from exc
         return self._facts(response["Instances"][0])
 
     def inspect(self, provider_id: str) -> HostFacts:

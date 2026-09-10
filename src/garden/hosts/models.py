@@ -65,6 +65,9 @@ class PoolDeclaration:
     maximum_age_minutes: int = 24 * 60
     estimated_runtime_hours: float = 1.0
     spend_limit_usd: float = 10.0
+    purchase_policy: str = "on_demand"
+    on_demand_fallback: bool = False
+    recoverable_workspace: bool = False
     provider_options: dict[str, Any] = field(default_factory=dict)
 
 

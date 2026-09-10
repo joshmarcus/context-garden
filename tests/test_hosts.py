@@ -99,7 +99,9 @@ def test_reconcile_replaces_a_missing_lower_slot_without_reusing_an_occupied_ope
     assert {host.host_id for host in reconciled} == {"workers-0", "workers-1"}
     assert len({host.operation_id for host in reconciled}) == 2
     assert slot_one.operation_id in {host.operation_id for host in reconciled}
+    assert slot_zero.operation_id not in {host.operation_id for host in reconciled}
     assert provider.provision_calls == 3
+    assert "host_lost" in (tmp_path / "state.json").read_text()
 
 
 def test_bootstrap_failure_is_explicit_and_cleans_up_owned_host(tmp_path):
@@ -180,6 +182,13 @@ class StubEC2:
     def start_instances(self, **kwargs):
         return {}
 
+    def describe_instance_status(self, **kwargs):
+        return {"InstanceStatuses": []}
+
+
+class NoSpotCapacity(RuntimeError):
+    response = {"Error": {"Code": "InsufficientInstanceCapacity"}}
+
 
 def test_ec2_adapter_scopes_discovery_tags_credentials_and_bootstrap(tmp_path):
     client = StubEC2()
@@ -233,6 +242,102 @@ def test_ec2_adapter_scopes_discovery_tags_credentials_and_bootstrap(tmp_path):
     lifecycle.reconcile(replace(declaration, desired=0))
     unrelated = next(i for i in client.instances if i["InstanceId"] == "i-unrelated")
     assert unrelated["State"]["Name"] == "running"
+
+
+def test_spot_policy_is_capability_checked_priced_and_explicit(tmp_path):
+    client = StubEC2()
+    spec = replace(
+        pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
+             profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
+        provider_options={
+            "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
+            "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
+            "spot_hourly_usd": 0.06, "spot_max_price_usd": 0.08,
+        },
+    )
+    lifecycle = HostLifecycle({"ec2": EC2Provider(client)}, JsonStateStore(tmp_path / "state.json"))
+
+    assert lifecycle.plan(spec).estimated_hourly_usd == 0.06
+    lifecycle.reconcile(spec)
+    assert client.run_args["InstanceMarketOptions"]["MarketType"] == "spot"
+    assert client.run_args["InstanceMarketOptions"]["SpotOptions"]["MaxPrice"] == "0.08"
+
+    with pytest.raises(ValueError, match="recoverable_workspace"):
+        lifecycle.plan(replace(spec, profile=profile(persistent=True)))
+    with pytest.raises(ValueError, match="hourly_usd"):
+        lifecycle.plan(replace(spec, on_demand_fallback=True))
+
+
+def test_spot_shortage_fallback_is_opt_in_and_uses_bounded_plan_price(tmp_path):
+    class Shortage(StubEC2):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        def run_instances(self, **kwargs):
+            self.calls.append(kwargs)
+            if "InstanceMarketOptions" in kwargs:
+                raise NoSpotCapacity("none")
+            return super().run_instances(**kwargs)
+
+    options = {
+        "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
+        "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
+        "spot_hourly_usd": 0.06, "hourly_usd": 0.20,
+    }
+    client = Shortage()
+    spec = replace(pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
+                        profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
+                   provider_options=options)
+    lifecycle = HostLifecycle({"ec2": EC2Provider(client)}, JsonStateStore(tmp_path / "state.json"))
+    with pytest.raises(RuntimeError, match="fallback is disabled"):
+        lifecycle.provision(spec)
+
+    fallback = replace(spec, on_demand_fallback=True)
+    assert lifecycle.plan(fallback).estimated_hourly_usd == 0.20
+    lifecycle.reconcile(fallback)
+    assert len(client.calls) == 3
+    assert "InstanceMarketOptions" not in client.calls[-1]
+    assert client.calls[-1]["ClientToken"].endswith("-ondemand")
+
+
+def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliation(tmp_path):
+    client = StubEC2()
+    spec = replace(
+        pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
+             profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
+        provider_options={
+            "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
+            "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
+            "spot_hourly_usd": 0.06,
+        },
+    )
+    state = JsonStateStore(tmp_path / "state.json")
+    lifecycle = HostLifecycle({"ec2": EC2Provider(client)}, state)
+    original = lifecycle.reconcile(spec)[0]
+    client.describe_instance_status = lambda **kwargs: {"InstanceStatuses": [{
+        "InstanceId": original.provider_id,
+        "Events": [{"Code": "instance-terminate", "Description": "Spot interruption"}],
+    }]}
+    # Give replacement launches distinct fixture identities.
+    old_run = client.run_instances
+
+    def replacement_run(**kwargs):
+        response = old_run(**kwargs)
+        response["Instances"][0]["InstanceId"] = "i-replacement"
+        return response
+
+    client.run_instances = replacement_run
+    replaced = lifecycle.reconcile(spec)
+    client.describe_instance_status = lambda **kwargs: {"InstanceStatuses": []}
+    again = lifecycle.reconcile(spec)
+
+    assert [host.provider_id for host in replaced if host.state != HostState.TERMINATED] == ["i-replacement"]
+    assert [host.provider_id for host in again if host.state != HostState.TERMINATED] == ["i-replacement"]
+    replacement = next(host for host in again if host.state != HostState.TERMINATED)
+    assert original.operation_id != replacement.operation_id
+    saved = state.read()
+    assert [event["kind"] for event in saved["events"]].count("interruption") == 1
 
 
 def test_provider_and_profile_options_are_namespaced_and_validated(tmp_path):
