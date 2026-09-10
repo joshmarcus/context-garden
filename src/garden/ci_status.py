@@ -124,8 +124,13 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             malformed_shas = _malformed_receipt_sources(raw)
             if sha in malformed_shas:
                 return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
-            mismatched = mismatched or bool(malformed_shas)
-            malformed = malformed or not malformed_shas
+            if not malformed_shas:
+                # This is the newest completion candidate, but truncation happened
+                # before its source identity became durable.  It therefore cannot be
+                # proven unrelated to the queried head, so an older success must not
+                # become authoritative.
+                return CIStatus("malformed", sha, provider="worker_check")
+            mismatched = True
             continue
         except (ValueError, TypeError, KeyError):
             malformed = True
