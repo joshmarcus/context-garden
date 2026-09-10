@@ -335,6 +335,7 @@ def review(call: Call) -> None:
             crit, ev = line.group(1), line.group(2)
             met = "gave no evidence" not in ev and not ev.startswith("author says NOT DONE")
             criteria.append({"criterion": crit, "met": met,
+                             **({"failure_category": "implementation"} if not met else {}),
                              "evidence": ev if met else "",
                              "reason": "evidence checks out" if met else "no evidence for this criterion"})
     rev["criteria"] = criteria
