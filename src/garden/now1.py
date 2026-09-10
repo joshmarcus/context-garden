@@ -634,6 +634,7 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
         "windows": WINDOWS,
         "garden": {"name": str(cfg.get("name") or store.root.name), "tick_interval": int(cfg.get("tick_interval", 60) or 60),
                    "last_tick": str(tick.get("at") or ""), "next_tick_at": str(tick.get("next_at") or ""),
+                   "scheduler_status": tick.get("scheduler_status") or {},
                    "max_parallel": max_parallel, "review_parallel": review_parallel,
                    "worker_busy": worker_busy, "worker_without_process": worker_without_process, "review_busy": review_busy,
                    "free": sched.slots_free(),

@@ -93,7 +93,7 @@ of the loop touch different files.
 |---|---|
 | `model.py`, `store.py`, `graph.py`, `brief.py` | task frontmatter and statuses; discovery of products, phases and tasks on disk; the dependency graph and ready set; the worker brief and `GARDEN_RESULT` parsing |
 | `scheduler/__init__.py` | `Scheduler`: construction, the shared helpers (runner, model, repo, worktree, slots), `tick()` (which times each phase into the report and warns over `tick.warn_seconds`) and `_transition()`; `WORKER_MODES`, `REVIEW_MODES`, `CHECK_MODES` |
-| `scheduler/state.py`, `scheduler/report.py` | `State` (the `state.json` side-store with dirty-key merging) and `TickReport` (per-pass duration and slowest step) |
+| `scheduler/state.py`, `scheduler/report.py`, `scheduler_health.py` | `State` (the `state.json` side-store with dirty-key merging), `TickReport` (per-pass duration and slowest step), and bounded standalone-watch heartbeat/process health |
 | `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |
 | `scheduler/checkruns.py` | checks as run records (CG-182): dispatch a `check` run and route its results through the pre-PR → base-probe → rebase-re-check state machine, so the tick never runs a product's suite itself |
 | `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap; the live config-reload gate that holds an executable-field change against an in-flight run's fence manifest (CG-242) |
@@ -161,7 +161,10 @@ Git is the database. The split between the four stores is deliberate.
 
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
 `repos/` (clones of products given as URLs), `trials.jsonl` (model trial records), and
-`reservations.json` (durable id reservations, below).
+`reservations.json` (durable id reservations, below). A standalone `garden watch` publishes
+an atomic, per-process lease under `watchers/`; the web UI combines that auditable heartbeat
+and process identity with its separate embedded-watch setting instead of inferring scheduler
+health from the serving process.
 
 A product may opt into a provisioned canonical checkout instead of per-task worktrees:
 

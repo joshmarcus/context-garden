@@ -678,6 +678,11 @@ class Scheduler(
         work (a review the old process reaped in its last tick but died before persisting) nor
         re-runs it, and only then does the caller tick. Safe to call more than once: an
         already-reaped run is skipped (CG-198)."""
+        with self._controller_lock():
+            return self._reap_on_start_locked()
+
+    def _reap_on_start_locked(self) -> TickReport:
+        """Apply startup recovery while the caller holds the controller lock."""
         if self.maintenance_requested():
             return TickReport()
         rep = TickReport()

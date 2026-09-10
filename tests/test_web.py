@@ -54,6 +54,12 @@ def test_pages_render(garden):
         assert r.status_code == 200, url
 
 
+def test_rail_truthfully_reports_missing_standalone_and_disabled_embedded_watch(garden):
+    page = client(garden).get("/").text
+    assert "scheduler: no standalone watcher detected · embedded watch off" in page
+    assert "scheduler loop off" not in page
+
+
 def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
     c = client(garden)
     response = c.post(
