@@ -17,7 +17,14 @@ from ..config import no_live_garden_root
 from ..runs import Run
 from ..sandbox import SandboxPolicy
 from ..validation import bounded_validation_timeout_seconds
-from .base import Runner, RunnerError, run_temp_dir, scrubbed_env, worker_home
+from .base import (
+    Runner,
+    RunnerError,
+    run_temp_dir,
+    scrubbed_env,
+    worker_credentials_dir,
+    worker_home,
+)
 
 
 class LocalRunner(Runner):
@@ -45,6 +52,7 @@ class LocalRunner(Runner):
             cmd, _ = policy.command_argv(
                 shlex.join(cmd), worktree,
                 additional_writable_roots=[Path(worker_home(worktree))],
+                readable_roots=[worktree, Path(worker_home(worktree)), Path(worker_credentials_dir(worktree))],
                 protected_roots=[Path(path) for path in run.fence_paths or []],
             )
         return cmd
