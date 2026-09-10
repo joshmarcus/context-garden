@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from ...runs import RunStore
 from ..common import Site
@@ -139,9 +139,10 @@ def register(app: FastAPI, site: Site) -> None:
                 if run and run.transcript_attempt_id else None)
         if path is None or not path.is_file():
             raise HTTPException(404)
-        return Response(path.read_bytes(), media_type="application/x-ndjson",
-                        headers={"Content-Disposition": f'attachment; filename="{run_id}-transcript.jsonl"',
-                                 "X-Content-Type-Options": "nosniff"})
+        return FileResponse(
+            path, media_type="application/x-ndjson", filename=f"{run_id}-transcript.jsonl",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
 
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):

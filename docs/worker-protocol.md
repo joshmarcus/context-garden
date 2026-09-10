@@ -64,8 +64,9 @@ Every record has schema version, monotonic sequence, UTC observation timestamp, 
 (`stdout` or `stderr`), and emitted data. Harness JSON remains unchanged inside `data`, so
 analysis can parse the available structured payload without the controller executing it.
 Known secret environment values are replaced in individual records and each replacement is
-counted. Private model reasoning and events not exposed by the harness are explicitly listed
-as capture limits; they are never inferred or fabricated.
+counted, including values split across capture read boundaries. Private model reasoning and
+events not exposed by the harness are explicitly listed as capture limits; they are never
+inferred or fabricated.
 
 `POST /api/runs/<id>/transcript` accepts at most 1 MiB per request with lease token, byte
 offset, base64 data, and SHA-256. The controller fsyncs each append before acknowledging its
@@ -80,9 +81,18 @@ completion time. Only this durable receipt changes transcript delivery from `par
 `complete`; worker execution completion remains independent. Workers retry chunks and
 finalization through the claim recovery window and post `/finish` only after transcript
 receipt, so cleanup cannot follow an unacknowledged transcript. Run pages show delivery state
-and provide an authenticated same-origin `transcript.jsonl` download for server-side analysis.
+and provide an authenticated same-origin, incrementally served `transcript.jsonl` download for
+server-side analysis. Check runs use the same contract and add their structured check result;
+because their supervisor redirects the two channels to separate files, their metadata records
+that cross-channel emission order is unavailable rather than inventing an order.
 Local/SSH records retain their stdout/stderr files and existing run links; records without the
 canonical stream truthfully report it as missing rather than substituting the final answer.
+
+Canonical capture, checksums, upload, and export are incremental. Legacy harness parsing is
+bounded to the final 16 MiB of each channel; when a larger stream requires that bounded view,
+the canonical transcript remains complete and its metadata records the parser truncation.
+Server-side consumers can use `Run.iter_transcript_events()` to process that inert JSONL
+stream without materializing the complete transcript.
 
 The controller default per-attempt limit is 256 MiB. Operators can lower it with
 `workers.transcripts.max_bytes`; ordinary run retention applies to the attempt directories.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import io
 import json
 import os
 import signal
@@ -26,6 +27,7 @@ from garden.remote_worker import (
     _host_check_data,
     _LeaseHeartbeat,
     _validation_receipts,
+    _TranscriptCapture,
     _wait_for_process,
     doctor_worker,
     execute_claim,
@@ -1387,6 +1389,22 @@ def test_canonical_transcript_upload_finalizes_with_integrity_metadata(garden, m
     assert export.status_code == 200 and export.content == content
 
 
+def test_transcript_redacts_secret_across_capture_read_boundary(tmp_path):
+    secret = "boundary-secret-value"
+    capture = _TranscriptCapture(tmp_path, {"SERVICE_TOKEN": secret})
+    prefix = "x" * (64 * 1024 - 7)
+
+    capture.reader(io.StringIO(prefix + secret + " suffix"), "stdout")
+    capture.record("worker", "result", payload={"details": f"found {secret}"})
+
+    content = capture.path.read_text()
+    events = [json.loads(line) for line in content.splitlines()]
+    assert secret not in content
+    assert "".join(event["data"] for event in events[:-1]) == prefix + "<redacted> suffix"
+    assert events[-1]["payload"] == {"details": "found <redacted>"}
+    assert capture.redactions == 2
+
+
 def test_finish_acknowledgement_replay_collects_one_result(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)
@@ -1543,6 +1561,9 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert "exec_root" not in check_claim["checks"]["ctx"]
     assert set(check_claim["checks"]["config"]) == {"worker_env"}
     execute_claim(check_claim, tmp_path / "independent-host", PostingClient())
+    saved_check = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved_check.transcript_status == "complete"
+    assert saved_check.transcript_events()
     check_execution = next(
         path for path in (tmp_path / "independent-host/runs").iterdir()
         if (path / "checks_input.json").exists()

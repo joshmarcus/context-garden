@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -355,40 +356,113 @@ class _TranscriptCapture:
 
     def __init__(self, root: Path, environment: dict[str, str]):
         self.path = root / "transcript.jsonl"
+        self.path.touch()
         self.stdout_path = root / "stdout.log"
         self.stderr_path = root / "stderr.log"
         self.lock = threading.Lock()
         self.sequence = 0
         self.redactions = 0
         secret_names = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "ACCESS_KEY")
-        self.secrets = [value for key, value in environment.items()
-                        if len(value) >= 4 and any(marker in key.upper() for marker in secret_names)]
+        self.secrets = sorted({value for key, value in environment.items()
+                               if len(value) >= 4
+                               and any(marker in key.upper() for marker in secret_names)},
+                              key=len, reverse=True)
+
+    def _redacted_parts(self, stream: TextIO) -> Iterator[tuple[str, int]]:
+        """Yield bounded text while retaining enough overlap to match split secrets."""
+        pending = ""
+        overlap = max((len(secret) for secret in self.secrets), default=1) - 1
+        while data := stream.read(64 * 1024):
+            pending += data
+            safe = max(0, len(pending) - overlap)
+            position = 0
+            while position < safe:
+                matches = [(pending.find(secret, position), secret) for secret in self.secrets]
+                matches = [(start, secret) for start, secret in matches if start >= 0]
+                if not matches:
+                    yield pending[position:safe], 0
+                    position = safe
+                    break
+                start, secret = min(matches, key=lambda item: item[0])
+                if start >= safe:
+                    yield pending[position:safe], 0
+                    position = safe
+                    break
+                if start > position:
+                    yield pending[position:start], 0
+                yield "<redacted>", 1
+                position = start + len(secret)
+            pending = pending[position:]
+        position = 0
+        while position < len(pending):
+            matches = [(pending.find(secret, position), secret) for secret in self.secrets]
+            matches = [(start, secret) for start, secret in matches if start >= 0]
+            if not matches:
+                yield pending[position:], 0
+                break
+            start, secret = min(matches, key=lambda item: item[0])
+            if start > position:
+                yield pending[position:start], 0
+            yield "<redacted>", 1
+            position = start + len(secret)
 
     def reader(self, stream: TextIO, channel: str) -> None:
         raw_path = self.stdout_path if channel == "stdout" else self.stderr_path
         with raw_path.open("w") as raw, self.path.open("a") as transcript:
             # Fixed reads keep a harness that emits one enormous line from becoming an
             # unbounded worker-side allocation. Concatenating channel data is lossless.
-            for data in iter(lambda: stream.read(64 * 1024), ""):
+            for data, redacted in self._redacted_parts(stream):
                 raw.write(data)
                 raw.flush()
-                clean = data
-                redacted = 0
-                for secret in self.secrets:
-                    occurrences = clean.count(secret)
-                    if occurrences:
-                        clean = clean.replace(secret, "<redacted>")
-                        redacted += occurrences
-                with self.lock:
-                    event = {"schema_version": 1, "sequence": self.sequence,
-                             "timestamp": dt.datetime.now(dt.UTC).isoformat(),
-                             "channel": channel, "data": clean}
-                    if redacted:
-                        event["redactions"] = redacted
-                    transcript.write(json.dumps(event, separators=(",", ":")) + "\n")
-                    transcript.flush()
-                    self.sequence += 1
-                    self.redactions += redacted
+                self._write_event(transcript, channel, data, redacted=redacted)
+
+    def _write_event(self, transcript: TextIO, channel: str, data: str, *, redacted: int = 0,
+                     payload: Any = None) -> None:
+        with self.lock:
+            event = {"schema_version": 1, "sequence": self.sequence,
+                     "timestamp": dt.datetime.now(dt.UTC).isoformat(),
+                     "channel": channel, "data": data}
+            if payload is not None:
+                event["payload"] = payload
+            if redacted:
+                event["redactions"] = redacted
+            transcript.write(json.dumps(event, separators=(",", ":")) + "\n")
+            transcript.flush()
+            self.sequence += 1
+            self.redactions += redacted
+
+    def record(self, channel: str, data: str, *, payload: Any = None) -> None:
+        clean_data, data_redactions = self._redact_value(data)
+        clean_payload, payload_redactions = self._redact_value(payload)
+        with self.path.open("a") as transcript:
+            self._write_event(
+                transcript, channel, clean_data, payload=clean_payload,
+                redacted=data_redactions + payload_redactions,
+            )
+
+    def _redact_value(self, value: Any) -> tuple[Any, int]:
+        if isinstance(value, str):
+            count = 0
+            for secret in self.secrets:
+                occurrences = value.count(secret)
+                value = value.replace(secret, "<redacted>")
+                count += occurrences
+            return value, count
+        if isinstance(value, list):
+            values, count = [], 0
+            for item in value:
+                clean, redactions = self._redact_value(item)
+                values.append(clean)
+                count += redactions
+            return values, count
+        if isinstance(value, dict):
+            values, count = {}, 0
+            for key, item in value.items():
+                clean, redactions = self._redact_value(item)
+                values[key] = clean
+                count += redactions
+            return values, count
+        return value, 0
 
     def upload_available(self, heartbeat: _LeaseHeartbeat, offset: int) -> int:
         if not self.path.exists():
@@ -399,10 +473,41 @@ class _TranscriptCapture:
                 offset = heartbeat.upload_transcript(offset, chunk)
         return offset
 
-    def texts(self) -> tuple[str, str]:
-        stdout = self.stdout_path.read_text() if self.stdout_path.exists() else ""
-        stderr = self.stderr_path.read_text() if self.stderr_path.exists() else ""
-        return stdout, stderr
+    def capture_file(self, path: Path, channel: str) -> None:
+        if path.exists():
+            with path.open(errors="replace") as source:
+                self.reader(source, channel)
+
+    def parser_texts(self, max_bytes: int = 16 * 1024 * 1024) -> tuple[str, str, bool]:
+        """Return bounded tail views for parsers; canonical capture remains complete."""
+        values = []
+        truncated = False
+        for path in (self.stdout_path, self.stderr_path):
+            if not path.exists():
+                values.append("")
+                continue
+            size = path.stat().st_size
+            with path.open("rb") as source:
+                if size > max_bytes:
+                    source.seek(size - max_bytes)
+                    truncated = True
+                values.append(source.read(max_bytes).decode(errors="replace"))
+        return values[0], values[1], truncated
+
+    def digest(self) -> str:
+        digest = hashlib.sha256()
+        with self.path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def upload_legacy_stdout(self, heartbeat: _LeaseHeartbeat) -> None:
+        offset = 0
+        if not self.stdout_path.exists():
+            return
+        with self.stdout_path.open() as source:
+            while chunk := source.read(256 * 1024):
+                offset = heartbeat.upload(offset, chunk)
 
 
 def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str]:
@@ -641,6 +746,21 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         "summary": "check execution did not complete", "details": error,
                     }]
             final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
+            with tempfile.TemporaryDirectory(prefix="transcript-", dir=runs_dir) as capture_dir:
+                capture = _TranscriptCapture(Path(capture_dir), execution_env)
+                capture.capture_file(execution_dir / "stdout.json", "stdout")
+                capture.capture_file(execution_dir / "stderr.log", "stderr")
+                capture.record("worker", "check result", payload=parsed)
+                transcript_upload_offset = capture.upload_available(heartbeat, 0)
+                heartbeat.finish_transcript(
+                    byte_count=transcript_upload_offset, sha256=capture.digest(),
+                    event_count=capture.sequence, redactions=capture.redactions,
+                    capture_limits=[
+                        "check stdout/stderr file ordering unavailable after redirected execution",
+                        "private model reasoning and unexposed harness events unavailable",
+                    ],
+                )
+                capture.upload_legacy_stdout(heartbeat)
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             final_path = repo.parent / f"{run['id']}-final.md"
@@ -697,20 +817,20 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 for reader in readers:
                     reader.join()
                 transcript_upload_offset = capture.upload_available(heartbeat, transcript_upload_offset)
-                stdout, stderr = capture.texts()
-                digest = hashlib.sha256(capture.path.read_bytes()).hexdigest()
+                stdout, stderr, parser_truncated = capture.parser_texts()
+                capture_limits = ["private model reasoning and unexposed harness events unavailable"]
+                if parser_truncated:
+                    capture_limits.append(
+                        "legacy harness parser inputs truncated to the final 16 MiB per channel"
+                    )
                 heartbeat.finish_transcript(
-                    byte_count=transcript_upload_offset, sha256=digest,
+                    byte_count=transcript_upload_offset, sha256=capture.digest(),
                     event_count=capture.sequence, redactions=capture.redactions,
-                    capture_limits=["private model reasoning and unexposed harness events unavailable"],
+                    capture_limits=capture_limits,
                 )
                 # Keep the legacy stdout renderer populated while canonical delivery is
                 # independently finalized and acknowledged.
-                legacy_offset = 0
-                for chunk_start in range(0, len(stdout), 256 * 1024):
-                    legacy_offset = heartbeat.upload(
-                        legacy_offset, stdout[chunk_start:chunk_start + 256 * 1024]
-                    )
+                capture.upload_legacy_stdout(heartbeat)
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}

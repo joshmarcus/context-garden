@@ -17,6 +17,7 @@ import os
 import signal
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -410,20 +411,23 @@ class Run:
 
     def transcript_events(self) -> list[dict[str, Any]]:
         """Return canonical observable events as inert data for authorized analysis."""
+        return list(self.iter_transcript_events())
+
+    def iter_transcript_events(self) -> Iterator[dict[str, Any]]:
+        """Incrementally read canonical events without trusting or executing their content."""
         if not self.transcript_attempt_id:
-            return []
+            return
         path = self.path / "transcripts" / self.transcript_attempt_id / "events.jsonl"
-        events: list[dict[str, Any]] = []
         if not path.exists():
-            return events
-        for line in path.read_text(errors="replace").splitlines():
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict):
-                events.append(value)
-        return events
+            return
+        with path.open(errors="replace") as source:
+            for line in source:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    yield value
 
 
 def _newest_mtime(root: Path) -> float:
