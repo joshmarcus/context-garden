@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
 
 import yaml
@@ -34,6 +35,8 @@ def test_idle_contact_survives_zero_jobs_and_api_matches_ui(garden, monkeypatch)
                        headers={"Authorization": "Bearer secret"})
     assert poll.status_code == 204
     payload = client.get("/api/workers").json()
+    assert "secret" not in json.dumps(payload).lower()
+    assert "token_env" not in json.dumps(payload)
     assert payload["totals"]["workers"] == 1
     assert payload["totals"]["jobs"] == 0
     assert payload["workers"][0]["status"] == "available"
@@ -79,7 +82,7 @@ def test_worker_states_cover_stale_explicit_and_no_workers(garden):
     contacts.record("pull-a", capacity=1, harnesses=[], tiers=[], facts={})
     saved = contacts.read()
     saved["pull-a"]["last_contact"] = (now - dt.timedelta(minutes=2)).isoformat()
-    contacts.path.write_text(__import__("json").dumps({"workers": saved}))
+    contacts.path.write_text(json.dumps({"workers": saved}))
     fleet = snapshot(store.config, RunStore(store.config.garden_dir), now=now)
     assert fleet["workers"][0]["status"] == "unreachable"
     assert fleet["workers"][0]["evidence_stale"] is True
