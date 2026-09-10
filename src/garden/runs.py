@@ -317,6 +317,69 @@ class Run:
                 return -1
         return None
 
+    def check_view(self) -> dict[str, Any] | None:
+        """Return the durable check evidence needed by the run-page presentation.
+
+        Check process completion and a check's own verdict are separate facts: a detached
+        runner can finish before its results are collected, and an exited command can report
+        a failure or an execution error.  Older records may lack either input or output, so
+        retain that uncertainty instead of inferring a successful check from ``status``.
+        """
+        if self.mode != "check":
+            return None
+        payload: dict[str, Any] = {}
+        try:
+            stored = json.loads((self.path / "checks_input.json").read_text())
+            if isinstance(stored, dict):
+                payload = stored
+        except (OSError, ValueError):
+            pass
+        specs = payload.get("specs") if isinstance(payload.get("specs"), list) else []
+        results = self.result.get("checks") if isinstance(self.result.get("checks"), list) else []
+        checks = []
+        for index, result in enumerate(results):
+            result = result if isinstance(result, dict) else {}
+            spec = specs[index] if index < len(specs) and isinstance(specs[index], dict) else {}
+            command = str(spec.get("command") or "")
+            if not command and spec.get("python"):
+                command = f"python check: {spec['python']}"
+            checks.append({
+                "name": str(result.get("name") or spec.get("name") or f"check {index + 1}"),
+                "command": command,
+                "status": str(result.get("status") or "incomplete"),
+                "summary": str(result.get("summary") or ""),
+                "details": str(result.get("details") or ""),
+            })
+        context = payload.get("ctx") if isinstance(payload.get("ctx"), dict) else {}
+        source = str(self.source_head or context.get("head_sha") or self.start_head or "")
+        active = self.status in {"requested", "preparing", "running"}
+        completed = self.status == "done"
+        statuses = {check["status"] for check in checks}
+        passing = {"pass", "passed", "done", "ok"}
+        if active:
+            conclusion, next_action = "in progress", "Wait for the check runner to finish."
+        elif not completed:
+            conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
+        elif not checks:
+            conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
+        elif statuses <= passing:
+            conclusion, next_action = "passed", "No action required."
+        elif statuses & {"fail", "failed", "error", "flaky"}:
+            conclusion, next_action = "needs attention", "Inspect the failing diagnostics, then fix or retry the check."
+        else:
+            conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
+        exit_code = self.exit_code if self.exit_code is not None else self.read_exit_code()
+        return {
+            "process": "running" if active else ("completed" if completed else f"ended ({self.status})"),
+            "exit_code": exit_code,
+            "source": source,
+            "branch": self.branch,
+            "base": self.base,
+            "checks": checks,
+            "conclusion": conclusion,
+            "next_action": next_action,
+        }
+
     def elapsed_minutes(self) -> float:
         if not self.started_at:
             return 0.0

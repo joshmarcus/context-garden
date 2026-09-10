@@ -31,6 +31,21 @@
     <p class="faint">No pre-PR checks are configured, or the check run has not finished yet.</p>
   {% endif %}
 </div>
+{% elif check_view %}
+<div class="panel">
+  <div class="eyebrow">Check outcome</div>
+  <p><span class="pill s-{{ 'done' if check_view.conclusion == 'passed' else ('running' if check_view.conclusion == 'in progress' else 'failed') }}">{{ check_view.conclusion }}</span> <span class="muted">Process {{ check_view.process }}{% if check_view.exit_code is not none %} · exit {{ check_view.exit_code }}{% else %} · exit code not recorded{% endif %}</span></p>
+  <dl class="facts">
+    <dt>source</dt><dd><span class="mono">{{ check_view.source or 'not recorded' }}</span>{% if check_view.branch %} · branch <span class="mono">{{ check_view.branch }}</span>{% endif %}{% if check_view.base %} → <span class="mono">{{ check_view.base }}</span>{% endif %}</dd>
+  </dl>
+  {% if check_view.checks %}
+  <h3>Checks</h3>
+  <ul class="tl">{% for check in check_view.checks %}
+    <li><span class="k">{{ check.name }}</span><span><span class="pill s-{{ 'done' if check.status in ['pass', 'passed', 'done', 'ok'] else 'failed' }}">{{ check.status }}</span>{% if check.summary %} {{ check.summary }}{% endif %}{% if check.command %}<br><span class="mono">{{ check.command }}</span>{% else %}<br><span class="faint">command not recorded</span>{% endif %}{% if check.details %}<pre class="log">{{ check.details }}</pre>{% endif %}</span></li>
+  {% endfor %}</ul>
+  {% else %}<p class="faint">No accepted check outcome has been recorded yet.</p>{% endif %}
+  <p><strong>Next action:</strong> {{ check_view.next_action }}</p>
+</div>
 {% else %}
 <div class="tabs">
   <input type="radio" name="runtab" id="tab-transcript" checked>

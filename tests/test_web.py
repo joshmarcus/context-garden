@@ -2544,6 +2544,49 @@ def test_run_page_mechanical_rebase(garden):
     assert 'data-tab="transcript"' not in body     # no transcript tabs for a git-only run
 
 
+def test_check_run_page_shows_command_source_and_passed_outcome(garden):
+    """A completed process is only successful when its collected checks passed."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status, run.source_head, run.exit_code = "done", "abc123def", 0
+    run.branch, run.base = "garden/dm-001", "main"
+    run.result = {"checks": [{"name": "unit", "status": "pass", "summary": "3 passed"}]}
+    run.save()
+    (run.path / "checks_input.json").write_text('{"specs":[{"name":"unit","command":"pytest tests/test_web.py -q"}]}')
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "Check outcome" in body and "passed" in body
+    assert "Process completed" in body and "exit 0" in body
+    assert "abc123def" in body and "garden/dm-001" in body
+    assert "pytest tests/test_web.py -q" in body and "No action required." in body
+
+
+def test_check_run_page_keeps_failure_and_missing_results_distinct(garden):
+    """Failed commands and an ended runner with no accepted result suggest different recovery."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    runs = RunStore(Store(garden).config.garden_dir)
+    failed = runs.new_run("DM-001", "local", "check")
+    failed.status, failed.exit_code = "done", 1
+    failed.result = {"checks": [{"name": "unit", "status": "fail", "summary": "exit 1", "details": "AssertionError: expected green"}]}
+    failed.save()
+    (failed.path / "checks_input.json").write_text('{"specs":[{"name":"unit","command":"pytest -q"}]}')
+    incomplete = runs.new_run("DM-001", "local", "check")
+    incomplete.status, incomplete.exit_code = "done", 0
+    incomplete.save()
+
+    c = client(garden)
+    failed_body = c.get(f"/runs/DM-001/{failed.run_id}").text
+    assert "needs attention" in failed_body and "AssertionError: expected green" in failed_body
+    assert "fix or retry the check" in failed_body
+    incomplete_body = c.get(f"/runs/DM-001/{incomplete.run_id}").text
+    assert "incomplete" in incomplete_body and "No accepted check outcome has been recorded yet." in incomplete_body
+    assert "Inspect the run diagnostics and retry the check." in incomplete_body
+
+
 def test_inbox_shows_the_merge_queue(garden):
     from garden.events import EventLog
     from garden.scheduler import Scheduler
