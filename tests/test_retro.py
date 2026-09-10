@@ -710,8 +710,8 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
 
     ph = store.phase("gdn", "p1")
     names = sorted(DEFAULT_PERSONAS)
-    assert len(names) == 7
-    # a retro entry naming all six personas, none dispatched yet (the mid-race snapshot);
+    assert len(names) == 8
+    # a retro entry naming every built-in persona, none dispatched yet (the mid-race snapshot);
     # only "designer" has a report on disk (pre-seeded by _live_garden)
     entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name, "personas": names,
              "skip_personas": False, "next_phase": "p2", "self_product": "gdn",
@@ -719,7 +719,7 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
     sched._retro_list().append(entry)
     sched.state.save()
 
-    assert sched.retro_pending(ph.key) == {"done": 1, "total": 7}
+    assert sched.retro_pending(ph.key) == {"done": 1, "total": 8}
     rep = sched.tick()  # tick() reloads state from disk, so re-fetch the entry after each call
     assert not rep.errors, rep.errors
     entry = sched._retro_list()[0]
@@ -732,7 +732,7 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
             continue
         (reviews / f"{name}-2026-01-02.md").write_text(f"# {name} review of gdn/p1\n\nfine.\n")
 
-    assert sched.retro_pending(ph.key) == {"done": 7, "total": 7}
+    assert sched.retro_pending(ph.key) == {"done": 8, "total": 8}
     friction, reported, comment_friction, reports, task_rows, merged = sched._retro_materials(ph, names)
     brief = reconcile_brief(store, ph, "main", friction, reported, comment_friction, reports, task_rows, merged, "p2")
     assert "(none)" not in brief.split("## Persona reviews")[1].split("## ")[0]

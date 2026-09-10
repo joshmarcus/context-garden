@@ -9,7 +9,7 @@ import pytest
 from garden.checks import run_check, run_checks, to_feedback
 from garden.inbox import attention_view
 from garden.model import Status
-from garden.personas import DEFAULT_PERSONAS, parse_persona, write_default_personas
+from garden.personas import DEFAULT_PERSONAS, load_persona, parse_persona, write_default_personas
 from garden.runs import RunStore
 from garden.store import Store
 from garden.trials import TrialLog, parse_compare, parse_contender
@@ -546,6 +546,19 @@ def test_default_personas_written(tmp_path):
     assert parse_persona('GARDEN_PERSONA: {"persona": "user", "score": 5, "overall": "x", "findings": []}')["score"] == 5
 
 
+def test_ontologist_default_is_extensible_without_overwriting_a_custom_persona(tmp_path):
+    custom = tmp_path / "personas" / "ontologist.md"
+    custom.parent.mkdir()
+    custom.write_text("# Persona: Local ontology\n\nUse our vocabulary.\n")
+
+    written = write_default_personas(tmp_path)
+
+    assert custom not in written
+    assert custom.read_text() == "# Persona: Local ontology\n\nUse our vocabulary.\n"
+    assert load_persona(Store(tmp_path), "ontologist") == custom.read_text()
+    assert "ontology-specification" in DEFAULT_PERSONAS["ontologist"]
+
+
 def test_phase_persona_runs_are_keyed_by_phase(sched):
     from tests.conftest import write
 
@@ -681,6 +694,32 @@ def test_product_manager_builtin_declares_its_sections(sched, fake_github, monke
     for heading in ("## Vision", "## Where we are", "## Features", "## Not now", "## Questions"):
         assert heading in report, heading
     assert "**Score:**" in report and "First run needs a config file" in report
+
+
+def test_ontologist_named_phase_review_preserves_its_authored_specification(sched, fake_github, monkeypatch):
+    """The built-in ontologist follows the normal named review path and keeps its narrative
+    specification section alongside findings in the phase artifact."""
+    sched.tick()
+    sched.tick()
+    ph = sched.store.phase("demo", "p1")
+    sched.dispatch_persona_phase(ph, "ontologist")
+    sched.tick()
+
+    report = next((ph.path / "docs" / "reviews").glob("ontologist-*.md")).read_text()
+    assert "## Ontology specification" in report
+    assert "The ontologist's ontology-specification section, in its own words." in report
+    assert "First run needs a config file" in report
+
+
+def test_ontologist_named_pr_review_posts_its_authored_specification(sched, fake_github):
+    sched.tick()
+    sched.tick()
+
+    sched.dispatch_persona_pr(sched.store.task("DM-001"), "ontologist")
+    sched.tick()
+
+    comment = next(comment for comment in fake_github.comments if "ontologist review of DM-001" in comment)
+    assert "## Ontology specification" in comment
 
 
 def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, monkeypatch):
