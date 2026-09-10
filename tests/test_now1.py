@@ -3,6 +3,7 @@ the live stream, the text view and the heat-map shading."""
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import os
@@ -10,6 +11,8 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import anyio
+import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -23,6 +26,7 @@ from garden.runs import Run, RunStore
 from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.web.app import create_app
+from garden.web.pages.now1 import SSEStreamingResponse
 from tests.conftest import FakeGitHub
 
 NOW = dt.datetime(2026, 9, 6, 2, 0, tzinfo=dt.UTC)
@@ -801,6 +805,33 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     assert 'fetchText(partialUrl("head", reading))' in page
     assert 'fetchText(partialUrl("period", reading))' in page
     assert "var head = parse(html[0]), period = parse(html[1]);" in page
+
+
+@pytest.mark.parametrize("shutdown", [asyncio.CancelledError, OSError])
+def test_sse_response_suppresses_expected_shutdown_signals(shutdown):
+    """Disconnect and server cancellation end an open stream without an app traceback."""
+    response = SSEStreamingResponse(iter(["message\n\n"]))
+
+    async def send(_message):
+        raise shutdown()
+
+    async def receive():
+        return {"type": "http.request"}
+
+    anyio.run(response, {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+
+
+def test_sse_response_does_not_suppress_application_errors():
+    response = SSEStreamingResponse(iter(["message\n\n"]))
+
+    async def send(_message):
+        raise RuntimeError("handler failed")
+
+    async def receive():
+        return {"type": "http.request"}
+
+    with pytest.raises(RuntimeError, match="handler failed"):
+        anyio.run(response, {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
 
 
 def test_tail_lines_leaves_a_partial_line_for_the_next_read(tmp_path):
