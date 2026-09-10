@@ -79,13 +79,38 @@ class _DiscoveryWatch:
             return
         # Recreate the descriptor so removed directories cannot leave stale watches behind.
         old_fd = self.fd
-        self.fd = self._libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-        os.close(old_fd)
-        if self.fd < 0:
+        try:
+            new_fd = self._libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError:
+            self.close()
             return
-        for directory, names, _files in os.walk(self.root):
-            names[:] = [name for name in names if name not in {".git", ".garden", ".venv", "node_modules"}]
-            self._libc.inotify_add_watch(self.fd, os.fsencode(directory), self._MASK)
+        if new_fd < 0:
+            self.close()
+            return
+        self.fd = new_fd
+        try:
+            os.close(old_fd)
+        except OSError:
+            self.close()
+            return
+        complete = True
+
+        def walk_error(_error: OSError) -> None:
+            nonlocal complete
+            complete = False
+
+        try:
+            for directory, names, _files in os.walk(self.root, onerror=walk_error):
+                names[:] = [name for name in names if name not in {".git", ".garden", ".venv", "node_modules"}]
+                if self._libc.inotify_add_watch(self.fd, os.fsencode(directory), self._MASK) < 0:
+                    complete = False
+                    break
+        except OSError:
+            complete = False
+        if not complete:
+            # A partial watch tree would make an edit below an unwatched directory invisible.
+            # Fall back to Store's metadata signature rather than serving a stale generation.
+            self.close()
 
     def changed(self) -> bool:
         if not self.available:
@@ -105,10 +130,12 @@ class _DiscoveryWatch:
             return True
 
     def close(self) -> None:
-        if self.fd >= 0:
-            os.close(self.fd)
-        self.fd = -1
-        self._libc = None
+        try:
+            if self.fd >= 0:
+                os.close(self.fd)
+        finally:
+            self.fd = -1
+            self._libc = None
 
 
 def product_checkout(store: Store, product: str) -> Path:

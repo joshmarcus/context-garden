@@ -627,6 +627,30 @@ def test_read_generation_skips_discovery_fingerprints_until_a_watch_event(garden
     assert calls == initial_calls
 
 
+def test_failed_discovery_watch_registration_uses_signature_fallback(garden, monkeypatch):
+    """An incomplete inotify tree cannot suppress external-edit detection."""
+    from garden.web import common
+
+    class FailedWatchLibc:
+        def inotify_init1(self, _flags):
+            return os.open(os.devnull, os.O_RDONLY)
+
+        def inotify_add_watch(self, _fd, _directory, _mask):
+            return -1
+
+    monkeypatch.setattr(common.ctypes, "CDLL", lambda *_args, **_kwargs: FailedWatchLibc())
+    c = client(garden)
+    assert not c.app.state.hub._discovery_watch.available
+
+    assert c.get("/board").status_code == 200
+    task_path = garden / "demo" / "p1" / "tasks" / "DM-001-first.md"
+    task_path.write_text(task_path.read_text().replace("First task", "Edited after failed watch"))
+
+    page = c.get("/tasks/DM-001")
+    assert page.status_code == 200
+    assert "Edited after failed watch" in page.text
+
+
 def test_task_page_shows_exact_head_ci_freshness_and_absence(garden):
     scheduler = Scheduler(Store(garden), read_only=True)
     scheduler.state.get("DM-001")["ci_status"] = {
