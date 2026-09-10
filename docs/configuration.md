@@ -56,3 +56,24 @@ Runtime audit events include the changed key, global scope, runtime provenance, 
 available to the current CLI/web trust model. Values whose key or metadata identifies a
 secret are replaced with `<redacted>` before logging or event emission. Configuration
 surfaces must represent secret references rather than return stored plaintext.
+
+## Phase execution
+
+`phase_execution` is `concurrent` by default, preserving existing scheduling. Set it to
+`sequential` globally or in a product configuration override to admit new model work only
+from that product's earliest open phase:
+
+```yaml
+phase_execution: sequential
+```
+
+The existing product phase discovery order is authoritative; this setting does not define a
+second order. The selected phase advances only when its goals document has been explicitly
+closed after the normal closing review and blocker gates. A frozen or otherwise blocked phase
+therefore remains selected and is reported as the reason later work waits.
+
+Changes apply on the next scheduler tick. Enabling sequential execution never cancels an
+active run or discards its result: collection, lease renewal, publication, and recovery keep
+running, while new model admission outside the selected phase stops. Disabling it restores
+concurrent admission. Reopening an earlier phase selects it for subsequent admission without
+cancelling work already in flight in a later phase.

@@ -321,7 +321,7 @@ class RebaseMixin:
         flight until its rollup goes green."""
         if self._manual_reserved(task):
             return "held"
-        self._refuse_if_closed_or_frozen(task)
+        self._refuse_if_phase_not_admitted(task)
         outcome = self._rebase_and_record(task, base, skip_if_current=skip_if_current, reason=reason)
         if outcome.status == "conflict":
             self.events.emit("rebase", task.id, base=base, files=outcome.files, resolved=False, how="agent")

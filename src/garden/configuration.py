@@ -77,6 +77,7 @@ CONFIG_FIELDS: dict[str, ConfigField] = {f.key: f for f in (
     _field("max_parallel", "integer", 10, "Requested concurrent worker runs; host resource limits may allow fewer.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT), minimum=1),
     _field("review_parallel", "optional_integer", None, "Concurrent review runs; empty follows max_parallel.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT), minimum=1),
     _field("auto_dispatch", "boolean", True, "Automatically starts ready work when capacity is available.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT)),
+    _field("phase_execution", "string", "concurrent", "Controls whether each project admits model work from all open phases or only its earliest open phase.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT), choices=("concurrent", "sequential")),
     _field("auto_revise", "boolean", True, "Automatically starts another paid worker round after review requests changes.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT)),
     _field("stack", "boolean", True, "Starts dependent work on an open dependency branch.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT)),
     _field("operating_profile", "string", "", "Selects a named bundle of worker, review, model and observation settings.", apply=ApplyMode.RUNTIME),
