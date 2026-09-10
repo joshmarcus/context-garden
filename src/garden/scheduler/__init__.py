@@ -952,6 +952,8 @@ class Scheduler(
             self._guard(rep, "merge queue", lambda: self._run_merge_queue(rep))
         with self._step(rep, "retro_close"):
             self._guard(rep, "retro close", lambda: self.close_accepted_reopens(rep))
+        with self._step(rep, "retro_ready"):
+            self._guard(rep, "retro readiness", lambda: self.queue_eligible_closing_reviews(rep))
         with self._step(rep, "harness_probe"):
             self._guard(rep, "harness probe", lambda: self.probe_paused_harnesses(rep))
         with self._step(rep, "tool_update"):
@@ -972,6 +974,7 @@ class Scheduler(
             dispatch = False
         if dispatch:
             with self._step(rep, "dispatch"):
+                self._guard(rep, "dispatch closing reviews", lambda: self.dispatch_queued_closing_reviews(rep))
                 self._guard(rep, "dispatch edits", lambda: self.dispatch_edits(rep))
                 self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
