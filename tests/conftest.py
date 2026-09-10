@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from pathlib import Path
@@ -30,6 +31,10 @@ def pytest_addoption(parser):
         "--run-stress", action="store_true", default=False,
         help="Opt in to stress/load experiments (excluded from ordinary test runs and CI)",
     )
+    parser.addoption(
+        "--garden-shard-worker", action="store_true", default=False,
+        help="Internal: execute one file shard of the macOS full suite",
+    )
 
 
 def pytest_configure(config):
@@ -55,6 +60,91 @@ def pytest_configure(config):
             resolved = ""
         if resolved and Path(resolved).is_file():
             os.environ["PATH"] = f"{Path(resolved).parent}:{os.environ.get('PATH', '')}"
+
+
+def _full_suite_shards(root: Path, count: int = 3) -> list[list[str]]:
+    """Balance test files by source size without collecting the suite a second time."""
+    files = sorted((root / "tests").rglob("test_*.py"), key=lambda path: path.stat().st_size,
+                   reverse=True)
+    buckets: list[tuple[int, list[str]]] = [(0, []) for _ in range(min(count, len(files)))]
+    for path in files:
+        index = min(range(len(buckets)), key=lambda item: buckets[item][0])
+        weight, members = buckets[index]
+        members.append(str(path.relative_to(root)))
+        buckets[index] = weight + path.stat().st_size, members
+    return [members for _weight, members in buckets]
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config):
+    """Run only the default macOS full suite as three independent file shards.
+
+    macOS process and filesystem startup makes the otherwise 7-minute serial Linux suite
+    exceed its unchanged 900-second guard. Focused selections and Linux/WSL stay serial.
+    Each child retains pytest's 120-second per-test and 900-second session deadlines, while
+    this parent applies the same monotonic 900-second bound to the complete set.
+    """
+    if sys.platform != "darwin" or config.getoption("garden_shard_worker"):
+        return None
+    if config.getoption("file_or_dir"):
+        return None
+    invocation = tuple(config.invocation_params.args)
+    if any(argument not in {"-q", "--quiet"} for argument in invocation):
+        return None
+
+    root = Path(config.rootpath)
+    shards = _full_suite_shards(root)
+    timeout = float(config.getoption("session_timeout") or config.getini("session_timeout") or 0)
+    deadline = time.monotonic() + timeout if timeout > 0 else None
+    print(f"macOS full suite: {len(shards)} file shards (same tests and timeout bounds)")
+    with tempfile.TemporaryDirectory(prefix="garden-pytest-shards-") as output_dir:
+        processes: list[tuple[subprocess.Popen[bytes], Path, object]] = []
+        for index, files in enumerate(shards, 1):
+            output = Path(output_dir) / f"shard-{index}.log"
+            handle = output.open("wb")
+            command = [
+                sys.executable, "-m", "pytest", *invocation, "--garden-shard-worker", *files,
+            ]
+            process = subprocess.Popen(
+                command, cwd=root, env=dict(os.environ), stdout=handle,
+                stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            processes.append((process, output, handle))
+
+        timed_out = False
+        try:
+            while any(process.poll() is None for process, _output, _handle in processes):
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    for process, _output, _handle in processes:
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGTERM)
+                    grace = time.monotonic() + 5
+                    while (time.monotonic() < grace
+                           and any(process.poll() is None for process, _output, _handle in processes)):
+                        time.sleep(0.05)
+                    for process, _output, _handle in processes:
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGKILL)
+                    break
+                time.sleep(0.05)
+        finally:
+            for process, _output, handle in processes:
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                process.wait()
+                handle.close()
+
+        for index, (_process, output, _handle) in enumerate(processes, 1):
+            print(f"\n--- macOS test shard {index}/{len(processes)} ---")
+            print(output.read_text(errors="replace"), end="")
+        if timed_out:
+            print(f"macOS full-suite timeout: {timeout:g} seconds exceeded")
+            return 1
+        return 0 if all(process.returncode == 0 for process, _output, _handle in processes) else 1
 
 
 def pytest_sessionstart(session):
