@@ -41,6 +41,8 @@ class LocalRunner(Runner):
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
             cmd = [resolved] + cmd[1:]
+        if policy.required:
+            cmd, _ = policy.command_argv(shlex.join(cmd), worktree)
         return cmd
 
     def harness_shell(self, run: Run, worktree: Path, final_path: Path | None) -> str:
