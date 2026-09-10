@@ -406,6 +406,7 @@ class PollMixin:
         if ci_note or replace_ci:
             merge_pending_feedback(st, pr.head_sha, "ci", ci_note)
         if not st.get("pending_feedback"):
+            st.pop("pending_feedback_implementation_failure", None)
             if task.status == Status.CHANGES_REQUESTED and not st.get("needs_human"):
                 self._transition(task, Status.IN_REVIEW, "current checks resolved the pending CI feedback")
             self.state.save()

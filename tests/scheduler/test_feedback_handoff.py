@@ -1,9 +1,11 @@
 """Review and asynchronous CI feedback reach one complete, head-bound revise brief."""
 
+import hashlib
 import json
 
 import pytest
 
+from garden import gitops
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler import Scheduler
@@ -282,6 +284,43 @@ def test_repeated_implementation_review_blocker_records_unchanged_attempt(
     ]
     assert signals.count("verification_rejected") == 2
     assert signals.count("repeated_unchanged_attempt") == 1
+
+
+@pytest.mark.parametrize(
+    ("category", "expects_unchanged_escalation"),
+    [("infrastructure", False), ("implementation", True)],
+)
+def test_review_classification_survives_dispatch_and_unchanged_revision(
+    sched, fake_github, monkeypatch, category, expects_unchanged_escalation,
+):
+    task, pr = _open_task(sched, fake_github)
+    review = _review()
+    review["criteria"] = []
+    review["findings"][0]["failure_category"] = category
+    reviewed = _review_run(sched, task, pr.head_sha, review)
+
+    sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nochange")
+    revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+
+    # The fake reports success without changing the existing branch or description. Seed
+    # the prior accepted identities so reap exercises the real no-change stall path.
+    worktree = sched.worktree_for(task)
+    state = sched.state.get(task.id)
+    state["last_diff_hash"] = gitops.diff_hash(worktree, revise.base)
+    state["last_pr_body_hash"] = hashlib.sha1(b"b").hexdigest()[:16]
+    sched.state.save()
+
+    sched.tick()
+
+    state = sched.state.get(task.id)
+    assert state["needs_human"]["kind"] == "stall"
+    unchanged_routes = [
+        event for event in state.get("implementation_failure_escalations") or []
+        if event["signal"] == "repeated_unchanged_attempt"
+    ]
+    assert bool(unchanged_routes) is expects_unchanged_escalation
+    assert revise.env_snapshot["implementation_failure_eligible"] is expects_unchanged_escalation
 
 
 def test_exact_provider_ci_failure_escalates_after_usable_analysis(sched, fake_github):

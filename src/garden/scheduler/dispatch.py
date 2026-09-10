@@ -356,7 +356,10 @@ class DispatchMixin:
             if not t.status.terminal:
                 continue
             st = self.state.get(t.id)
-            cleared = [k for k in ("needs_human", "pending_feedback", "pending_feedback_easy", "pending_feedback_rebase")
+            cleared = [k for k in (
+                "needs_human", "pending_feedback", "pending_feedback_easy",
+                "pending_feedback_rebase", "pending_feedback_implementation_failure",
+            )
                        if st.pop(k, None) is not None]
             if self._retire_terminal_check(t):
                 cleared.append("check continuation")
@@ -640,7 +643,15 @@ class DispatchMixin:
         # the point is not to burn the round's context on the harness's own account trouble.
         if mode == "revise":
             run.env_snapshot.update({"pending_feedback": feedback, "pending_feedback_easy": revise_easy,
-                                     "pending_feedback_rebase": bool(st.get("pending_feedback_rebase"))})
+                                     "pending_feedback_rebase": bool(st.get("pending_feedback_rebase")),
+                                     # Typed automated-review feedback can require another
+                                     # round without blaming the implementation (for example,
+                                     # unavailable evidence). Preserve that classification
+                                     # after pending state is cleared so an unchanged result
+                                     # cannot turn it into a generic implementation stall.
+                                     "implementation_failure_eligible": st.get(
+                                         "pending_feedback_implementation_failure", True
+                                     )})
             from ..suggestions import pending_suggestions
 
             pend = pending_suggestions(task.body)
@@ -828,6 +839,7 @@ class DispatchMixin:
             st["pending_feedback"] = ""
             st.pop("pending_feedback_sources", None)
             st.pop("pending_feedback_easy", None)
+            st.pop("pending_feedback_implementation_failure", None)
         elif mode == "rebase":
             # A rebase round has its own counter and never touches max_revisions.
             st["rebases"] = int(st.get("rebases", 0)) + 1

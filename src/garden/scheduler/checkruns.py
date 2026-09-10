@@ -660,7 +660,14 @@ class CheckRunMixin:
             return
         self._open_pr_after_checks(task, worker_run, branch, base, cont, rep)
         if stalled and worker_run is not None:
-            self._stall(task, rep, f"revise run {worker_run.run_id} produced no change to the diff or PR description")
+            self._stall(
+                task,
+                rep,
+                f"revise run {worker_run.run_id} produced no change to the diff or PR description",
+                implementation_failure=bool(
+                    (worker_run.env_snapshot or {}).get("implementation_failure_eligible", True)
+                ),
+            )
 
     def _open_pr_after_checks(self, task: Task, worker_run: Run | None, branch: str, base: str,
                               cont: dict[str, Any], rep: TickReport) -> None:

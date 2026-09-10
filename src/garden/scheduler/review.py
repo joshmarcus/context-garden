@@ -1395,6 +1395,8 @@ class ReviewMixin:
                 st.pop("no_change_reconciliation", None)
         if verdict == "approve":
             merge_pending_feedback(st, review_head, "review", "")
+            if not st.get("pending_feedback"):
+                st.pop("pending_feedback_implementation_failure", None)
             if (task.status == Status.CHANGES_REQUESTED and not st.get("pending_feedback")
                     and not st.get("needs_human")):
                 self._transition(task, Status.IN_REVIEW, "current review resolved the pending review findings")
@@ -1427,6 +1429,14 @@ class ReviewMixin:
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
                 if fb:
+                    had_feedback = bool(str(st.get("pending_feedback") or "").strip())
+                    prior_eligible = st.get("pending_feedback_implementation_failure")
+                    # Existing untyped feedback retains the historical implementation-stall
+                    # behavior. A fresh typed review round is eligible only when its objective
+                    # classification identified an implementation failure.
+                    st["pending_feedback_implementation_failure"] = bool(signal) or (
+                        had_feedback and (True if prior_eligible is None else bool(prior_eligible))
+                    )
                     st.setdefault("review_feedback_history", []).append(fb)
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = review_is_description_only(review) and not already_queued
@@ -1463,6 +1473,11 @@ class ReviewMixin:
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
                 if fb:
+                    had_feedback = bool(str(st.get("pending_feedback") or "").strip())
+                    prior_eligible = st.get("pending_feedback_implementation_failure")
+                    st["pending_feedback_implementation_failure"] = had_feedback and (
+                        True if prior_eligible is None else bool(prior_eligible)
+                    )
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = not already_queued
                     st.pop("pending_feedback_rebase", None)

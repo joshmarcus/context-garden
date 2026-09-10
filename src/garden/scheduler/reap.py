@@ -1016,7 +1016,14 @@ class ReapMixin:
             st["last_pr_body_hash"] = body_h
         self._open_or_update_pr(task, run, branch, base, result, rep, cost)
         if stalled:
-            self._stall(task, rep, f"revise run {run.run_id} produced no change to the diff or PR description")
+            self._stall(
+                task,
+                rep,
+                f"revise run {run.run_id} produced no change to the diff or PR description",
+                implementation_failure=bool(
+                    (run.env_snapshot or {}).get("implementation_failure_eligible", True)
+                ),
+            )
 
     def _open_or_update_pr(self, task: Task, run: Run, branch: str, base: str, result: dict[str, Any],
                            rep: TickReport, cost: str) -> None:
@@ -1179,6 +1186,10 @@ class ReapMixin:
         snap = run.env_snapshot or {}
         if run.mode == "revise" and task.pr:
             st["pending_feedback"] = snap.get("pending_feedback", "")
+            if "implementation_failure_eligible" in snap:
+                st["pending_feedback_implementation_failure"] = bool(
+                    snap["implementation_failure_eligible"]
+                )
             if snap.get("pending_feedback_easy"):
                 st["pending_feedback_easy"] = True
             else:
