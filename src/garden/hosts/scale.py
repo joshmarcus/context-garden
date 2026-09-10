@@ -126,7 +126,7 @@ class ScaleStatus:
     retained_resources: tuple[str, ...]
     pending_credential_revocations: tuple[str, ...]
     delayed_cost_notice: str
-    phase: str
+    phase: str = "unknown"
 
 
 class ScaleOperation:
