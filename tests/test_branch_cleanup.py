@@ -152,6 +152,39 @@ def test_guarded_delete_rejects_a_concurrent_remote_push(sched):
     assert _git(repo, "ls-remote", "--heads", "origin", "refs/heads/garden/raced").startswith(new)
 
 
+def test_sweep_retains_candidate_claimed_by_unrelated_pr_after_inventory(sched, monkeypatch):
+    task = sched.store.tasks()["DM-001"]
+    task.status = Status.DONE
+    task.branch = "garden/new-pr-claim"
+    sched.store.save(task)
+    repo = sched.repo_for(task)
+    head = _make_branch(repo, task.branch)
+    _record_branch(sched, task.id, task.branch)
+    inventory = sched.branch_cleanup_inventory()
+    assert next(row for row in inventory if row.branch == task.branch).classification == "removable"
+
+    pr = sched.github.create_pr("example/demo", task.branch, "main", "Claim", "body")
+    pr.author = "unrelated-collaborator"
+    monkeypatch.setattr(sched, "branch_cleanup_inventory", lambda: inventory)
+
+    result = sched.sweep_worker_branches(type("Report", (), {"transitions": []})(), limit=20)
+
+    assert result[0]["outcome"] == "retained"
+    assert result[0]["reason"] == f"PR #{pr.number} is open"
+    assert gitops.local_head(repo, task.branch) == head
+    assert _git(repo, "ls-remote", "--heads", "origin", f"refs/heads/{task.branch}").startswith(head)
+
+    sched.github.close_pr("example/demo", pr.number)
+    dependent = sched.github.create_pr(
+        "example/demo", "garden/new-dependent", task.branch, "Dependent", "body",
+    )
+    dependent.author = "unrelated-collaborator"
+    result = sched.sweep_worker_branches(type("Report", (), {"transitions": []})(), limit=20)
+
+    assert result[0]["outcome"] == "retained"
+    assert result[0]["reason"] == f"PR #{dependent.number} depends on the branch"
+
+
 def test_partial_failures_are_reported_without_hiding_success(sched, monkeypatch):
     task = sched.store.tasks()["DM-001"]
     repo = sched.repo_for(task)

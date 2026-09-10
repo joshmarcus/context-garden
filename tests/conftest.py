@@ -448,6 +448,14 @@ class FakeGitHub:
     def find_pr(self, slug, head_branch):
         return self.prs.get(head_branch)
 
+    def find_open_pr(self, slug, head_branch):
+        pr = self.prs.get(head_branch)
+        return pr if pr is not None and pr.state == "OPEN" else None
+
+    def find_open_pr_by_base(self, slug, base_branch):
+        return next((pr for pr in self.prs.values()
+                     if pr.state == "OPEN" and pr.base == base_branch), None)
+
     def list_open_prs(self, slug, project_users=None):
         authors = {self.me(), *(project_users or [])}
         return [

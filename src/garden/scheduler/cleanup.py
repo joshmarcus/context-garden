@@ -55,12 +55,31 @@ class CleanupMixin:
     def _branch_delete_recheck(self, item: BranchDisposition) -> str:
         """Refresh task PRs and rerun all local/run/ref classification immediately."""
         tasks = self.store.tasks()
+        representative = next((tasks[task_id] for task_id in item.task_ids if task_id in tasks), None)
+        if representative is None:
+            return "recorded provenance changed"
+        if not self.github.available:
+            return "open PR claims could not be rechecked: provider is unavailable"
+        slug = self.slug_for(representative)
+        if not slug:
+            return "open PR claims could not be rechecked: repository provider is not configured"
+        try:
+            open_pr = self.github.find_open_pr(slug, item.branch)
+        except (GitHubError, OSError, ValueError) as exc:
+            return f"open PR claims could not be rechecked: {exc}"
+        if open_pr is not None:
+            return f"PR #{open_pr.number} is open"
+        try:
+            dependent_pr = self.github.find_open_pr_by_base(slug, item.branch)
+        except (GitHubError, OSError, ValueError) as exc:
+            return f"open PR claims could not be rechecked: {exc}"
+        if dependent_pr is not None:
+            return f"PR #{dependent_pr.number} depends on the branch"
         for task_id in item.task_ids:
             task = tasks.get(task_id)
-            if not task or not task.pr or not self.github.available:
+            if not task or not task.pr:
                 continue
             number = self._pr_number(task)
-            slug = self.slug_for(task)
             if not (number and slug):
                 continue
             try:

@@ -243,6 +243,8 @@ class GitHubLike(Protocol):
     def me(self) -> str: ...
     def is_authenticated(self) -> bool: ...
     def find_pr(self, slug: str, head_branch: str) -> PRInfo | None: ...
+    def find_open_pr(self, slug: str, head_branch: str) -> PRInfo | None: ...
+    def find_open_pr_by_base(self, slug: str, base_branch: str) -> PRInfo | None: ...
     def list_open_prs(self, slug: str, project_users: list[str] | None = ...) -> list[PRInfo]: ...
     def get_pr(self, slug: str, number: int) -> PRInfo: ...
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str,
@@ -420,6 +422,62 @@ class GitHub:
             return None
         prs.sort(key=lambda p: p.get("updated_at", ""), reverse=True)
         return self._pr_from_rest(prs[0])
+
+    def find_open_pr(self, slug: str, head_branch: str) -> PRInfo | None:
+        """Return an open PR for ``head_branch``, regardless of its author.
+
+        Unlike ``list_open_prs``, this exact-head safety query is deliberately not scoped
+        to Garden's configured project users. It is used before destructive branch
+        operations, where a newly opened PR from any repository collaborator is a claim.
+        """
+        if self.gh:
+            out = self._gh(
+                "pr", "list", "-R", self._repo(slug), "--head", head_branch,
+                "--state", "open",
+                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt,isDraft",
+                "--limit", "1",
+            )
+            prs = json.loads(out or "[]")
+            if not prs:
+                return None
+            p = prs[0]
+            return PRInfo(
+                number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
+                head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
+                review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
+                updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
+            )
+        owner = slug.split("/")[0]
+        prs = self._rest(
+            "GET", f"/repos/{slug}/pulls",
+            params={"head": f"{owner}:{head_branch}", "state": "open", "per_page": 1},
+        )
+        return self._pr_from_rest(prs[0]) if prs else None
+
+    def find_open_pr_by_base(self, slug: str, base_branch: str) -> PRInfo | None:
+        """Return an open PR targeting ``base_branch``, regardless of its author."""
+        if self.gh:
+            out = self._gh(
+                "pr", "list", "-R", self._repo(slug), "--base", base_branch,
+                "--state", "open",
+                "--json", "number,url,state,title,headRefName,baseRefName,reviewDecision,mergeable,updatedAt,isDraft",
+                "--limit", "1",
+            )
+            prs = json.loads(out or "[]")
+            if not prs:
+                return None
+            p = prs[0]
+            return PRInfo(
+                number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
+                head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
+                review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
+                updated_at=p.get("updatedAt", ""), is_draft=bool(p.get("isDraft")),
+            )
+        prs = self._rest(
+            "GET", f"/repos/{slug}/pulls",
+            params={"base": base_branch, "state": "open", "per_page": 1},
+        )
+        return self._pr_from_rest(prs[0]) if prs else None
 
     def list_open_prs(self, slug: str, project_users: list[str] | None = None) -> list[PRInfo]:
         """Return relevant open pull requests with review/check state when available.
