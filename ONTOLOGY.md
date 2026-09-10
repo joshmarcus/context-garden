@@ -106,28 +106,83 @@ Task status is persisted as one of:
 
 `blocked` is explicitly derived from unmet dependencies and is never a `Status` value (`src/garden/model.py`, `Status`; `src/garden/graph.py`). Terminal means `done`, `cancelled`, or `wont_do`; notably `failed` is not terminal. `ensure_open` protects only `done` and `cancelled`, so the implementation does not apply the same reopening guard to `wont_do` (`src/garden/model.py`, `Status.terminal`, `ensure_open`).
 
+The following diagram shows the principal loop. It is intentionally a readable projection;
+the table after it is the exhaustive ordinary transition relation.
+
 ```mermaid
 stateDiagram-v2
     [*] --> draft
-    draft --> ready: human approval
+    draft --> ready: approve
     ready --> running: dispatch
-    running --> waiting_human: needs_input / wont_do / no_change proposal
-    waiting_human --> running: answer or continue
-    running --> changes_requested: failed pre-PR check
-    changes_requested --> running: revise dispatch
-    running --> awaiting_triage: commits and draft PR
-    awaiting_triage --> in_review: triage accepts
-    in_review --> changes_requested: actionable feedback or applicable failed CI
-    in_review --> merged_into_parent: stacked PR merged to parent
-    merged_into_parent --> done: parent reaches base
-    in_review --> done: merged to base
-    running --> failed: unrecovered execution failure
-    waiting_human --> wont_do: human accepts
-    draft --> cancelled
-    ready --> cancelled
+    running --> waiting_human: question or proposed outcome
+    waiting_human --> running: answer and resume
+    running --> changes_requested: check or recovery feedback
+    changes_requested --> running: revise
+    running --> awaiting_triage: draft PR
+    running --> in_review: ready PR
+    awaiting_triage --> in_review: accept triage
+    awaiting_triage --> changes_requested: request changes
+    in_review --> awaiting_triage: return PR to draft
+    in_review --> changes_requested: feedback or failed CI
+    changes_requested --> in_review: feedback resolved
+    in_review --> merged_into_parent: merge to stack parent
+    merged_into_parent --> done: parent reaches final base
+    in_review --> done: merge to final base
+    running --> failed: execution or publication failure
+    in_review --> failed: PR closed
+    failed --> ready: retry
+    waiting_human --> wont_do: accept proposal
 ```
 
-The scheduler owns ordinary transitions and scheduler-owned task fields. `Store.save` performs a three-way field/body merge using an in-memory load snapshot, preventing unrelated concurrent edits from being overwritten. Forced status mutation is an explicit escape hatch rather than an ordinary lifecycle edge (`src/garden/model.py`, `Task.snapshot`; `src/garden/store.py`; `src/garden/scheduler/__init__.py`, `edits.py`).
+### Allowed task transitions
+
+Garden does not define a central transition validator: `_transition` records any target it
+is given, and each scheduler action or reconciliation path checks its own preconditions. The
+ordinary relation below is therefore the union of those guarded call sites. “Any open” means
+every status except `done` and `cancelled`, matching `ensure_open`; it includes `wont_do`,
+which `Status.terminal` calls terminal but `ensure_open` does not protect. Same-state calls
+only append evidence or refresh control state and are omitted as non-transitions.
+
+| From | To | Authority and condition |
+|---|---|---|
+| `draft` | `ready` | Human approval after phase and brief gates; an accepted retro-reopen verdict may also approve its generated drafts. |
+| `ready` | `draft` | Human/web withdrawal before dispatch. |
+| `draft`, `ready`, `failed` | `in_review` | Human attachment of a verified open external PR adopts its head and review state. |
+| `ready`, `changes_requested`, `waiting_human` | `running` | Scheduler or human dispatch of work/revise, or answer dispatch of a resume run. Dispatch recovery may also restore a live task to `running`. |
+| `running` | `ready` | Missing/dead run recovery, retryable work failure, environment recovery, or explicit human retry. |
+| `running` | `waiting_human` | Worker question, proposed `wont_do`/`no_change`, publication condition needing intervention, or recoverable resume failure. |
+| `running` | `changes_requested` | Pre-PR/check failure, restored revision/rebase feedback, stall, or other actionable recovery result. |
+| `running` | `awaiting_triage`, `in_review` | A created or updated PR enters its draft-dependent PR status; manual/external completion with an open PR enters `in_review`. |
+| `running` | `failed` | Exhausted/unrecoverable worker, dispatch, fence, push, revision, or manual-run failure. |
+| `awaiting_triage` | `in_review` | Human/GitHub triage marks the PR ready, or current PR state is restored. |
+| `awaiting_triage` | `changes_requested` | Human triage, persona review, automated review, PR feedback, CI, conflict, or explicit retry queues revision. |
+| `in_review` | `awaiting_triage` | GitHub converts the PR back to draft, or a stopped task resumes to its prior draft-PR state. |
+| `in_review` | `changes_requested` | Review/persona feedback, failed CI, conflict, explicit retry, or recovery queues revision. |
+| `changes_requested` | `awaiting_triage`, `in_review` | A revision/no-change continuation updates the PR, feedback or checks resolve without a revision, or a human clears a stop; draft state chooses the target. |
+| `changes_requested` | `ready` | Stale check recovery with no PR, or explicit human retry/reset when no revision context applies. |
+| `waiting_human` | `changes_requested` | Human rejects a worker decision, accepts `no_change` without a PR, or recovery restores pending feedback. |
+| `waiting_human` | `awaiting_triage`, `in_review` | Accepted `no_change` or cleared stop returns an existing PR to its draft-dependent state. |
+| `waiting_human` | `wont_do` | Human accepts the worker's proposal. |
+| `ready`, `awaiting_triage`, `in_review`, `changes_requested`, `waiting_human`, `failed` | `done` | Provider reconciliation observes the recorded PR merged to the final base. |
+| `ready`, `awaiting_triage`, `in_review`, `changes_requested`, `waiting_human` | `failed` | Provider reconciliation observes the recorded PR closed without merge. (`failed → failed` only records the repeated fact and is omitted.) |
+| `ready`, `awaiting_triage`, `in_review`, `changes_requested`, `waiting_human`, `failed` | `merged_into_parent` | Provider reconciliation observes a recorded stacked PR merged to its parent branch rather than the final base. |
+| `merged_into_parent` | `done` | The parent result reaches the final base. |
+| `failed` | `ready` | Human retry resets attempts when there is no open-PR revision context. |
+| `failed` | `changes_requested` | Human retry retains or reconstructs feedback for an open PR. |
+| `draft`, `ready`, `running`, `awaiting_triage`, `in_review`, `changes_requested`, `waiting_human`, `merged_into_parent`, `failed`, `wont_do` | `cancelled` | Explicit human cancellation; an active run is cancelled first. |
+| Any open status | `done` | Explicit human completion after ancestry verification; `--force` is required to bypass that verification. |
+| Any open status | `wont_do` | Explicit human status decision; an open PR is closed when possible. |
+
+The `set-status` command is a provenance-recorded escape hatch, not part of the ordinary
+relation: it can select any stored status from any source. Moving out of `done` or
+`cancelled` requires `--force`; selecting `done` uses the completion/ancestry guard unless
+forced, and selecting `wont_do` uses its PR-closing path. Consequently the enum alone is not
+a state-machine contract, and integrations should invoke scheduler actions rather than write
+status directly (`src/garden/scheduler/__init__.py`, `_transition`; `human.py`, `approve`,
+`answer`, `accept_decision`, `reject_decision`, `triage`, `retry`, `resume_task`, `cancel`,
+`mark_done`, `set_status`; `poll.py`, `_poll_pr`; `reap.py`; `src/garden/cli/state.py`).
+
+The scheduler owns ordinary transitions and scheduler-owned task fields. `Store.save` performs a three-way field/body merge using an in-memory load snapshot, preventing unrelated concurrent edits from being overwritten (`src/garden/model.py`, `Task.snapshot`; `src/garden/store.py`; `src/garden/scheduler/__init__.py`, `edits.py`).
 
 Task deletion has no domain tombstone or cascade. Normal outcomes retain the task document. Branch/worktree cleanup is separately classified and bounded (`src/garden/scheduler/cleanup.py`).
 
