@@ -2482,7 +2482,7 @@ def test_config_editor_round_trips_empty_and_yaml_sensitive_strings(garden):
         assert Config.load(garden).get(key) == value
 
 
-@pytest.mark.parametrize("value", ["true", "123", "a: b"])
+@pytest.mark.parametrize("value", ["", "true", "123", "a: b"])
 def test_config_editor_round_trips_yaml_sensitive_string_or_list_scalars(garden, value):
     import re
 
@@ -2491,7 +2491,40 @@ def test_config_editor_round_trips_yaml_sensitive_string_or_list_scalars(garden,
     token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
     response = c.post(
         "/config/save",
-        data={"key": "upgrade.pip", "value": value, "revision": token},
+        data={"key": "upgrade.pip", "revision": token, "collection_kind": "scalar",
+              "collection_value": value},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert Config.load(garden).get("upgrade.pip") == value
+
+
+@pytest.mark.parametrize("value, kind, form_values", [
+    (None, "unset", []),
+    ("", "scalar", [""]),
+    ("uv pip", "scalar", ["uv pip"]),
+    (["uv", "pip"], "list", ["uv", "pip"]),
+])
+def test_config_editor_round_trips_optional_string_or_list_modes(
+    garden, value, kind, form_values,
+):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data.setdefault("upgrade", {})["pip"] = value
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+    page = c.get("/config").text
+    setting = page.split('id="setting-upgrade-pip"', 1)[1].split("</section>", 1)[0]
+    assert f'<option value="{kind}" selected>' in setting
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+
+    response = c.post(
+        "/config/save",
+        data={"key": "upgrade.pip", "revision": token, "collection_kind": kind,
+              "collection_value": form_values},
         follow_redirects=False,
     )
 

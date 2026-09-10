@@ -50,9 +50,12 @@
         <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}">{% for choice in row.choices %}<option value="{{ choice }}" {% if row.rendered == choice|string %}selected{% endif %}>{{ choice if choice != '' else '(empty)' }}</option>{% endfor %}</select>
         {% elif row.collection_kind %}
         {% set setting_index = loop.index %}
-        {% if row.collection_choice %}<select name="collection_kind" data-collection-mode aria-label="Value type"><option value="scalar" {% if row.collection_kind == 'choice' %}selected{% endif %}>Single value</option><option value="list" {% if row.collection_kind == 'list' %}selected{% endif %}>List</option></select>{% endif %}
-        {% if row.collection_kind == "choice" %}
+        {% if row.collection_choice %}<select {% if row.collection_kind == 'unset' %}id="config-value-{{ setting_index }}" aria-describedby="config-help-{{ setting_index }}" {% endif %}name="collection_kind" data-collection-mode aria-label="Value type for {{ row.field.key }}">{% if row.field.value_type.startswith('optional_') %}<option value="unset" {% if row.collection_kind == 'unset' %}selected{% endif %}>Unset</option>{% endif %}<option value="scalar" {% if row.collection_kind == 'scalar' %}selected{% endif %}>Single value</option><option value="list" {% if row.collection_kind == 'list' %}selected{% endif %}>List</option></select>{% endif %}
+        {% if row.collection_kind == "scalar" %}
         <div data-collection-rows data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"><input id="config-value-{{ setting_index }}" name="collection_value" value="{{ row.rendered }}" aria-describedby="config-help-{{ setting_index }}"></div>
+        <button type="button" data-add-row hidden disabled>Add item</button>
+        {% elif row.collection_kind == "unset" %}
+        <div data-collection-rows data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"></div>
         <button type="button" data-add-row hidden disabled>Add item</button>
         {% elif row.collection_kind == "list" %}
         {% if not row.collection_choice %}<input type="hidden" name="collection_kind" value="list">{% endif %}
@@ -305,9 +308,17 @@ document.querySelectorAll(".config-setting-form").forEach(form => {
   mode?.addEventListener("change", () => {
     const valueId = rows.dataset.valueId;
     const helpId = rows.dataset.helpId;
+    mode.toggleAttribute("id", mode.value === "unset");
+    mode.toggleAttribute("aria-describedby", mode.value === "unset");
+    if (mode.value === "unset") {
+      mode.id = valueId;
+      mode.setAttribute("aria-describedby", helpId);
+    }
     rows.innerHTML = mode.value === "list"
       ? '<div class="config-collection-row config-list-row"><input name="collection_value" aria-label="Item 1"><button type="button" data-remove-row aria-label="Remove item 1">×</button></div>'
-      : `<input id="${valueId}" name="collection_value" aria-describedby="${helpId}">`;
+      : mode.value === "scalar"
+        ? `<input id="${valueId}" name="collection_value" aria-describedby="${helpId}">`
+        : "";
     rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
     addButton.hidden = mode.value !== "list";
     addButton.disabled = mode.value !== "list";

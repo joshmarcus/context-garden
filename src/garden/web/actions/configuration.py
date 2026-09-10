@@ -33,10 +33,16 @@ def _parse_value(key: str, raw: str) -> Any:
 def _parse_collection(key: str, kind: str, keys: list[str], values: list[str]) -> Any:
     field = CONFIG_FIELDS[key]
     expected = field.value_type.removeprefix("optional_")
-    if kind == "list":
+    if kind == "unset":
+        if not field.value_type.startswith("optional_"):
+            raise ValueError(f"{key} cannot be unset")
+        value: Any = None
+    elif kind == "scalar" and expected == "string_or_list":
+        value = values[0] if values else ""
+    elif kind == "list":
         if expected not in {"list", "string_or_list", "any"}:
             raise ValueError(f"{key} does not accept a list")
-        value: Any = values
+        value = values
     elif kind == "mapping":
         if expected not in {"mapping", "any"}:
             raise ValueError(f"{key} does not accept a mapping")
@@ -53,8 +59,10 @@ def _parse_collection(key: str, kind: str, keys: list[str], values: list[str]) -
                 value[item_key] = yaml.safe_load(raw_value)
             except yaml.YAMLError as exc:
                 raise ValueError(f"{key}.{item_key} has invalid YAML: {exc}") from None
-    else:
+    elif kind == "scalar":
         return _parse_value(key, values[0] if values else "")
+    else:
+        raise ValueError(f"unknown collection mode {kind!r}")
     field.validate(value)
     return value
 

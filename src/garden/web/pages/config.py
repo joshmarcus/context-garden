@@ -90,7 +90,8 @@ def register(app: FastAPI, site: Site) -> None:
                 "overridden": field.key in project_overrides,
                 "collection_kind": ("mapping" if isinstance(saved_value, dict) else
                                     "list" if isinstance(saved_value, list) else
-                                    "choice" if field.value_type.removeprefix("optional_") in {"string_or_list", "any"}
+                                    "unset" if field.value_type == "optional_string_or_list" and saved_value is None else
+                                    "scalar" if field.value_type.removeprefix("optional_") in {"string_or_list", "any"}
                                     else ""),
                 "collection_choice": field.value_type.removeprefix("optional_") in {"string_or_list", "any"},
                 "list_items": [str(value) for value in saved_value] if isinstance(saved_value, list) else [],
