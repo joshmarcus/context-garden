@@ -373,6 +373,40 @@ def _persist_active_claim(root: Path, run: dict[str, Any], execution_dir: Path,
     return path
 
 
+def _collect_supervised_result(
+    run: dict[str, Any], execution_dir: Path, final_path: Path, rc: int,
+) -> tuple[str, dict[str, Any], dict[str, Any], float | None, str, int]:
+    """Collect mode-specific output from a completed claim supervisor."""
+    if run.get("mode") == "check":
+        result_path = execution_dir / "checks.json"
+        if result_path.exists():
+            results = json.loads(result_path.read_text())
+            error = ""
+        else:
+            timeout_result = validation_timeout_result(execution_dir, rc)
+            if timeout_result is not None:
+                results = [timeout_result]
+                error = timeout_result["details"]
+            else:
+                error = f"remote check supervisor exited {rc} without results"
+                results = [{
+                    "name": "checks", "status": "error",
+                    "summary": "check execution did not complete", "details": error,
+                }]
+        return "", {"checks": results}, {}, 0.0, error, rc
+
+    stdout = (execution_dir / "stdout.log").read_text(errors="replace")
+    stderr = (execution_dir / "stderr.log").read_text(errors="replace")
+    harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
+    collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
+    final = str(collected.get("final_text") or "")
+    parsed = collected.get("result") or parse_result(final) or {}
+    return (
+        final, parsed, collected.get("usage") or {}, collected.get("cost_usd"),
+        str(collected.get("error") or ""), rc,
+    )
+
+
 def _process_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -742,14 +776,9 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
                     )
                 continue
             rc = int(exit_path.read_text().strip())
-            stdout = (execution_dir / "stdout.log").read_text(errors="replace")
-            stderr = (execution_dir / "stderr.log").read_text(errors="replace")
-            harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
-            collected = harness.parse(
-                stdout, stderr, final_path, model=str(run.get("model") or "")
+            final, parsed, usage, cost, error, rc = _collect_supervised_result(
+                run, execution_dir, final_path, rc,
             )
-            final = str(collected.get("final_text") or "")
-            parsed = collected.get("result") or parse_result(final) or {}
             repo_lock = _acquire_repo_lock(run, root)
             try:
                 try:
@@ -824,24 +853,16 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             proc = subprocess.Popen(
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
                 cwd=repo, env=execution_env, pass_fds=(repo_lock.fileno(),),
+                start_new_session=True,
+            )
+            final_path = repo.parent / f"{run['id']}-final.md"
+            active_claim = _persist_active_claim(
+                root, run, execution_dir, repo, final_path, proc.pid,
             )
             check_returncode = _wait_for_process(proc, heartbeat)
-            result_path = execution_dir / "checks.json"
-            if result_path.exists():
-                results = json.loads(result_path.read_text())
-                error = ""
-            else:
-                timeout_result = validation_timeout_result(execution_dir, check_returncode)
-                if timeout_result is not None:
-                    results = [timeout_result]
-                    error = timeout_result["details"]
-                else:
-                    error = f"remote check supervisor exited {check_returncode} without results"
-                    results = [{
-                        "name": "checks", "status": "error",
-                        "summary": "check execution did not complete", "details": error,
-                    }]
-            final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
+            final, parsed, usage, cost, error, rc = _collect_supervised_result(
+                run, execution_dir, final_path, check_returncode,
+            )
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             final_path = repo.parent / f"{run['id']}-final.md"
@@ -916,8 +937,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             run, root, repo, heartbeat, final=final, parsed=parsed, usage=usage,
             cost=cost, error=error, rc=rc, execution_dir=execution_dir,
         )
-        if run.get("mode") != "check":
-            active_claim.unlink(missing_ok=True)
+        active_claim.unlink(missing_ok=True)
     finally:
         if repo_lock is not None:
             repo_lock.close()

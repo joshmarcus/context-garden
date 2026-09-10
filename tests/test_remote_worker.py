@@ -256,6 +256,57 @@ def test_replacement_daemon_collects_surviving_supervisor_once(tmp_path, monkeyp
     assert recover_active_claims(root, ReplacementClient()) == 0
 
 
+def test_replacement_daemon_collects_surviving_check_once(tmp_path, monkeypatch):
+    """A replacement daemon collects check output without replaying the check command."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "check-live"
+    execution_dir.mkdir(parents=True)
+    count_path = execution_dir / "executions"
+    result_path = execution_dir / "checks.json"
+    script = (
+        f"sleep 0.2; printf run >> {count_path}; "
+        f"printf '[{{\"name\":\"unit\",\"status\":\"pass\"}}]' > {result_path}"
+    )
+    supervisor = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), script],
+        start_new_session=True,
+    )
+    run = {
+        "id": "run-1", "task_id": "DM-001", "mode": "check",
+        "lease_token": "lease-1", "heartbeat_seconds": 0.05, "recovery_seconds": 5,
+        "push_ref": "refs/recovery/run-1",
+    }
+    _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "unused-final.md", supervisor.pid,
+    )
+    published = []
+
+    class ReplacementClient:
+        events = None
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            return 200, {}
+
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *args, **kwargs: published.append(kwargs),
+    )
+
+    assert recover_active_claims(root, ReplacementClient()) == 1
+    supervisor.wait(timeout=5)
+    assert count_path.read_text() == "run"
+    assert published[0]["parsed"] == {
+        "checks": [{"name": "unit", "status": "pass"}],
+    }
+    assert published[0]["rc"] == 0
+    assert recover_active_claims(root, ReplacementClient()) == 0
+    assert count_path.read_text() == "run"
+
+
 class HealthyHeartbeatClient:
     events = None
 
