@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -297,11 +298,14 @@ def _stop_obsolete_process(proc: subprocess.Popen[Any]) -> None:
 
 
 def _wait_for_process(proc: subprocess.Popen[Any], heartbeat: _LeaseHeartbeat,
-                      *, interval: float = 0.1) -> int:
+                      *, interval: float = 0.1,
+                      enforce_authority: Callable[[], Any] | None = None) -> int:
     """Wait while fencing an active child against terminal lease loss."""
     while (returncode := proc.poll()) is None:
         try:
             heartbeat.ensure_not_failed()
+            if enforce_authority is not None:
+                enforce_authority()
         except BaseException:
             _stop_obsolete_process(proc)
             raise
@@ -508,7 +512,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             identity_operation = subprocess_authority(
                 host_config or {}, identity_target, f"automation:{run['id']}", env,
             )
-            execution_env, _identity_metadata, authority_redactor = identity_operation.__enter__()
+            (execution_env, _identity_metadata, authority_redactor,
+             resolved_authority) = identity_operation.__enter__()
         except WorkloadIdentityError as exc:
             _finish_materialization_failure(
                 run, heartbeat, ClaimMaterializationError("workload identity", str(exc))
@@ -544,7 +549,20 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
                 cwd=repo, env=execution_env, pass_fds=(repo_lock.fileno(),),
             )
-            check_returncode = _wait_for_process(proc, heartbeat)
+            try:
+                check_returncode = _wait_for_process(
+                    proc, heartbeat,
+                    enforce_authority=(resolved_authority.enforce_current
+                                       if resolved_authority is not None else None),
+                )
+            except WorkloadIdentityError as exc:
+                heartbeat.finish(authority_redactor.redact_data({
+                    "lease_token": run["lease_token"], "exit_code": 1,
+                    "final_text": "", "result": {}, "usage": {}, "cost_usd": None,
+                    "error": str(exc), "pushed_head": "",
+                    "env_error": True, "env_kind": "workload_identity",
+                }))
+                return
             result_path = execution_dir / "checks.json"
             if result_path.exists():
                 results = json.loads(result_path.read_text())
@@ -592,9 +610,15 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 transcript_upload_offset = 0
                 timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
                 deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
+                authority_failure = None
                 while proc.poll() is None:
                     try:
                         heartbeat.ensure_not_failed()
+                        if resolved_authority is not None:
+                            resolved_authority.enforce_current()
+                    except WorkloadIdentityError as exc:
+                        authority_failure = exc
+                        _stop_obsolete_process(proc)
                     except BaseException:
                         _stop_obsolete_process(proc)
                         raise
@@ -636,6 +660,14 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                     transcript_upload_offset = heartbeat.upload(
                         transcript_upload_offset, final_chunk
                     )
+            if authority_failure is not None:
+                heartbeat.finish(authority_redactor.redact_data({
+                    "lease_token": run["lease_token"], "exit_code": 1,
+                    "final_text": "", "result": {}, "usage": {}, "cost_usd": None,
+                    "error": str(authority_failure), "pushed_head": "",
+                    "env_error": True, "env_kind": "workload_identity",
+                }))
+                return
             stdout = authority_redactor.redact(stdout)
             stderr = authority_redactor.redact(stderr)
             if final_path.exists():

@@ -13,6 +13,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import IO
@@ -522,6 +523,40 @@ def redact_authority_outputs(run_dir: Path) -> None:
         path.write_text(text)
 
 
+def _supervised_authority():
+    """Recreate a local operation boundary inside the detached supervisor."""
+    from garden.workload_identity import subprocess_authority
+
+    raw = os.environ.pop("GARDEN_WORKLOAD_IDENTITY_CONFIG", "")
+    target = os.environ.pop("GARDEN_WORKLOAD_IDENTITY_TARGET", "")
+    run_identity = os.environ.pop("GARDEN_WORKLOAD_IDENTITY_RUN", "")
+    if not raw:
+        return subprocess_authority({}, target, run_identity, os.environ)
+    return subprocess_authority(json.loads(raw), target, run_identity, os.environ)
+
+
+def _pump_output(source: IO[str], destination: Path, redactor, mirror: IO[str]) -> None:
+    """Persist only redacted stream output, retaining split-match tails in memory."""
+    stream = redactor.stream()
+    with destination.open("w") as output:
+        # TextIO.read(size) may wait for all ``size`` characters on a pipe. A single
+        # character keeps live views moving while the stream redactor retains only the
+        # bounded suffix needed to recognize a credential split across writes.
+        while chunk := source.read(1):
+            safe = stream.feed(chunk)
+            if safe:
+                output.write(safe)
+                output.flush()
+                mirror.write(safe)
+                mirror.flush()
+        safe = stream.finish()
+        if safe:
+            output.write(safe)
+            output.flush()
+            mirror.write(safe)
+            mirror.flush()
+
+
 def _run_setup(run_dir: Path) -> bool:
     payload = run_dir / "setup_input.json"
     if not payload.exists():
@@ -597,6 +632,22 @@ def main() -> int:
         return 2
     execution_started, execution_started_at = _mark_execution_started(run_dir, timeout_seconds)
     execution_deadline = execution_started + timeout_seconds if timeout_seconds is not None else None
+    authority_operation = None
+    resolved_authority = None
+    try:
+        authority_operation = _supervised_authority()
+        (child_env, metadata, authority_redactor,
+         resolved_authority) = authority_operation.__enter__()
+        if metadata is not None:
+            (run_dir / "workload_identity.json").write_text(json.dumps(metadata.__dict__))
+    except Exception as exc:
+        from garden.workload_identity import WorkloadIdentityError
+
+        if not isinstance(exc, WorkloadIdentityError):
+            raise
+        (run_dir / "identity_error.json").write_text(json.dumps({"error": str(exc)}))
+        (run_dir / "exit_code").write_text("1")
+        return 1
     # Keep the workload in a group separate from the supervisor. The supervisor can then
     # signal and observe that whole group after its shell leader exits, on both Linux and
     # Darwin, without signalling itself. Linux's subreaper additionally retains children
@@ -606,7 +657,37 @@ def main() -> int:
         env=dict(os.environ),
         pass_fds=_preserved_child_fds(),
         start_new_session=True,
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
+    assert child.stdout is not None and child.stderr is not None
+    stdout_thread = threading.Thread(
+        target=_pump_output,
+        args=(child.stdout, run_dir / "stdout.json", authority_redactor, sys.stdout),
+    )
+    stderr_thread = threading.Thread(
+        target=_pump_output,
+        args=(child.stderr, run_dir / "stderr.log", authority_redactor, sys.stderr),
+    )
+    raw_final_value = os.environ.get("GARDEN_RAW_FINAL_PATH", "")
+    final_path_value = os.environ.get("GARDEN_FINAL_PATH", "")
+    raw_final = Path(raw_final_value)
+    final_path = Path(final_path_value)
+    final_thread = None
+    if raw_final_value and final_path_value:
+        raw_final.unlink(missing_ok=True)
+        os.mkfifo(raw_final, 0o600)
+
+        def pump_final() -> None:
+            with raw_final.open() as source:
+                _pump_output(source, final_path, authority_redactor, sys.stdout)
+
+        final_thread = threading.Thread(target=pump_final)
+        final_thread.start()
+    stdout_thread.start()
+    stderr_thread.start()
     kill_deadline = None
     timed_out = False
 
@@ -634,6 +715,17 @@ def main() -> int:
 
     while (code := child.poll()) is None:
         _reap_exited_children(excluding=child.pid)
+        if resolved_authority is not None:
+            try:
+                resolved_authority.enforce_current()
+            except Exception as exc:
+                from garden.workload_identity import WorkloadIdentityError
+
+                if not isinstance(exc, WorkloadIdentityError):
+                    raise
+                (run_dir / "identity_error.json").write_text(json.dumps({"error": str(exc)}))
+                _signal_owned_processes(child.pid, signal.SIGTERM)
+                stopping = True
         if stopping:
             kill_deadline = kill_deadline or time.monotonic() + 5.0
             if time.monotonic() >= kill_deadline:
@@ -649,7 +741,16 @@ def main() -> int:
         time.sleep(0.05)
     if timed_out:
         code = 124
-    redact_authority_outputs(run_dir)
+    stdout_thread.join()
+    stderr_thread.join()
+    if final_thread is not None:
+        if final_thread.is_alive():
+            with raw_final.open("w"):
+                pass
+        final_thread.join()
+        raw_final.unlink()
+    if authority_operation is not None:
+        authority_operation.__exit__(None, None, None)
     (run_dir / "exit_code").write_text(str(code))
     if slot is not None and not timed_out:
         _set_execution_state(run_dir, "finished")

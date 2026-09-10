@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -144,6 +147,76 @@ def test_supervisor_redacts_local_run_records_before_completion(tmp_path, monkey
     redact_authority_outputs(tmp_path)
     for name in ("stdout.json", "stderr.log", "final.md"):
         assert (tmp_path / name).read_text() == f"prefix <redacted> in {name}"
+
+
+def test_running_supervisor_streams_redacted_output_and_fails_on_rotated_renewal(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    config = identity_config("tests.test_workload_identity")
+    config["workload_identity"]["boundaries"]["worker"]["lifetime_seconds"] = 1
+    env = dict(os.environ)
+    for name in ("GARDEN_HEAVY_EXECUTION", "GARDEN_EXECUTION_OWNER",
+                 "GARDEN_EXECUTION_RUN_DIR", "GARDEN_OWNER_SCOPED"):
+        env.pop(name, None)
+    env.update({
+        "GARDEN_WORKLOAD_IDENTITY_CONFIG": json.dumps(config),
+        "GARDEN_WORKLOAD_IDENTITY_TARGET": "worker",
+        "GARDEN_WORKLOAD_IDENTITY_RUN": "automation:live-run",
+        "GARDEN_RAW_FINAL_PATH": str(run_dir / ".final.raw"),
+        "GARDEN_FINAL_PATH": str(run_dir / "final.md"),
+    })
+    script = (
+        f"{sys.executable} -c \"import os,time; token=os.environ['SERVICE_TOKEN']; "
+        "print('prefix '+token[:10], end='', flush=True); time.sleep(.1); "
+        "print(token[10:]+' suffix'+('x'*40), flush=True); "
+        "f=open(os.environ['GARDEN_RAW_FINAL_PATH'],'w'); f.write(token[:10]); f.flush(); "
+        "time.sleep(.1); f.write(token[10:]); f.close(); time.sleep(5)\""
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), script], env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.monotonic() + 2
+    persisted = ""
+    while time.monotonic() < deadline and proc.poll() is None:
+        if (run_dir / "stdout.json").exists():
+            persisted = (run_dir / "stdout.json").read_text()
+            assert "synthetic-secret" not in persisted
+            if (run_dir / "final.md").exists():
+                assert "synthetic-secret" not in (run_dir / "final.md").read_text()
+            if "<redacted>" in persisted:
+                break
+        time.sleep(.02)
+    assert "<redacted>" in persisted
+    proc.wait(timeout=4)
+    assert json.loads((run_dir / "identity_error.json").read_text())["error"].endswith(
+        "renewed with rotated authority"
+    )
+    assert "synthetic-secret" not in (run_dir / "stdout.json").read_text()
+    assert (run_dir / "final.md").read_text() == "<redacted>"
+
+
+def test_remote_process_is_stopped_when_running_authority_is_revoked(provider_module):
+    from garden.remote_worker import _wait_for_process
+
+    authority = resolve(WorkloadIdentityResolver(identity_config(provider_module)))
+
+    class Heartbeat:
+        def ensure_not_failed(self):
+            return None
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    timer = threading.Timer(.1, setattr, args=(authority._provider, "revoked", True))
+    timer.start()
+    try:
+        with pytest.raises(WorkloadIdentityError, match="unavailable"):
+            _wait_for_process(proc, Heartbeat(), interval=.02,
+                              enforce_authority=authority.enforce_current)
+        assert proc.poll() is not None
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            proc.kill()
 
 
 @pytest.mark.parametrize("change, message", [

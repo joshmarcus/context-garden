@@ -152,7 +152,7 @@ class LocalRunner(Runner):
         try:
             with subprocess_authority(
                 self.config, "worker", f"automation:{run.run_id}", env,
-            ) as (execution_env, metadata, _redactor):
+            ) as (execution_env, metadata, _redactor, _authority):
                 if metadata is not None:
                     (d / "workload_identity.json").write_text(json.dumps(metadata.__dict__))
                     boundary = self.config["workload_identity"]["references"][
@@ -161,6 +161,15 @@ class LocalRunner(Runner):
                     execution_env["GARDEN_WORKLOAD_IDENTITY_BINDINGS"] = ",".join(
                         str(name) for name in boundary["bindings"]
                     )
+                    # The detached supervisor owns the operation after this scheduler tick
+                    # exits. It resolves again from the same trusted, fenced local policy,
+                    # removes this control input before launch, and enforces the authority
+                    # for the complete lifetime of the child.
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_CONFIG"] = json.dumps({
+                        "workload_identity": self.config["workload_identity"],
+                    })
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_TARGET"] = "worker"
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_RUN"] = f"automation:{run.run_id}"
                 self.launch(run, worktree, brief_path, execution_env)
         except WorkloadIdentityError as exc:
             # Complete through the ordinary reap path. It will restore the attempt/revision
@@ -177,8 +186,8 @@ class LocalRunner(Runner):
         overrides only this step."""
         assert self.harness is not None
         d = run.path
-        model_output = self.harness_output_path(run, worktree)
-        inner = self.harness_shell(run, worktree, model_output)
+        raw_final = self.harness_output_path(run, worktree)
+        inner = self.harness_shell(run, worktree, raw_final)
         timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
         env = dict(env)
         if timeout_min:
@@ -187,18 +196,12 @@ class LocalRunner(Runner):
             # process tree rather than only the shell leader.
             env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{timeout_min * 60:g}"
             env["GARDEN_EXECUTION_TIMEOUT_KIND"] = "worker"
-        publish_result = ""
-        if model_output != d / "final.md":
-            publish_result = (
-                f"; result=$?; if [ -f {shlex.quote(str(model_output))} ]; then "
-                f"cp {shlex.quote(str(model_output))} {shlex.quote(str(d / 'final.md'))} || exit $?; "
-                "fi; exit $result"
-            )
         script = (
             f"cd {shlex.quote(str(worktree))} && {inner} "
-            f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "
-            f"2> {shlex.quote(str(d / 'stderr.log'))}{publish_result}"
+            f"< {shlex.quote(str(brief_path))}"
         )
+        env["GARDEN_RAW_FINAL_PATH"] = str(raw_final)
+        env["GARDEN_FINAL_PATH"] = str(d / "final.md")
         credential_fds: tuple[int, ...] = ()
         credential_read_fd = -1
         key_name = self.harness.api_key_env
