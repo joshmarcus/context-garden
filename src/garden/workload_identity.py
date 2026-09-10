@@ -28,6 +28,7 @@ class AuthorityRequest:
     run_identity: str
     lifetime_seconds: int
     scopes: frozenset[str]
+    target: str
 
 
 @dataclass(frozen=True)
@@ -112,17 +113,21 @@ class ResolvedAuthority:
         _validate_authority(self.request, self._authority)
         return self._authority
 
-    def subprocess_env(self, base: Mapping[str, str]) -> dict[str, str]:
+    def subprocess_env(self, base: Mapping[str, str], target: str) -> dict[str, str]:
         """Return an environment for the one named subprocess delivery boundary."""
         if self.delivery != "environment":
             raise WorkloadIdentityError("workload identity is not configured for subprocess delivery")
+        if target != self.request.target:
+            raise WorkloadIdentityError("workload identity is not configured for this subprocess")
         authority = self._ensure_current()
         return {**base, **_bound_values(self.bindings, authority.values)}
 
-    def request_headers(self, base: Mapping[str, str]) -> dict[str, str]:
+    def request_headers(self, base: Mapping[str, str], target: str) -> dict[str, str]:
         """Return headers for the one named protocol request delivery boundary."""
         if self.delivery != "headers":
             raise WorkloadIdentityError("workload identity is not configured for protocol delivery")
+        if target != self.request.target:
+            raise WorkloadIdentityError("workload identity is not configured for this protocol request")
         authority = self._ensure_current()
         return {**base, **_bound_values(self.bindings, authority.values)}
 
@@ -189,15 +194,23 @@ class WorkloadIdentityResolver:
         return providers
 
     def resolve(self, reference: str, operation: str, audience: str, run_identity: str,
-                lifetime_seconds: int, scopes: set[str] | frozenset[str] | None = None) -> ResolvedAuthority:
+                lifetime_seconds: int, scopes: set[str] | frozenset[str] | None = None, *,
+                target: str) -> ResolvedAuthority:
         policy = self._references.get(reference)
         if not isinstance(policy, Mapping):
             raise WorkloadIdentityError(f"unknown workload identity reference {reference!r}")
         allowed_scopes = frozenset(str(item) for item in policy.get("scopes") or [])
         requested_scopes = allowed_scopes if scopes is None else frozenset(scopes)
-        maximum = int(policy.get("max_lifetime_seconds") or 0)
+        try:
+            maximum = int(policy.get("max_lifetime_seconds") or 0)
+        except (TypeError, ValueError) as exc:
+            raise WorkloadIdentityError(
+                f"workload identity reference {reference!r} has an invalid lifetime"
+            ) from exc
         if operation != policy.get("operation") or audience != policy.get("audience"):
             raise WorkloadIdentityError("workload identity operation or audience is not allowed")
+        if target != policy.get("target"):
+            raise WorkloadIdentityError("workload identity target is not allowed")
         if not requested_scopes.issubset(allowed_scopes):
             raise WorkloadIdentityError("requested workload identity scope is not allowed")
         if not run_identity or lifetime_seconds <= 0 or not maximum or lifetime_seconds > maximum:
@@ -207,7 +220,7 @@ class WorkloadIdentityResolver:
         if provider is None:
             raise WorkloadIdentityError(f"identity provider {provider_name!r} is unavailable")
         request = AuthorityRequest(reference, operation, audience, run_identity,
-                                   lifetime_seconds, requested_scopes)
+                                   lifetime_seconds, requested_scopes, target)
         try:
             authority = provider.resolve(request)
         except Exception as exc:
@@ -219,6 +232,8 @@ class WorkloadIdentityResolver:
         bindings = policy.get("bindings") or {}
         if delivery not in {"environment", "headers"} or not isinstance(bindings, Mapping) or not bindings:
             raise WorkloadIdentityError(f"workload identity {reference!r} has invalid delivery policy")
+        if delivery == "environment" and any("," in str(name) for name in bindings):
+            raise WorkloadIdentityError(f"workload identity {reference!r} has invalid environment bindings")
         return ResolvedAuthority(request, provider_name, delivery,
                                  MappingProxyType({str(k): str(v) for k, v in bindings.items()}),
                                  provider, authority)
@@ -230,3 +245,33 @@ class WorkloadIdentityResolver:
             yield authority
         finally:
             authority.close()
+
+
+@contextmanager
+def subprocess_authority(config: Mapping[str, Any], target: str, run_identity: str,
+                         base: Mapping[str, str]) -> Iterator[tuple[dict[str, str], AuthorityMetadata | None]]:
+    """Apply the host-configured identity, if any, to exactly one subprocess target."""
+    section = config.get("workload_identity") or {}
+    boundaries = section.get("boundaries") or {}
+    boundary = boundaries.get(target) if isinstance(boundaries, Mapping) else None
+    if boundary is None:
+        yield dict(base), None
+        return
+    if not isinstance(boundary, Mapping):
+        raise WorkloadIdentityError(f"workload identity boundary {target!r} must be a mapping")
+    unknown = set(boundary) - {"reference", "operation", "audience", "lifetime_seconds", "scopes"}
+    if unknown:
+        raise WorkloadIdentityError(f"workload identity boundary {target!r} has unsupported fields")
+    try:
+        lifetime = int(boundary.get("lifetime_seconds") or 0)
+        scopes = {str(scope) for scope in boundary.get("scopes") or []} or None
+    except (TypeError, ValueError) as exc:
+        raise WorkloadIdentityError(
+            f"workload identity boundary {target!r} has invalid lifetime or scopes"
+        ) from exc
+    resolver = WorkloadIdentityResolver(config)
+    with resolver.operation(
+        str(boundary.get("reference") or ""), str(boundary.get("operation") or ""),
+        str(boundary.get("audience") or ""), run_identity, lifetime, scopes, target=target,
+    ) as authority:
+        yield authority.subprocess_env(base, target), authority.metadata

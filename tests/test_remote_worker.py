@@ -1518,6 +1518,8 @@ def test_terminal_lease_loss_stops_supervised_process_tree(tmp_path):
 
 
 def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
+    from tests.test_workload_identity import identity_config
+
     isolated_execution_runtime(tmp_path, monkeypatch)
     client, store = remote_client(garden, monkeypatch, validation_timeout=731)
     scheduler = Scheduler(store, github=fake_github)
@@ -1559,7 +1561,15 @@ run.save()
             return response.status_code, response.json()
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
-    execute_claim(payload, tmp_path / "independent-host", PostingClient())
+    env_dump = tmp_path / "remote-worker.env"
+    monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(env_dump))
+    payload["env_allowlist"] = [*payload.get("env_allowlist", []), "FAKE_CLAUDE_*"]
+    execute_claim(
+        payload, tmp_path / "independent-host", PostingClient(),
+        host_config=identity_config("tests.test_workload_identity"),
+    )
+    dumped_env = env_dump.read_text()
+    assert "SERVICE_TOKEN=synthetic-secret-" in dumped_env
     stale_release.write_text("save")
     assert stale_writer.wait(timeout=5) == 0
     saved = RunStore(store.config.garden_dir).latest("DM-001")

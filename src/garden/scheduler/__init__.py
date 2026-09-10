@@ -232,6 +232,10 @@ class Scheduler(
         cfg["checkout"] = self.cfg.product_checkout(task.product)
         cfg["worker_env"] = dict(self.cfg.get("worker_env") or {})  # what of the scheduler's env it keeps
         cfg["resources"] = dict(self.cfg.get("resources") or {})  # supervisor lease and cgroup boundary
+        if name == "local":
+            # Provider code and delivery policy stay on the executing host. Pull-based
+            # workers use their own managed-worker configuration instead of a claim value.
+            cfg["workload_identity"] = dict(self.cfg.get("workload_identity") or {})
         # A private class may be selected only from operator configuration.  Preserve the
         # entire registration map so its configured alias continues to resolve at reap.
         cfg["_runner_adapters"] = dict(self.cfg.get("runner_adapters") or {})

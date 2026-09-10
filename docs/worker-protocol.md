@@ -35,11 +35,15 @@ Original verdicts, finding identities and repeated-finding stops remain part of 
 `workload_identity.providers` and `workload_identity.references` are trusted local
 configuration and part of the executable configuration fence. Provider adapters declare
 interface version 1 and an exact capability set. A reference fixes its provider, operation,
-audience, maximum scopes, maximum lifetime, and either environment or HTTP-header bindings.
+audience, maximum scopes, maximum lifetime, named delivery target, and either environment or
+HTTP-header bindings. `workload_identity.boundaries` selects the logical reference and bounded
+request for a host-owned target such as `worker`; repository or claim data cannot select it.
 Runtime code calls `WorkloadIdentityResolver.resolve` with the logical reference, operation,
 audience, automation run identity, requested lifetime, and optional narrower scopes.
 
-The returned object's public metadata contains only issuer, expiry, audience, scopes,
+The local runner and managed remote consumer resolve the `worker` boundary immediately before
+launching their supervised subprocess, using `automation:<run id>` as membership. The returned
+object's public metadata contains only issuer, expiry, audience, scopes,
 provider, and automation identity. Its secret values can be applied only through the
 configured delivery method to the named subprocess environment or protocol request headers;
 they are excluded from representations and cleared when the operation context closes.
