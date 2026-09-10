@@ -105,7 +105,7 @@ def _normalize_review_count_policy(data: dict[str, Any]) -> None:
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
     "notify.command", "notify.recipient", "checks", "worker_env.pass",
-    "worker_env.config_files", "runner_adapters",
+    "worker_env.config_files", "sandbox", "runner_adapters",
 )
 
 
@@ -347,6 +347,13 @@ DEFAULTS: dict[str, Any] = {
                                   # per dispatch; custom variables pass through unchanged.
         "config_files": {},       # explicitly named {source, destination, required} files;
                                   # destinations are relative to the isolated worker HOME.
+    },
+    "sandbox": {
+        # Opt in to fail-closed execution isolation. Agent runs use their native sandbox;
+        # setup/check commands additionally require the platform wrapper argv below.
+        "required": False,
+        "network_destinations": [],
+        "command": [],
     },
     "browser_readiness": {
         "timeout_seconds": 20,   # bounded Chromium launch before capture-required work dispatches
