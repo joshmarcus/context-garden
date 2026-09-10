@@ -66,9 +66,8 @@ original environment for pixel matching. The input hashes and font hashes in the
 receipt make those differences inspectable.
 
 On Windows, copy this directory from a WSL checkout to a local drive before
-running npm and rendering. A sparse Git checkout of only `scripts/history-film/`
-also works. The full product contains `aux.py`, which Git cannot check out onto
-a native Windows filesystem. Capture with Python and Git inside WSL, then copy
+running npm and rendering. The full product contains `aux.py`, which Git for
+Windows rejects even in a sparse index. Capture with Python and Git inside WSL, then copy
 the resulting snapshot into the local utility directory. Linux and macOS use
 their native Python, Git, Node, and FFmpeg. There
 are no hardcoded usernames, WSL distribution names, systemd services, browser
@@ -158,8 +157,9 @@ The bundled data contains only the fields used by the film. Review summaries are
 reduced to a presence boolean, preserving the pulse behavior; raw task bodies,
 goals, commit subjects, run IDs, local paths, and retrospective excerpts are absent.
 Inspect task titles and filenames before publishing a capture of private work.
-Keep generated MP4s and PNGs outside Git; retain the small input snapshot and its
-manifest to make a cut reproducible.
+Keep generated MP4s and new frame sets outside Git; retain the small input snapshot
+and its manifest to make a cut reproducible. The root README uses one selected PNG
+poster and links to the externally hosted video.
 
 ## Validation
 

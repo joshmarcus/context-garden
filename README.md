@@ -4,6 +4,10 @@
 
 You can change the direction of the project in the same place you define it. Each worker gets a focused brief built from the shared context, and each phase leaves evidence you can use to improve the next one: what shipped, where agents got stuck, how reviewers responded, and what the work cost.
 
+[![Context Garden's development loop: tasks return through revision on the left while growing file nodes and code dependencies fill the graph on the right.](docs/screenshots/history-film.png)](https://drive.google.com/file/d/146FxqsfkbsCL8AwFBRdbsInpjA0v0MQI/view?usp=sharing)
+
+[Watch Context Garden build itself — one-minute video](https://drive.google.com/file/d/146FxqsfkbsCL8AwFBRdbsInpjA0v0MQI/view?usp=sharing) · [Reproduce the film](scripts/history-film/README.md)
+
 [Features](#what-you-can-do) · [See it in action](#feature-tour) · [Getting started](docs/getting-started.md) · [Operating guide](docs/operations.md) · [Contributing](docs/contributing.md) · [All documentation](docs/README.md)
 
 ![The development loop: maintain principles, product context, goals, and specs; plan and approve; build and check; review and merge. Feedback drives revisions, and retrospectives inform the next phase.](docs/development-loop.svg)
