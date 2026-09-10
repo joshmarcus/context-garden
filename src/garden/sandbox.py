@@ -128,20 +128,25 @@ class SandboxPolicy:
             (protected / "secret").write_text("secret")
             (outside / "secret").write_text("outside")
             (writable / "escape").symlink_to(protected, target_is_directory=True)
-            listener = socket.socket()
-            listener.bind(("127.0.0.1", 0))
-            listener.listen(1)
-            port = listener.getsockname()[1]
+            allowed_listener = socket.socket()
+            allowed_listener.bind(("127.0.0.1", 0))
+            allowed_listener.listen(1)
+            allowed_port = allowed_listener.getsockname()[1]
+            denied_listener = socket.socket()
+            denied_listener.bind(("127.0.0.1", 0))
+            denied_listener.listen(1)
+            denied_port = denied_listener.getsockname()[1]
             token = os.urandom(16).hex()
             script = """
 import pathlib, socket, subprocess, sys
-w, r, p, outside, port, token = (pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4]), int(sys.argv[5]), sys.argv[6])
+w, r, p, outside, allowed_port, denied_port, token = (pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]), sys.argv[7])
 def denied(fn):
     try: fn()
     except (OSError, PermissionError): return True
     return False
 ok = (r / 'context').read_text() == 'context'
 (w / 'normal').write_text('ok')
+with socket.create_connection(('127.0.0.1', allowed_port), timeout=.25): pass
 checks = [
     denied(lambda: (p / 'secret').read_text()),
     denied(lambda: (p / 'changed').write_text('bad')),
@@ -151,7 +156,7 @@ checks = [
     subprocess.run([sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('bad')", str(p / 'child')], capture_output=True).returncode != 0,
     subprocess.run([sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).read_text()", str(outside / 'secret')], capture_output=True).returncode != 0,
     subprocess.run([sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('bad')", str(outside / 'child')], capture_output=True).returncode != 0,
-    denied(lambda: socket.create_connection(('127.0.0.1', port), timeout=.25)),
+    denied(lambda: socket.create_connection(('127.0.0.1', denied_port), timeout=.25)),
 ]
 if ok and all(checks): print(token)
 else: raise SystemExit(97)
@@ -161,19 +166,20 @@ else: raise SystemExit(97)
                 "writable_roots": [str(writable)],
                 "readable_roots": [str(writable), str(readable)],
                 "protected_roots": [str(protected)],
-                "network_destinations": [],
+                "network_destinations": [f"127.0.0.1:{allowed_port}"],
                 "inherit_to_descendants": True,
                 "resolve_symlinks": True,
             }
             argv = [*prefix, _POLICY_FLAG, json.dumps(policy, separators=(",", ":")), "--",
                     sys.executable, "-c", script, str(writable), str(readable), str(protected), str(outside),
-                    str(port), token]
+                    str(allowed_port), str(denied_port), token]
             try:
                 result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=5)
             except (OSError, subprocess.SubprocessError) as exc:
                 raise SandboxError(f"sandbox enforcement challenge failed: {exc}") from exc
             finally:
-                listener.close()
+                allowed_listener.close()
+                denied_listener.close()
             if result.returncode != 0 or result.stdout.strip() != token:
                 raise SandboxError(
                     "sandbox command failed the allowlist, protected-root, descendant, symlink, or network "
