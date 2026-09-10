@@ -29,6 +29,7 @@ from garden.remote_worker import (
     _LeaseHeartbeat,
     _validation_receipts,
     _wait_for_process,
+    deliver_pending_results,
     doctor_worker,
     execute_claim,
 )
@@ -117,6 +118,45 @@ def test_lost_successful_claim_response_replays_one_generation(garden, monkeypat
     assert calls == 2
     assert saved.lease_token == executed[0]["lease_token"]
     assert len(saved.claim_history) == 1
+
+
+def test_worker_diagnostic_export_correlates_claim_without_request_body(garden, monkeypatch):
+    http, store = remote_client(garden, monkeypatch)
+    queued = queued_run(store)
+    response = http.post("/api/runs/claim", json={
+        "host": "build-1", "harnesses": ["claude"],
+        "claim_request_id": "diagnostic-request-id", "request_id": "transport-request-id",
+    }, headers={"Authorization": "Bearer secret-token"})
+    assert response.status_code == 200
+
+    exported = http.get("/api/worker-diagnostics?limit=10")
+    assert exported.status_code == 200
+    event = exported.json()[-1]
+    assert event["request_id"] == "transport-request-id"
+    assert event["run_id"] == queued.run_id
+    assert event["operation"] == "claim"
+    serialized = json.dumps(event)
+    assert "secret-token" not in serialized and "safe brief" not in serialized
+
+
+def test_pending_finish_is_delivered_after_worker_restart(tmp_path):
+    pending = tmp_path / "pending-results"
+    pending.mkdir()
+    (pending / "run-1.json").write_text(json.dumps({
+        "run_id": "run-1", "payload": {"lease_token": "opaque", "exit_code": 0},
+    }))
+    calls = []
+
+    class Client:
+        events = None
+
+        def post(self, path, payload):
+            calls.append((path, payload))
+            return 200, {"already_finished": True}
+
+    assert deliver_pending_results(tmp_path, Client()) == 1
+    assert calls == [("/api/runs/run-1/finish", {"lease_token": "opaque", "exit_code": 0})]
+    assert not list(pending.iterdir())
 
 
 def test_claim_request_replay_fences_host_generation_and_expiry(garden, monkeypatch):

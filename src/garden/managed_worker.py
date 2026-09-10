@@ -16,8 +16,9 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .remote_worker import WorkerClient, WorkerRequestError, execute_claim
+from .remote_worker import WorkerClient, WorkerRequestError, deliver_pending_results, execute_claim
 from .system_resources import memory_bytes
+from .worker_diagnostics import WorkerEventLog, durable_worker_identity
 
 try:
     import fcntl
@@ -26,19 +27,44 @@ except ImportError:  # pragma: no cover - exercised on Windows
     import msvcrt
 
 
-def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep) -> tuple[int, dict]:
+def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep,
+                     max_elapsed_seconds: float = 300) -> tuple[int, dict]:
     """Repeat one logical idle claim with bounded backoff and a stable identity."""
     request = {**payload, "claim_request_id": uuid.uuid4().hex}
     delay = 0.25
+    started = time.monotonic()
+    attempts = 0
     while True:
+        attempts += 1
         try:
-            return client.post("/api/runs/claim", request)
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
-            sleep(delay)
+            result = client.post("/api/runs/claim", request)
+            if getattr(client, "events", None) and attempts > 1:
+                client.events.emit("transport_recovered", request_id=request["claim_request_id"],
+                                   operation="claim", reconnect_attempts=attempts - 1,
+                                   recovery_outcome="recovered")
+            return result
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            cause = type(exc).__name__
         except WorkerRequestError as exc:
             if not exc.retryable:
+                if getattr(client, "events", None):
+                    client.events.emit("worker_exit", exit_reason="authentication_or_permanent_failure",
+                                       cause="authentication" if exc.status in {401, 403} else "permanent_response",
+                                       operator_action="verify worker enrollment and controller compatibility")
                 raise
-            sleep(delay)
+            cause = f"http_{exc.status}"
+        elapsed = time.monotonic() - started
+        if elapsed >= max_elapsed_seconds:
+            if getattr(client, "events", None):
+                client.events.emit("worker_exit", exit_reason="controller_unavailable",
+                                   cause=cause, reconnect_attempts=attempts,
+                                   recovery_outcome="retry_window_exhausted",
+                                   operator_action="check controller and proxy health, then restart the worker")
+            raise RuntimeError(f"claim recovery window exhausted after {attempts} attempts")
+        if getattr(client, "events", None):
+            client.events.emit("transport_retry", request_id=request["claim_request_id"], operation="claim",
+                               reconnect_attempt=attempts, backoff_seconds=delay, cause=cause)
+        sleep(min(delay, max_elapsed_seconds - elapsed))
         delay = min(delay * 2, 5.0)
 
 
@@ -124,8 +150,19 @@ def run(config: dict, *, once: bool = False):
     # tempfile may have been imported before the disk-backed location was installed.
     import tempfile
     tempfile.tempdir = str(temp)
+    worker_id = durable_worker_identity(root, str(config.get("worker_id") or ""))
+    generation = uuid.uuid4().hex
+    events = WorkerEventLog(root / "worker-events.jsonl", worker_id=worker_id, generation=generation)
+    restart_path = root / "restart-count"
+    restart_count = int(restart_path.read_text().strip() or 0) + 1 if restart_path.exists() else 1
+    restart_path.write_text(f"{restart_count}\n")
+    events.emit("worker_start", restart_count=restart_count, exit_reason="process_start")
     client = AttributedClient(config, root)
+    client.events = events
+    client.worker_id = worker_id
+    client.process_generation = generation
     with host_slot(root):
+        deliver_pending_results(root, client)
         while True:
             facts = resources(root)
             if (facts["memory_available_bytes"] < config.get("memory_reserve_mib", 512) * 1024**2
@@ -136,7 +173,7 @@ def run(config: dict, *, once: bool = False):
                 continue
             status, claim = claim_with_retry(client, {
                 "host": config["host"], "harnesses": config["harnesses"], "capacity": 1,
-            })
+            }, max_elapsed_seconds=float(config.get("claim_recovery_seconds", 300)))
             if status == 204 or not claim:
                 if once:
                     return
