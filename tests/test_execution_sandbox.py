@@ -12,7 +12,8 @@ from garden.sandbox import SandboxError, SandboxPolicy
 
 def test_required_claude_policy_reports_filesystem_network_and_inheritance(tmp_path: Path):
     policy = SandboxPolicy.from_config({
-        "sandbox": {"required": True, "network_destinations": ["api.example.test:443"]},
+        "sandbox": {"required": True, "network_destinations": ["api.example.test:443"],
+                    "command": ["/bin/sh"]},
     })
     cmd = Harness("claude", {}).command(worktree=tmp_path, sandbox_policy=policy)
     settings = json.loads(cmd[cmd.index("--settings") + 1])
@@ -20,8 +21,9 @@ def test_required_claude_policy_reports_filesystem_network_and_inheritance(tmp_p
     assert settings["sandbox"]["filesystem"]["allowWrite"] == [str(tmp_path), "$TMPDIR"]
     assert settings["sandbox"]["filesystem"]["denyWrite"] == ["//"]
     assert settings["sandbox"]["network"]["allowedDomains"] == ["api.example.test:443"]
-    assert policy.report_env("claude-native") == {
-        "GARDEN_SANDBOX_MECHANISM": "claude-native", "GARDEN_SANDBOX_ENFORCED": "1",
+    assert policy.report_env("configured-os-wrapper+claude-native") == {
+        "GARDEN_SANDBOX_MECHANISM": "configured-os-wrapper+claude-native",
+        "GARDEN_SANDBOX_ENFORCED": "1",
     }
 
 
@@ -33,7 +35,9 @@ def test_required_policy_rejects_harness_bypass(name: str, mode: str, tmp_path: 
     with pytest.raises(SandboxError, match="bypass"):
         Harness(name, {"permission_mode": mode}).command(
             worktree=tmp_path,
-            sandbox_policy=SandboxPolicy.from_config({"sandbox": {"required": True}}),
+            sandbox_policy=SandboxPolicy.from_config({
+                "sandbox": {"required": True, "command": ["/bin/sh"]},
+            }),
         )
 
 
@@ -47,12 +51,13 @@ def test_required_policy_rejects_missing_check_enforcer(tmp_path: Path):
     assert not (tmp_path.parent / "controller").exists()
 
 
-def test_required_policy_rejects_custom_harness_and_codex_network(tmp_path: Path):
+def test_required_policy_rejects_custom_harness(tmp_path: Path):
     policy = SandboxPolicy.from_config({
-        "sandbox": {"required": True, "network_destinations": ["example.test"]},
+        "sandbox": {"required": True, "network_destinations": ["example.test"],
+                    "command": ["/bin/sh"]},
     })
-    with pytest.raises(SandboxError, match="named network"):
-        Harness("codex", {}).command(worktree=tmp_path, sandbox_policy=policy)
+    cmd = Harness("codex", {}).command(worktree=tmp_path, sandbox_policy=policy)
+    assert "sandbox_workspace_write.network_access=false" in cmd
     with pytest.raises(SandboxError, match="does not declare"):
         Harness("custom", {"command": ["agent"]}).command(worktree=tmp_path, sandbox_policy=policy)
 
