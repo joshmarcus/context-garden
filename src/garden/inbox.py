@@ -511,7 +511,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         actions.append({"label": "Cancel", "kind": "troubled-cancel" if troubled else "cancel", "command": cancel_command,
                         "detail": ("requires a reason and closes only after the writer drains; branch, PR, runs and artifacts stay preserved"
                                    if troubled else "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else ""))})
-    if t.pr:
+    if t.pr and not saved_troubled_deferral:
         actions.append({"label": "Open PR", "kind": "link", "href": t.pr, "detail": "the pull request on GitHub"})
     if investigation.get("report"):
         report = investigation["report"]
