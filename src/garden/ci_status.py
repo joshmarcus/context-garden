@@ -133,6 +133,20 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
             mismatched = True
             continue
         except (ValueError, TypeError, KeyError):
+            if isinstance(row, dict) and row.get("malformed_validation_receipt") is True:
+                sources = row.get("recoverable_source_shas")
+                if not isinstance(sources, list) or not all(
+                    isinstance(item, str) for item in sources
+                ):
+                    return CIStatus("malformed", sha, provider="worker_check")
+                if sha in sources:
+                    return CIStatus(
+                        "malformed", sha, exists_for_sha=True, provider="worker_check"
+                    )
+                if not sources:
+                    return CIStatus("malformed", sha, provider="worker_check")
+                mismatched = True
+                continue
             malformed = True
             continue
         if receipt_sha != sha:
