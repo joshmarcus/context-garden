@@ -98,6 +98,7 @@ of the loop touch different files.
 | `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |
 | `scheduler/checkruns.py` | checks as run records (CG-182): dispatch a `check` run and route its results through the pre-PR → base-probe → rebase-re-check state machine, so the tick never runs a product's suite itself |
 | `branch_cleanup.py`, `scheduler/cleanup.py` | provenance-based worker-branch inventory and bounded, lease-guarded local/remote cleanup; uncertain or still-referenced work is retained with a reason |
+| `storage_cleanup.py` | portable owned-tree measurement, containment checks, disposable worker-home cache cleanup, free-space probes and durable cleanup receipts |
 | `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap; the live config-reload gate that holds an executable-field change against an in-flight run's fence manifest (CG-242) |
 | `scheduler/discovered.py` | discovered tasks (deduplicated against open tasks in the phase and the next one), duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |
@@ -165,6 +166,7 @@ Git is the database. The split between the four stores is deliberate.
 | `.garden/runs/<task>/<run>/` | one directory per worker run: the exact brief, raw output, exit code, usage and cost | runners and the scheduler | the audit trail and the token ledger |
 | `.garden/run-archive/<task>/<run>/` | old terminal run artifacts plus `index.json`, a compact metadata ledger | `garden archive-runs` | keeps transcripts available on demand without putting their directories in ordinary request scans |
 | `.garden/events.jsonl` | append-only history: every transition, dispatch, run completion, review verdict, question, answer, stall, budget event | the scheduler | the source of truth for *history*; feeds timelines, `garden digest` and `garden metrics` |
+| `.garden/storage-cleanup/*.json` | bounded inventory and cleanup receipts, including bytes reclaimed and retained/error reasons | the scheduler and `garden cleanup-storage` | makes partial or interrupted cleanup observable without treating missing run results as success |
 
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
 `repos/` (clones of products given as URLs), `trials.jsonl` (model trial records), and
@@ -242,6 +244,21 @@ restore-run TASK RUN` returns one run and all of its logs to `.garden/runs`. A m
 invalid manifest is reported by the run store rather than inferred as empty history. Deploy
 the indexed reader by restarting `garden serve` normally; no cache file or temporary
 operator parsing cache is retained, and active workers remain detached across the restart.
+
+`garden cleanup-storage` previews allocated bytes below the configured worktree and temporary
+roots. `--apply` incrementally removes only eligible items, bounded by
+`storage_cleanup.limit`; the ordinary tick runs the same guarded pass. Clean terminal
+worktrees are removed before the existing worker-branch sweep. Adjacent
+`.garden-home-<worktree>` directories remain separate inventory items: after their managed
+run is terminal and the worktree is gone, only explicitly disposable package/browser caches
+are removed, while credentials and model sessions remain. `worktrees.keep_days` and
+`storage_cleanup.home_keep_days` set retention, and `storage_cleanup.audit_keep` bounds the
+receipt history. Active/queued runs, manual or canonical ownership, dirty and uniquely
+unmerged work, unknown directories, and links are retained with reasons. The report includes
+guest filesystem free space and, under WSL when PowerShell is available, separately labelled
+Windows system-volume free space; Garden never resizes or compacts either disk.
+Inventory classification is capped by `storage_cleanup.inventory_limit`; a truncated report
+says so explicitly so the operator can increase the bound for a larger owned root.
 
 Fence manifests protect live config, state and concurrently active run evidence. They are
 stored once under `.garden/fence-guard-manifests/` and referenced by digest from state while

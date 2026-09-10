@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 
+from garden import gitops
 from garden.model import Status
 
 
@@ -64,6 +65,16 @@ def test_terminal_worktree_sweep_prunes_caches_but_skips_active_runs(sched):
 
     old = time.time() - 3 * 86400
     os.utime(worktree, (old, old))
+    sched.tick(dispatch=False)
+    assert worktree.exists()  # a task status alone cannot prove unique commits were preserved
+
+    gitops.git("reset", "--hard", gitops.base_ref(worktree, "main"), cwd=worktree)
+    for run in sched.runs.active():
+        run.status = "done"
+        run.save()
+    os.utime(worktree, (old, old))
+    candidate = next(row for row in sched.storage_inventory()["items"] if row["path"] == str(worktree))
+    assert candidate["eligible"], candidate["reason"]
     sched.tick(dispatch=False)
     assert not worktree.exists()
 

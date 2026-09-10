@@ -208,6 +208,12 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
 DEFAULTS: dict[str, Any] = {
     "work_dir": "",               # product clones and worktrees; empty = .garden (see Config.work_dir)
     "worktrees": {"keep_days": 2}, # prune terminal-task worktrees after this age
+    "storage_cleanup": {
+        "limit": 20,                # maximum trees/caches removed by one incremental sweep
+        "home_keep_days": 2,        # retain recently used isolated worker homes
+        "audit_keep": 20,           # bounded durable sweep receipts
+        "inventory_limit": 2000,    # maximum owned paths classified by one pass
+    },
     "doctor": {"min_free_mb": 2048},
     "name": "garden",
     "principles_digest": "principles/00-index.md",
@@ -874,6 +880,15 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
     cleanup_limit = branches.get("cleanup_limit", 20)
     if isinstance(cleanup_limit, bool) or not isinstance(cleanup_limit, int) or cleanup_limit < 0:
         raise ValueError("branches.cleanup_limit must be a non-negative integer")
+    storage = data.get("storage_cleanup") or {}
+    if not isinstance(storage, dict):
+        raise ValueError("storage_cleanup must be a mapping")
+    for key in ("limit", "audit_keep", "inventory_limit", "home_keep_days"):
+        value = storage.get(key, DEFAULTS["storage_cleanup"][key])
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"storage_cleanup.{key} must be a non-negative number")
+        if key != "home_keep_days" and not isinstance(value, int):
+            raise ValueError(f"storage_cleanup.{key} must be a non-negative integer")
     review = data.get("review") or {}
     if not isinstance(review, dict):
         raise ValueError("review must be a mapping")

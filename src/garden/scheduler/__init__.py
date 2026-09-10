@@ -894,7 +894,7 @@ class Scheduler(
                 self._guard(rep, "dispatch edits", lambda: self.dispatch_edits(rep))
                 self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
-            self._guard(rep, "worktree sweep", lambda: self._sweep_terminal_worktrees(rep))
+            self._guard(rep, "storage sweep", lambda: self._sweep_terminal_worktrees(rep))
             self._guard(rep, "branch sweep", lambda: self.sweep_worker_branches(rep))
             self._guard(rep, "stuck audit", lambda: self._audit_stuck(rep))
             self._guard(rep, "terminal sweep", lambda: self._sweep_terminal_state(rep))
