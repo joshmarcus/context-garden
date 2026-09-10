@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import random
 import shlex
 import shutil
 import subprocess
@@ -28,7 +29,7 @@ from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, 
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 from .workload_identity import AuthorityRedactor
 from .worker_diagnostics import WorkerEventLog, endpoint_class
-from .worker_diagnostics import WorkerEventLog, endpoint_class
+from .worker_diagnostics import WorkerEventLog, endpoint_class, safe_correlation_id
 
 
 class WorkerRequestError(RuntimeError):
@@ -190,7 +191,9 @@ class WorkerClient:
         self.process_generation = events.generation if events else ""
 
     def post(self, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        request_id = str(payload.get("request_id") or payload.get("claim_request_id") or uuid.uuid4().hex)
+        request_id = safe_correlation_id(
+            payload.get("request_id") or payload.get("claim_request_id")
+        ) or uuid.uuid4().hex
         payload = {**payload, "request_id": request_id,
                    "worker_id": self.worker_id, "process_generation": self.process_generation}
         operation = endpoint_class(path)
@@ -236,22 +239,69 @@ def _work_state(operation: str) -> str:
         operation, "unknown")
 
 
-def deliver_pending_results(root: Path, client: WorkerClient) -> int:
-    """Replay durable accepted-or-ambiguous finishes before claiming new work."""
+def deliver_pending_results(root: Path, client: WorkerClient, *, sleep=time.sleep,
+                            max_attempts: int = 5, max_elapsed_seconds: float = 30) -> int:
+    """Replay durable finishes without letting one delivery trap supervisor startup."""
     pending = root / "pending-results"
     delivered = 0
     if not pending.exists():
         return delivered
     for path in sorted(pending.glob("*.json")):
-        value = json.loads(path.read_text())
-        status, _ = client.post(f"/api/runs/{value['run_id']}/finish", dict(value["payload"]))
-        if status == 200:
-            path.unlink()
-            delivered += 1
+        try:
+            value = json.loads(path.read_text())
+            run_id = str(value["run_id"])
+            payload = dict(value["payload"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _quarantine_pending(path, client, "invalid_pending_result", type(exc).__name__)
+            continue
+        started = time.monotonic()
+        delay = 0.25
+        for attempt in range(1, max(1, max_attempts) + 1):
+            try:
+                status, _ = client.post(f"/api/runs/{run_id}/finish", payload)
+                if status == 200:
+                    path.unlink()
+                    delivered += 1
+                    if client.events:
+                        client.events.emit("result_recovered", run_id=run_id,
+                                           reconnect_attempts=attempt - 1,
+                                           recovery_outcome="delivered_after_restart")
+                break
+            except WorkerRequestError as exc:
+                if not exc.retryable:
+                    cause = "authentication" if exc.status in {401, 403} else "stale_or_rejected_generation"
+                    _quarantine_pending(path, client, cause, f"http_{exc.status}", run_id)
+                    break
+                cause = f"http_{exc.status}"
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+                cause = type(exc).__name__
+            elapsed = time.monotonic() - started
+            if attempt >= max_attempts or elapsed >= max_elapsed_seconds:
+                if client.events:
+                    client.events.emit("result_recovery_deferred", run_id=run_id, cause=cause,
+                                       reconnect_attempts=attempt, recovery_outcome="retry_window_exhausted",
+                                       operator_action="check controller connectivity; delivery remains pending")
+                break
+            backoff = min(delay, max(0.0, max_elapsed_seconds - elapsed))
+            jittered = backoff * random.uniform(0.8, 1.2)
             if client.events:
-                client.events.emit("result_recovered", run_id=value["run_id"],
-                                   recovery_outcome="delivered_after_restart")
+                client.events.emit("transport_retry", run_id=run_id, operation="result",
+                                   reconnect_attempt=attempt, backoff_seconds=round(jittered, 3), cause=cause)
+            sleep(jittered)
+            delay = min(delay * 2, 5.0)
     return delivered
+
+
+def _quarantine_pending(path: Path, client: WorkerClient, cause: str, detail: str,
+                        run_id: str = "") -> None:
+    quarantine = path.parent / "quarantine"
+    quarantine.mkdir(exist_ok=True)
+    destination = quarantine / path.name
+    path.replace(destination)
+    if client.events:
+        client.events.emit("result_recovery_quarantined", run_id=run_id, cause=cause,
+                           exception=detail, recovery_outcome="operator_action_required",
+                           operator_action="verify enrollment or lease generation, then inspect quarantined result")
 
 
 def _persist_pending_result(root: Path, run_id: str, payload: dict[str, Any]) -> Path:

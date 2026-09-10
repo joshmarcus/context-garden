@@ -22,12 +22,13 @@ from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...workers import WorkerContactStore
 from ...workers import snapshot as worker_snapshot
-from ...worker_diagnostics import WorkerEventLog
+from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
 from ..common import Site
 
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+    controller_worker_log = WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl")
 
     def record_worker_event(event: str, body: dict[str, Any], operation: str,
                             status: int, run: Any | None = None, outcome: str = "success") -> None:
@@ -35,16 +36,71 @@ def register(app: FastAPI, site: Site) -> None:
         generation = str(body.get("process_generation") or "")
         if not re.fullmatch(r"[a-f0-9]{32}", generation):
             generation = ""
-        WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl").emit(
-            event, request_id=str(body.get("request_id") or body.get("claim_request_id") or ""),
-            claim_request_id=str(body.get("claim_request_id") or ""), operation=operation,
+        log = controller_worker_log
+        request_id = safe_correlation_id(body.get("request_id") or body.get("claim_request_id"))
+        correlated = next((item for item in reversed(log.read(limit=100))
+                           if request_id and item.get("request_id") == request_id
+                           and item.get("run_id")), {})
+        worker_id = str(getattr(run, "host", "") or body.get("host") or "")[:128]
+        prior = [item for item in log.read(limit=100)
+                 if item.get("event") == "controller_outcome"
+                 and item.get("worker_id") == worker_id and item.get("operation") == operation]
+        record = log.emit(
+            event, request_id=request_id,
+            claim_request_id=safe_correlation_id(body.get("claim_request_id")), operation=operation,
             endpoint_class=operation, http_status=status, outcome=outcome,
-            worker_id=str(getattr(run, "host", "") or body.get("host") or "")[:128],
+            worker_id=worker_id,
             process_generation=generation,
-            run_id=str(getattr(run, "run_id", "")), task_id=str(getattr(run, "task_id", "")),
+            run_id=str(getattr(run, "run_id", "") or correlated.get("run_id") or ""),
+            task_id=str(getattr(run, "task_id", "") or correlated.get("task_id") or ""),
             work_state={"claim": "queued_or_idle", "heartbeat": "executing",
                         "result": "returning_result"}.get(operation, "unknown"),
         )
+        if event != "controller_outcome":
+            return
+        previous = prior[-1] if prior else None
+        failure = status >= 500 or status in {401, 403, 409}
+        same_failure = bool(previous and previous.get("http_status") == status
+                            and int(previous.get("http_status") or 0) >= 400)
+        recovered = status < 400 and bool(previous and int(previous.get("http_status") or 0) >= 400)
+        if (failure and not same_failure) or recovered:
+            # This is the existing in-process inventory/notification feed. Consumers poll
+            # it without making the request path synchronously contact a host or notifier.
+            hub.events.append({
+                "at": record["at"], "kind": "worker_recovery" if recovered else "worker_failure",
+                "worker_id": worker_id, "operation": operation, "http_status": status,
+                "message": (f"worker {worker_id or 'unknown'} {operation} recovered"
+                            if recovered else
+                            f"worker {worker_id or 'unknown'} {operation} failed with HTTP {status}"),
+            })
+            del hub.events[:-50]
+
+    @app.middleware("http")
+    async def worker_protocol_diagnostics(request: Request, call_next):
+        """Capture both sides of worker API calls, including framework-generated failures."""
+        match = re.fullmatch(r"/api/runs(?:/[^/]+)?/(claim|heartbeat|finish)", request.url.path)
+        if request.method != "POST" or match is None:
+            return await call_next(request)
+        operation = {"finish": "result"}.get(match.group(1), match.group(1))
+        body: dict[str, Any] = {}
+        raw = await request.body()
+        try:
+            value = json.loads(raw)
+            if isinstance(value, dict):
+                body = value
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        record_worker_event("controller_request", body, operation, 0, outcome="received")
+        try:
+            response = await call_next(request)
+        except Exception:
+            record_worker_event("controller_outcome", body, operation, 500, outcome="failed")
+            raise
+        record_worker_event(
+            "controller_outcome", body, operation, response.status_code,
+            outcome="success" if response.status_code < 400 else "failed",
+        )
+        return response
 
     def request_object(value: Any) -> dict[str, Any]:
         if not isinstance(value, dict):
