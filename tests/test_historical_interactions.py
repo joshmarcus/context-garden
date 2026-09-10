@@ -5,14 +5,14 @@ from __future__ import annotations
 import httpx
 
 from garden.model import Status
-from garden.qa.sandbox import start
+from garden.qa.sandbox import Sandbox, start
 from garden.runs import RunStore
 from garden.scheduler import Scheduler, State
 from garden.store import Store
 
 
-def _client(box: object) -> httpx.Client:
-    base_url = getattr(box, "base_url")
+def _client(box: Sandbox) -> httpx.Client:
+    base_url = box.base_url
     return httpx.Client(base_url=base_url, follow_redirects=False, timeout=20,
                         headers={"referer": base_url + "/inbox"})
 
