@@ -13,9 +13,11 @@ import logging
 import os
 import re
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from .host_identity import scrub_shared_text
+from .notification_adapters import NotificationDelivery, NotificationEvent
 
 LOGGER = logging.getLogger("garden.notify")
 
@@ -50,6 +52,15 @@ def should_notify(status: str | None, needs_human: bool = False) -> bool:
     if status == "changes_requested" and needs_human:
         return True
     return False
+
+
+def notification_kind(status: str) -> str:
+    """Classify scheduler lifecycle notifications without deriving it from worker text."""
+    if status == "failed":
+        return "failure"
+    if status in {"harness_resumed", "recovered"}:
+        return "recovery"
+    return "required_action"
 
 
 def _run_command(command: str, env: dict[str, str], timeout: float) -> tuple[bool, str]:
@@ -97,6 +108,7 @@ def notify(
     status: str,
     message: str,
     pr_url: str = "",
+    kind: str | None = None,
 ) -> None:
     """Run the notify.command with task details in environment variables.
 
@@ -106,17 +118,39 @@ def notify(
     misconfigured command is noticed instead of silently doing nothing.
     """
     cmd_config = cfg.get("notify", {}) if isinstance(cfg.get("notify"), dict) else {}
+    delivery_path = cfg.get("_notification_delivery_path")
+    if delivery_path and isinstance(cmd_config.get("destinations"), dict) and cmd_config["destinations"]:
+        results = NotificationDelivery(Path(str(delivery_path))).deliver(
+            cfg, NotificationEvent(task_id, status, message, pr_url, kind or notification_kind(status)),
+        )
+        for result in results:
+            if result.endswith(("failed", "permanent failure", "revoked")):
+                LOGGER.warning("notification delivery for %s (status=%s): %s", task_id, status, result)
+        return
     command = cmd_config.get("command")
     if not command:
         return
 
     timeout = float(cmd_config.get("timeout_seconds", 30))
 
-    env = _notification_env(cfg, task_id, status, scrub_shared_text(message, cfg), pr_url)
+    env = _notification_env(
+        cfg, task_id, status, scrub_shared_text(message, cfg), scrub_shared_text(pr_url, cfg),
+    )
 
     ok, detail = _run_command(command, env, timeout)
     if not ok:
         LOGGER.warning("notify.command failed for %s (status=%s): %s", task_id, status, detail)
+
+
+def retry_pending(cfg: dict[str, Any]) -> None:
+    """Retry due typed-delivery failures without replaying task transitions."""
+    cmd_config = cfg.get("notify", {}) if isinstance(cfg.get("notify"), dict) else {}
+    delivery_path = cfg.get("_notification_delivery_path")
+    if not (delivery_path and isinstance(cmd_config.get("destinations"), dict) and cmd_config["destinations"]):
+        return
+    for result in NotificationDelivery(Path(str(delivery_path))).retry_pending(cfg):
+        if result.endswith(("failed", "permanent failure", "revoked")):
+            LOGGER.warning("notification retry: %s", result)
 
 
 def notify_test(cfg: dict[str, Any]) -> tuple[bool, str] | None:

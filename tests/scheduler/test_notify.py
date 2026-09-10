@@ -5,6 +5,11 @@ import json
 
 from garden import notify as notification
 from garden.github import Feedback
+from garden.notification_adapters import (
+    NotificationDelivery,
+    NotificationEvent,
+    TransientDeliveryError,
+)
 from tests.scheduler.conftest import statuses
 
 
@@ -42,6 +47,84 @@ def test_notification_timeout_and_delivery_failure_are_nonfatal(caplog):
     notification.notify(cfg, "DM-001", "failed", "delivery failed")
 
     assert "notify.command failed for DM-001 (status=failed): exited 1" in caplog.text
+
+
+def test_typed_notification_kinds_follow_scheduler_lifecycle():
+    assert notification.notification_kind("failed") == "failure"
+    assert notification.notification_kind("harness_resumed") == "recovery"
+    assert notification.notification_kind("needs_human") == "required_action"
+
+
+def test_typed_notify_constructs_lifecycle_events(monkeypatch, tmp_path):
+    events = []
+
+    class Recorder:
+        def __init__(self, path):
+            assert path == tmp_path / "notifications.json"
+
+        def deliver(self, cfg, event):
+            events.append(event)
+            return []
+
+    monkeypatch.setattr(notification, "NotificationDelivery", Recorder)
+    cfg = {
+        "_notification_delivery_path": str(tmp_path / "notifications.json"),
+        "notify": {"destinations": {"operator": {"adapter": "synthetic"}}},
+    }
+    for status in ("failed", "harness_resumed", "needs_human"):
+        notification.notify(cfg, "DM-001", status, "test")
+
+    assert [event.kind for event in events] == ["failure", "recovery", "required_action"]
+
+
+def test_scheduler_tick_ignores_malformed_ledger_record_and_retries_valid_one(sched):
+    class FailingAdapter:
+        version = 1
+
+        def deliver(self, destination, fields, timeout):
+            raise TransientDeliveryError("synthetic failure")
+
+    ledger = sched.cfg.garden_dir / "notifications.json"
+    event = NotificationEvent("DM-001", "failed", "retry after restart")
+    cfg = {"notify": {"destinations": {
+        "operator": {"adapter": "synthetic", "backoff_seconds": 0},
+    }}}
+    delivery = NotificationDelivery(ledger, {"synthetic": FailingAdapter()})
+    assert delivery.deliver(cfg, event) == ["operator: failed"]
+    records = json.loads(ledger.read_text())
+    records["corrupt-record"] = 1
+    ledger.write_text(json.dumps(records))
+
+    # Revocation is handled without calling an external adapter. The pending valid
+    # record is still processed, and the unrelated task transition remains intact.
+    sched.cfg.data["notify"] = {"destinations": {
+        "operator": {"adapter": "synthetic", "backoff_seconds": 0, "revoked": True},
+    }}
+    before = statuses(sched)
+    sched.tick(dispatch=False)
+
+    assert statuses(sched) == before
+    persisted = json.loads(ledger.read_text())
+    assert "corrupt-record" not in persisted
+    assert next(iter(persisted.values()))["outcome"] == "permanent"
+    assert next(iter(persisted.values()))["reason"] == "destination revoked"
+
+
+def test_scheduler_tick_contains_invalid_utf8_notification_ledger(sched, caplog):
+    ledger = sched.cfg.garden_dir / "notifications.json"
+    malformed = b'{"private diagnostic":"\xff"}'
+    ledger.write_bytes(malformed)
+    sched.cfg.data["notify"] = {"destinations": {
+        "operator": {"adapter": "synthetic"},
+    }}
+    before = statuses(sched)
+
+    sched.tick(dispatch=False)
+
+    assert statuses(sched) == before
+    assert ledger.read_bytes() == malformed
+    assert "notification delivery ledger could not be read; retries skipped" in caplog.text
+    assert "private diagnostic" not in caplog.text
 
 
 def test_notify_on_waiting_human_transition(sched, fake_github, tmp_path):

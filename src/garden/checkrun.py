@@ -58,7 +58,13 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
     elif cwd is not None and not cwd.exists():
         cwd = None  # do not run command checks in a worktree that isn't there
     specs = [{**spec, "env": {**(spec.get("env") or {}), **temp_env}} for spec in specs]
-    results = run_checks(specs, payload.get("ctx") or {}, cwd=cwd,
+    ctx = dict(payload.get("ctx") or {})
+    if cwd is not None:
+        # A remote worker materialises the controller's job in a different checkout. Treat
+        # the directory that actually runs the job as authoritative even when an older worker
+        # forwards the controller's serialized context unchanged.
+        ctx["worktree"] = str(cwd)
+    results = run_checks(specs, ctx, cwd=cwd,
                          timeout=int(payload.get("timeout") or 600), config=config)
     if payload.get("ci_rerun"):
         # A wholly-flaky CI verdict reruns CI here, in the detached job — not in the tick — so

@@ -88,6 +88,10 @@ def test_required_policy_rejects_custom_harness(tmp_path: Path, sandbox_wrapper:
     assert "sandbox_workspace_write.network_access=true" in cmd
     with pytest.raises(SandboxError, match="does not declare"):
         Harness("custom", {"command": ["agent"]}).command(worktree=tmp_path, sandbox_policy=policy)
+    with pytest.raises(SandboxError, match="does not declare"):
+        Harness("custom", {"resume": True, "resume_command": ["agent"]}).resume_command(
+            "session-1", worktree=tmp_path, sandbox_policy=policy,
+        )
 
 
 def test_required_codex_policy_denies_native_network_without_destinations(

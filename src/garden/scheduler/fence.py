@@ -899,6 +899,7 @@ class FenceMixin:
             return
         changed = self.store.adopt_config(new_cfg)
         self.cfg = self.store.config
+        self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         was_held = ctrl.pop("config_hold", None)
         if accepted:
             ctrl["config_accept_signature"] = executable_signature(new_cfg.data)

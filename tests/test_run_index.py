@@ -14,6 +14,35 @@ import pytest
 from garden.runs import HistoryUnavailable, Run, RunMutationConflict, RunStore
 
 
+@pytest.mark.parametrize(
+    "modules",
+    [
+        ("garden.runner", "garden.runs", "garden.hosts"),
+        ("garden.runner", "garden.hosts", "garden.runs"),
+        ("garden.runs", "garden.hosts", "garden.runner"),
+        ("garden.runs", "garden.runner", "garden.hosts"),
+        ("garden.hosts", "garden.runner", "garden.runs"),
+        ("garden.hosts", "garden.runs", "garden.runner"),
+    ],
+)
+def test_public_modules_import_cleanly_in_fresh_process(modules: tuple[str, ...]):
+    """Exercise imports outside pytest's populated module cache and conftest order."""
+    script = """
+import importlib
+import sys
+
+expected = {
+    "garden.runner": "Runner",
+    "garden.runs": "RunStore",
+    "garden.hosts": "WorkerDrainStore",
+}
+for name in sys.argv[1:]:
+    module = importlib.import_module(name)
+    assert hasattr(module, expected[name]), (name, sorted(vars(module)))
+"""
+    subprocess.run([sys.executable, "-c", script, *modules], check=True, timeout=10)
+
+
 def _finished(rs: RunStore, task: str, run_id: str, cost: float = 1.0):
     run = rs.new_run(task, "local", run_id=run_id)
     run.status = "done"

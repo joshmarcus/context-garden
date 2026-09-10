@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from garden.checks import github_actions_failures
 from garden.github import (
     GitHub,
     GitHubError,
@@ -334,6 +335,57 @@ def test_rest_pr_paginates_check_runs_before_computing_rollup(monkeypatch):
     assert pr.checks == "FAILURE" and pr.failed_checks == ["late-failure"]
 
 
+@pytest.mark.parametrize("late_source", ["check_runs", "statuses"])
+def test_gh_pr_paginates_checks_and_statuses_before_computing_rollup(monkeypatch, late_source):
+    github = GitHub(use_gh=True)
+    github.gh = "gh"
+    calls = []
+
+    def gh(*args, **kwargs):
+        calls.append(args)
+        field = "check_runs" if "/check-runs?" in args[1] else "statuses"
+        if field == late_source:
+            if field == "check_runs":
+                passing = [
+                    {"name": f"pass-{i}", "status": "completed", "conclusion": "success"}
+                    for i in range(100)
+                ]
+                failure = {"name": "late-failure", "status": "completed", "conclusion": "failure"}
+            else:
+                passing = [
+                    {"context": f"pass-{i}", "state": "success"}
+                    for i in range(100)
+                ]
+                failure = {"context": "late-failure", "state": "failure"}
+            return json.dumps([
+                {field: passing},
+                {field: [failure]},
+            ])
+        return json.dumps([{field: []}])
+
+    monkeypatch.setattr(github, "_gh", gh)
+
+    state, failures = github._checks_for_sha("team/repo", "head-7")
+    assert state == "FAILURE" and failures == ["late-failure"]
+    assert all("--paginate" in call and "--slurp" in call for call in calls)
+
+
+def test_gh_pr_fails_closed_when_a_later_status_page_cannot_be_read(monkeypatch):
+    github = GitHub(use_gh=True)
+    github.gh = "gh"
+
+    def gh(*args, **kwargs):
+        if "/check-runs?" in args[1]:
+            return json.dumps([{"check_runs": [
+                {"name": "tests", "status": "completed", "conclusion": "success"}
+            ]}])
+        raise GitHubError("gh api pagination failed on page 2")
+
+    monkeypatch.setattr(github, "_gh", gh)
+
+    assert github._checks_for_sha("team/repo", "head-7") == ("UNAVAILABLE", [])
+
+
 @pytest.mark.parametrize("status, expected", [(403, "PERMISSION"), (503, "UNAVAILABLE")])
 def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expected):
     github = GitHub(use_gh=False, token="scoped-token")
@@ -356,18 +408,18 @@ def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expect
 
 
 @pytest.mark.parametrize(
-    ("blocked_path", "accessible_path", "accessible_response", "expected", "failed_checks"),
+    ("blocked_path", "accessible_path", "accessible_response"),
     [
         ("/check-runs", "/status", {"statuses": [
             {"context": "external/validation", "state": "failure"}
-        ]}, "FAILURE", ["external/validation"]),
+        ]}),
         ("/status", "/check-runs", {"check_runs": [
             {"name": "actions/unit", "status": "completed", "conclusion": "success"}
-        ]}, "SUCCESS", []),
+        ]}),
     ],
 )
-def test_rest_pr_uses_accessible_check_source_when_other_is_forbidden(
-    monkeypatch, blocked_path, accessible_path, accessible_response, expected, failed_checks
+def test_rest_pr_fails_closed_when_one_check_source_is_forbidden(
+    monkeypatch, blocked_path, accessible_path, accessible_response
 ):
     github = GitHub(use_gh=False, token="scoped-token")
     pull = {
@@ -388,8 +440,55 @@ def test_rest_pr_uses_accessible_check_source_when_other_is_forbidden(
     monkeypatch.setattr(github, "_rest", rest)
 
     pr = github.get_pr("team/repo", 7)
-    assert pr.checks == expected
-    assert pr.failed_checks == failed_checks
+    assert pr.checks == "PERMISSION"
+    assert pr.failed_checks == []
+
+
+@pytest.mark.parametrize("failed_path", ["/check-runs", "/status"])
+def test_rest_pr_fails_closed_when_one_check_source_is_unavailable(monkeypatch, failed_path):
+    github = GitHub(use_gh=False, token="scoped-token")
+
+    def rest(method, path, **kwargs):
+        if path.endswith(failed_path):
+            raise GitHubError(f"GET {path}: 503 synthetic failure")
+        return {"statuses": []} if path.endswith("/status") else {
+            "check_runs": [{
+                "name": "unit", "status": "completed", "conclusion": "success",
+            }]
+        }
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    assert github._checks_for_sha("team/repo", "head-7") == ("UNAVAILABLE", [])
+
+
+@pytest.mark.parametrize(("late_response", "expected"), [
+    pytest.param(GitHubError("GET checks: 503 later page failure"), "UNAVAILABLE",
+                 id="request-failure"),
+    pytest.param({"total_count": 101, "check_runs": "invalid"}, "PENDING",
+                 id="malformed-page"),
+])
+def test_rest_pr_fails_closed_after_an_earlier_successful_page(
+    monkeypatch, late_response, expected
+):
+    github = GitHub(use_gh=False, token="scoped-token")
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/status"):
+            return {"statuses": []}
+        if kwargs["params"]["page"] == 1:
+            return {"total_count": 101, "check_runs": [
+                {"name": f"pass-{i}", "status": "completed", "conclusion": "success"}
+                for i in range(100)
+            ]}
+        if isinstance(late_response, Exception):
+            raise late_response
+        return late_response
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    state, failures = github._checks_for_sha("team/repo", "head-7")
+    assert state == expected
 
 
 def test_rest_pr_combines_commit_statuses_with_check_runs(monkeypatch):
@@ -594,6 +693,61 @@ def test_repository_host_survives_copy_and_serialization(copy_kind):
     assert copied.host == "forge-one.test"
 
 
+def test_check_context_serializes_the_configured_repository_host(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"]["github"] = {"host": "forge-one.test", "slug": "team/repo"}
+    sched = Scheduler(store, read_only=True)
+    monkeypatch.setattr(sched, "repo_for", lambda _task: garden.parent / "repo")
+    monkeypatch.setattr("garden.scheduler.gitops.remote_url", lambda _repo: "https://forge-one.test/team/repo.git")
+
+    ctx = json.loads(json.dumps(sched.check_ctx(store.task("DM-001"), "feature", "main")))
+
+    assert ctx["repo_slug"] == "team/repo"
+    assert ctx["repo_host"] == "forge-one.test"
+
+
+def test_actions_analyser_qualifies_each_host_in_cli_and_rerun_commands(monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = (
+                '[{"databaseId": 42, "name": "test", "conclusion": "failure", "headSha": "head"}]'
+                if command[2] == "list" else "intermittent failure"
+            )
+
+        return Result()
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/fake/gh")
+    monkeypatch.setattr("garden.checks.subprocess.run", fake_run)
+    spec = {"rerun": True, "flaky_patterns": ["intermittent"]}
+    first = github_actions_failures(
+        {"repo_slug": "team/repo", "repo_host": "forge-one.test", "branch": "feature", "head_sha": "head"}, spec,
+    )
+    second = github_actions_failures(
+        {"repo_slug": "team/repo", "repo_host": "forge-two.test", "branch": "feature", "head_sha": "head"}, spec,
+    )
+    public = github_actions_failures(
+        {"repo_slug": "team/repo", "branch": "feature", "head_sha": "head"}, spec,
+    )
+
+    assert [command[command.index("-R") + 1] for command in commands] == [
+        "forge-one.test/team/repo", "forge-one.test/team/repo",
+        "forge-two.test/team/repo", "forge-two.test/team/repo",
+        "github.com/team/repo", "github.com/team/repo",
+    ]
+    assert first["retry_command"] == "/fake/gh run rerun 42 -R forge-one.test/team/repo --failed"
+    assert second["retry_command"] == "/fake/gh run rerun 42 -R forge-two.test/team/repo --failed"
+    assert public["retry_command"] == "/fake/gh run rerun 42 -R github.com/team/repo --failed"
+
+
 def test_public_host_uses_default_client_without_an_explicit_route(monkeypatch):
     default = GitHub(use_gh=False, token="public")
     enterprise = GitHub(use_gh=False, host="forge-one.test", token="enterprise")
@@ -605,6 +759,71 @@ def test_public_host_uses_default_client_without_an_explicit_route(monkeypatch):
     router.mark_ready(RepositorySlug("team/repo", "github.com"), 7)
 
     assert calls == [("team/repo", 7)]
+
+
+def test_exact_head_check_reads_are_coalesced_and_refresh(monkeypatch):
+    github = GitHub(use_gh=False, token="one")
+    calls = []
+    clock = [100.0]
+
+    def rest(method, path, **kwargs):
+        calls.append((method, path))
+        if path.endswith("/check-runs"):
+            return {"check_runs": [
+                {"name": "tests", "status": "completed", "conclusion": "success"},
+            ]}
+        return {"statuses": []}
+
+    monkeypatch.setattr(github, "_rest", rest)
+    monkeypatch.setattr("garden.github.time.time", lambda: clock[0])
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert len(calls) == 2
+    clock[0] += 11
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert len(calls) == 4
+
+
+def test_rate_limited_check_read_is_pending_until_reset_then_recovers(monkeypatch):
+    github = GitHub(use_gh=False, token="one")
+    clock = [100.0]
+    calls = [0]
+
+    def rest(method, path, **kwargs):
+        calls[0] += 1
+        if calls[0] == 1:
+            raise GitHubError("GET checks: 403 API rate limit; rate_limit_reset=120")
+        if path.endswith("/check-runs"):
+            return {"check_runs": [
+                {"name": "tests", "status": "completed", "conclusion": "success"},
+            ]}
+        return {"statuses": []}
+
+    monkeypatch.setattr(github, "_rest", rest)
+    monkeypatch.setattr("garden.github.time.time", lambda: clock[0])
+    state, failures = github._checks_for_sha("team/repo", "abc")
+    assert state == "PENDING" and "rate limited" in failures[0]
+    clock[0] = 110
+    assert github._checks_for_sha("team/repo", "other")[0] == "PENDING"
+    assert calls[0] == 1
+    clock[0] = 121
+    assert github._checks_for_sha("team/repo", "abc")[0] == "SUCCESS"
+    assert calls[0] == 3
+
+
+def test_exact_head_rollup_includes_commit_status_contexts(monkeypatch):
+    github = GitHub(use_gh=False, token="one")
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/check-runs"):
+            return {"check_runs": [{"name": "tests", "status": "completed",
+                                    "conclusion": "success"}]}
+        return {"statuses": [{"context": "external/deploy", "state": "failure"}]}
+
+    monkeypatch.setattr(github, "_rest", rest)
+    state, failures = github._checks_for_sha("team/repo", "abc")
+    assert state == "FAILURE"
+    assert failures == ["external/deploy"]
 
 
 @pytest.mark.parametrize("slug", [

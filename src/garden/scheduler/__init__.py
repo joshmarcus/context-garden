@@ -28,7 +28,7 @@ from ..events import EventLog
 from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, repo_slug_from_remote
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, now_iso
-from ..notify import notify, should_notify
+from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
 from ..runs import Run, RunStore
@@ -125,6 +125,8 @@ class Scheduler(
     ):
         self.store = store
         self.cfg = store.config
+        # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
+        self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
@@ -460,8 +462,10 @@ class Scheduler(
         from GARDEN_ROOT, which run_checks always sets to a non-existent sentinel so a check
         command cannot use it to act on the live garden (see find_root)."""
         st = self.state.get(task.id)
+        repo = self.slug_for(task)
         return {"exec_root": str(self.store.root), "task_id": task.id, "product": task.product, "phase": task.phase, "branch": branch, "base": base,
-                "repo_slug": self.slug_for(task) or "", "pr": task.pr, "pr_number": st.get("pr_number") or 0,
+                "repo_slug": repo or "", "repo_host": getattr(repo, "host", "github.com"),
+                "pr": task.pr, "pr_number": st.get("pr_number") or 0,
                 "head_sha": st.get("head_sha") or "", "failed_checks": st.get("failed_checks") or [],
                 "worktree": str(worktree or self.worktree_for(task))}
 
@@ -807,6 +811,7 @@ class Scheduler(
             # change against an in-flight run's fence manifest until it's safe or an operator
             # confirms it (CG-242) — before anything else in this pass can act on it.
             self._reload_config_if_safe()
+            retry_pending(self.cfg.data)
             with gitops.tick_read_cache():
                 self._tick_body(rep, dispatch)
         finally:
@@ -892,7 +897,7 @@ class Scheduler(
                 self._guard(rep, "dispatch edits", lambda: self.dispatch_edits(rep))
                 self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
-            self._guard(rep, "worktree sweep", lambda: self._sweep_terminal_worktrees(rep))
+            self._guard(rep, "storage sweep", lambda: self._sweep_terminal_worktrees(rep))
             self._guard(rep, "branch sweep", lambda: self.sweep_worker_branches(rep))
             self._guard(rep, "stuck audit", lambda: self._audit_stuck(rep))
             self._guard(rep, "terminal sweep", lambda: self._sweep_terminal_state(rep))

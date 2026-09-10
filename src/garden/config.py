@@ -104,7 +104,7 @@ def _normalize_review_count_policy(data: dict[str, Any]) -> None:
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
-    "notify.command", "notify.recipient", "checks", "worker_env.pass",
+    "notify.command", "notify.recipient", "notify.destinations", "checks", "worker_env.pass",
     "worker_env.config_files", "sandbox", "runner_adapters",
 )
 
@@ -208,6 +208,12 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
 DEFAULTS: dict[str, Any] = {
     "work_dir": "",               # product clones and worktrees; empty = .garden (see Config.work_dir)
     "worktrees": {"keep_days": 2}, # prune terminal-task worktrees after this age
+    "storage_cleanup": {
+        "limit": 20,                # maximum trees/caches removed by one incremental sweep
+        "home_keep_days": 2,        # retain recently used isolated worker homes
+        "audit_keep": 20,           # bounded durable sweep receipts
+        "inventory_limit": 2000,    # maximum owned paths classified by one pass
+    },
     "doctor": {"min_free_mb": 2048},
     "name": "garden",
     "principles_digest": "principles/00-index.md",
@@ -334,6 +340,7 @@ DEFAULTS: dict[str, Any] = {
         "command": "",            # shell command to run when a task needs a human; empty = disabled
         "timeout_seconds": 30,    # timeout for the command
         "recipient": "",          # fixed calling user included in GARDEN_NOTIFICATION_JSON; never task text
+        "destinations": {},         # trusted logical destination -> typed adapter configuration
     },
     "worker_env": {
         "pass": [],               # extra environment variable names or globs a worker and its setup
@@ -710,6 +717,28 @@ class Config:
         return {"provider": str(value.get("provider") or ""),
                 "command": str(value.get("command") or "")}
 
+    def product_ci_policy(self, name: str) -> dict[str, Any]:
+        """Resolve the exact-head gate from the product validation policy.
+
+        The top-level ``ci`` block predates per-product validation and remains the
+        compatibility policy for products which have not selected one explicitly.
+        """
+        validation = self.product_validation(name)
+        provider = validation["provider"]
+        if provider == "legacy":
+            policy = dict(self.get("ci", {}) or {})
+            policy["required"] = bool(
+                policy.get("required") or self.product_setup(name).get("worker_push") is True
+            )
+            return policy
+        if provider == "command":
+            return {
+                "status_provider": "worker_check",
+                "required": True,
+                "worker_check": {"command": validation["command"]},
+            }
+        return {"status_provider": "github", "required": provider in ("actions", "status")}
+
     def product_checkout(self, name: str) -> dict[str, Any]:
         """Opt-in checkout policy for a product.
 
@@ -859,6 +888,15 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
     cleanup_limit = branches.get("cleanup_limit", 20)
     if isinstance(cleanup_limit, bool) or not isinstance(cleanup_limit, int) or cleanup_limit < 0:
         raise ValueError("branches.cleanup_limit must be a non-negative integer")
+    storage = data.get("storage_cleanup") or {}
+    if not isinstance(storage, dict):
+        raise ValueError("storage_cleanup must be a mapping")
+    for key in ("limit", "audit_keep", "inventory_limit", "home_keep_days"):
+        value = storage.get(key, DEFAULTS["storage_cleanup"][key])
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"storage_cleanup.{key} must be a non-negative number")
+        if key != "home_keep_days" and not isinstance(value, int):
+            raise ValueError(f"storage_cleanup.{key} must be a non-negative integer")
     review = data.get("review") or {}
     if not isinstance(review, dict):
         raise ValueError("review must be a mapping")
