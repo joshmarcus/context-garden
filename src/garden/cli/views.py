@@ -77,7 +77,8 @@ def status(
         console.print(f"[dim]{legend}[/dim]")
     for key, pending in retro_waiting:
         if "done" in pending:
-            console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
+            detail = f" — {pending['reason']}" if pending.get("reason") else ""
+            console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']}){detail}[/yellow]")
         else:
             detail = f" — {pending['reason']}" if pending.get("reason") else ""
             source = f" · source {str(pending['source'])[:12]}" if pending.get("source") else ""

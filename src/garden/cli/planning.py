@@ -290,7 +290,8 @@ def retro(
         console.print(f"  tier: {plan['difficulty']} ({plan['model'] or 'harness default'})")
         pending = sched.retro_pending(ph.key)
         if pending:
-            console.print(f"  [yellow]retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
+            detail = f" — {pending['reason']}" if pending.get("reason") else ""
+            console.print(f"  [yellow]retro: waiting for personas ({pending['done']} of {pending['total']}){detail}[/yellow]")
         verdict = sched.retro_verdict(ph.key)
         if verdict:
             from ..retro import PHASE_VERDICTS
