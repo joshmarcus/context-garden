@@ -20,6 +20,11 @@ from ..trust import safe_relative_path
 # worker mentions them in its result.
 CAPTURE_SUFFIXES = frozenset({".gif", ".htm", ".html", ".jpeg", ".jpg", ".md", ".markdown", ".png", ".webp"})
 INTERNAL_CAPTURE_NAMES = frozenset({"brief.md", "exit_code", "final.md", "run.json", "stderr.log", "stdout.json"})
+CAPTURE_MEDIA_TYPES = {
+    ".gif": "image/gif", ".htm": "text/html", ".html": "text/html",
+    ".jpeg": "image/jpeg", ".jpg": "image/jpeg", ".md": "text/markdown",
+    ".markdown": "text/markdown", ".png": "image/png", ".webp": "image/webp",
+}
 
 
 def _design_root(store: Store, product: str) -> Path:
@@ -38,7 +43,11 @@ def _git_file(repo: Path, ref: str, relative: str) -> bytes | None:
 
 
 def _media(path: str) -> str:
-    return mimetypes.guess_type(path)[0] or "application/octet-stream"
+    # The OS MIME database is not consistent: a stock macOS install, for example, does
+    # not identify Markdown. Captures support a closed suffix set, so make those responses
+    # deterministic and leave mimetypes only for design documents outside that set.
+    return CAPTURE_MEDIA_TYPES.get(Path(path).suffix.lower(),
+                                   mimetypes.guess_type(path)[0] or "application/octet-stream")
 
 
 def recorded_captures(run: Run) -> list[Path]:

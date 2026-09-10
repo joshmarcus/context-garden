@@ -3,7 +3,7 @@
 When the garden manages the product that provides its `garden` binary (a product with
 `provides_tool: true`), the tool is installed from a pinned commit, e.g.
 
-    pip install "context-garden @ git+https://github.com/joshmarcus/context-garden@<sha>"
+    pip install "git+https://github.com/joshmarcus/context-garden@<sha>#egg=context-garden"
 
 pip records the installed commit in the distribution's ``direct_url.json``.  A merge into
 that product moves the pin forward; :class:`Upgrader` reinstalls at the new sha, and the
@@ -51,6 +51,11 @@ def git_ref(url: str) -> str:
     return f"git+file://{Path(url).resolve()}"
 
 
+def git_install_spec(url: str, sha: str, package: str = DEFAULT_PACKAGE) -> str:
+    """A VCS requirement accepted by both current pip and older platform-bundled pip."""
+    return f"{git_ref(url)}@{sha}#egg={package}"
+
+
 @dataclass
 class Upgrader:
     """Reinstalls the tool at a pinned commit and reports what is installed.
@@ -75,7 +80,7 @@ class Upgrader:
         ``--no-deps`` keeps the reinstall to the package itself (dependencies do not change
         between pins); ``--force-reinstall`` defeats pip's habit of keeping the old build
         when the version number has not moved. Returns (ok, combined output)."""
-        spec = f"{self.package} @ {git_ref(url)}@{sha}"
+        spec = git_install_spec(url, sha, self.package)
         proc = subprocess.run([*self._pip(), "install", "--force-reinstall", "--no-deps", spec],
                               capture_output=True, text=True)
         return proc.returncode == 0, (proc.stdout + proc.stderr).strip()

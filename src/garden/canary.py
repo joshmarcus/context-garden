@@ -30,7 +30,7 @@ import yaml
 from .model import Status
 from .qa.sandbox import MemoryGitHub
 from .store import Store
-from .upgrade import git_ref
+from .upgrade import git_install_spec
 
 WORKER = Path(__file__).parent / "qa" / "worker.py"
 
@@ -275,7 +275,7 @@ def install_build(url: str, sha: str, venv_dir: Path, log: Callable[[str], None]
     say = log or (lambda m: None)
     _venv.create(venv_dir, with_pip=True)
     py = venv_dir / ("Scripts" if sys.platform == "win32" else "bin") / "python"
-    spec = f"context-garden @ {git_ref(url)}@{sha}"
+    spec = git_install_spec(url, sha)
     say(f"pip install {spec}")
     proc = subprocess.run([str(py), "-m", "pip", "install", spec], capture_output=True, text=True)
     return proc.returncode == 0, py, (proc.stdout + proc.stderr).strip()
