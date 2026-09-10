@@ -389,16 +389,29 @@ def commit_all(worktree: Path, message: str) -> bool:
 
 def stash_all(worktree: Path, message: str) -> str:
     """Stash every uncommitted change in `worktree` (including untracked files) under a named
-    stash and return the commit sha of the stash entry, or "" if there was nothing to stash.
+    stash and return that stash commit's stable object id, or "" if there was nothing to stash.
 
     Used when a fresh dispatch lands on a worktree a killed worker left dirty: reconciling the
     branch onto its base (`_ensure_base`) would fail with "Your local changes would be
     overwritten". Stashing sets the abandoned edits aside — recorded by sha so a person can
-    recover them with `git stash apply <sha>` — and lets the new run start from a clean tree."""
+    recover them with `git stash apply <sha>` — and lets the new run start from a clean tree.
+
+    `refs/stash` is shared by every linked worktree.  Do not resolve it after `stash push`:
+    another worker may create a stash before that lookup and make us record its changes.  Git's
+    stash reflog records the message and resulting object id atomically with the push, so find
+    our uniquely named entry there and retain the object id for all later recovery operations.
+    """
     if not has_uncommitted_changes(worktree):
         return ""
     git("stash", "push", "--include-untracked", "-m", message, cwd=worktree)
-    return git("rev-parse", "refs/stash", cwd=worktree).strip()
+    suffix = f": {message}"
+    reflog = git("reflog", "show", "--format=%H%x00%gs", "refs/stash", cwd=worktree)
+    for entry in reflog.splitlines():
+        sha, separator, subject = entry.partition("\x00")
+        if separator and subject.endswith(suffix):
+            if git("cat-file", "-t", sha, cwd=worktree, check=False).strip() == "commit":
+                return sha
+    raise GitError(f"could not identify stash created for {message!r}")
 
 
 def is_ancestor(repo: Path, ref_a: str, ref_b: str) -> bool:
