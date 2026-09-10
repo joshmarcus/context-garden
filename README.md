@@ -8,7 +8,7 @@ You can change the direction of the project in the same place you define it. Eac
 
 [Watch Context Garden build itself — one-minute video](https://drive.google.com/file/d/146FxqsfkbsCL8AwFBRdbsInpjA0v0MQI/view?usp=sharing) · [Reproduce the film](scripts/history-film/README.md)
 
-[Features](#what-you-can-do) · [See it in action](#feature-tour) · [Getting started](docs/getting-started.md) · [Operating guide](docs/operations.md) · [Contributing](docs/contributing.md) · [All documentation](docs/README.md)
+[Features](#what-you-can-do) · [See it in action](#feature-tour) · [Ontology](ONTOLOGY.md) · [Getting started](docs/getting-started.md) · [Operating guide](docs/operations.md) · [Contributing](docs/contributing.md) · [All documentation](docs/README.md)
 
 ![The development loop: maintain principles, product context, goals, and specs; plan and approve; build and check; review and merge. Feedback drives revisions, and retrospectives inform the next phase.](docs/development-loop.svg)
 
