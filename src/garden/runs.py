@@ -140,7 +140,7 @@ class Run:
     brief_tokens: int = 0
     error: str = ""
     idempotency_key: str = ""  # recovery API: caller identity persisted with this operation
-    preparer_pid: int | None = None  # server preparing it; never reported as a worker pid
+    preparer_pid: int | None = None  # process preparing it; never reported as a worker pid
     fence_paths: list[str] = field(default_factory=list)  # dirs a worker must not write (garden, product clone)
     fence_manifest_sha256: str = ""  # controller-owned authority for this run's fence
     # What dispatch() cleared from state to start a revise/rebase round (the feedback text,

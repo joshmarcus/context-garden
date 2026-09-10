@@ -450,6 +450,11 @@ class ResourceMixin:
             self._admit_local_launch(kind, weight)
             run = self.runs.new_run(task_id, runner_name, mode=mode, run_id=run_id)
             run.execution_remote = False
+            # A local run is published before worktree and brief preparation complete.
+            # Record the process that owns that short pre-worker window so another
+            # scheduler can avoid reaping an in-progress launch, while a restart can
+            # still reclaim the reservation once this process is gone.
+            run.preparer_pid = os.getpid()
             run.env_snapshot["resource_weight"] = weight
             run.save()
             return run

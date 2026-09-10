@@ -16,6 +16,7 @@ from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..preflight import missing_preflight
+from ..proctree import pid_alive
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run, RunMutationConflict
 from .human import validate_investigation_report
@@ -1335,9 +1336,21 @@ class ReapMixin:
             )
             if run.runner == "remote" and not terminal_remote:
                 continue
+            # Dispatch reserves a record before it prepares a worktree and records the
+            # worker pid. A concurrent tick must not interpret that intentional window
+            # as a worker that never started. Its owner is persisted, so a later
+            # scheduler can still reclaim a reservation abandoned by a crashed preparer.
+            if run.pid is None and run.preparer_pid is not None and pid_alive(run.preparer_pid):
+                continue
             no_exit_code = not (run.path / "exit_code").exists()
             process_missing = run.pid is None
             process_dead = not process_missing and run.process_finished()
+            # The local supervisor writes its completion signal immediately before it
+            # exits.  A tick can read the missing signal, then observe the exited process
+            # after that write.  Treat that completed run as owned by normal reap rather
+            # than turning a successful worker into a vanished process.
+            if no_exit_code and not process_missing and process_dead:
+                no_exit_code = not (run.path / "exit_code").exists()
             if no_exit_code and (process_missing or process_dead):
                 # A recovery operation with no worker pid is durable pending work, not live
                 # work.  Its client replays the same key after a server restart, which resumes

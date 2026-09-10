@@ -373,6 +373,12 @@ class Sandbox:
     def stop(self) -> None:
         if self._hub is not None:
             self._hub.stop()
+            # The watch thread may be finishing a tick that writes scheduler state.  Wait
+            # for it before the caller removes this disposable garden, otherwise it can
+            # recreate `.garden` after cleanup and leave the QA run looking retained.
+            watch_thread = self._hub._watch_thread
+            if watch_thread is not None:
+                watch_thread.join(timeout=10)
         if self._server is not None:
             self._server.should_exit = True
         if self._thread is not None:
