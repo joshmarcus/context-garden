@@ -253,16 +253,17 @@ class PollMixin:
         if pr.mergeable == "CONFLICTING":
             self._handle_pr_conflict(task, rep)
             return
-        if pr.updated_at and pr.updated_at == st.get("pr_updated_at") and not observed_feedback:
-            # Nothing new on GitHub since last look, so any feedback is already processed:
-            # a stable point to consider merging on the garden's own gates (a check rollup
-            # can flip to green without bumping updated_at, so re-evaluate every poll).
-            self._maybe_automerge(task, pr, rep)
-            return
-        st["pr_updated_at"] = pr.updated_at
-        st["head_sha"] = pr.head_sha
         ci_note = ""
-        ci_identity = f"{pr.head_sha}:{pr.checks}"
+        # Check rollups change independently of the PR timestamp. Process a new terminal
+        # failure before the timestamp shortcut below or an approved PR can sit in review,
+        # visibly red but never routed back to revision. Persisting the head and failure
+        # shape keeps repeated observations idempotent across ticks and controller restarts;
+        # analyser run IDs separately deduplicate the bounded retry attempts they initiate.
+        ci_identity = json.dumps({
+            "head": pr.head_sha,
+            "state": pr.checks,
+            "failed_checks": sorted(pr.failed_checks),
+        }, sort_keys=True)
         if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != ci_identity:
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
@@ -284,6 +285,13 @@ class PollMixin:
                                              extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1},
                                              source_head=pr.head_sha)
                     return
+        if pr.updated_at and pr.updated_at == st.get("pr_updated_at") and not observed_feedback and not ci_note:
+            # No PR metadata, feedback, or terminal CI result changed. A check rollup can
+            # still flip to green without bumping updated_at, so re-evaluate merge gates.
+            self._maybe_automerge(task, pr, rep)
+            return
+        st["pr_updated_at"] = pr.updated_at
+        st["head_sha"] = pr.head_sha
         fb = observed_feedback if observed_feedback is not None else self.github.feedback_since(slug, number, task.last_dispatched_at)
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)

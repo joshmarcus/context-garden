@@ -294,6 +294,51 @@ def test_ci_failure_triggers_revise(sched, fake_github):
     assert "**CI** is failing" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
 
 
+def test_ci_failure_without_pr_timestamp_change_triggers_one_revise(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    original_updated_at = pr.updated_at
+
+    pr.checks = "PENDING"
+    sched.tick()
+    assert sched.store.task("DM-001").status == Status.IN_REVIEW
+
+    pr.checks = "FAILURE"
+    pr.failed_checks = ["tests"]
+    rep = sched.tick()
+    assert pr.updated_at == original_updated_at
+    assert rep.dispatched == ["DM-001(revise)"]
+    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    assert "failed checks: tests" in brief
+
+    sched.tick()
+    assert sched.state.get("DM-001")["revisions"] == 1
+
+
+def test_approved_pr_with_new_ci_failure_leaves_merge_queue(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    st = sched.state.get(task.id)
+    st["last_review"] = {"verdict": "approve"}
+    st["last_review_head"] = pr.head_sha
+    st["review_rounds"] = 1
+    st["automerge_candidate"] = True
+    st["automerge_ready_at"] = "t1"
+
+    pr.checks = "FAILURE"
+    pr.failed_checks = ["unit"]
+    rep = sched.tick(dispatch=False)
+
+    assert sched.store.task(task.id).status == Status.CHANGES_REQUESTED
+    st = sched.state.get(task.id)
+    assert not st.get("automerge_candidate")
+    assert "DM-001 -> changes_requested" in rep.transitions
+    assert "failed checks: unit" in st["pending_feedback"]
+
+
 def test_actions_disabled_and_alternate_provider_diagnostics_are_distinct(sched, fake_github):
     sched.tick()
     sched.tick()
