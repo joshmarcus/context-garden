@@ -598,5 +598,4 @@ def fake_github():
 def sched(garden, fake_github, monkeypatch):
     monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
     store = Store(garden)
-    fake_github.remote = garden.parent / "remote.git"
     return Scheduler(store, github=fake_github, log=print)
