@@ -336,7 +336,12 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
                    "stress_opt_in": False, "excluded_nodes": list(STRESS_NODES),
                    "requested_selection": requested, "effective_selection": effective},
     }))
-    (receipt.parent / "execution.json").write_text('{"state": "finished"}')
+    (receipt.parent / "execution.json").write_text(json.dumps({
+        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
+        "pid": 123, "owner_scoped": True, "owner": "run:test",
+        "execution_started_at": "2026-09-10T01:00:00+00:00",
+        "timeout_seconds": 900, "deadline_at": "2026-09-10T01:15:00+00:00",
+    }))
     (receipt.parent / "exit_code").write_text("0")
     (receipt.parent / "stderr.log").write_text("")
     rep = sched.tick()

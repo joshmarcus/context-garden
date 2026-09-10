@@ -6,13 +6,51 @@ immutable revision passed; analysers may still turn a known failure into useful 
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import math
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .validation import receipt_has_current_policy
+
+
+def _completed_supervisor_execution(execution: object) -> bool:
+    """Validate the bounded admission record emitted by ``run_supervisor``."""
+    if not isinstance(execution, dict) or execution.get("state") != "finished":
+        return False
+    owner = execution.get("owner")
+    pid = execution.get("pid")
+    timeout = execution.get("timeout_seconds")
+    if (not isinstance(owner, str) or not owner
+            or not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0
+            or not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
+            or not math.isfinite(timeout) or timeout <= 0):
+        return False
+    try:
+        started = dt.datetime.fromisoformat(execution["execution_started_at"])
+        deadline = dt.datetime.fromisoformat(execution["deadline_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if started.tzinfo is None or deadline.tzinfo is None:
+        return False
+    if abs((deadline - started).total_seconds() - timeout) > 1e-6:
+        return False
+    if execution.get("inherited_lease") is True:
+        return True
+    slot = execution.get("slot")
+    limit = execution.get("limit")
+    requested_limit = execution.get("requested_limit")
+    return (
+        execution.get("owner_scoped") is True
+        and isinstance(slot, int) and not isinstance(slot, bool) and slot >= 0
+        and isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+        and slot < limit
+        and isinstance(requested_limit, int) and not isinstance(requested_limit, bool)
+        and requested_limit > 0
+    )
 
 
 @dataclass(frozen=True)
@@ -92,8 +130,7 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
                 or not isinstance(selection, list) or not selection
                 or not all(isinstance(item, str) and item for item in selection)
                 or str(Path(log).resolve()) != str(path.parent.resolve())
-                or not isinstance(execution, dict)
-                or execution.get("state") != "finished"
+                or not _completed_supervisor_execution(execution)
                 or ("exit_code" in execution and execution.get("exit_code") != exit_code)
                 or durable_exit_code != exit_code):
             return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")

@@ -374,6 +374,7 @@ def _mark_execution_started(run_dir: Path, timeout_seconds: float | None) -> tup
         "deadline_at": (
             dt.datetime.fromisoformat(started_at) + dt.timedelta(seconds=timeout_seconds)
         ).isoformat(),
+        "owner": os.environ["GARDEN_EXECUTION_OWNER"],
     })
     if os.environ.get("GARDEN_VALIDATION_INHERITS_LEASE") == "1":
         status["inherited_lease"] = True
