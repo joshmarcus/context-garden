@@ -5,8 +5,11 @@ with tests/fake_claude.py in its `qa` mode."""
 import json
 import os
 import re
+import threading
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -76,6 +79,103 @@ def test_scripted_client_uses_the_flow_timeout_for_http_requests(monkeypatch):
     monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
     Client("http://example.test", timeout=42)
     assert observed["timeout"] == 42
+
+
+def test_scripted_client_uses_remaining_flow_budget_for_each_request(monkeypatch):
+    observed = []
+    now = iter((100.0, 104.0, 105.0, 106.0, 107.0))
+
+    class FakeHTTPClient:
+        base_url = httpx.URL("http://example.test/")
+
+        def __init__(self, **kwargs):
+            pass
+
+        def stream(self, method, path, **kwargs):
+            observed.append(kwargs["timeout"])
+            response = httpx.Response(200, content=b"ok", request=httpx.Request(method, path))
+            return _FakeStreamContext(response)
+
+        def close(self):
+            pass
+
+    class _FakeStreamContext:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self.response
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
+    monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: next(now))
+    client = Client("http://example.test", timeout=30)
+    try:
+        client.begin_flow()
+        client.get("/")
+    finally:
+        client.close()
+    assert observed == [26.0]
+
+
+def test_scripted_client_reports_flow_expiry_during_request(monkeypatch):
+    class FakeHTTPClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def stream(self, method, path, **kwargs):
+            raise httpx.ReadTimeout("upstream stalled")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
+    client = Client("http://example.test", timeout=30)
+    try:
+        client.begin_flow()
+        with pytest.raises(FlowFailed, match="flow deadline expired during request"):
+            client.get("/")
+    finally:
+        client.close()
+
+    monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: 130.0)
+    client = Client("http://example.test", timeout=30)
+    try:
+        client.begin_flow()
+        monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: 161.0)
+        with pytest.raises(FlowFailed, match="flow deadline expired"):
+            client.get("/")
+    finally:
+        client.close()
+
+
+def test_scripted_client_bounds_a_stalled_response_read_to_the_flow_deadline():
+    """A response that stalls after one byte cannot outlive the flow deadline."""
+    release = threading.Event()
+
+    class StalledStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"first"
+            release.wait()
+            yield b"second"
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=StalledStream(), request=request)
+    )
+    client = Client("http://example.test", timeout=0.05)
+    client.http.close()
+    client.http = httpx.Client(transport=transport, base_url="http://example.test")
+    try:
+        client.begin_flow()
+        started = time.monotonic()
+        with pytest.raises(FlowFailed, match="flow deadline expired during request"):
+            client.get("/")
+        assert time.monotonic() - started < 0.15
+    finally:
+        release.set()
+        client.close()
 
 
 def test_a_broken_flow_names_the_step_and_exits_non_zero(tmp_path, monkeypatch):
