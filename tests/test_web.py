@@ -2459,6 +2459,33 @@ def test_config_editor_covers_metadata_and_saves_global_and_project_values(garde
     assert Config.load(garden).setting("max_parallel", "demo").source == "global"
 
 
+def test_config_editor_separates_editable_value_from_masking_overlay(garden, monkeypatch):
+    import re
+
+    monkeypatch.setenv("GARDEN_ENV", "work")
+    (garden / "garden.work.yaml").write_text("max_parallel: 7\n")
+    c = client(garden)
+    page = c.get("/config").text
+    setting = page.split('id="setting-max_parallel"', 1)[1].split("</section>", 1)[0]
+
+    assert "Editable value: <strong class=\"mono\">2</strong>" in setting
+    assert "source: <strong>garden.yaml</strong>" in setting
+    assert "effective now: <strong class=\"mono\">7</strong>" in setting
+    assert "from <strong>garden.work.yaml</strong>" in setting
+    assert "currently masks that value" in setting
+
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "4", "revision": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert yaml.safe_load((garden / "garden.yaml").read_text())["max_parallel"] == 4
+    assert Config.load(garden).get("max_parallel") == 7
+
+
 def test_config_editor_round_trips_empty_and_yaml_sensitive_strings(garden):
     import re
 

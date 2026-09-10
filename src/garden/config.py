@@ -29,13 +29,29 @@ from .github import is_git_remote_url
 CONFIG_NAME = "garden.yaml"
 
 
-def _contains(data: dict[str, Any], dotted: str) -> bool:
+def _value_at(data: dict[str, Any], dotted: str) -> tuple[bool, Any]:
     current: Any = data
     for part in dotted.split("."):
         if not isinstance(current, dict) or part not in current:
-            return False
+            return False, None
         current = current[part]
-    return True
+    return True, current
+
+
+def _merge_source_owners(current: Any, override: Any, source: str) -> Any:
+    """Mirror ``_merge`` while retaining the owner of each surviving value leaf."""
+    if not isinstance(override, dict):
+        return source
+    owners = dict(current) if isinstance(current, dict) else {}
+    for key, value in override.items():
+        owners[key] = _merge_source_owners(owners.get(key), value, source)
+    return owners or source
+
+
+def _owner_names(owners: Any) -> set[str]:
+    if isinstance(owners, dict):
+        return {name for owner in owners.values() for name in _owner_names(owner)}
+    return {owners} if isinstance(owners, str) else set()
 
 # Config keys read once at startup — either when the Scheduler is constructed or when the
 # watch/serve loop first computes its sleep interval — and so NOT picked up by the per-tick
@@ -376,19 +392,26 @@ class Config:
 
     def setting_source(self, key: str, product: str | None = None) -> str:
         """Name the source documents that contribute the resolved saved value."""
-        def contains(document: dict[str, Any]) -> bool:
-            if product is not None:
-                overrides, locks = product_configuration(document, product)
-                resolved = product_configuration(self.data, product)
-                if key in resolved[1]:
-                    return key in locks
-                if key in resolved[0]:
-                    return key in overrides
-            return _contains(document, key)
+        project_has_override = product is not None and key in product_configuration(
+            self.data, product
+        )[0]
+        owners: Any = None
+        last_present_source = "default"
+        for name, document in self.source_documents:
+            if project_has_override:
+                overrides, _ = product_configuration(document, product or "")
+                present = key in overrides
+                value = overrides.get(key)
+            else:
+                present, value = _value_at(document, key)
+            if not present:
+                continue
+            owners = _merge_source_owners(owners, value, name)
+            last_present_source = name
 
-        names = [name for name, document in self.source_documents if contains(document)]
-        explicit = [name for name in names if name != "default"]
-        return " + ".join(explicit or names) if names else "default"
+        contributing = _owner_names(owners) or {last_present_source}
+        names = [name for name, _ in self.source_documents if name in contributing]
+        return " + ".join(names) if names else "default"
 
     def source_names(self) -> list[str]:
         """The garden.yaml / garden.<env>.yaml / garden.local.yaml file names this config is
