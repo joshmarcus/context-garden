@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -602,7 +603,7 @@ class Config:
                 return {}
             value = {
                 "slug": source.get("repository"),
-                "host": source.get("host"),
+                "host": source.get("host") or urlparse(str(source.get("web_url") or "")).hostname,
                 "api_base": source.get("api_url"),
                 "token_env": source.get("credential_env"),
                 "ca_bundle": source.get("ca_bundle"),
