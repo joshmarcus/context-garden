@@ -95,6 +95,20 @@ def worker_diagnostic_excerpt(details: object, config: dict[str, Any]) -> str:
         text = "[diagnostic excerpt truncated]\n" + text[-MAX_WORKER_DIAGNOSTIC:]
     return text
 
+# A detached local check has already been admitted by its supervisor.  Command checks are
+# scrubbed before executing branch code, so carry only the supervisor protocol needed by a
+# nested ``garden.validation`` invocation to identify and inherit that lease.  These values
+# grant no external authority; credentials and general scheduler environment remain scrubbed.
+_VALIDATION_SUPERVISOR_ENV = (
+    "GARDEN_EXECUTION_RUN_DIR",
+    "GARDEN_EXECUTION_OWNER",
+    "GARDEN_HEAVY_EXECUTION",
+    "GARDEN_OWNER_SCOPED",
+    "GARDEN_VALIDATION_RUNNER",
+    "GARDEN_VALIDATION_TIMEOUT_SECONDS",
+    "GARDEN_EXECUTION_CGROUP",
+)
+
 
 _PUBLISHING_CI_HELPER = re.compile(
     r"(?:^|\s)(?:[^\s`]+/)?python(?:3)?\s+(?:[^\s`]+/)?scripts/check_ci\.py(?:\s|$)"
@@ -151,6 +165,8 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
         if spec.get("command"):
             policy = SandboxPolicy.from_config(config)
             env = scrubbed_env(config, worktree=cwd)
+            env.update({name: os.environ[name] for name in _VALIDATION_SUPERVISOR_ENV
+                        if os.environ.get(name)})
             env.update({f"GARDEN_{k.upper()}": (json.dumps(v) if not isinstance(v, str) else v) for k, v in ctx.items()})
             for k, v in (spec.get("env") or {}).items():  # the product's prepared environment
                 env[str(k)] = str(v)
