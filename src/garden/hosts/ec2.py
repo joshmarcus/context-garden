@@ -169,12 +169,21 @@ class EC2Provider:
         price_key = "spot_hourly_usd" if pool.purchase_policy == "spot" else "hourly_usd"
         if price_key not in options:
             raise ValueError(f"ec2.{price_key} is required for a reviewable, current cost plan")
-        if pool.on_demand_fallback and "hourly_usd" not in options:
-            raise ValueError("ec2.hourly_usd is required to price on-demand fallback")
+        implicit_spot_ceiling = (
+            pool.purchase_policy == "spot" and options.get("spot_max_price_usd") is None
+        )
+        if (pool.on_demand_fallback or implicit_spot_ceiling) and "hourly_usd" not in options:
+            reason = "the implicit Spot ceiling" if implicit_spot_ceiling else "on-demand fallback"
+            raise ValueError(f"ec2.hourly_usd is required to price {reason}")
 
-        price_keys = ["hourly_usd" if pool.on_demand_fallback else price_key]
-        if pool.purchase_policy == "spot" and options.get("spot_max_price_usd") is not None:
-            price_keys.append("spot_max_price_usd")
+        price_keys = [price_key]
+        if pool.purchase_policy == "spot":
+            price_keys.append(
+                "spot_max_price_usd" if options.get("spot_max_price_usd") is not None
+                else "hourly_usd"
+            )
+        if pool.on_demand_fallback and "hourly_usd" not in price_keys:
+            price_keys.append("hourly_usd")
         prices: list[float] = []
         for key in price_keys:
             try:

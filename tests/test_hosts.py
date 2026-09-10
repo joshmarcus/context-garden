@@ -297,6 +297,26 @@ def test_spot_maximum_price_is_included_in_spend_admission(tmp_path):
     assert client.run_args is None
 
 
+def test_implicit_spot_ceiling_is_included_in_spend_admission(tmp_path):
+    client = StubEC2()
+    spec = replace(
+        pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
+             estimated_runtime_hours=2, spend_limit_usd=0.30,
+             profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
+        provider_options={
+            "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
+            "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
+            "spot_hourly_usd": 0.06, "hourly_usd": 0.20,
+        },
+    )
+    lifecycle = HostLifecycle({"ec2": EC2Provider(client)}, JsonStateStore(tmp_path / "state.json"))
+
+    assert lifecycle.plan(spec).estimated_hourly_usd == 0.20
+    with pytest.raises(ValueError, match="exceeds pool spend limit"):
+        lifecycle.reconcile(spec)
+    assert client.run_args is None
+
+
 def test_spot_shortage_fallback_is_opt_in_and_uses_bounded_plan_price(tmp_path):
     class Shortage(StubEC2):
         def __init__(self):
@@ -375,7 +395,7 @@ def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliatio
         provider_options={
             "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
             "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
-            "spot_hourly_usd": 0.06,
+            "spot_hourly_usd": 0.06, "hourly_usd": 0.20,
         },
     )
     state = JsonStateStore(tmp_path / "state.json")
@@ -424,7 +444,7 @@ def test_eventbridge_rebalance_event_drains_host_and_ignores_other_events(tmp_pa
         provider_options={
             "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
             "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
-            "spot_hourly_usd": 0.06,
+            "spot_hourly_usd": 0.06, "hourly_usd": 0.20,
         },
     )
     lifecycle = HostLifecycle(
@@ -504,7 +524,7 @@ def test_interruption_waits_for_consumer_drain_before_destroying(tmp_path):
              profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
         provider_options={"instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
                           "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
-                          "spot_hourly_usd": 0.06},
+                          "spot_hourly_usd": 0.06, "hourly_usd": 0.20},
     )
     lifecycle = HostLifecycle({"ec2": EC2Provider(client, event_source=Events())},
                               JsonStateStore(tmp_path / "state.json"),

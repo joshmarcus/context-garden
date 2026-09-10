@@ -42,12 +42,8 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
             raise ValueError("continue with the operation's original enrollment configuration")
         enrollment_config = Path(saved_config)
     declaration = pool_from_dict(saved["admitted_declaration"]) if saved else pool
-    declared_options = {
-        **declaration.provider_options,
-        **declaration.profile.provider_options,
-    }
-    if declaration.purchase_policy == "spot" and declared_options.get("spot_max_price_usd") is not None:
-        # Reject an unsafe AWS request ceiling before credential or event-source setup.
+    if declaration.purchase_policy == "spot":
+        # Reject an unsafe explicit or implicit AWS request ceiling before credential setup.
         EC2Provider.validate_purchase_prices(declaration)
     try:
         import boto3

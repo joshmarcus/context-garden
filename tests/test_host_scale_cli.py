@@ -124,7 +124,11 @@ def test_spot_cli_requires_durable_event_configuration_before_aws_session(tmp_pa
     specification = tmp_path / "spot-pool.json"
     specification.write_text(json.dumps({
         "contract_version": "garden.hosts/v1",
-        **asdict(pool(provider="ec2", purchase_policy="spot")),
+        **asdict(pool(
+            provider="ec2",
+            purchase_policy="spot",
+            provider_options={"spot_hourly_usd": 0.06, "hourly_usd": 0.20},
+        )),
     }))
 
     result = CliRunner().invoke(app, ["hosts", "scale", str(specification)])
@@ -153,6 +157,28 @@ def test_spot_cli_rejects_invalid_maximum_price_before_aws_access(tmp_path, monk
 
     assert result.exit_code == 1
     assert "spot_max_price_usd must be a positive finite price" in result.output
+
+
+def test_spot_cli_rejects_unpriced_implicit_ceiling_before_aws_access(tmp_path, monkeypatch):
+    from tests.test_hosts import pool
+
+    class Boto3:
+        @staticmethod
+        def Session(**kwargs):
+            raise AssertionError("Spot price validation must precede AWS access")
+
+    monkeypatch.setitem(sys.modules, "boto3", Boto3)
+    spec = replace(
+        pool(provider="ec2", purchase_policy="spot"),
+        provider_options={"spot_hourly_usd": 0.06},
+    )
+    specification = tmp_path / "spot-pool.json"
+    specification.write_text(json.dumps({"contract_version": "garden.hosts/v1", **asdict(spec)}))
+
+    result = CliRunner().invoke(app, ["hosts", "scale", str(specification)])
+
+    assert result.exit_code == 1
+    assert "hourly_usd is required to price the implicit Spot ceiling" in result.output
 
 
 def test_provider_error_does_not_render_secret_bearing_locals(tmp_path, monkeypatch):
