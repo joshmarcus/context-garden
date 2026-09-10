@@ -56,6 +56,42 @@ def test_concurrent_setup_recovery_executes_command_once(tmp_path):
     assert tally.read_text() == "x\n"
 
 
+def test_setup_rechecks_storage_after_waiting_for_lock(tmp_path, monkeypatch):
+    from garden.storage import StorageAdmissionError
+
+    wt = tmp_path / "worktrees" / "T-1"
+    wt.mkdir(parents=True)
+    launched = False
+    checks = 0
+    events: list[str] = []
+
+    def storage_check(*args, **kwargs):
+        nonlocal checks
+        checks += 1
+        events.append("storage check")
+        if checks == 2:
+            raise StorageAdmissionError("local filesystem has 1 free byte")
+
+    def acquire_lock(*args, **kwargs):
+        events.append("setup lock acquired")
+
+    def launch(*args, **kwargs):
+        nonlocal launched
+        launched = True
+
+    monkeypatch.setattr("garden.storage.require_storage", storage_check)
+    monkeypatch.setattr("garden.runner.base.fcntl.flock", acquire_lock)
+    monkeypatch.setattr("garden.runner.base.subprocess.Popen", launch)
+
+    with pytest.raises(RunnerError, match="local filesystem has 1 free byte"):
+        run_setup(wt, {"command": "echo should-not-run"})
+
+    assert checks == 2
+    assert events == ["storage check", "setup lock acquired", "storage check"]
+    assert not launched
+    assert not setup_marker(wt).exists()
+
+
 def test_run_setup_reruns_when_worktree_is_recreated_at_same_path(tmp_path):
     """A sibling marker from a removed base-probe checkout cannot prepare its replacement."""
     wt = tmp_path / "worktrees" / "T-1.base-probe"
