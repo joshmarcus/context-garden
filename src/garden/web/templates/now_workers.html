@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Workers · Now{% endblock %}
+{% block body_class %}page-now page-workers{% endblock %}
+{% block head %}
+<style>
+.now-tabs { display:flex; gap:18px; margin-top:9px; font:12px/1.4 var(--mono); }
+.now-tabs a { color:var(--muted); text-decoration:none; padding-bottom:3px; border-bottom:1px solid transparent; }
+.now-tabs a.on { color:var(--ink); border-color:var(--accent); }
+.fleet-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; margin:24px 0 30px; background:var(--line); border:1px solid var(--line); }
+.fleet-summary div { background:var(--paper); padding:14px 16px; }
+.fleet-summary b { display:block; font:500 28px/1 var(--display); }
+.fleet-summary span { font:11px/1.4 var(--mono); color:var(--muted); text-transform:uppercase; }
+.worker-list { display:grid; gap:13px; }
+.worker-card { border:1px solid var(--line-strong); padding:15px 17px; min-width:0; }
+.worker-head { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+.worker-head h2 { margin:0; font:500 19px/1.2 var(--display); }
+.worker-head .placement, .worker-meta, .worker-reason { font:11.5px/1.5 var(--mono); color:var(--muted); }
+.worker-state { margin-left:auto; font:700 10px/1.4 var(--mono); letter-spacing:.07em; text-transform:uppercase; padding:2px 7px; border:1px solid var(--line-strong); }
+.worker-state.executing, .worker-state.available { border-color:var(--accent); }
+.worker-state.unreachable, .worker-state.disabled, .worker-state.terminated { border-style:dashed; color:var(--warn); }
+.worker-meta { margin:9px 0 0; display:flex; gap:5px 16px; flex-wrap:wrap; }
+.worker-reason { margin:5px 0 0; }
+.job-list { list-style:none; margin:12px 0 0; padding:0; border-top:1px dashed var(--line); }
+.job-list li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; padding:9px 0; border-bottom:1px dashed var(--line); }
+.job-list .lease { grid-column:1/-1; font:11px/1.4 var(--mono); color:var(--muted); }
+.fleet-note { max-width:780px; color:var(--muted); font:13px/1.55 var(--body); }
+.fleet-empty { padding:28px; border:1px dashed var(--line-strong); text-align:center; color:var(--muted); }
+@media (max-width:600px) {
+  .fleet-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .worker-state { margin-left:0; }
+  .job-list li { grid-template-columns:1fr; }
+  .job-list .lease { grid-column:1; overflow-wrap:anywhere; }
+}
+</style>
+{% endblock %}
+{% block body %}
+<div class="page-head"><div><h1>Now</h1><nav class="now-tabs" aria-label="Now views"><a href="/now">Activity</a><a class="on" aria-current="page" href="/now/workers">Workers</a></nav></div></div>
+<section aria-labelledby="fleet-title">
+  <div class="region-head"><h2 class="section-title" id="fleet-title">Worker fleet</h2><span class="lead">recorded presence and current occupancy</span></div>
+  <div class="fleet-summary">
+    <div><b>{{ fleet.totals.workers }}</b><span>workers known</span></div>
+    <div><b>{{ fleet.totals.jobs }}</b><span>jobs executing</span></div>
+    <div><b>{{ fleet.totals.available }}</b><span>available</span></div>
+    <div><b>{{ fleet.totals.available_capacity }}/{{ fleet.totals.capacity }}</b><span>capacity free</span></div>
+  </div>
+  <p class="fleet-note">{{ fleet.explanation }} This view uses recorded telemetry as of <time datetime="{{ fleet.observed_at }}">{{ fleet.observed_at[11:19] }}Z</time>; it does not contact hosts.</p>
+  <div class="worker-list">
+  {% for worker in fleet.workers %}
+    <article class="worker-card">
+      <div class="worker-head"><h2>{{ worker.id }}</h2><span class="placement">{{ worker.placement }}</span><span class="worker-state {{ worker.status }}">{{ worker.status }}</span></div>
+      <p class="worker-meta"><span>{{ worker.available_capacity }}/{{ worker.capacity }} capacity available</span><span>last contact: {{ worker.last_contact or "unknown" }}</span><span>evidence: {{ worker.evidence_at or "unknown" }}{% if worker.evidence_stale %} · stale/unknown{% endif %}</span></p>
+      {% if worker.unavailable_reason %}<p class="worker-reason">{{ worker.unavailable_reason }}</p>{% endif %}
+      {% if worker.prior_provider_ids %}<p class="worker-reason">Replaced infrastructure identities retained in history: {{ worker.prior_provider_ids|join(", ") }}</p>{% endif %}
+      <ul class="job-list">
+      {% for job in worker.current_jobs %}
+        <li><span><a href="{{ job.task_url }}">{{ job.task_id }}</a> · {{ job.mode }}</span><a href="{{ job.run_url }}">run details</a><span class="lease">job lease: {{ job.lease_state }}{% if job.lease_expires_at %} · expires {{ job.lease_expires_at }}{% endif %}{% if job.recovery_expires_at %} · recovery through {{ job.recovery_expires_at }}{% endif %}</span></li>
+      {% endfor %}
+      </ul>
+    </article>
+  {% else %}
+    <div class="fleet-empty"><b>No workers configured or enrolled.</b><br>Add a worker host or wait for an enrolled worker to contact this garden.</div>
+  {% endfor %}
+  </div>
+</section>
+<script>
+// Presence changes independently of scheduler events. One bounded cached read keeps this
+// secondary tab current; hidden tabs wait until they are visible again.
+(function refreshWorkers() {
+  setTimeout(function () {
+    if (document.visibilityState === "visible") window.location.reload();
+    else document.addEventListener("visibilitychange", function visible() {
+      if (document.visibilityState === "visible") window.location.reload();
+    }, {once:true});
+  }, 15000);
+})();
+</script>
+{% endblock %}

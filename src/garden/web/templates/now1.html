@@ -4,6 +4,9 @@
 {% block head %}
 <style>
 /* ---- the Now page (docs/design/now-1.md) ------------------------------------------- */
+.now-tabs { display:flex; gap:18px; margin-top:9px; font:12px/1.4 var(--mono); }
+.now-tabs a { color:var(--muted); text-decoration:none; padding-bottom:3px; border-bottom:1px solid transparent; }
+.now-tabs a.on { color:var(--ink); border-color:var(--accent); }
 .now-summary { margin:9px 0 28px; padding:13px 0 0; border-top:1px solid var(--line-strong); }
 .now-summary > h2 { margin:0 0 12px; font:11px/1.2 var(--mono); letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .now-summary dl { display:grid; grid-template-columns:1.05fr 1.45fr 1fr 1fr; margin:0; }
@@ -234,7 +237,7 @@ body.page-now .rail-running { display:none; }
 {% from "_now1_macros.html" import summary, slots with context %}
 {% set g = snap.garden %}
 <div id="now1" data-window="{{ snap.window }}" data-next-tick="{{ g.next_tick_at }}" data-tick-interval="{{ g.tick_interval }}">
-<div class="page-head"><div><h1>Now</h1></div></div>
+<div class="page-head"><div><h1>Now</h1><nav class="now-tabs" aria-label="Now views"><a class="on" href="/now">Activity</a><a href="/now/workers">Workers</a></nav></div></div>
 {{ summary(snap) }}
 <div class="now-live" aria-live="polite" id="now-live"></div>
 

@@ -17,6 +17,7 @@ from markupsafe import Markup
 from ... import now1
 from ...charts import cost_stack_svg, sparkline_svg
 from ...runs import RunStore
+from ...workers import snapshot as worker_snapshot
 from ..common import Site
 
 WINDOW_KEYS = {key for key, _ in now1.WINDOWS}
@@ -99,6 +100,14 @@ def register(app: FastAPI, site: Site) -> None:
     @app.get("/now", response_class=HTMLResponse)
     def now_page(request: Request, window: str = "hour"):
         return templates.TemplateResponse(request, "now1.html", page_ctx(request, window))
+
+    @app.get("/now/workers", response_class=HTMLResponse)
+    def workers_page(request: Request):
+        s = hub.fresh()
+        fleet = worker_snapshot(s.config, RunStore(s.config.garden_dir))
+        return templates.TemplateResponse(
+            request, "now_workers.html", ctx(request, page="now", fleet=fleet)
+        )
 
     @app.get("/now1", include_in_schema=False)
     @app.get("/now2", include_in_schema=False)
