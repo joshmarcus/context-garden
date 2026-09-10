@@ -266,6 +266,7 @@ class State:
     def archive_completed(self, task_ids: set[str], *, limit: int) -> dict[str, int]:
         """Move bounded terminal-task payloads to a durable, indexed compressed CAS."""
         report = {"tasks": 0, "logical_bytes": 0, "stored_bytes": 0}
+        counted_blobs: set[str] = set()
         if limit <= 0:
             return report
         lock_path = self.path.parent / "state-history.lock"
@@ -300,7 +301,9 @@ class State:
                     current.pop(key, None)
                 report["tasks"] += 1
                 report["logical_bytes"] += len(raw)
-                report["stored_bytes"] += blob.stat().st_size
+                if sha not in counted_blobs:
+                    report["stored_bytes"] += blob.stat().st_size
+                    counted_blobs.add(sha)
             # The archive and its index are durable before compact references replace data.
             self.save()
         return report
