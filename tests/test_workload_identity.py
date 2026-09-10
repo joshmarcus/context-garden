@@ -9,6 +9,7 @@ import pytest
 
 from garden.config import executable_diff
 from garden.workload_identity import (
+    AuthorityRedactor,
     AuthorityRequest,
     ProviderAuthority,
     WorkloadIdentityError,
@@ -116,8 +117,33 @@ def test_resolves_bounded_authority_and_redacts_values(provider_module):
         assert authority.metadata.issuer == "synthetic://issuer"
         assert "synthetic-secret" not in repr(authority)
         assert "synthetic-secret" not in repr(authority._authority)
+        redactor = authority.redactor()
+        assert redactor.redact(f"leaked {environment['SERVICE_TOKEN']}") == "leaked <redacted>"
+        assert "synthetic-secret" not in repr(redactor)
     with pytest.raises(WorkloadIdentityError, match="closed"):
         authority.subprocess_env({}, "worker")
+
+
+def test_stream_redaction_covers_split_values_and_nested_payloads():
+    redactor = AuthorityRedactor(("synthetic-secret",))
+    stream = redactor.stream()
+    output = stream.feed("before synthetic-") + stream.feed("secret after") + stream.finish()
+    assert output == "before <redacted> after"
+    assert redactor.redact_data({"final": "synthetic-secret", "rows": ["safe"]}) == {
+        "final": "<redacted>", "rows": ["safe"],
+    }
+
+
+def test_supervisor_redacts_local_run_records_before_completion(tmp_path, monkeypatch):
+    from garden.run_supervisor import redact_authority_outputs
+
+    monkeypatch.setenv("GARDEN_WORKLOAD_IDENTITY_BINDINGS", "SERVICE_TOKEN")
+    monkeypatch.setenv("SERVICE_TOKEN", "synthetic-secret")
+    for name in ("stdout.json", "stderr.log", "final.md"):
+        (tmp_path / name).write_text(f"prefix synthetic-secret in {name}")
+    redact_authority_outputs(tmp_path)
+    for name in ("stdout.json", "stderr.log", "final.md"):
+        assert (tmp_path / name).read_text() == f"prefix <redacted> in {name}"
 
 
 @pytest.mark.parametrize("change, message", [
@@ -200,7 +226,9 @@ def test_local_runner_delivers_only_to_worker_process(sched, provider_module, mo
     from tests.inprocess import InProcessRunner
 
     config = identity_config(provider_module)
+    config["worker_env"] = {"pass": ["FAKE_CLAUDE_ECHO_ENV"]}
     sched.cfg.data.update(config)
+    monkeypatch.setenv("FAKE_CLAUDE_ECHO_ENV", "SERVICE_TOKEN")
     captured = {}
     original = InProcessRunner.launch
 
@@ -216,6 +244,9 @@ def test_local_runner_delivers_only_to_worker_process(sched, provider_module, mo
     assert "synthetic://issuer" in audit
     assert captured["SERVICE_TOKEN"] not in audit
     assert captured["SERVICE_TOKEN"] not in (run.path / "command.txt").read_text()
+    persisted = (run.path / "stdout.json").read_text() + (run.path / "stderr.log").read_text()
+    assert captured["SERVICE_TOKEN"] not in persisted
+    assert "<redacted>" in persisted
 
 
 def test_local_identity_failure_uses_environment_error_recovery(sched, provider_module):

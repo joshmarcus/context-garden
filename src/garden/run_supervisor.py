@@ -498,6 +498,30 @@ def setup_environment() -> dict[str, str]:
     return env
 
 
+def redact_authority_outputs(run_dir: Path) -> None:
+    """Scrub worker-bound credential values before publishing completion.
+
+    The supervisor is the last process allowed to retain the injected environment.  It
+    rewrites every harness-owned run record before ``exit_code`` makes the run collectable.
+    """
+    names = os.environ.get("GARDEN_WORKLOAD_IDENTITY_BINDINGS", "").split(",")
+    values = sorted(
+        {os.environ.get(name, "") for name in names if name}, key=len, reverse=True,
+    )
+    values = [value for value in values if value]
+    if not values:
+        return
+    for name in ("stdout.json", "stderr.log", "final.md"):
+        path = run_dir / name
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for value in values:
+            text = text.replace(value, "<redacted>")
+        path.write_text(text)
+
+
 def _run_setup(run_dir: Path) -> bool:
     payload = run_dir / "setup_input.json"
     if not payload.exists():
@@ -625,6 +649,7 @@ def main() -> int:
         time.sleep(0.05)
     if timed_out:
         code = 124
+    redact_authority_outputs(run_dir)
     (run_dir / "exit_code").write_text(str(code))
     if slot is not None and not timed_out:
         _set_execution_state(run_dir, "finished")

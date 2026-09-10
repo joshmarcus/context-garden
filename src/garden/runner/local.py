@@ -152,7 +152,7 @@ class LocalRunner(Runner):
         try:
             with subprocess_authority(
                 self.config, "worker", f"automation:{run.run_id}", env,
-            ) as (execution_env, metadata):
+            ) as (execution_env, metadata, _redactor):
                 if metadata is not None:
                     (d / "workload_identity.json").write_text(json.dumps(metadata.__dict__))
                     boundary = self.config["workload_identity"]["references"][
