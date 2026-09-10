@@ -1,6 +1,4 @@
-"""Compatibility import for the garden-wide durable-file lock."""
-
-from __future__ import annotations
+"""Compatibility import for the package-neutral, garden-wide durable-file lock."""
 
 from ..locking import file_lock
 
