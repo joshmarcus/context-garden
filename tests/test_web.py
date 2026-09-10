@@ -1111,9 +1111,20 @@ def test_active_worktree_design_files_are_inert_and_visible_from_the_task(garden
         task.branch = "garden/dm-001"
         store.save(task)
 
+        # An inherited design from the comparison base is not current task output.
+        shared = worktree / "docs" / "design" / "shared.html"
+        shared.write_text("<p>shared</p>")
+        subprocess.run(["git", "add", str(shared)], cwd=worktree, check=True)
+        subprocess.run(["git", "commit", "-m", "shared parent design"], cwd=worktree, check=True)
+        subprocess.run(["git", "branch", "garden/parent", "HEAD"], cwd=worktree, check=True)
+        state = State(garden / ".garden" / "state.json")
+        state.get(task.id)["pr_base"] = "garden/parent"
+        state.save()
+
         c = client(garden)
         page = c.get("/tasks/DM-001")
         assert "worktree%3ADM-001" in page.text and "draft.html" in page.text
+        assert "shared.html" not in page.text
         response = c.get("/design/draft.html?ref=worktree%3ADM-001&product=demo")
         assert response.status_code == 200 and "target=\"_top\"" in response.text
         assert response.headers["content-security-policy"].startswith("sandbox;")

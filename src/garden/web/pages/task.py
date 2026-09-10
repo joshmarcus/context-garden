@@ -85,6 +85,37 @@ def _design_files(task: Any, store: Any, state: dict[str, Any]) -> dict[str, lis
     except Exception:  # noqa: BLE001
         return {"changed": [], "shared": []}
 
+    changed_paths = _changed_design_paths(diff)
+    worktree = store.config.worktree_path(task.id)
+    if worktree.is_dir():
+        try:
+            branch = gitops.git("branch", "--show-current", cwd=worktree).strip()
+            if branch == task.branch:
+                diff = gitops.git(
+                    "diff", "--name-status", "-z", "--find-renames", "--diff-filter=AMR",
+                    base_ref, cwd=worktree,
+                )
+                untracked = gitops.git(
+                    "ls-files", "-z", "--others", "--exclude-standard", "docs/design",
+                    cwd=worktree,
+                )
+                changed_paths = _changed_design_paths(diff) | {
+                    path for path in untracked.split("\0") if _is_design_path(path)
+                }
+                head_ref = f"worktree:{task.id}"
+        except Exception:  # noqa: BLE001
+            pass
+
+    changed = sorted(changed_paths)
+    shared = sorted({path for path in task.reading if _is_design_path(path)} - set(changed))
+    return {
+        "changed": [{"name": name, "href": _design_href(name, head_ref, task.product)} for name in changed],
+        "shared": [{"name": name, "href": _design_href(name, base_ref, task.product)} for name in shared],
+    }
+
+
+def _changed_design_paths(diff: str) -> set[str]:
+    """Extract existing design destinations from a NUL-delimited name-status diff."""
     changed_paths: set[str] = set()
     fields = iter(diff.split("\0"))
     for status in fields:
@@ -95,13 +126,7 @@ def _design_files(task: Any, store: Any, state: dict[str, Any]) -> dict[str, lis
         name = next(fields)
         if _is_design_path(name):
             changed_paths.add(name)
-
-    changed = sorted(changed_paths)
-    shared = sorted({path for path in task.reading if _is_design_path(path)} - set(changed))
-    return {
-        "changed": [{"name": name, "href": _design_href(name, head_ref, task.product)} for name in changed],
-        "shared": [{"name": name, "href": _design_href(name, base_ref, task.product)} for name in shared],
-    }
+    return changed_paths
 
 
 def _is_design_path(path: str) -> bool:
