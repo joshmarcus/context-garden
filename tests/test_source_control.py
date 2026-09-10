@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from garden.config import Config
-from garden.github import GitHub
+from garden.github import GitHub, GitHubError
 from garden.source_control import (
     AuthenticationFailure,
     CertificateFailure,
@@ -100,6 +100,7 @@ def test_authentication_failure_does_not_echo_response_or_token(monkeypatch):
     ))
     with pytest.raises(AuthenticationFailure) as caught:
         github.find_pr("team/repo", "work")
+    assert isinstance(caught.value, GitHubError)
     assert "secret" not in str(caught.value)
     assert "private.test" not in str(caught.value)
 
