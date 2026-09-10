@@ -38,6 +38,13 @@ configurable finite window; permanent authentication responses stop immediately.
 `GET /api/worker-diagnostics` export reads controller-local history only and is suitable for
 the existing worker inventory consumer without synchronous host fan-out.
 
+Managed model executions also leave a private active-claim handoff and claim-scoped output with
+their detached supervisor. A replacement daemon resumes heartbeats for that fenced generation,
+collects the surviving execution, and delivers it before claiming new work. It neither repeats the
+model invocation nor permits an expired generation to publish. If the supervisor disappears without
+its durable exit record, recovery preserves the handoff and classifies a process crash instead of
+guessing that a network or host event occurred.
+
 At the next recurrence, correlate the worker `request_id` with the controller record. If the
 worker has a transport exception and the controller has no matching receipt, classify it as
 network-path loss. If the controller records a response, use its actual status; a 5xx without
