@@ -25,15 +25,32 @@ class Client:
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
         # A flow's deadline must also bound an individual request.  Dispatch and resume
-        # actions prepare a worktree before redirecting; on a busy host that can take longer
-        # than the old fixed ten-second HTTP timeout even though the whole flow still has time.
-        # A form action can prepare a worktree before it redirects.  Give each request the
-        # same budget as the flow that contains it; a shorter, hidden HTTP timeout makes a
-        # healthy but loaded canary fail before its advertised flow deadline.
+        # actions prepare a worktree before redirecting, so each request gets the remaining
+        # flow budget rather than a shorter hidden timeout or a fresh full-flow timeout.
         self.http = httpx.Client(base_url=base_url, follow_redirects=False, timeout=timeout)
         self.timeout = timeout
         self.last_page = "/"
         self.events: list[dict[str, Any]] = []
+        self._flow_deadline: float | None = None
+
+    def begin_flow(self) -> None:
+        """Start the finite wall-clock budget for the next flow."""
+        self._flow_deadline = time.monotonic() + self.timeout
+
+    def _remaining(self) -> float:
+        if self._flow_deadline is None:
+            return self.timeout
+        remaining = self._flow_deadline - time.monotonic()
+        if remaining <= 0:
+            raise FlowFailed(f"flow deadline expired after {self.timeout:.0f}s")
+        return remaining
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Make a request without allowing it to outlive the containing flow."""
+        try:
+            return self.http.request(method, path, timeout=self._remaining(), **kwargs)
+        except httpx.TimeoutException as e:
+            raise FlowFailed(f"request deadline expired before the flow deadline: {e}") from e
 
     def _record(self, method: str, path: str, status: int) -> None:
         self.events.append({"at": time.time(), "method": method, "url": str(self.http.base_url.join(path)),
@@ -44,7 +61,7 @@ class Client:
 
     def get(self, path: str) -> str:
         self.last_page = path
-        r = self.http.get(path)
+        r = self._request("GET", path)
         self._record("GET", path, r.status_code)
         if r.status_code != 200:
             raise FlowFailed(f"GET {path} returned {r.status_code}")
@@ -53,7 +70,7 @@ class Client:
     def post(self, path: str, data: dict[str, str] | None = None, referer: str = "") -> str:
         """Post a form; return the page it redirected to. A flash on that page is a refusal."""
         headers = {"referer": self.http.base_url.join(referer or self.last_page).__str__()}
-        r = self.http.post(path, data=data or {}, headers=headers)
+        r = self._request("POST", path, data=data or {}, headers=headers)
         self._record("POST", path, r.status_code)
         if r.status_code not in (303, 302):
             raise FlowFailed(f"POST {path} returned {r.status_code}: {r.text[:200]}")
@@ -66,7 +83,7 @@ class Client:
         return location
 
     def tasks(self) -> dict[str, dict[str, Any]]:
-        r = self.http.get("/api/tasks")
+        r = self._request("GET", "/api/tasks")
         self._record("GET", "/api/tasks", r.status_code)
         if r.status_code != 200:
             raise FlowFailed(f"GET /api/tasks returned {r.status_code}")
@@ -79,24 +96,32 @@ class Client:
     def wait_status(self, task_id: str, *want: str) -> str:
         """Wait for a task to reach one of `want`, pressing "Tick now" between looks the way
         a person would rather than waiting a whole tick interval."""
-        deadline = time.time() + self.timeout
+        deadline = self._flow_deadline
+        if deadline is None:
+            self.begin_flow()
+            deadline = self._flow_deadline
+        assert deadline is not None
         seen = self.status(task_id)
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             seen = self.status(task_id)
             if seen in want:
                 return seen
-            response = self.http.post("/tick", headers={"referer": str(self.http.base_url.join(self.last_page))})
+            response = self._request("POST", "/tick", headers={"referer": str(self.http.base_url.join(self.last_page))})
             self._record("POST", "/tick", response.status_code)
-            time.sleep(0.2)
-        raise FlowFailed(f"{task_id} is {seen or 'missing'}; expected {' or '.join(want)} within {self.timeout:.0f}s")
+            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+        raise FlowFailed(f"flow deadline expired after {self.timeout:.0f}s while waiting for {task_id} to be {' or '.join(want)}")
 
     def wait_for(self, what: str, check: Callable[[], bool]) -> None:
-        deadline = time.time() + self.timeout
-        while time.time() < deadline:
+        deadline = self._flow_deadline
+        if deadline is None:
+            self.begin_flow()
+            deadline = self._flow_deadline
+        assert deadline is not None
+        while time.monotonic() < deadline:
             if check():
                 return
-            time.sleep(0.2)
-        raise FlowFailed(f"{what} did not happen within {self.timeout:.0f}s")
+            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+        raise FlowFailed(f"flow deadline expired after {self.timeout:.0f}s while waiting for {what}")
 
 
 @dataclass(frozen=True)
@@ -286,6 +311,7 @@ def run_scripted(base_url: str, timeout: float = 30.0) -> dict[str, Any]:
     try:
         for f in FLOWS:
             event_start = len(c.events)
+            c.begin_flow()
             try:
                 f.run(c)
                 flows.append({"name": f.name, "ok": True, "page": f.page, "note": "",

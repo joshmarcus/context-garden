@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -76,6 +77,65 @@ def test_scripted_client_uses_the_flow_timeout_for_http_requests(monkeypatch):
     monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
     Client("http://example.test", timeout=42)
     assert observed["timeout"] == 42
+
+
+def test_scripted_client_uses_remaining_flow_budget_for_each_request(monkeypatch):
+    observed = []
+    now = iter((100.0, 104.0))
+
+    class FakeHTTPClient:
+        base_url = httpx.URL("http://example.test/")
+
+        def __init__(self, **kwargs):
+            pass
+
+        def request(self, method, path, **kwargs):
+            observed.append(kwargs["timeout"])
+            return type("Response", (), {"status_code": 200, "text": "ok"})()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
+    monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: next(now))
+    client = Client("http://example.test", timeout=30)
+    try:
+        client.begin_flow()
+        client.get("/")
+    finally:
+        client.close()
+    assert observed == [26.0]
+
+
+def test_scripted_client_reports_request_and_flow_deadlines_separately(monkeypatch):
+    class FakeHTTPClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def request(self, method, path, **kwargs):
+            raise httpx.ReadTimeout("upstream stalled")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
+    client = Client("http://example.test", timeout=30)
+    try:
+        client.begin_flow()
+        with pytest.raises(FlowFailed, match="request deadline expired"):
+            client.get("/")
+    finally:
+        client.close()
+
+    monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: 130.0)
+    client = Client("http://example.test", timeout=30)
+    try:
+        client.begin_flow()
+        monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: 161.0)
+        with pytest.raises(FlowFailed, match="flow deadline expired"):
+            client.get("/")
+    finally:
+        client.close()
 
 
 def test_a_broken_flow_names_the_step_and_exits_non_zero(tmp_path, monkeypatch):
