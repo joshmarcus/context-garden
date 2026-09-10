@@ -1,7 +1,9 @@
 # Final maintainer check of ONTOLOGY.md
 
-Read-only review; do not edit files. At source commit
-`bcc8419c2dde10ff022621a8a73d37bebdb8d1bc`, verify that `ONTOLOGY.md` now correctly:
+Read-only review; do not edit files. Review the current worktree's `ONTOLOGY.md`; the document
+is newly authored on top of source commit `bcc8419c2dde10ff022621a8a73d37bebdb8d1bc`, so it is
+not expected to exist in that source commit. Verify its claims against that source identity,
+including that it correctly:
 
 1. models phase persona reviews without requiring a task document or PR;
 2. includes `waiting` and `env_error` run states and distinguishes lifecycle completion from

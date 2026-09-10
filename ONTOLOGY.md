@@ -140,7 +140,8 @@ Modes include `work`, `revise`, `resume`, `trial`, `rebase`, `review`, `persona`
 A run records routing (`runner`, `execution_remote`, `harness`, `model`, `pool_member`, `difficulty`, `host`), source and branch coordinates, startup/process state, remote claim state, completion evidence, parsed result, usage, cost, errors, recovery evidence, and an optimistic `record_version`. Empty string and empty mapping/list are the dominant absence values; `pid`, `exit_code`, `cost_usd`, and legacy `execution_remote` use null. `status` defaults to `running`, while the documented startup sequence also uses `requested` and `preparing` (`src/garden/runs.py`, `Run`).
 
 Run statuses used by the scheduler are `requested`, `preparing`, `running`, `waiting`,
-`done`, `blocked`, `failed`, `timeout`, `cancelled`, `superseded`, and `env_error`.
+`done`, `blocked`, `failed`, `timeout`, `cancelled`, `superseded`, `env_error`, `no_change`,
+and `wont_do`.
 `waiting` preserves an answered-or-decision run until its continuation is resolved;
 `env_error` records an environment-owned stop that may be retried without author-attempt
 accounting (`src/garden/scheduler/reap.py`, `_handle_result`, `_handle_quota_env_error`). The
@@ -149,7 +150,9 @@ stable control-plane projection `lifecycle_state` preserves only `requested`, `p
 `Run.lifecycle_state`). This projection is broader than archival eligibility: the archive
 accepts only `done`, `blocked`, `failed`, `timeout`, `cancelled`, and `superseded` with a finish
 time, deliberately excluding `waiting` and `env_error` because they can retain recovery or
-retry meaning (`src/garden/runs.py`, `RunStore.archive_terminal`).
+retry meaning; `no_change` and `wont_do` likewise remain outside that archival set while
+their human decision is resolved (`src/garden/runs.py`, `RunStore.archive_terminal`;
+`src/garden/scheduler/reap.py`, `_handle_result`).
 
 An **Attempt** is not a separate persisted entity. `Task.attempts` is a count incremented for authoring attempts, while run records include activities that do not count as task attempts. Environment-owned admission failures are intended to occur before attempt accounting. Reviews and revisions have separate counters in side state (`src/garden/model.py`, `Task.attempts`; `src/garden/scheduler/dispatch.py`, `quota.py`, `review.py`; `docs/host-lifecycle.md`).
 
@@ -159,7 +162,13 @@ Terminal runs with a finish time may be archived. Archive `index.json` remains t
 
 ## Brief, harness, model, and profile
 
-A **Brief** is the exact prompt artifact delivered to an execution. It contains a task, rendered text, per-section character counts, and lists of inlined, referenced, and missing paths. Character and approximate token counts are derived; `fixed_tokens` counts the stable context sections (`src/garden/brief.py`, `Brief`).
+A **Task Brief** (`src/garden/brief.py`, `Brief`) is the exact task-oriented prompt artifact
+delivered to an authoring or task-review execution. It contains a task, rendered text,
+per-section character counts, and lists of inlined, referenced, and missing paths. Character
+and approximate token counts are derived; `fixed_tokens` counts the stable context sections.
+Other auxiliary executions receive prompt text but not this `Brief` value: notably,
+`phase_brief` constructs a phase persona prompt around a synthetic run bucket without a task
+document (`src/garden/personas.py`; `src/garden/scheduler/persona.py`).
 
 A brief is immutable evidence once written to a run directory, although a later resume or revision is a new run with new contextual material. Its result protocol is a final one-line `GARDEN_RESULT` JSON marker with status and optional question, reason, PR text, evidence, amendments, friction, and discovered work (`src/garden/brief.py`, `OPERATING_RULES`; `docs/worker-protocol.md`).
 
@@ -286,7 +295,11 @@ provider registration and authority material (`src/garden/remote_worker.py`;
 
 ## Event, usage, and cost
 
-An **Event** is a schemaless JSON object with required emitted fields `at`, `kind`, and `task`, plus kind-specific data. In-memory `Event` returns a falsy empty string for missing keys. Its stable identity for consumers is the append-only JSONL line number, optionally exposed as `_line_number` (`src/garden/events.py`, `Event`, `EventLog`).
+An **Event** is a schemaless JSON object whose emitter always writes the fields `at`, `kind`,
+and `task`, plus kind-specific data. `task` is structurally present but semantically optional:
+garden-wide events use the empty string. In-memory `Event` also returns a falsy empty string
+for missing keys. Its stable identity for consumers is the append-only JSONL line number,
+optionally exposed as `_line_number` (`src/garden/events.py`, `Event`, `EventLog`).
 
 Representative serialization:
 
