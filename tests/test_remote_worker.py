@@ -26,6 +26,7 @@ from garden.remote_worker import (
     WorkerRequestError,
     _claim_suffix,
     _host_check_data,
+    _launch_claim_supervisor,
     _LeaseHeartbeat,
     _persist_active_claim,
     _persist_pending_result,
@@ -71,6 +72,128 @@ def isolated_execution_runtime(tmp_path, monkeypatch):
     runtime = tmp_path / "worker-runtime"
     runtime.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+
+@pytest.mark.parametrize("mode", ["work", "check"])
+def test_claim_supervisor_waits_for_durable_handoff_before_workload(
+    tmp_path, monkeypatch, mode,
+):
+    """Harness and check workloads fail closed when active-claim persistence fails."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / mode
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "stdout.log").write_text("")
+    (execution_dir / "stderr.log").write_text("")
+    marker = execution_dir / "workload-started"
+    run = {"id": f"run-{mode}", "task_id": "DM-001", "mode": mode}
+
+    def fail_persistence(*_args, **_kwargs):
+        raise OSError("simulated durable handoff failure")
+
+    monkeypatch.setattr("garden.remote_worker._persist_active_claim", fail_persistence)
+    with pytest.raises(OSError, match="durable handoff failure"):
+        _launch_claim_supervisor(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+             f"printf started > {marker}"],
+            root=root, run=run, execution_dir=execution_dir, repo=repo,
+            final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+            start_new_session=True,
+        )
+
+    assert not marker.exists()
+    assert not (root / "active-claims" / f"run-{mode}.json").exists()
+    assert (execution_dir / "exit_code").read_text() == "1"
+
+
+@pytest.mark.parametrize("mode", ["work", "check"])
+def test_durable_handoff_releases_supervisor_workload_once(tmp_path, monkeypatch, mode):
+    """Once fenced metadata exists, either workload kind starts exactly once."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / mode
+    execution_dir.mkdir(parents=True)
+    marker = execution_dir / "workload-started"
+    run = {"id": f"run-{mode}", "task_id": "DM-001", "mode": mode}
+
+    proc, active = _launch_claim_supervisor(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+         f"printf run >> {marker}"],
+        root=root, run=run, execution_dir=execution_dir, repo=repo,
+        final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+        start_new_session=True,
+    )
+    proc.wait(timeout=5)
+
+    state = json.loads(active.read_text())
+    assert state["supervisor_pid"] == proc.pid
+    assert state["supervisor_birth"]
+    assert marker.read_text() == "run"
+
+
+@pytest.mark.parametrize("mode", ["work", "check"])
+def test_replacement_recovers_crash_immediately_after_durable_handoff(
+    tmp_path, monkeypatch, mode,
+):
+    """A lost release is a recoverable cancelled execution, never an orphan workload."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / mode
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "stdout.log").write_text("")
+    (execution_dir / "stderr.log").write_text("")
+    marker = execution_dir / "workload-started"
+    run = {
+        "id": f"run-{mode}", "task_id": "DM-001", "mode": mode,
+        "lease_token": "lease-1", "heartbeat_seconds": 0.05,
+        "recovery_seconds": 1, "harness": "claude", "harness_config": {},
+        "model": "small", "push_ref": f"refs/recovery/{mode}",
+    }
+    real_write = os.write
+
+    def lose_release(fd, data):
+        if data == b"1":
+            raise BrokenPipeError("simulated daemon loss after handoff")
+        return real_write(fd, data)
+
+    monkeypatch.setattr("garden.remote_worker.os.write", lose_release)
+    with pytest.raises(BrokenPipeError, match="after handoff"):
+        _launch_claim_supervisor(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+             f"printf run >> {marker}"],
+            root=root, run=run, execution_dir=execution_dir, repo=repo,
+            final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+            start_new_session=True,
+        )
+    monkeypatch.setattr("garden.remote_worker.os.write", real_write)
+    publications = []
+    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
+        "final_text": "", "result": {}, "usage": {}, "cost_usd": 0.0,
+        "error": "cancelled before launch",
+    })
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *args, **kwargs: publications.append(kwargs),
+    )
+
+    class ReplacementClient:
+        events = None
+
+        def post(self, path, _payload):
+            assert path == f"/api/runs/run-{mode}/heartbeat"
+            return 200, {}
+
+    assert recover_active_claims(root, ReplacementClient()) == 1
+    assert recover_active_claims(root, ReplacementClient()) == 0
+    assert not marker.exists()
+    assert len(publications) == 1
+    assert publications[0]["rc"] == 1
 
 
 def queued_run(store, task_id="DM-001"):

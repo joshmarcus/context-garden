@@ -522,6 +522,20 @@ def main() -> int:
         _signal_owned_processes(child.pid if child is not None else None, signal.SIGTERM)
 
     signal.signal(signal.SIGTERM, stop)
+    gate_fd_text = os.environ.pop("GARDEN_LAUNCH_GATE_FD", "")
+    if gate_fd_text:
+        try:
+            gate_fd = int(gate_fd_text)
+            released = os.read(gate_fd, 1) == b"1"
+            os.close(gate_fd)
+        except (OSError, ValueError):
+            released = False
+        if not released:
+            (run_dir / "stderr.log").write_text(
+                "claim launch cancelled before durable recovery handoff\n"
+            )
+            (run_dir / "exit_code").write_text("1")
+            return 1
     try:
         slot = (_execution_slot(run_dir, lambda: stopping,
                                 owner_scoped=os.environ.get("GARDEN_OWNER_SCOPED") == "1")

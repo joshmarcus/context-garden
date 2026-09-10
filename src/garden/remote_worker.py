@@ -448,14 +448,66 @@ def _persist_active_claim(root: Path, run: dict[str, Any], execution_dir: Path,
     saved_run = {key: value for key, value in run.items() if key not in {"brief", "repo"}}
     supervisor_birth = _process_birth_identity(supervisor_pid)
     temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps({
+    payload = json.dumps({
         "run": saved_run, "execution_dir": str(execution_dir), "repo": str(repo),
         "final_path": str(final_path), "supervisor_pid": supervisor_pid,
         "supervisor_birth": supervisor_birth,
-    }))
-    os.chmod(temporary, 0o600)
+    })
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as staged:
+            staged.write(payload)
+            staged.flush()
+            os.fsync(staged.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     temporary.replace(path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     return path
+
+
+def _launch_claim_supervisor(
+    command: list[str], *, root: Path, run: dict[str, Any], execution_dir: Path,
+    repo: Path, final_path: Path, env: dict[str, str], pass_fds: tuple[int, ...],
+    **popen_kwargs: Any,
+) -> tuple[subprocess.Popen[Any], Path]:
+    """Launch a supervisor whose workload is fenced behind its durable handoff."""
+    gate_read, gate_write = os.pipe()
+    launch_env = dict(env)
+    launch_env["GARDEN_LAUNCH_GATE_FD"] = str(gate_read)
+    proc: subprocess.Popen[Any] | None = None
+    try:
+        proc = subprocess.Popen(
+            command, env=launch_env, pass_fds=(*pass_fds, gate_read), **popen_kwargs,
+        )
+        os.close(gate_read)
+        gate_read = -1
+        active_claim = _persist_active_claim(
+            root, run, execution_dir, repo, final_path, proc.pid,
+        )
+        os.write(gate_write, b"1")
+        return proc, active_claim
+    except BaseException:
+        # EOF makes the supervisor fail closed before it acquires a slot or starts work.
+        if proc is not None:
+            os.close(gate_write)
+            gate_write = -1
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _stop_obsolete_process(proc)
+        raise
+    finally:
+        if gate_read >= 0:
+            os.close(gate_read)
+        if gate_write >= 0:
+            os.close(gate_write)
 
 
 def _collect_supervised_result(
@@ -1067,14 +1119,13 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 f"> {shlex.quote(str(execution_dir / 'stdout.json'))} "
                 f"2> {shlex.quote(str(execution_dir / 'stderr.log'))}"
             )
-            proc = subprocess.Popen(
+            final_path = repo.parent / f"{run['id']}-final.md"
+            proc, active_claim = _launch_claim_supervisor(
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
+                root=root, run=run, execution_dir=execution_dir, repo=repo,
+                final_path=final_path,
                 cwd=repo, env=execution_env, pass_fds=(repo_lock.fileno(),),
                 start_new_session=True,
-            )
-            final_path = repo.parent / f"{run['id']}-final.md"
-            active_claim = _persist_active_claim(
-                root, run, execution_dir, repo, final_path, proc.pid,
             )
             check_returncode = _wait_for_process(proc, heartbeat)
             final, parsed, usage, cost, error, rc = _collect_supervised_result(
@@ -1102,11 +1153,12 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             stdout_path = execution_dir / "stdout.log"
             stderr_path = execution_dir / "stderr.log"
             with stdout_path.open("w+") as stdout_file, stderr_path.open("w+") as stderr_file:
-                proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
-                                        text=True, cwd=repo, env=execution_env,
-                                        pass_fds=(repo_lock.fileno(),), start_new_session=True)
-                active_claim = _persist_active_claim(
-                    root, run, execution_dir, repo, final_path, proc.pid,
+                proc, active_claim = _launch_claim_supervisor(
+                    supervised, root=root, run=run, execution_dir=execution_dir,
+                    repo=repo, final_path=final_path, env=execution_env,
+                    pass_fds=(repo_lock.fileno(),), stdin=subprocess.PIPE,
+                    stdout=stdout_file, stderr=stderr_file, text=True, cwd=repo,
+                    start_new_session=True,
                 )
                 assert proc.stdin is not None
                 proc.stdin.write(str(run.get("brief") or ""))
