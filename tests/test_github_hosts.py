@@ -719,8 +719,9 @@ def test_actions_analyser_qualifies_each_host_in_cli_and_rerun_commands(monkeypa
             returncode = 0
             stderr = ""
             stdout = (
-                '[{"databaseId": 42, "name": "test", "conclusion": "failure", "headSha": "head"}]'
-                if command[2] == "list" else "intermittent failure"
+                '[{"databaseId": 42, "name": "test", "conclusion": "failure", '
+                '"headSha": "head", "attempt": 3}]'
+                if command[2] == "list" else "job\tstep\t2026-09-10T00:00:00Z ##[group]Run pytest tests/test_api.py\nintermittent failure"
             )
 
         return Result()
@@ -746,6 +747,9 @@ def test_actions_analyser_qualifies_each_host_in_cli_and_rerun_commands(monkeypa
     assert first["retry_command"] == "/fake/gh run rerun 42 -R forge-one.test/team/repo --failed"
     assert second["retry_command"] == "/fake/gh run rerun 42 -R forge-two.test/team/repo --failed"
     assert public["retry_command"] == "/fake/gh run rerun 42 -R github.com/team/repo --failed"
+    assert "run 42, attempt 3, source head" in first["details"]
+    assert "### Commands\npytest tests/test_api.py" in first["details"]
+    assert "attempt" in commands[0][commands[0].index("--json") + 1]
 
 
 def test_public_host_uses_default_client_without_an_explicit_route(monkeypatch):
