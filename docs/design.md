@@ -2,8 +2,8 @@
 
 This is the high-level design: the idea and the loop. `docs/architecture.md` describes how
 the pieces fit and `docs/worker-protocol.md` how the scheduler and a worker communicate.
-Per-feature specs live under `context-garden/phase-01-bootstrap/specs/`; the roadmap is
-`docs/roadmap.md`.
+The [specification index](../specs/README.md) identifies current product contracts and
+historical phase specifications; the roadmap is `docs/roadmap.md`.
 
 ## The idea
 
@@ -80,9 +80,11 @@ token-free scripts; `events` records history; `store` and `model` read and write
    needed). An automated review checks acceptance criteria, correctness, scope and the PR
    description; configured personas add their view. Findings route into the revise loop.
 6. **Triage.** The human's first look, from the Inbox: ready for review, or send it back.
-7. **Humans.** Review on GitHub. Comments and red CI (analysed by token-free checkers,
-   with flaky reruns) become revise runs. Stall detection stops loops that do not
-   converge; questions pause the task until answered.
+7. **Humans.** Review on GitHub. Substantive comments and applicable red CI (analysed by
+   token-free checkers, with bounded flaky reruns) become revise runs. Verification is
+   proportionate to the changed behavior; missing optional presentation evidence is not itself
+   a defect. Stall detection stops loops that do not converge; questions pause the task until
+   answered.
 8. **Merge.** The scheduler automatically merges eligible reviewed PRs. The task is done,
    dependents unblock or restack, and the worktree is removed.
 9. **Reflect.** `garden digest` says what needs a human; `garden metrics` says what each

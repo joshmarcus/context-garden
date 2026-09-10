@@ -92,10 +92,12 @@ branch for CI; this does not grant PR-management credentials. The SSH runner pus
 host-side branch, while the remote runner pushes a lease-specific staging ref for scheduler
 promotion. Review comments and pull requests remain scheduler-owned.
 
-## Required review evidence
+## Review evidence
 
-A task can ask the scheduler to produce review evidence with `requires:` frontmatter, or
-with the same concise phrases in an acceptance criterion. For example:
+A task can explicitly ask the scheduler to produce review evidence with `requires:` frontmatter,
+or with the same concise phrases in an acceptance criterion. These declarations are useful when
+the evidence is material to the outcome; they are not a universal checklist inferred from a path
+or keyword. For example:
 
 ```yaml
 requires:
@@ -143,10 +145,10 @@ There is no universal library path, and the garden never installs host packages 
 privileges. If Config shows `worker_env.pass` as held by an in-flight fence, accept the reload
 through the supported Config action before expecting the probe to see it.
 
-Browser readiness is infrastructure evidence only. It is not application acceptance: the
-current PR head must still produce every expected PNG and provide executed interaction and
-viewport evidence. HTML/text fallback output and partial screenshot sets fail the UI check;
-they are retained as diagnostics, never presented as successful captures.
+Browser readiness is infrastructure evidence only. It is not application acceptance. When a
+task explicitly requires captures, the current PR head must produce the required output and the
+result must be reported truthfully. HTML/text fallback output and partial screenshot sets are
+diagnostics, not successful captures.
 
 An owner can temporarily set `review.capture_infrastructure_policy: advisory` when the
 screenshot host path is unavailable. The default is `require`. Advisory mode skips the
@@ -159,23 +161,15 @@ viewport behavior, another failed functional check, or source/artifact evidence 
 contradicts the reviewed head. Those remain blocking, and a missing PNG is never reported as a
 pass. Restore `require` once capture infrastructure is available.
 
-The scheduler also classifies changes to the web app, scheduler lifecycle, Inbox/model state,
-or QA journeys as interaction-affecting. Their automated reviewer must serve the reviewed head
-against a disposable garden and report the command, performed actions, observed consequences,
-and artifact paths for the affected journey, an empty state, and a relevant failure/recovery
-state. This structured JSON interaction record names the reviewed SHA, repeats the performed
-actions and observations, and includes a chronological sequence of affected, empty, failure, and
-recovery events. Each event names its outcome; served HTTP failures have an unsuccessful response
-followed by a successful recovery response, while browser actions name the action, target, outcome,
-and observed result.
-It lists automated checks separately. A screenshot, generic file, or image-only artifact by
-itself is capture evidence, not interaction evidence; missing,
-failed, stale-head, live-garden, or partly unverified interaction evidence mechanically changes
-an approval to changes requested. Reviews of performance or scalability claims additionally
-record representative and larger histories, repeated cache-expiry intervals, executing bounded
-workloads, empirical latency samples, read/scan counts, and whether the load was controlled or
-used real model harnesses. Pure non-UI changes keep the ordinary proportionate code-and-test
-review.
+The scheduler may classify web, lifecycle, Inbox/model-state, or QA changes as interaction
+affecting and can request a disposable application replay. The reviewer chooses evidence
+proportionate to the concrete behavior and reports the reviewed source and what was actually
+observed. A running application, every empty/failure/recovery state, a prescribed JSON event
+shape, and performance/load experiments are not blanket requirements. Performance or scalability
+claims do require evidence that addresses those claims, and load work remains separately bounded
+and opt-in. A stale-head result, observed defect, failed applicable check, or contradictory claim
+remains blocking; absent optional evidence does not mechanically change an otherwise supported
+approval.
 
 ## The sequence
 
