@@ -41,7 +41,9 @@ def register(app: FastAPI, site: Site) -> None:
         correlated = next((item for item in reversed(log.read(limit=100))
                            if request_id and item.get("request_id") == request_id
                            and item.get("run_id")), {})
-        worker_id = str(getattr(run, "host", "") or body.get("host") or "")[:128]
+        worker_id = safe_correlation_id(
+            body.get("worker_id") or getattr(run, "host", "") or body.get("host")
+        )
         prior = [item for item in log.read(limit=100)
                  if item.get("event") == "controller_outcome"
                  and item.get("worker_id") == worker_id and item.get("operation") == operation]

@@ -28,10 +28,12 @@ from garden.remote_worker import (
     _host_check_data,
     _LeaseHeartbeat,
     _validation_receipts,
+    _persist_active_claim,
     _wait_for_process,
     deliver_pending_results,
     doctor_worker,
     execute_claim,
+    recover_active_claims,
 )
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
@@ -158,6 +160,31 @@ def test_controller_diagnostics_capture_and_deduplicate_failed_requests(garden, 
     assert [item["kind"] for item in notices] == ["worker_failure", "worker_recovery"]
 
 
+def test_controller_diagnostics_keep_worker_recoveries_separate(garden, monkeypatch):
+    http, _store = remote_client(garden, monkeypatch)
+    headers = {"Authorization": "Bearer secret-token"}
+
+    failed = http.post("/api/runs/missing/heartbeat", json={
+        "worker_id": "worker-a", "process_generation": "a" * 32,
+        "request_id": "worker-a-failure", "lease_token": "missing",
+    }, headers=headers)
+    assert failed.status_code == 404
+    assert http.post("/api/runs/claim", json={
+        "worker_id": "worker-b", "process_generation": "b" * 32,
+        "request_id": "worker-b-success", "host": "build-1", "harnesses": ["claude"],
+    }, headers=headers).status_code == 204
+
+    outcomes = [event for event in http.get("/api/worker-diagnostics").json()
+                if event["event"] == "controller_outcome"]
+    assert [(event["worker_id"], event["http_status"]) for event in outcomes[-2:]] == [
+        ("worker-a", 404), ("worker-b", 204),
+    ]
+    notices = http.get("/api/events").json()
+    assert [(event["kind"], event["worker_id"]) for event in notices] == [
+        ("worker_failure", "worker-a"),
+    ]
+
+
 def test_pending_finish_is_delivered_after_worker_restart(tmp_path):
     pending = tmp_path / "pending-results"
     pending.mkdir()
@@ -176,6 +203,52 @@ def test_pending_finish_is_delivered_after_worker_restart(tmp_path):
     assert deliver_pending_results(tmp_path, Client()) == 1
     assert calls == [("/api/runs/run-1/finish", {"lease_token": "opaque", "exit_code": 0})]
     assert not list(pending.iterdir())
+
+
+def test_replacement_daemon_collects_surviving_supervisor_once(tmp_path, monkeypatch):
+    """A real detached supervisor finishes while only replacement-daemon state observes it."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-live"
+    execution_dir.mkdir(parents=True)
+    final_path = repo.parent / "run-1-final.md"
+    stdout_path = execution_dir / "stdout.log"
+    stderr_path = execution_dir / "stderr.log"
+    script = f"sleep 0.2; printf survived > {stdout_path}"
+    with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+        supervisor = subprocess.Popen(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), script],
+            stdout=stdout, stderr=stderr, start_new_session=True,
+        )
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 5, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    _persist_active_claim(root, run, execution_dir, repo, final_path, supervisor.pid)
+    published = []
+
+    class ReplacementClient:
+        events = None
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            return 200, {}
+
+    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
+        "final_text": "survived", "result": {"status": "done"}, "usage": {},
+        "cost_usd": 0.0, "error": "",
+    })
+    monkeypatch.setattr("garden.remote_worker._publish_claim_result",
+                        lambda *args, **kwargs: published.append(kwargs))
+
+    assert recover_active_claims(root, ReplacementClient()) == 1
+    supervisor.wait(timeout=5)
+    assert published[0]["final"] == "survived"
+    assert published[0]["rc"] == 0
+    assert recover_active_claims(root, ReplacementClient()) == 0
 
 
 def test_pending_finish_retries_transient_failure_without_blocking_startup(tmp_path):
