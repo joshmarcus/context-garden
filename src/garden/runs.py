@@ -962,6 +962,8 @@ class RunStore:
     def _archived_runs(self) -> list[Run]:
         """Read the compact archive index, never the archived directory tree."""
         manifest = self.archive_dir / "index.json"
+        if (self.archive_dir / "pending.json").exists():
+            raise HistoryUnavailable("archive migration is incomplete; rerun garden archive-runs --apply")
         if not manifest.exists():
             if self.archive_dir.exists() and any(self.archive_dir.iterdir()):
                 raise HistoryUnavailable("archive index is missing; historical totals are unavailable")
@@ -986,6 +988,8 @@ class RunStore:
         manifest = self.archive_dir / "index.json"
         if not self.archive_dir.exists():
             return ""
+        if (self.archive_dir / "pending.json").exists():
+            return "archive migration is incomplete; run garden archive-runs --apply to repair it"
         if not manifest.exists():
             return "archive index is missing; run garden archive-runs to verify and rebuild it"
         try:
@@ -1188,6 +1192,12 @@ class RunStore:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
                     continue
+                self._durable_replace(
+                    self.archive_dir / "pending.json",
+                    json.dumps({"version": self.ARCHIVE_VERSION, "task_id": run.task_id,
+                                "run_id": run.run_id, "source": str(run.path),
+                                "target": str(target)}).encode(),
+                )
                 os.replace(run.path, target)
                 self._compact_archived_run(target)
                 self._index.dirty_tasks.add(run.task_id)
@@ -1198,6 +1208,7 @@ class RunStore:
             for run_json in legacy[:limit] if limit is not None else legacy:
                 self._compact_archived_run(run_json.parent)
             self._write_archive_index()
+            (self.archive_dir / "pending.json").unlink(missing_ok=True)
             return moved
 
     def archive_preview(self, before: dt.datetime, protected_run_ids: set[str] | None = None,

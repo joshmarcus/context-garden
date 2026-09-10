@@ -390,6 +390,16 @@ def test_legacy_archive_ledger_remains_readable(tmp_path: Path):
     assert fresh.totals()["cost_usd"] == 3.25
     assert fresh.all_runs()[0].run_id == run.run_id
 
+def test_incomplete_archive_migration_never_silently_omits_history(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    rs.archive_dir.mkdir()
+    (rs.archive_dir / "index.json").write_text('{"version": 2, "runs": []}')
+    (rs.archive_dir / "pending.json").write_text('{"run_id": "run-1"}')
+
+    assert "incomplete" in rs.archive_health()
+    with pytest.raises(HistoryUnavailable, match="incomplete"):
+        rs.all_runs()
+
 
 def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):
     rs = RunStore(tmp_path)
