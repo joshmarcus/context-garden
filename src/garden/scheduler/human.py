@@ -435,7 +435,9 @@ class HumanMixin:
             effective = floor
         new = effective
         protected = bool(task.model)
-        if not protected and effective != "hard":
+        if protected:
+            new = current
+        elif effective != "hard":
             new = levels[levels.index(effective) + 1]
         if not protected:
             task.difficulty = new

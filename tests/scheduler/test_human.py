@@ -543,8 +543,8 @@ def test_objective_failure_escalates_once_and_records_resolved_route(sched):
         "reason": "branch-owned tests failed",
         "prior_tier": "easy",
         "new_tier": "medium",
-        "prior_model": "",
-        "model": "",
+        "prior_model": "haiku",
+        "model": "sonnet",
         "protected_model": False,
         "at": st["implementation_failure_escalations"][-1]["at"],
     }

@@ -1,5 +1,7 @@
 """Review and asynchronous CI feedback reach one complete, head-bound revise brief."""
 
+import json
+
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler import Scheduler
@@ -84,13 +86,16 @@ def _failed_ci():
     return [{"name": "actions", "status": "fail", "summary": "six focused tests failed", "details": "test recovery[0-5]"}]
 
 
-def _finish_ci(sched, task, run, head, rep=None):
+def _finish_ci(sched, task, run, head, rep=None, failure_identity=""):
     rep = rep or TickReport()
+    if not failure_identity:
+        failure_identity = sched._ci_failure_identity(sched.github.prs[task.branch])
     sched._after_ci_check(
         task,
         run,
         _failed_ci(),
-        {"head": head, "ci_note": "- **CI** is failing on this branch (failed checks: test)."},
+        {"head": head, "ci_note": "- **CI** is failing on this branch (failed checks: test).",
+         "ci_failure_identity": failure_identity},
         rep,
     )
     return rep
@@ -171,7 +176,7 @@ def test_ci_reap_is_restart_safe_deduplicated_and_charges_one_revision(sched, fa
     routes = restarted.state.get(task.id)["implementation_failure_escalations"]
     assert len(routes) == 1
     assert routes[0]["signal"] == "failed_final_verification"
-    assert routes[0]["identity"] == f"{pr.head_sha}:test"
+    assert json.loads(routes[0]["identity"])["head"] == pr.head_sha
     assert second.transitions == []
     restarted.dispatch(restarted_task, mode="revise", runner=restarted.runner_for(restarted_task))
     assert restarted.state.get(task.id)["revisions"] == 1
@@ -192,6 +197,22 @@ def test_ci_infrastructure_failure_does_not_escalate_implementation(sched, fake_
     )
 
     assert not sched.state.get(task.id).get("implementation_failure_escalations")
+
+
+def test_exact_provider_ci_failure_escalates_after_usable_analysis(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    pr.checks = "SUCCESS"
+    identity = f"worker_check:{pr.head_sha}:failure"
+
+    _finish_ci(
+        sched, task, _ci_run(sched, task, pr.head_sha), pr.head_sha,
+        failure_identity=identity,
+    )
+
+    route = sched.state.get(task.id)["implementation_failure_escalations"][-1]
+    assert route["signal"] == "failed_final_verification"
+    assert route["identity"] == identity
+    assert task.difficulty == "hard"
 
 
 def test_ci_preserves_an_operator_resolved_or_superseded_feedback_record(sched, fake_github):
