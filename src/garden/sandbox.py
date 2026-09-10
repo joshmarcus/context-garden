@@ -113,17 +113,20 @@ class SandboxPolicy:
 
         The challenge is deliberately independent of command text and runs before untrusted
         input. A wrapper must permit an authorized read/write while denying protected access,
-        a symlink escape, the same write from a descendant, and an unapproved connection.
+        arbitrary outside-allowlist access, a symlink escape, descendant access, and an
+        unapproved connection.
         """
         with tempfile.TemporaryDirectory(prefix="garden-sandbox-probe-") as raw:
             root = Path(raw)
             writable = root / "writable"
             readable = root / "readable"
             protected = root / "protected"
-            for path in (writable, readable, protected):
+            outside = root / "outside"
+            for path in (writable, readable, protected, outside):
                 path.mkdir()
             (readable / "context").write_text("context")
             (protected / "secret").write_text("secret")
+            (outside / "secret").write_text("outside")
             (writable / "escape").symlink_to(protected, target_is_directory=True)
             listener = socket.socket()
             listener.bind(("127.0.0.1", 0))
@@ -132,7 +135,7 @@ class SandboxPolicy:
             token = os.urandom(16).hex()
             script = """
 import pathlib, socket, subprocess, sys
-w, r, p, port, token = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+w, r, p, outside, port, token = (pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4]), int(sys.argv[5]), sys.argv[6])
 def denied(fn):
     try: fn()
     except (OSError, PermissionError): return True
@@ -142,8 +145,12 @@ ok = (r / 'context').read_text() == 'context'
 checks = [
     denied(lambda: (p / 'secret').read_text()),
     denied(lambda: (p / 'changed').write_text('bad')),
+    denied(lambda: (outside / 'secret').read_text()),
+    denied(lambda: (outside / 'changed').write_text('bad')),
     denied(lambda: (w / 'escape' / 'secret').read_text()),
     subprocess.run([sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('bad')", str(p / 'child')], capture_output=True).returncode != 0,
+    subprocess.run([sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).read_text()", str(outside / 'secret')], capture_output=True).returncode != 0,
+    subprocess.run([sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('bad')", str(outside / 'child')], capture_output=True).returncode != 0,
     denied(lambda: socket.create_connection(('127.0.0.1', port), timeout=.25)),
 ]
 if ok and all(checks): print(token)
@@ -159,7 +166,8 @@ else: raise SystemExit(97)
                 "resolve_symlinks": True,
             }
             argv = [*prefix, _POLICY_FLAG, json.dumps(policy, separators=(",", ":")), "--",
-                    sys.executable, "-c", script, str(writable), str(readable), str(protected), str(port), token]
+                    sys.executable, "-c", script, str(writable), str(readable), str(protected), str(outside),
+                    str(port), token]
             try:
                 result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=5)
             except (OSError, subprocess.SubprocessError) as exc:
@@ -167,7 +175,10 @@ else: raise SystemExit(97)
             finally:
                 listener.close()
             if result.returncode != 0 or result.stdout.strip() != token:
-                raise SandboxError("sandbox command failed the filesystem, descendant, symlink, or network enforcement challenge")
+                raise SandboxError(
+                    "sandbox command failed the allowlist, protected-root, descendant, symlink, or network "
+                    "enforcement challenge"
+                )
 
     def command_argv(self, shell_command: str, writable_root: Path, *,
                      additional_writable_roots: list[Path] | None = None,

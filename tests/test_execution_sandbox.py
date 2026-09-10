@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -8,6 +9,8 @@ import pytest
 
 from garden.checks import run_check
 from garden.harness import Harness
+from garden.runner.local import LocalRunner
+from garden.runs import Run
 from garden.sandbox import SandboxError, SandboxPolicy
 
 
@@ -118,6 +121,70 @@ def test_wrapper_receives_complete_policy(
         "inherit_to_descendants": True, "resolve_symlinks": True,
     }
     assert mechanism == "test-sandbox"
+
+
+def test_sandboxed_codex_result_uses_narrow_output_root(
+        tmp_path: Path, sandbox_wrapper: Path):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = tmp_path / "controller" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    run = Run(task_id="T-1", run_id="r1", dir=str(run_dir), runner="local",
+              fence_paths=[str(tmp_path / "controller")])
+    runner = LocalRunner(
+        {"sandbox": {"required": True, "command": [str(sandbox_wrapper)]}},
+        Harness("codex", {}),
+    )
+
+    output = runner.harness_output_path(run, worktree)
+    argv = runner.harness_argv(run, worktree, run_dir / "final.md")
+    payload = json.loads(argv[argv.index("--garden-sandbox-policy") + 1])
+
+    assert output.parent in [Path(path) for path in payload["writable_roots"]]
+    assert str(run_dir) not in payload["writable_roots"]
+    assert str(tmp_path / "controller") in payload["protected_roots"]
+    assert str(output) in argv[-1]
+
+
+def test_trusted_supervisor_publishes_sandboxed_codex_result(
+        tmp_path: Path, sandbox_wrapper: Path):
+    agent = tmp_path / "codex"
+    agent.write_text("""#!/usr/bin/env python3
+import pathlib, sys
+args = sys.argv[1:]
+pathlib.Path(args[args.index('--output-last-message') + 1]).write_text('sandbox result')
+sys.stdin.read()
+""")
+    agent.chmod(agent.stat().st_mode | stat.S_IXUSR)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = tmp_path / "controller" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    brief = run_dir / "brief.md"
+    brief.write_text("brief")
+    run = Run(task_id="T-1", run_id="r1", dir=str(run_dir), runner="local",
+              fence_paths=[str(tmp_path / "controller")])
+    runner = LocalRunner(
+        {"timeout_minutes": 0, "sandbox": {"required": True, "command": [str(sandbox_wrapper)]}},
+        Harness("codex", {"bin": str(agent)}),
+    )
+    output = runner.harness_output_path(run, worktree)
+
+    env = dict(os.environ)
+    for name in (
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
+        "GARDEN_OWNER_SCOPED", "GARDEN_EXECUTION_TIMEOUT_SECONDS",
+        "GARDEN_VALIDATION_INHERITS_LEASE",
+    ):
+        env.pop(name, None)
+    runner.launch(run, worktree, brief, env)
+    os.waitpid(run.pid, 0)
+
+    assert run.read_exit_code() == 0
+    assert (run_dir / "final.md").read_text() == "sandbox result"
+    command = (run_dir / "command.txt").read_text()
+    assert f"--output-last-message {output}" in command
+    assert f"cp {output} {run_dir / 'final.md'}" in command
 
 
 def test_capability_attestation_without_enforcement_is_rejected(

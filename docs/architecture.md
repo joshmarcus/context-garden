@@ -73,9 +73,11 @@ flowchart LR
   readable, writable and protected roots, symlink resolution, descendant inheritance and
   destination-level network filtering. Each launch receives the concrete JSON policy through
   `--garden-sandbox-policy`, followed by `-- sh -c <command>`. Garden then challenges the
-  wrapper with real approved and prohibited operations before trusting that report: protected
-  reads and writes, symlink traversal, descendant writes, and an unapproved loopback connection
-  must be denied while an authorized read and write succeed. Legacy `{writable_root}` and
+  wrapper with real approved and prohibited operations before trusting that report: direct and
+  descendant reads and writes outside the allowlists, protected-root access, symlink traversal,
+  and an unapproved loopback connection must be denied while an authorized read and write
+  succeed. Sandboxed model results are written to a narrow per-run output root, then copied into
+  protected run state by the trusted supervisor. Legacy `{writable_root}` and
   `{network_destinations}` argument placeholders remain available. This makes the wrapper
   responsible for filesystem, symlink, child-process and network enforcement rather than
   trusting branch code or a self-attested capability document. Writable cache/state and copied
