@@ -172,5 +172,15 @@ def test_skipped_criterion_flows_through_pr_body_review_and_metrics(sched, fake_
     m = metrics(log.read(), sched.store.tasks())
     row = next(r for r in m["tasks"] if r["id"] == "DM-001")
     assert row["criteria_met"] == 1 and row["criteria_total"] == 2
-    d = m["by_difficulty"]["medium"]
+    # The unmet criterion is an objective implementation failure. Metrics group the
+    # task under its current effective tier, while the dispatch event retains the
+    # historical medium/sonnet route used for the first attempt.
+    assert row["difficulty"] == "hard"
+    d = m["by_difficulty"]["hard"]
     assert d["criteria_met"] == 1 and d["criteria_total"] == 2 and d["criteria_rate"] == 0.5
+    first_work = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "work")
+    assert first_work.difficulty == "medium" and first_work.model == "sonnet"
+    escalation = st["implementation_failure_escalations"][-1]
+    assert escalation["signal"] == "unmet_acceptance_criteria"
+    assert escalation["prior_tier"] == "medium" and escalation["new_tier"] == "hard"
+    assert escalation["prior_model"] == "sonnet" and escalation["model"] == "opus"
