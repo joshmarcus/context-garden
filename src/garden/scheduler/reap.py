@@ -21,6 +21,7 @@ from ..runner.base import Runner, run_temp_dir
 from ..runs import Run, RunMutationConflict
 from .human import validate_investigation_report
 from .report import TickReport
+from .resources import ResourcePressureError
 
 
 class ReapMixin:
@@ -898,10 +899,14 @@ class ReapMixin:
         repo = self.repo_for(task)
         try:
             if not wt.exists():
-                gitops.prepare_worktree(repo, wt, branch, base)
+                with self._local_staging_admission("base recovery checkout materialization"):
+                    gitops.prepare_worktree(repo, wt, branch, base)
             gitops.fetch(wt)
             ref = gitops.base_ref(wt, base)
             tip = gitops.rev_parse(wt, ref)
+        except ResourcePressureError as e:
+            self.log(f"{task.id}: {e}; still waiting for `{base}`")
+            return False
         except gitops.GitError as e:
             self.log(f"{task.id}: base re-probe failed ({e}); still waiting for `{base}`")
             return False
