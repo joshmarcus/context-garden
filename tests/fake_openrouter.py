@@ -37,7 +37,7 @@ def handle(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> in
     if "GARDEN_REVIEW:" in brief:
         final = 'GARDEN_REVIEW: {"verdict":"approve","summary":"OpenRouter checked it","description_ok":true,"findings":[]}'
     elif "GARDEN_PERSONA:" in brief:
-        final = 'GARDEN_PERSONA: {"persona":"operator","score":9,"overall":"OpenRouter persona complete","findings":[]}'
+        final = 'GARDEN_PERSONA: {"persona":"security","score":9,"overall":"OpenRouter persona complete","findings":[]}'
     elif brief == "Reply with the single word: ready.":
         final = "ready"
     else:

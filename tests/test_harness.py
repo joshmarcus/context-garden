@@ -74,12 +74,12 @@ def test_openrouter_defaults_and_probe_use_provider_configuration():
     assert prompt == "Reply with the single word: ready."
     assert 'model_provider="openrouter"' in argv
     assert 'sandbox_mode="read-only"' in argv
-    assert argv[argv.index("-m") + 1] == "openrouter/qwen/qwen3-coder"
+    assert argv[argv.index("-m") + 1] == "qwen/qwen3-coder"
 
 
 def test_openrouter_rejects_unsafe_api_key_environment_name():
     with pytest.raises(ValueError, match="environment variable name"):
-        Harness("openrouter", {"api_key_env": "KEY=value"}).api_key_env
+        _ = Harness("openrouter", {"api_key_env": "KEY=value"}).api_key_env
 
 
 def test_claude_spend_limit_is_a_quota_env_error():

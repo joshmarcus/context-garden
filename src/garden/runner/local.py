@@ -129,7 +129,6 @@ class LocalRunner(Runner):
         )
         credential_fds: tuple[int, ...] = ()
         credential_read_fd = -1
-        credential_write_fd = -1
         key_name = self.harness.api_key_env
         key_value = os.environ.get(key_name, "") if key_name else ""
         if key_name and key_value:
@@ -138,17 +137,18 @@ class LocalRunner(Runner):
             credential_read_fd, credential_write_fd = os.pipe()
             os.write(credential_write_fd, key_value.encode())
             os.close(credential_write_fd)
-            credential_write_fd = -1
             env["GARDEN_HARNESS_API_KEY_FD"] = str(credential_read_fd)
             env["GARDEN_HARNESS_API_KEY_NAME"] = key_name
             credential_fds = (credential_read_fd,)
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(worktree), env=env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, pass_fds=credential_fds,
-        )
-        if credential_read_fd >= 0:
-            os.close(credential_read_fd)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(worktree), env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, pass_fds=credential_fds,
+            )
+        finally:
+            if credential_read_fd >= 0:
+                os.close(credential_read_fd)
         run.pid = proc.pid
         run.status = "running"
         run.harness = self.harness.name

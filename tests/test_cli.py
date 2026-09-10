@@ -1,6 +1,7 @@
 import json
 import re
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -663,6 +664,22 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch, _gh_available):
         assert "all good" in r.output
         assert "free space work dir: 1 MB" in r.output
         assert "below doctor.min_free_mb=2048 MB" in r.output
+
+
+def test_doctor_reports_openrouter_key_and_tier_models(garden, monkeypatch):
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["harnesses"]["openrouter"] = {
+        "bin": str(Path(__file__).with_name("fake_openrouter.py")),
+        "models": {"easy": "openrouter/qwen/qwen3-coder", "medium": "openrouter/openai/gpt-5"},
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    result = run(garden, "doctor")
+
+    assert result.exit_code == 1
+    assert "harness openrouter: OPENROUTER_API_KEY is not set" in result.output
+    assert "openrouter/qwen/qwen3-coder" in result.output
 
 
 def test_doctor_does_not_import_private_runner_adapters(

@@ -247,7 +247,8 @@ class Harness:
                     "-c", 'model_providers.openrouter.wire_api="responses"',
                 ]
             if model:
-                cmd += ["-m", model]
+                provider_model = model.removeprefix("openrouter/") if self.name == "openrouter" else model
+                cmd += ["-m", provider_model]
             if final_path is not None:
                 cmd += ["--output-last-message", str(final_path)]
             cmd += [str(a) for a in (self.cfg.get("extra_args") or [])]

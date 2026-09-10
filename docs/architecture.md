@@ -202,6 +202,8 @@ review pools, personas, and retros can route to it independently. `api_key_env` 
 setup, while the ordinary worker environment remains scrubbed. Codex JSONL remains the raw
 `stdout.json` transcript. Its final message becomes `final.md`, and response usage plus the
 provider-reported `usage.cost` are persisted in `run.json`.
+The garden-facing `openrouter/vendor/model` identifier is passed to the provider as its
+native `vendor/model` name.
 
 ```yaml
 harnesses:
