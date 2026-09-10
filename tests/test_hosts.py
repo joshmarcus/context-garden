@@ -333,6 +333,15 @@ def test_on_demand_capacity_error_is_not_reported_as_spot_shortage(tmp_path):
 
 def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliation(tmp_path):
     client = StubEC2()
+
+    class Events:
+        pending = []
+
+        def pending_events(self, owner, pool):
+            assert (owner, pool) == ("team-a", "workers")
+            return self.pending
+
+    events = Events()
     spec = replace(
         pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
              profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
@@ -343,12 +352,13 @@ def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliatio
         },
     )
     state = JsonStateStore(tmp_path / "state.json")
-    lifecycle = HostLifecycle({"ec2": EC2Provider(client)}, state)
+    lifecycle = HostLifecycle({"ec2": EC2Provider(client, event_source=events)}, state)
     original = lifecycle.reconcile(spec)[0]
-    client.describe_instance_status = lambda **kwargs: {"InstanceStatuses": [{
-        "InstanceId": original.provider_id,
-        "Events": [{"Code": "instance-terminate", "Description": "Spot interruption"}],
-    }]}
+    events.pending = [{
+        "source": "aws.ec2",
+        "detail-type": "EC2 Spot Instance Interruption Warning",
+        "detail": {"instance-id": original.provider_id, "instance-action": "terminate"},
+    }]
     # Give replacement launches distinct fixture identities.
     old_run = client.run_instances
 
@@ -359,7 +369,7 @@ def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliatio
 
     client.run_instances = replacement_run
     replaced = lifecycle.reconcile(spec)
-    client.describe_instance_status = lambda **kwargs: {"InstanceStatuses": []}
+    events.pending = []
     again = lifecycle.reconcile(spec)
 
     assert [host.provider_id for host in replaced if host.state != HostState.TERMINATED] == ["i-replacement"]
@@ -368,6 +378,49 @@ def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliatio
     assert original.operation_id != replacement.operation_id
     saved = state.read()
     assert [event["kind"] for event in saved["events"]].count("interruption") == 1
+
+
+def test_eventbridge_rebalance_event_drains_host_and_ignores_other_events(tmp_path):
+    client = StubEC2()
+
+    class Events:
+        pending = []
+
+        def pending_events(self, owner, pool):
+            return self.pending
+
+    events = Events()
+
+    spec = replace(
+        pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
+             profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
+        provider_options={
+            "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
+            "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
+            "spot_hourly_usd": 0.06,
+        },
+    )
+    lifecycle = HostLifecycle(
+        {"ec2": EC2Provider(client, event_source=events)},
+        JsonStateStore(tmp_path / "state.json"),
+    )
+    lifecycle.reconcile(spec)
+    events.pending = [
+        {
+            "source": "aws.ec2",
+            "detail-type": "EC2 Instance Rebalance Recommendation",
+            "detail": {"instance-id": "i-owned"},
+        },
+        {
+            "source": "aws.ec2",
+            "detail-type": "EC2 Instance State-change Notification",
+            "detail": {"instance-id": "i-unrelated", "state": "stopping"},
+        },
+    ]
+    lifecycle.reconcile(spec)
+
+    assert client.instances[0]["State"]["Name"] == "terminated"
+    assert "EC2 Instance Rebalance Recommendation" in (tmp_path / "state.json").read_text()
 
 
 def test_stale_host_return_does_not_displace_or_rotate_replacement(tmp_path):

@@ -13,6 +13,7 @@ import math
 import re
 import shlex
 import time
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -43,6 +44,12 @@ class DeadlineEnforcer(Protocol):
     def arm_and_verify(self, declaration: HostDeclaration) -> None: ...
 
 
+class EC2EventSource(Protocol):
+    """Durable, non-consuming view of AWS events delivered outside the EC2 query API."""
+
+    def pending_events(self, owner: str, pool: str) -> Iterable[dict[str, Any]]: ...
+
+
 class EC2Provider:
     name = "ec2"
     contract_version = CONTRACT_VERSION
@@ -67,7 +74,8 @@ class EC2Provider:
 
     def __init__(self, client: EC2Client, *, required_tags: dict[str, str] | None = None,
                  wait_seconds: float = 60, sleep=time.sleep,
-                 deadline_enforcer: DeadlineEnforcer | None = None):
+                 deadline_enforcer: DeadlineEnforcer | None = None,
+                 event_source: EC2EventSource | None = None):
         self.client = client
         self.required_tags = dict(required_tags or {})
         if any(k.startswith("context-garden:") or k.startswith("aws:") for k in self.required_tags):
@@ -78,6 +86,7 @@ class EC2Provider:
         self.wait_seconds = wait_seconds
         self.sleep = sleep
         self.deadline_enforcer = deadline_enforcer
+        self.event_source = event_source
 
     def validate_options(self, options: dict[str, Any]) -> None:
         unknown = set(options) - self.ALLOWED_OPTIONS
@@ -116,15 +125,8 @@ class EC2Provider:
             for reservation in response.get("Reservations", [])
             for instance in reservation.get("Instances", [])
         ]
-        status_method = getattr(self.client, "describe_instance_status", None)
-        if status_method and hosts:
-            statuses = status_method(InstanceIds=[host.provider_id for host in hosts], IncludeAllInstances=True)
-            interrupted = {
-                row["InstanceId"]: event
-                for row in statuses.get("InstanceStatuses", [])
-                for event in row.get("Events", [])
-                if event.get("Code") in {"instance-stop", "instance-terminate", "instance-retirement"}
-            }
+        if self.event_source is not None and hosts:
+            interrupted = self._spot_events(owner, pool)
             hosts = [
                 replace(host, state=HostState.INTERRUPTED,
                         detail=json.dumps({"provider_event": interrupted[host.provider_id]}, sort_keys=True))
@@ -132,6 +134,25 @@ class EC2Provider:
                 for host in hosts
             ]
         return hosts
+
+    def _spot_events(self, owner: str, pool: str) -> dict[str, dict[str, Any]]:
+        """Translate actual EventBridge Spot signals into provider-neutral interruptions."""
+        assert self.event_source is not None
+        events: dict[str, dict[str, Any]] = {}
+        for event in self.event_source.pending_events(owner, pool):
+            if event.get("source") != "aws.ec2":
+                continue
+            event_type = event.get("detail-type")
+            if event_type not in {
+                "EC2 Spot Instance Interruption Warning",
+                "EC2 Instance Rebalance Recommendation",
+            }:
+                continue
+            detail = event.get("detail")
+            instance_id = detail.get("instance-id") if isinstance(detail, dict) else None
+            if isinstance(instance_id, str) and instance_id:
+                events[instance_id] = event
+        return events
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
