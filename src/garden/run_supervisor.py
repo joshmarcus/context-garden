@@ -644,28 +644,6 @@ def main() -> int:
         (run_dir / "identity_error.json").write_text(json.dumps({"error": str(exc)}))
         (run_dir / "exit_code").write_text("1")
         return 1
-    # Keep the workload in a group separate from the supervisor. The supervisor can then
-    # signal and observe that whole group after its shell leader exits, on both Linux and
-    # Darwin, without signalling itself. Linux's subreaper additionally retains children
-    # that deliberately create another session; other POSIX kernels provide no equivalent.
-    child = subprocess.Popen(
-        ["sh", "-c", script],
-        pass_fds=_preserved_child_fds(),
-        start_new_session=True,
-        env=child_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    assert child.stdout is not None and child.stderr is not None
-    stdout_thread = threading.Thread(
-        target=_pump_output,
-        args=(child.stdout, run_dir / "stdout.json", authority_redactor, sys.stdout),
-    )
-    stderr_thread = threading.Thread(
-        target=_pump_output,
-        args=(child.stderr, run_dir / "stderr.log", authority_redactor, sys.stderr),
-    )
     raw_final_value = os.environ.get("GARDEN_RAW_FINAL_PATH", "")
     final_path_value = os.environ.get("GARDEN_FINAL_PATH", "")
     raw_final = Path(raw_final_value)
@@ -680,7 +658,32 @@ def main() -> int:
                 _pump_output(source, final_path, authority_redactor, sys.stdout)
 
         final_thread = threading.Thread(target=pump_final)
+    # Keep the workload in a group separate from the supervisor. The supervisor can then
+    # signal and observe that whole group after its shell leader exits, on both Linux and
+    # Darwin, without signalling itself. Linux's subreaper additionally retains children
+    # that deliberately create another session; other POSIX kernels provide no equivalent.
+    # Install the final-output FIFO and its reader first: a fast harness must never create a
+    # raw regular file before the redaction boundary is ready.
+    child = subprocess.Popen(
+        ["sh", "-c", script],
+        pass_fds=_preserved_child_fds(),
+        start_new_session=True,
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None and child.stderr is not None
+    if final_thread is not None:
         final_thread.start()
+    stdout_thread = threading.Thread(
+        target=_pump_output,
+        args=(child.stdout, run_dir / "stdout.json", authority_redactor, sys.stdout),
+    )
+    stderr_thread = threading.Thread(
+        target=_pump_output,
+        args=(child.stderr, run_dir / "stderr.log", authority_redactor, sys.stderr),
+    )
     stdout_thread.start()
     stderr_thread.start()
     kill_deadline = None

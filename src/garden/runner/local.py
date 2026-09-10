@@ -162,8 +162,12 @@ class LocalRunner(Runner):
             f"cd {shlex.quote(str(worktree))} && {inner} "
             f"< {shlex.quote(str(brief_path))}"
         )
-        env["GARDEN_RAW_FINAL_PATH"] = str(raw_final)
-        env["GARDEN_FINAL_PATH"] = str(d / "final.md")
+        # Custom harness commands are allowed to ignore the optional final-output path.
+        # Do not make their supervisors own a FIFO reader which can never have a writer.
+        # When the harness does consume it, the supervisor installs the FIFO before launch.
+        if str(raw_final) in inner:
+            env["GARDEN_RAW_FINAL_PATH"] = str(raw_final)
+            env["GARDEN_FINAL_PATH"] = str(d / "final.md")
         credential_fds: tuple[int, ...] = ()
         credential_read_fd = -1
         key_name = self.harness.api_key_env

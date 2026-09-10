@@ -777,8 +777,9 @@ def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path
         ))
         runs.append(run)
     for run in runs:
-        os.waitpid(run.pid, 0)
+        _wait_for_local_run(run, timeout=10.0)
         assert run.read_exit_code() == 0
+        assert not (run.path / ".final.raw").exists()
     assert (tmp_path / "model.txt").read_text() == "0 2"
     assert (tmp_path / "heavy.txt").read_text() == "0 1"
 
