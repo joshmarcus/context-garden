@@ -59,16 +59,19 @@ def register(app: FastAPI, site: Site) -> None:
         if event != "controller_outcome":
             return
         previous = prior[-1] if prior else None
-        failure = status >= 500 or status in {401, 403, 409}
+        failure = status >= 400
         same_failure = bool(previous and previous.get("http_status") == status
                             and int(previous.get("http_status") or 0) >= 400)
         recovered = status < 400 and bool(previous and int(previous.get("http_status") or 0) >= 400)
         if (failure and not same_failure) or recovered:
             # This is the existing in-process inventory/notification feed. Consumers poll
             # it without making the request path synchronously contact a host or notifier.
+            action = ("verify worker enrollment credentials" if status in {401, 403}
+                      else "inspect the correlated worker diagnostic and controller state")
             hub.events.append({
                 "at": record["at"], "kind": "worker_recovery" if recovered else "worker_failure",
                 "worker_id": worker_id, "operation": operation, "http_status": status,
+                "operator_action": "none" if recovered else action,
                 "message": (f"worker {worker_id or 'unknown'} {operation} recovered"
                             if recovered else
                             f"worker {worker_id or 'unknown'} {operation} failed with HTTP {status}"),
