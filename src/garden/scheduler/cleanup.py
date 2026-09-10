@@ -30,14 +30,14 @@ class CleanupMixin:
     def storage_inventory(self, *, measure: bool = True) -> dict[str, Any]:
         """Account for bounded Garden-owned worktrees, isolated homes and run temp data."""
         self.runs.invalidate()
-        self.store.invalidate_tasks()
         tasks = self.store.tasks()
         runs = self.runs.all_runs()
         active = {run.task_id for run in self.runs.active()}
-        runs_by_worktree_name: dict[str, list[Any]] = {}
+        runs_by_worktree: dict[str, list[Any]] = {}
         for run in runs:
             if run.worktree:
-                runs_by_worktree_name.setdefault(Path(run.worktree).name, []).append(run)
+                key = str(Path(run.worktree).absolute())
+                runs_by_worktree.setdefault(key, []).append(run)
         branch_rows = {(row.product, row.branch): row for row in self.branch_cleanup_inventory()}
         keep_days = float(self.cfg.get("worktrees.keep_days", 2) or 0)
         home_keep_days = float(self.cfg.get("storage_cleanup.home_keep_days", keep_days) or 0)
@@ -65,7 +65,7 @@ class CleanupMixin:
                     continue
                 if path.name.startswith(".garden-home-"):
                     worktree_name = path.name.removeprefix(".garden-home-")
-                    matching_runs = runs_by_worktree_name.get(worktree_name, [])
+                    matching_runs = runs_by_worktree.get(str((root / worktree_name).absolute()), [])
                     task_id = matching_runs[-1].task_id if matching_runs else worktree_name
                     task = tasks.get(task_id)
                     worktree = root / worktree_name
@@ -84,12 +84,16 @@ class CleanupMixin:
                               else self._home_retention_reason(task, task_id, active, worktree, age, home_keep_days))
                     items.append(StorageItem(str(path), "worker_home", task_id, size(path), eligible, reason))
                     continue
-                task = tasks.get(path.name)
+                matching_runs = runs_by_worktree.get(str(path.absolute()), [])
+                task_id = matching_runs[-1].task_id if matching_runs else path.name
+                task = tasks.get(task_id)
                 if task is None:
                     items.append(StorageItem(str(path), "worktree", "unknown", size(path), False,
                                              "no Garden task provenance"))
                     continue
-                eligible, reason = self._worktree_disposition(task, path, active, branch_rows, now, keep_days)
+                eligible, reason = self._worktree_disposition(
+                    task, path, matching_runs, active, branch_rows, now, keep_days
+                )
                 items.append(StorageItem(str(path), "worktree", task.id, size(path), eligible, reason))
                 if task.status.terminal and task.id not in active:
                     caches = chain((path / ".venv", path / ".pytest_cache"), path.rglob("__pycache__"))
@@ -145,12 +149,19 @@ class CleanupMixin:
             return f"retained for {keep_days:g} days"
         return "uncertain ownership"
 
-    def _worktree_disposition(self, task: Any, path: Path, active: set[str],
+    def _worktree_disposition(self, task: Any, path: Path, matching_runs: list[Any], active: set[str],
                               branches: dict[tuple[str, str], BranchDisposition], now: float,
                               keep_days: float) -> tuple[bool, str]:
         if task.id in active or self._manual_reserved(task):
             return False, "active, queued or manually reserved run"
-        if task.status not in (Status.DONE, Status.CANCELLED):
+        if matching_runs and any(run.completion_mode != "managed" for run in matching_runs):
+            return False, "external or pushed checkout ownership"
+        managed_attempt = bool(matching_runs) and all(
+            run.status not in ("requested", "preparing", "running")
+            and run.completion_mode == "managed"
+            for run in matching_runs
+        )
+        if task.status not in (Status.DONE, Status.CANCELLED) and not managed_attempt:
             return False, f"task is {task.status.value}"
         if str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place":
             return False, "canonical/external checkout ownership"
@@ -159,12 +170,15 @@ class CleanupMixin:
         age = self._storage_age_days(path, now)
         if age < keep_days:
             return False, f"retained for {keep_days:g} days"
-        row = branches.get((task.product, task.branch)) if task.branch else None
+        attempt_branch = matching_runs[-1].branch if matching_runs else ""
+        branch = attempt_branch or task.branch
+        row = branches.get((task.product, branch)) if branch else None
+        detached_check = bool(matching_runs) and all(run.mode == "check" for run in matching_runs)
         checked_out_only = bool(row and row.classification == "needed"
                                 and row.reason == "the branch is checked out in a worktree")
-        if row and row.classification == "needed" and not checked_out_only:
+        if row and row.classification == "needed" and not checked_out_only and not detached_check:
             return False, f"branch retained: {row.reason}"
-        if row is None or row.classification == "uncertain" or checked_out_only:
+        if row is None or row.classification == "uncertain" or checked_out_only or detached_check:
             try:
                 base = gitops.base_ref(path, self.cfg.product_base_branch(task.product))
                 if not gitops.is_ancestor(path, "HEAD", base):
@@ -172,7 +186,7 @@ class CleanupMixin:
                     return False, f"worktree head has unique unmerged commits{detail}"
             except gitops.GitError as exc:
                 return False, f"Git ownership could not be proven: {exc}"
-        return True, "clean terminal worktree with preserved/reachable head"
+        return True, "clean inactive managed worktree with preserved/reachable head"
 
     def sweep_storage(self, rep: TickReport, *, apply: bool = True,
                       limit: int | None = None, measure: bool = True) -> dict[str, Any]:
@@ -201,6 +215,9 @@ class CleanupMixin:
                 if len(results) >= limit or not item["eligible"]:
                     continue
                 path = Path(str(item["path"]))
+                # The preview may be older than an operator edit made during this sweep.
+                # Refresh task ownership immediately before the destructive recheck.
+                self.store.invalidate_tasks()
                 current = next((row for row in self.storage_inventory(measure=False)["items"]
                                 if row["path"] == str(path)), None)
                 if not current or not current["eligible"]:

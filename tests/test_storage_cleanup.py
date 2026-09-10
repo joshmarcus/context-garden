@@ -166,3 +166,52 @@ def test_completed_worktree_is_removed_before_its_branch(sched):
     assert row.classification == "removable", row.reason
     results = sched.sweep_worker_branches(report, limit=20)
     assert results[0]["outcome"] == "removed"
+
+
+@pytest.mark.parametrize(
+    ("suffix", "mode"),
+    [("", "work"), ("-trial-codex-gpt", "trial")],
+)
+def test_abandoned_failed_attempt_worktree_uses_run_provenance(sched, suffix, mode):
+    task = sched.store.task("DM-001")
+    task.status = Status.FAILED
+    sched.store.save(task)
+    branch = f"{task.default_branch()}{suffix}"
+    worktree = sched.cfg.worktree_path(f"{task.id}{suffix}")
+    gitops.prepare_worktree(sched.repo_for(task), worktree, branch, "main")
+    gitops.git("config", "status.showUntrackedFiles", "no", cwd=worktree)
+    (worktree / ".venv").mkdir()
+    (worktree / ".venv" / "cached-wheel").write_bytes(b"x" * 4096)
+    run = sched.runs.new_run(task.id, "local", mode=mode)
+    run.status = "failed"
+    run.finished_at = run.started_at
+    run.worktree = str(worktree)
+    run.branch = branch
+    run.base = "main"
+    run.save()
+    old = time.time() - 3 * 86400
+    os.utime(worktree, (old, old))
+
+    sibling = sched.runs.new_run(task.id, "local")
+    retained = next(row for row in sched.storage_inventory()["items"]
+                    if row["path"] == str(worktree) and row["category"] == "worktree")
+    assert not retained["eligible"] and "active" in retained["reason"]
+    sibling.status = "done"
+    sibling.save()
+
+    run.completion_mode = "external"
+    run.save()
+    retained = next(row for row in sched.storage_inventory()["items"]
+                    if row["path"] == str(worktree) and row["category"] == "worktree")
+    assert not retained["eligible"] and "external" in retained["reason"]
+    run.completion_mode = "managed"
+    run.save()
+
+    row = next(row for row in sched.storage_inventory()["items"]
+               if row["path"] == str(worktree) and row["category"] == "worktree")
+    assert row["owner"] == task.id
+    assert row["eligible"], row["reason"]
+
+    result = sched.sweep_storage(type("Report", (), {"transitions": []})(), apply=True, limit=20)
+    assert not worktree.exists()
+    assert result["bytes_reclaimed"] >= 4096

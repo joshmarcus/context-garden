@@ -614,6 +614,18 @@ class DispatchMixin:
             raise RuntimeError("recovery launch reservation is no longer dispatchable")
         self._dispatching_run = run
         run.status = "preparing"
+        # Persist the intended checkout before preparation starts. If worktree creation or
+        # setup is interrupted, storage cleanup can still attribute a nonstandard trial,
+        # probe or scratch path to this managed attempt instead of retaining it forever as
+        # an unknown directory.
+        run.branch = branch
+        run.base = self.base_for(task)
+        run.completion_mode = completion_mode
+        run.env_snapshot["product"] = task.product
+        if worktree and not runner.remote:
+            run.worktree = str(worktree_override or self.worktree_for(task))
+        elif worktree_override is not None:
+            run.worktree = str(worktree_override)
         run.save()
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
