@@ -142,9 +142,14 @@
     Available memory: <strong>{{ resource_status.memory_available_mb if resource_status.memory_available_mb is not none else "unknown" }} MiB</strong>
     {% if resource_status.cgroup_available_mb is not none %}(effective {{ resource_status.cgroup_boundary }} headroom {{ resource_status.cgroup_available_mb }} MiB){% endif %};
     temporary storage: <strong>{{ resource_status.temp_free_mb if resource_status.temp_free_mb is not none else "unknown" }} MiB</strong>.
+    Disk reserve: <strong>{{ resource_status.disk_reserve_bytes }} bytes</strong>;
+    admitted allocation: <strong>{{ resource_status.disk_required_bytes }} bytes</strong>.
   </p>
+  {% for volume in resource_status.storage_volumes %}<p class="muted" style="margin:4px 0 0">
+    {{ volume.label }}: <strong>{{ volume.free_bytes if volume.free_bytes is not none else "unavailable" }}{% if volume.free_bytes is not none %} free bytes{% endif %}</strong>{% if volume.error %} — {{ volume.error }}{% endif %}.
+  </p>{% endfor %}
   {% if resource_status.capacity_full %}<p class="muted" style="margin:8px 0 0"><strong>At local execution capacity:</strong> {{ resource_status.active }}/{{ resource_status.limit }} busy. Eligible work waits for a slot and dispatches automatically when one opens.</p>{% endif %}
-  {% if resource_status.pressured %}<p class="warn" style="margin:8px 0 0"><strong>Resource pressure:</strong> {{ resource_status.pressure_reasons|join('; ') }}.{% if resource_status.capacity_full %} Also at local execution capacity ({{ resource_status.active }}/{{ resource_status.limit }} busy).{% endif %} New local launches wait for pressure to clear; active work can drain.</p>{% endif %}
+  {% if resource_status.pressured %}<p class="warn" style="margin:8px 0 0"><strong>Resource pressure blocks {{ resource_status.disk_operation }}:</strong> {{ resource_status.pressure_reasons|join('; ') }}.{% if resource_status.capacity_full %} Also at local execution capacity ({{ resource_status.active }}/{{ resource_status.limit }} busy).{% endif %} New local launches wait for pressure to clear; active work can drain.</p>{% endif %}
   {% if resource_status.heavy_conflict %}<p class="warn" style="margin:8px 0 0">Heavy capacity conflict: {{ resource_status.heavy_conflict }}. Existing authoritative capacity remains enforced.</p>{% endif %}
   {% if resource_status.reclaim %}<p class="muted" style="margin:8px 0 0">{{ resource_status.reclaim }}. Admission still requires a fresh ordinary headroom check.</p>{% endif %}
   {% if resource_status.cgroup_events %}<p class="muted" style="margin:8px 0 0">Memory events: {% for name, value in resource_status.cgroup_events %}{{ name }}={{ value }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}

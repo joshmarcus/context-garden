@@ -17,6 +17,7 @@ from ..review import validation_plan
 from ..runner.base import Runner
 from ..runs import Run
 from .report import TickReport
+from .resources import ResourcePressureError
 from .selection import worker_candidates
 
 MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
@@ -148,6 +149,11 @@ class DispatchMixin:
                         old_state["resource_bypasses"] = int(old_state.get("resource_bypasses", 0)) + 1
                     if blocked_local:
                         self.state.save()
+            except ResourcePressureError as e:
+                rep.errors.append(f"{task.id}: {e}")
+                # A transient host constraint is not a task or model failure. The run, if
+                # preparation had begun, is closed by dispatch() and the task stays queued.
+                continue
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
                 if not self.state.get(task.id).get("needs_human"):
@@ -699,8 +705,15 @@ class DispatchMixin:
         wt: Path | None = None
         generated_context: Path | None = None
         if worktree and not runner.remote:
-            wt = (canonical_root if canonical_root is not None else
-                  gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base))
+            if canonical_root is None:
+                try:
+                    self._recheck_local_materialization(run, f"{mode} checkout materialization")
+                    wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
+                except ResourcePressureError as exc:
+                    self._close_dispatch_failure(task, run, exc)
+                    raise
+            else:
+                wt = canonical_root
             # Operational design context belongs to this run, outside the checkout.  A
             # generated file in source makes an otherwise clean branch dirty and can be
             # swept into a worker commit or collide with a tracked snapshot on rebase.
