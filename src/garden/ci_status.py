@@ -9,12 +9,18 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .validation import receipt_has_current_policy
+
+
+def _malformed_receipt_sources(raw: str) -> set[str]:
+    """Recover source identities that were fully written before a JSON truncation."""
+    return set(re.findall(r'"source_sha"\s*:\s*"([^"\\]*)"', raw))
 
 
 def _completed_supervisor_execution(execution: object) -> bool:
@@ -105,12 +111,23 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
     malformed = False
     for path in candidates:
         try:
-            row = json.loads(path.read_text())
+            raw = path.read_text()
+            row = json.loads(raw)
             receipt_sha = str(row["source_sha"])
             command = str(row["command"])
             exit_code = int(row["exit_code"])
             log = str(row["log_location"])
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        except OSError:
+            malformed = True
+            continue
+        except json.JSONDecodeError:
+            malformed_shas = _malformed_receipt_sources(raw)
+            if sha in malformed_shas:
+                return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
+            mismatched = mismatched or bool(malformed_shas)
+            malformed = malformed or not malformed_shas
+            continue
+        except (ValueError, TypeError, KeyError):
             malformed = True
             continue
         if receipt_sha != sha:
