@@ -1376,7 +1376,17 @@ class ReviewMixin:
         keys = sorted({f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
+        implementation_keys = sorted({
+            f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
+            for f in review.get("findings") or []
+            if (isinstance(f, dict) and f.get("severity") == "blocking"
+                and f.get("failure_category") == "implementation")
+        })
+        repeated_implementation = sorted(
+            set(implementation_keys) & set(st.get("last_implementation_findings", []))
+        )
         st["last_findings"] = keys
+        st["last_implementation_findings"] = implementation_keys
         reconciliation = st.get("no_change_reconciliation")
         if isinstance(reconciliation, dict):
             reconciled_head = str(reconciliation.get("head") or "")
@@ -1423,7 +1433,13 @@ class ReviewMixin:
                     st.pop("pending_feedback_rebase", None)
                     st.pop("review_fix_reasked", None)
                     if repeated and bool(self.cfg.get("stall.enabled", True)):
-                        self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
+                        repeated_key = repeated_implementation[0] if repeated_implementation else repeated[0]
+                        self._stall(
+                            task,
+                            rep,
+                            f"review finding repeated after a revise round: {repeated_key.split('|')[1][:80]}",
+                            implementation_failure=bool(repeated_implementation),
+                        )
                         return True
                     manual_handoff = not bool(self.effective("auto_revise", True, task.product))
                     if manual_handoff and not st.get("needs_human"):

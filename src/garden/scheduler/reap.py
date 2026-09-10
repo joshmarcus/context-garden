@@ -1431,8 +1431,11 @@ class ReapMixin:
             rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} closed (dangling)")
 
     # ---- stall detection ---------------------------------------------------
-    def _stall(self, task: Task, rep: TickReport, reason: str) -> None:
-        self._record_implementation_failure(task, "repeated_unchanged_attempt", reason, reason)
+    def _stall(
+        self, task: Task, rep: TickReport, reason: str, *, implementation_failure: bool = True
+    ) -> None:
+        if implementation_failure:
+            self._record_implementation_failure(task, "repeated_unchanged_attempt", reason, reason)
         self._set_needs_human(task, "stall", reason)
         self.events.emit("stall", task.id, reason=reason)
         action = f'garden triage {task.id} --changes "<feedback>" to unblock'

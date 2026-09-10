@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler import Scheduler
@@ -236,6 +238,50 @@ def test_persisted_nonimplementation_review_blockers_do_not_escalate_or_consume_
     assert restarted.state.get(task.id)["last_review"]["findings"] == review["findings"]
     assert not restarted.state.get(task.id).get("implementation_failure_escalations")
     assert restarted.store.task(task.id).attempts == attempts
+
+
+@pytest.mark.parametrize("category", ["infrastructure", "admission", "unavailable_evidence"])
+def test_repeated_nonimplementation_review_blocker_stalls_without_escalating(
+    sched, fake_github, category,
+):
+    task, pr = _open_task(sched, fake_github)
+    review = _review()
+    review["criteria"] = []
+    review["findings"] = [{
+        "severity": "blocking",
+        "failure_category": category,
+        "file": "",
+        "line": None,
+        "summary": "The required test runner is unavailable.",
+        "fix": "Restore the runner before evaluating the source.",
+    }]
+
+    for _ in range(2):
+        reviewed = _review_run(sched, task, pr.head_sha, review)
+        sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+
+    state = sched.state.get(task.id)
+    assert state["needs_human"]["kind"] == "stall"
+    assert not state.get("implementation_failure_escalations")
+
+
+def test_repeated_implementation_review_blocker_records_unchanged_attempt(
+    sched, fake_github,
+):
+    task, pr = _open_task(sched, fake_github)
+    review = _review()
+    review["criteria"] = []
+
+    for _ in range(2):
+        reviewed = _review_run(sched, task, pr.head_sha, review)
+        sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+
+    signals = [
+        event["signal"]
+        for event in sched.state.get(task.id)["implementation_failure_escalations"]
+    ]
+    assert signals.count("verification_rejected") == 2
+    assert signals.count("repeated_unchanged_attempt") == 1
 
 
 def test_exact_provider_ci_failure_escalates_after_usable_analysis(sched, fake_github):
