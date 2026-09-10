@@ -48,6 +48,16 @@ class PollMixin:
         }, sort_keys=True)
 
     @staticmethod
+    def _exact_ci_failure_identity(status: CIStatus) -> str:
+        return json.dumps({
+            "provider": status.provider,
+            "head": status.queried_sha,
+            "state": status.state,
+            "failures": sorted(status.failures),
+            "evidence_url": status.evidence_url,
+        }, sort_keys=True)
+
+    @staticmethod
     def _feedback_key(item: dict[str, Any]) -> str:
         identity = str(item.get("id") or "")
         if identity and not identity.endswith(":"):
@@ -290,7 +300,11 @@ class PollMixin:
                 self._dispatch_check_run(
                     task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
                     base=self.base_for(task), specs=list(deferred["specs"]), stage="ci", rep=rep,
-                    cont={"ci_note": str(deferred["ci_note"]), "head": str(deferred["head"])},
+                    cont={
+                        "ci_note": str(deferred["ci_note"]),
+                        "head": str(deferred["head"]),
+                        "ci_failure_identity": str(deferred.get("failure_identity") or ""),
+                    },
                     extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1},
                 )
                 return
@@ -316,7 +330,7 @@ class PollMixin:
             st.pop("ci_rerun_waiting_for", None)
         if waiting_for_rerun:
             st.pop("ci_failed_at", None)
-        failure_key = f"{ci_status.provider}:{ci_status.queried_sha}:{ci_status.state}"
+        failure_key = self._exact_ci_failure_identity(ci_status)
         github_ci_failure = (provider in ("actions", "status", "legacy")
                              and pr.checks == "FAILURE"
                              and not waiting_for_rerun
@@ -338,7 +352,10 @@ class PollMixin:
             if specs and phase_hold:
                 # Keep the CI facts and route the feedback into the held task, but do not
                 # spend a detached analyser run until the phase is released.
-                st["deferred_ci_check"] = {"specs": specs, "ci_note": ci_note, "head": pr.head_sha}
+                st["deferred_ci_check"] = {
+                    "specs": specs, "ci_note": ci_note, "head": pr.head_sha,
+                    "failure_identity": failure_identity,
+                }
             else:
                 st["ci_failed_at"] = failure_identity
             if specs:
@@ -347,7 +364,9 @@ class PollMixin:
                 # verdict with the GitHub feedback and starts (or reruns instead of) a revise round.
                 if not phase_hold:
                     self._dispatch_check_run(task, worktree=self.worktree_for(task), branch=task.branch or task.default_branch(),
-                                             base=self.base_for(task), specs=specs, stage="ci", rep=rep, cont={"ci_note": ci_note, "head": pr.head_sha},
+                                             base=self.base_for(task), specs=specs, stage="ci", rep=rep,
+                                             cont={"ci_note": ci_note, "head": pr.head_sha,
+                                                   "ci_failure_identity": failure_identity},
                                              extra={"ci_rerun": int(st.get("ci_reruns", 0)) < 1},
                                              source_head=pr.head_sha)
                     return
@@ -447,7 +466,7 @@ class PollMixin:
         reran = [r for r in results if r.get("reran")]
         if reran:
             ci_note = ""
-        elif pr.checks == "SUCCESS":
+        elif pr.checks == "SUCCESS" and not cont.get("ci_failure_identity"):
             ci_note = ""
         elif check_failures(results):
             safe_results = [
@@ -483,12 +502,18 @@ class PollMixin:
             # observation through the analyser once more. The ci_reruns limit prevents
             # another flaky rerun, while the head checks reject obsolete commits.
             st["ci_rerun_waiting_for"] = self._ci_failure_identity(pr)
-        elif ci_note and pr.checks == "FAILURE" and not self._check_did_not_run(run, results):
-            identity = f"{head}:" + ",".join(sorted(pr.failed_checks))
-            self._record_implementation_failure(
-                task, "failed_final_verification", identity,
-                "terminal CI failure was classified as actionable implementation feedback",
-            )
+        elif ci_note and not self._check_did_not_run(run, results):
+            identity = str(cont.get("ci_failure_identity") or "")
+            # Legacy continuations predate authoritative provider identities. Only infer
+            # their identity from a still-failing GitHub rollup; a newer provider result
+            # must never be replaced with unrelated PR metadata.
+            if not identity and pr.checks == "FAILURE":
+                identity = self._ci_failure_identity(pr)
+            if identity:
+                self._record_implementation_failure(
+                    task, "failed_final_verification", identity,
+                    "terminal CI failure was classified as actionable implementation feedback",
+                )
         self._apply_feedback(task, pr, fb, ci_note, rep, replace_ci=True)
         self.state.save()
         if reran:
