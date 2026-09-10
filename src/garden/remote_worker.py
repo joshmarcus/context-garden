@@ -21,7 +21,7 @@ from typing import Any, TextIO
 
 from .brief import parse_result
 from .harness import Harness
-from .runner.base import install_config_files, scrubbed_env, setup_marker
+from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 
 
@@ -261,6 +261,10 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
     env.setdefault("HOME", str(home))
     env.update(GARDEN_TASK_ID=run["task_id"], GARDEN_RUN_ID=run["id"],
                GARDEN_ROOT=str(worktree / ".garden-no-live-garden"))
+    # A host worker's harness can run Git just like a local harness. Keep optional
+    # filesystem-monitor and maintenance daemons out of its supervised process group so
+    # the claim can finish after the harness exits.
+    env.update(_no_fsmonitor_env())
     env.pop("GARDEN_EXECUTION_TIMEOUT_SECONDS", None)
     env["GARDEN_VALIDATION_TIMEOUT_SECONDS"] = str(
         int(run.get("validation_timeout_seconds") or 900)

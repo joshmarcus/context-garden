@@ -345,6 +345,9 @@ def test_portable_worker_installs_claimed_config_mapping(tmp_path, monkeypatch):
     copied = Path(env["HOME"]) / ".config/synthetic/tool.json"
     assert copied.read_text() == "portable-tool-config"
     assert copied.stat().st_mode & 0o777 == 0o600
+    assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
+    assert env["GIT_CONFIG_VALUE_0"] == "false"
+    assert env["GIT_CONFIG_KEY_1"] == "maintenance.auto"
 
 
 def test_remote_claim_carries_mapping_but_not_config_contents(garden, tmp_path, monkeypatch):
