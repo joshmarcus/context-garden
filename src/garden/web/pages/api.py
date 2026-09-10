@@ -134,6 +134,15 @@ def register(app: FastAPI, site: Site) -> None:
                     raise HTTPException(409, f"host_facts.{name} does not match authenticated host")
         return facts
 
+    def host_is_draining(facts: dict[str, Any] | None) -> bool:
+        if not facts:
+            return False
+        from ...hosts.drain import WorkerDrainStore
+
+        return WorkerDrainStore(hub.store.config.garden_dir).contains(
+            str(facts.get("operation_id") or "")
+        )
+
     def persist_host_facts(run: Any, value: Any, host: dict[str, Any]) -> None:
         facts = bound_host_facts(value, host)
         if facts is not None:
@@ -341,7 +350,7 @@ def register(app: FastAPI, site: Site) -> None:
         if (isinstance(requested_capacity, bool) or not isinstance(requested_capacity, int)
                 or not 1 <= requested_capacity <= 1024):
             raise HTTPException(422, "capacity must be an integer between 1 and 1024")
-        bound_host_facts(body.get("host_facts"), host_cfg)
+        facts = bound_host_facts(body.get("host_facts"), host_cfg)
         request_id = body.get("claim_request_id")
         if request_id is None:
             # Compatibility for older independent workers. New workers supply this value
@@ -373,6 +382,11 @@ def register(app: FastAPI, site: Site) -> None:
                     raise HTTPException(409, "claim request identity cannot be replayed")
                 claimed_run(replay.run_id, host_cfg, response_token)
                 return JSONResponse(replay.claim_response)
+            # Provider warnings fence only new work. An already leased run keeps claim
+            # replay, heartbeat and finish authority so transcript, checks, commits and
+            # result upload can reach the controller before lifecycle retirement.
+            if host_is_draining(facts):
+                return Response(status_code=204)
             runs = RunStore(hub.store.config.garden_dir).active()
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))

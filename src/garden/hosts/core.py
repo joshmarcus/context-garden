@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import math
 import os
@@ -84,6 +85,7 @@ class HostLifecycle:
         reservation_seconds: float = 300,
         absolute_deadline: str = "",
         operation_seed: str = "",
+        interruption_drain: Callable[[HostFacts, str, str], bool] | None = None,
     ):
         self.providers = providers
         self.state = state
@@ -96,6 +98,7 @@ class HostLifecycle:
         self.reservation_seconds = reservation_seconds
         self.absolute_deadline = absolute_deadline
         self.operation_seed = operation_seed
+        self.interruption_drain = interruption_drain
 
     def _provider(self, pool: PoolDeclaration) -> HostProvider:
         try:
@@ -129,6 +132,10 @@ class HostLifecycle:
             raise ValueError("spend_limit_usd must be positive")
         if not math.isfinite(pool.estimated_runtime_hours) or pool.estimated_runtime_hours <= 0:
             raise ValueError("estimated_runtime_hours must be positive")
+        if pool.purchase_policy not in {"on_demand", "spot"}:
+            raise ValueError("purchase_policy must be on_demand or spot")
+        if pool.on_demand_fallback and pool.purchase_policy != "spot":
+            raise ValueError("on_demand_fallback is only valid for a Spot pool")
         profile = pool.profile
         for name in ("cpu", "memory_mib", "disk_gib"):
             value = getattr(profile, name)
@@ -140,9 +147,80 @@ class HostLifecycle:
             raise ValueError("profile endpoint must use reachable HTTPS")
         if profile.endpoint and not profile.enrollment_secret_ref:
             raise ValueError("an HTTPS enrollment endpoint requires a scoped secret reference")
+        if profile.persistent_workspace and pool.purchase_policy == "spot" and not pool.recoverable_workspace:
+            raise ValueError("Spot development hosts require recoverable_workspace=true")
+
+    def _replacement_generation(self, pool: PoolDeclaration, slot: int) -> int:
+        data = self.state.read()
+        generations = data.get("replacement_generations", {})
+        pool_generations = generations.get(pool.name, {}) if isinstance(generations, dict) else {}
+        return int(pool_generations.get(str(slot), 0)) if isinstance(pool_generations, dict) else 0
 
     def _operation_id(self, pool: PoolDeclaration, slot: int) -> str:
-        return host_operation_id(pool, slot, self.operation_seed)
+        generation = self._replacement_generation(pool, slot)
+        if generation == 0:
+            return host_operation_id(pool, slot, self.operation_seed)
+        seed = f"{self.operation_seed}\0{generation}" if self.operation_seed else str(generation)
+        return host_operation_id(pool, slot, seed)
+
+    def _advance_replacement(self, pool: PoolDeclaration, host: HostFacts) -> None:
+        slot = str(self._host_slot(pool, host))
+        with self.state.locked():
+            data = self.state.read()
+            generations = data.setdefault("replacement_generations", {})
+            assert isinstance(generations, dict)
+            pool_generations = generations.setdefault(pool.name, {})
+            assert isinstance(pool_generations, dict)
+            pool_generations[slot] = int(pool_generations.get(slot, 0)) + 1
+            self.state.write(data)
+
+    @staticmethod
+    def _host_slot(pool: PoolDeclaration, host: HostFacts) -> int:
+        prefix = f"{pool.name}-"
+        slot = host.host_id.removeprefix(prefix)
+        if not host.host_id.startswith(prefix) or not slot.isdigit():
+            raise ProviderError(f"provider returned invalid stable host id {host.host_id!r}")
+        return int(slot)
+
+    def _is_current_generation(self, pool: PoolDeclaration, host: HostFacts) -> bool:
+        return host.operation_id == self._operation_id(pool, self._host_slot(pool, host))
+
+    def _advance_missing_replacements(
+        self, pool: PoolDeclaration, discovered: list[HostFacts]
+    ) -> list[HostEvent]:
+        """Rotate idempotency identities once when a previously recorded host vanishes."""
+        data = self.state.read()
+        pools = data.get("pools", {})
+        prior_pool = pools.get(pool.name, {}) if isinstance(pools, dict) else {}
+        prior_hosts = prior_pool.get("hosts", []) if isinstance(prior_pool, dict) else []
+        present = {host.operation_id for host in discovered}
+        events: list[HostEvent] = []
+        for raw in prior_hosts if isinstance(prior_hosts, list) else []:
+            if not isinstance(raw, dict) or raw.get("state") == HostState.TERMINATED:
+                continue
+            host = HostFacts(
+                **{
+                    **raw,
+                    "state": HostState(raw["state"]),
+                    "retained_resources": tuple(raw.get("retained_resources", ())),
+                }
+            )
+            prefix = f"{pool.name}-"
+            if host.operation_id in present or not host.host_id.startswith(prefix):
+                continue
+            slot_text = host.host_id.removeprefix(prefix)
+            if not slot_text.isdigit() or self._operation_id(pool, int(slot_text)) != host.operation_id:
+                continue
+            self._advance_replacement(pool, host)
+            events.append(
+                HostEvent(
+                    "host_lost",
+                    host.host_id,
+                    HostState.INTERRUPTED,
+                    "previously recorded provider host is no longer discoverable",
+                )
+            )
+        return events
 
     def _declaration(self, pool: PoolDeclaration, slot: int) -> HostDeclaration:
         operation = self._operation_id(pool, slot)
@@ -172,6 +250,8 @@ class HostLifecycle:
     def plan(self, pool: PoolDeclaration) -> HostPlan:
         self.validate(pool)
         provider = self._provider(pool)
+        if pool.purchase_policy == "spot" and not provider.capabilities.spot:
+            raise ValueError(f"provider {provider.name!r} does not support Spot")
         current = sorted(provider.discover(pool.owner, pool.name), key=lambda h: h.host_id)
         active = [h for h in current if h.state != HostState.TERMINATED]
         retire = tuple(h.host_id for h in active[pool.desired :])
@@ -188,6 +268,8 @@ class HostLifecycle:
             estimated_accrued_usd=estimate * pool.estimated_runtime_hours,
             assumptions=(
                 f"compute and {pool.profile.disk_gib} GiB storage for {pool.desired} host(s)",
+                f"{pool.purchase_policy.replace('_', '-')} purchase; on-demand fallback "
+                + ("enabled" if pool.on_demand_fallback else "disabled"),
                 "public IPv4 and transfer are provider-dependent and excluded unless adapter pricing includes them",
                 f"projected admission budget ${pool.spend_limit_usd:.2f}; not a hard billing cap",
                 f"estimated runtime {pool.estimated_runtime_hours:g} hour(s)",
@@ -206,10 +288,56 @@ class HostLifecycle:
             )
         provider = self._provider(pool)
         hosts = sorted(provider.discover(pool.owner, pool.name), key=lambda h: h.host_id)
-        active = [h for h in hosts if h.state != HostState.TERMINATED]
-        events: list[HostEvent] = []
+        loss_events = self._advance_missing_replacements(pool, hosts)
+        current = [h for h in hosts if self._is_current_generation(pool, h)]
+        stale = [h for h in hosts if h not in current and h.state != HostState.TERMINATED]
+        interrupted = [h for h in current if h.state == HostState.INTERRUPTED]
+        active = [
+            h for h in current if h.state not in {HostState.INTERRUPTED, HostState.TERMINATED}
+        ]
+        events: list[HostEvent] = loss_events
         failures: list[HostFacts] = []
         retirements: list[HostFacts] = []
+        draining_hosts: dict[str, HostFacts] = {}
+        for host in stale:
+            self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
+            retired = provider.destroy(
+                host.provider_id, delete_storage=not pool.profile.persistent_workspace
+            )
+            retirements.append(retired)
+            events.append(
+                HostEvent(
+                    "stale_host_retired",
+                    host.host_id,
+                    retired.state,
+                    "host operation generation was superseded",
+                )
+            )
+        for host in interrupted:
+            events.append(HostEvent("interruption", host.host_id, host.state, host.detail))
+            deadline = self._interruption_deadline(host)
+            if self.interruption_drain is not None \
+                    and not self.interruption_drain(host, deadline, host.detail):
+                draining = replace(host, state=HostState.DRAINING,
+                                   detail=f"interruption drain pending until {deadline}")
+                active.append(draining)
+                draining_hosts[host.operation_id] = draining
+                events.append(HostEvent("interruption_draining", host.host_id,
+                                        HostState.DRAINING, draining.detail))
+                continue
+            self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
+            retired = provider.destroy(
+                host.provider_id, delete_storage=not pool.profile.persistent_workspace
+            )
+            acknowledge = getattr(provider, "acknowledge_interruption", None)
+            if acknowledge is not None:
+                acknowledge(host.provider_id)
+            retirements.append(retired)
+            self._advance_replacement(pool, host)
+            events.append(HostEvent("replacement_pending", host.host_id, HostState.PROVISIONING))
+            clearer = getattr(self.interruption_drain, "clear", None)
+            if clearer is not None:
+                clearer(host.operation_id)
         slots = self._available_slots(pool, active)[: max(0, pool.desired - len(active))]
         if eligible_slots is not None:
             slots = [slot for slot in slots if slot in eligible_slots]
@@ -282,6 +410,7 @@ class HostLifecycle:
                 )
             )
         refreshed = sorted(provider.discover(pool.owner, pool.name), key=lambda h: h.host_id)
+        refreshed = [draining_hosts.get(host.operation_id, host) for host in refreshed]
         discovered_operations = {host.operation_id for host in refreshed}
         failures = [host for host in failures if host.operation_id not in discovered_operations]
         retired_ids = {host.provider_id for host in retirements}
@@ -310,6 +439,20 @@ class HostLifecycle:
             checked.append(host)
         self._record(pool, checked, events, plan)
         return checked
+
+    @staticmethod
+    def _interruption_deadline(host: HostFacts) -> str:
+        """Use the provider notice time when present, with a conservative two-minute bound."""
+        try:
+            event = json.loads(host.detail).get("provider_event", {})
+            if event.get("detail-type") == "EC2 Spot Instance Interruption Warning":
+                value = event.get("time")
+                noticed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if noticed.tzinfo is not None:
+                    return (noticed + dt.timedelta(seconds=110)).isoformat()
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+        return (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=110)).isoformat()
 
     def inspect(self, pool: PoolDeclaration) -> list[HostFacts]:
         self.validate(pool)

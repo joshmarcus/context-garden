@@ -9,15 +9,25 @@ instance role and secret reference, never controller credentials or secret value
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 import shlex
 import time
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from .models import CONTRACT_VERSION, HostDeclaration, HostFacts, HostState, ProviderCapabilities
+from .models import (
+    CONTRACT_VERSION,
+    HostDeclaration,
+    HostFacts,
+    HostState,
+    PoolDeclaration,
+    ProviderCapabilities,
+)
 from .provider import ProviderError, ProvisioningUncertain, TransientProviderError
 
 OWNED_TAG = "context-garden:managed"
@@ -42,10 +52,76 @@ class DeadlineEnforcer(Protocol):
     def arm_and_verify(self, declaration: HostDeclaration) -> None: ...
 
 
+class EC2EventSource(Protocol):
+    """Durable, non-consuming view of AWS events delivered outside the EC2 query API."""
+
+    def pending_events(self, owner: str, pool: str) -> Iterable[dict[str, Any]]: ...
+
+
+class SQSEC2EventSource:
+    """Durably journal EventBridge events delivered through an SQS queue."""
+
+    def __init__(self, client: Any, queue_url: str, journal_path: Path):
+        if not queue_url:
+            raise ValueError("spot_event_queue_url must be nonempty")
+        self.client, self.queue_url, self.journal_path = client, queue_url, journal_path
+
+    def _read(self) -> list[dict[str, Any]]:
+        try:
+            value = json.loads(self.journal_path.read_text())
+        except (OSError, ValueError, TypeError):
+            return []
+        rows = value.get("events") if isinstance(value, dict) else None
+        return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    def _write(self, rows: list[dict[str, Any]]) -> None:
+        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.journal_path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(json.dumps({"events": rows}, indent=2, sort_keys=True) + "\n")
+        temporary.replace(self.journal_path)
+
+    def pending_events(self, owner: str, pool: str) -> Iterable[dict[str, Any]]:
+        rows = self._read()
+        known = {str(row.get("event", {}).get("id") or row.get("receipt")): row for row in rows}
+        response = self.client.receive_message(
+            QueueUrl=self.queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=0,
+            VisibilityTimeout=30,
+        )
+        for message in response.get("Messages", []):
+            try:
+                event = json.loads(message["Body"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            identity = str(event.get("id") or message.get("ReceiptHandle") or "")
+            if identity and identity not in known:
+                row = {"event": event, "receipt": str(message.get("ReceiptHandle") or "")}
+                rows.append(row)
+                known[identity] = row
+            elif identity:
+                # SQS supplies a fresh receipt handle after each visibility timeout.
+                # Retaining the newest one makes the eventual acknowledgment effective.
+                known[identity]["receipt"] = str(message.get("ReceiptHandle") or "")
+        self._write(rows)
+        return [row["event"] for row in rows]
+
+    def acknowledge(self, provider_id: str) -> None:
+        rows = self._read()
+        remaining = []
+        for row in rows:
+            detail = row.get("event", {}).get("detail", {})
+            if isinstance(detail, dict) and detail.get("instance-id") == provider_id:
+                receipt = str(row.get("receipt") or "")
+                if receipt:
+                    self.client.delete_message(QueueUrl=self.queue_url, ReceiptHandle=receipt)
+            else:
+                remaining.append(row)
+        self._write(remaining)
+
+
 class EC2Provider:
     name = "ec2"
     contract_version = CONTRACT_VERSION
-    capabilities = ProviderCapabilities(stop_start=True, persistent_disks=True, spot=False)
+    capabilities = ProviderCapabilities(stop_start=True, persistent_disks=True, spot=True)
     ALLOWED_OPTIONS = {
         "instance_type",
         "subnet_id",
@@ -53,6 +129,8 @@ class EC2Provider:
         "instance_profile_arn",
         "availability_zone",
         "hourly_usd",
+        "spot_hourly_usd",
+        "spot_max_price_usd",
         "delete_root_on_termination",
         "cpu_credits",
         "bootstrap_path",
@@ -64,7 +142,8 @@ class EC2Provider:
 
     def __init__(self, client: EC2Client, *, required_tags: dict[str, str] | None = None,
                  wait_seconds: float = 60, sleep=time.sleep,
-                 deadline_enforcer: DeadlineEnforcer | None = None):
+                 deadline_enforcer: DeadlineEnforcer | None = None,
+                 event_source: EC2EventSource | None = None):
         self.client = client
         self.required_tags = dict(required_tags or {})
         if any(k.startswith("context-garden:") or k.startswith("aws:") for k in self.required_tags):
@@ -75,17 +154,49 @@ class EC2Provider:
         self.wait_seconds = wait_seconds
         self.sleep = sleep
         self.deadline_enforcer = deadline_enforcer
+        self.event_source = event_source
 
     def validate_options(self, options: dict[str, Any]) -> None:
         unknown = set(options) - self.ALLOWED_OPTIONS
         if unknown:
             raise ValueError(f"unsupported ec2 options: {sorted(unknown)}")
 
+    @staticmethod
+    def validate_purchase_prices(declaration: HostDeclaration | PoolDeclaration) -> float:
+        """Return the greatest hourly compute price this declaration authorizes."""
+        pool = declaration.pool if isinstance(declaration, HostDeclaration) else declaration
+        options = {**pool.provider_options, **pool.profile.provider_options}
+        price_key = "spot_hourly_usd" if pool.purchase_policy == "spot" else "hourly_usd"
+        if price_key not in options:
+            raise ValueError(f"ec2.{price_key} is required for a reviewable, current cost plan")
+        implicit_spot_ceiling = (
+            pool.purchase_policy == "spot" and options.get("spot_max_price_usd") is None
+        )
+        if (pool.on_demand_fallback or implicit_spot_ceiling) and "hourly_usd" not in options:
+            reason = "the implicit Spot ceiling" if implicit_spot_ceiling else "on-demand fallback"
+            raise ValueError(f"ec2.hourly_usd is required to price {reason}")
+
+        price_keys = [price_key]
+        if pool.purchase_policy == "spot":
+            price_keys.append(
+                "spot_max_price_usd" if options.get("spot_max_price_usd") is not None
+                else "hourly_usd"
+            )
+        if pool.on_demand_fallback and "hourly_usd" not in price_keys:
+            price_keys.append("hourly_usd")
+        prices: list[float] = []
+        for key in price_keys:
+            try:
+                price = float(options[key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"ec2.{key} must be a positive finite price") from exc
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError(f"ec2.{key} must be a positive finite price")
+            prices.append(price)
+        return max(prices)
+
     def estimate_hourly_usd(self, declaration: HostDeclaration) -> float:
-        options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
-        if "hourly_usd" not in options:
-            raise ValueError("ec2.hourly_usd is required for a reviewable, current cost plan")
-        return float(options["hourly_usd"])
+        return self.validate_purchase_prices(declaration)
 
     def discover(self, owner: str, pool: str) -> list[HostFacts]:
         response = self.client.describe_instances(
@@ -99,14 +210,48 @@ class EC2Provider:
                 },
             ]
         )
-        return [
+        hosts = [
             self._facts(instance)
             for reservation in response.get("Reservations", [])
             for instance in reservation.get("Instances", [])
         ]
+        if self.event_source is not None and hosts:
+            interrupted = self._spot_events(owner, pool)
+            hosts = [
+                replace(host, state=HostState.INTERRUPTED,
+                        detail=json.dumps({"provider_event": interrupted[host.provider_id]}, sort_keys=True))
+                if host.provider_id in interrupted else host
+                for host in hosts
+            ]
+        return hosts
+
+    def _spot_events(self, owner: str, pool: str) -> dict[str, dict[str, Any]]:
+        """Translate actual EventBridge Spot signals into provider-neutral interruptions."""
+        assert self.event_source is not None
+        events: dict[str, dict[str, Any]] = {}
+        for event in self.event_source.pending_events(owner, pool):
+            if event.get("source") != "aws.ec2":
+                continue
+            event_type = event.get("detail-type")
+            if event_type not in {
+                "EC2 Spot Instance Interruption Warning",
+                "EC2 Instance Rebalance Recommendation",
+            }:
+                continue
+            detail = event.get("detail")
+            instance_id = detail.get("instance-id") if isinstance(detail, dict) else None
+            if isinstance(instance_id, str) and instance_id:
+                events[instance_id] = event
+        return events
+
+    def acknowledge_interruption(self, provider_id: str) -> None:
+        acknowledge = getattr(self.event_source, "acknowledge", None)
+        if acknowledge is not None:
+            acknowledge(provider_id)
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
+        self.validate_purchase_prices(declaration)
         if not declaration.pool.profile.image.startswith("ami-"):
             raise ValueError("ec2 profile image must be a pinned AMI id")
         if any(char.isspace() for char in declaration.pool.profile.bootstrap_version):
@@ -169,6 +314,12 @@ class EC2Provider:
         if shutdown not in {"stop", "terminate"}:
             raise ValueError("shutdown_behavior must be stop or terminate")
         args["InstanceInitiatedShutdownBehavior"] = shutdown
+        if declaration.pool.purchase_policy == "spot":
+            spot: dict[str, Any] = {"SpotInstanceType": "one-time",
+                                    "InstanceInterruptionBehavior": "terminate"}
+            if options.get("spot_max_price_usd") is not None:
+                spot["MaxPrice"] = str(options["spot_max_price_usd"])
+            args["InstanceMarketOptions"] = {"MarketType": "spot", "SpotOptions": spot}
         if str(options["instance_type"]).startswith(("t2.", "t3.", "t3a.", "t4g.")):
             credits = options.get("cpu_credits", "standard")
             if credits not in ("standard", "unlimited"):
@@ -188,7 +339,28 @@ class EC2Provider:
         except ConnectionError as exc:
             raise TransientProviderError(f"temporary EC2 connection failure: {exc}") from exc
         except Exception as exc:
-            raise ProviderError(f"EC2 launch failed: {exc}") from exc
+            code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+            no_spot_capacity = code in {
+                "InsufficientInstanceCapacity",
+                "InsufficientFreeAddressesInSubnet",
+                "MaxSpotInstanceCountExceeded",
+                "SpotMaxPriceTooLow",
+            }
+            if (
+                declaration.pool.purchase_policy == "spot"
+                and declaration.pool.on_demand_fallback
+                and no_spot_capacity
+            ):
+                args.pop("InstanceMarketOptions", None)
+                args["ClientToken"] = f"{declaration.operation_id}-ondemand"
+                try:
+                    response = self.client.run_instances(**args)
+                except Exception as fallback_exc:
+                    raise ProviderError(f"EC2 on-demand fallback failed: {fallback_exc}") from fallback_exc
+            elif declaration.pool.purchase_policy == "spot" and no_spot_capacity:
+                raise ProviderError("EC2 Spot capacity is unavailable and fallback is disabled") from exc
+            else:
+                raise ProviderError(f"EC2 launch failed: {exc}") from exc
         return self._facts(response["Instances"][0])
 
     def inspect(self, provider_id: str) -> HostFacts:
