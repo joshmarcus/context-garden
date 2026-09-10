@@ -37,11 +37,13 @@ def _review(summary="Bounded environment recovery is incomplete", finding="Envir
         "criteria": [{
             "criterion": "Bound every started-review recovery",
             "met": False,
+            "failure_category": "implementation",
             "reason": "Started environment errors bypass the recovery limit.",
             "evidence": "six focused recovery tests fail",
         }],
         "findings": [{
             "severity": "blocking",
+            "failure_category": "implementation",
             "file": "src/garden/scheduler/review.py",
             "line": 950,
             "summary": finding,
@@ -197,6 +199,43 @@ def test_ci_infrastructure_failure_does_not_escalate_implementation(sched, fake_
     )
 
     assert not sched.state.get(task.id).get("implementation_failure_escalations")
+
+
+def test_persisted_nonimplementation_review_blockers_do_not_escalate_or_consume_attempts(
+    sched, fake_github,
+):
+    task, pr = _open_task(sched, fake_github)
+    attempts = task.attempts
+    review = _review()
+    review["criteria"] = [{
+        "criterion": "Verify behavior in the external environment",
+        "met": False,
+        "failure_category": "unavailable_evidence",
+        "reason": "The evidence service cannot be reached.",
+    }]
+    review["findings"] = [
+        {
+            "severity": "blocking",
+            "failure_category": "infrastructure",
+            "file": "",
+            "line": None,
+            "summary": "The required test runner is unavailable.",
+            "fix": "Restore the runner before evaluating the source.",
+        },
+    ]
+    reviewed = _review_run(sched, task, pr.head_sha, review)
+
+    sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+
+    state = sched.state.get(task.id)
+    assert not state.get("implementation_failure_escalations")
+    assert sched.store.task(task.id).attempts == attempts
+    assert reviewed.result["findings"] == review["findings"]
+
+    restarted = Scheduler(Store(sched.store.root), github=fake_github)
+    assert restarted.state.get(task.id)["last_review"]["findings"] == review["findings"]
+    assert not restarted.state.get(task.id).get("implementation_failure_escalations")
+    assert restarted.store.task(task.id).attempts == attempts
 
 
 def test_exact_provider_ci_failure_escalates_after_usable_analysis(sched, fake_github):
