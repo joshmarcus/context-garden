@@ -6,8 +6,8 @@ from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status
 from garden.scheduler.report import TickReport
 from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
-from tests.scheduler.conftest import statuses
 from tests.reference_context import agent_context
+from tests.scheduler.conftest import statuses
 
 
 def test_required_persona_comment_precedes_automated_review_and_check_evidence(sched, fake_github):

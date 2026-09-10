@@ -13,8 +13,8 @@ from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
 from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
-from tests.scheduler.conftest import statuses
 from tests.reference_context import agent_context
+from tests.scheduler.conftest import statuses
 
 
 def test_manual_reservation_is_retry_safe_and_suppresses_dispatch(sched):
