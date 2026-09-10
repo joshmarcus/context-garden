@@ -105,7 +105,8 @@ class PollMixin:
                 suppressed.add(product)
                 continue
             if route["provider"] == "github":
-                slug = RepositorySlug(route["repository"], route["host"])
+                host = route.get("host") or route.get("web_url", "").removeprefix("https://")
+                slug = RepositorySlug(route["repository"], host)
             else:
                 from ..source_control import RepositoryIdentity
 
