@@ -16,6 +16,7 @@ from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..preflight import missing_preflight
+from ..proctree import pid_alive
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run, RunMutationConflict
 from .human import validate_investigation_report
@@ -1336,10 +1337,10 @@ class ReapMixin:
             if run.runner == "remote" and not terminal_remote:
                 continue
             # Dispatch reserves a record before it prepares a worktree and records the
-            # worker pid.  A concurrent tick must not interpret that intentional
-            # requested/preparing window as a worker that never started; dispatch closes
-            # the record itself if preparation raises.
-            if run.status in ("requested", "preparing"):
+            # worker pid. A concurrent tick must not interpret that intentional window
+            # as a worker that never started. Its owner is persisted, so a later
+            # scheduler can still reclaim a reservation abandoned by a crashed preparer.
+            if run.pid is None and run.preparer_pid is not None and pid_alive(run.preparer_pid):
                 continue
             no_exit_code = not (run.path / "exit_code").exists()
             process_missing = run.pid is None

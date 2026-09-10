@@ -4,6 +4,7 @@ the generalisation of the orphan sweep (CG-116) to every run mode."""
 
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -95,7 +96,9 @@ def test_dead_run_sweep_closes_a_run_that_never_started(sched):
 @pytest.mark.parametrize("status", ("requested", "preparing"))
 def test_dead_run_sweep_leaves_a_dispatch_launch_reservation_alone(sched, status):
     """The dispatcher, not a concurrent tick, owns its pre-pid launch window."""
-    sched.runs.new_run("DM-001", "local", mode="work", initial_status=status)
+    run = sched.runs.new_run("DM-001", "local", mode="work", initial_status=status)
+    run.preparer_pid = os.getpid()
+    run.save()
 
     rep = TickReport()
     sched.reap_dead_runs(rep)
