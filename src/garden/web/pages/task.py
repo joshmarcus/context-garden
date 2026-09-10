@@ -20,7 +20,7 @@ from ...criteria import (
 from ...events import EventLog
 from ...graph import dependency_after, dependents, deps_in_later_phase
 from ...inbox import approve_phase_options, decision_card_view, split_log
-from ...model import effective_owner, phase_refusal
+from ...model import effective_owner
 from ...outcomes import base_acceptance
 from ...reference_snapshot import REFERENCE_DIR
 from ...review import review_to_markdown
@@ -188,8 +188,9 @@ def register(app: FastAPI, site: Site) -> None:
         review_history = _review_history(runs) if completion else []
         manual_runner = (t.runner or s.config.product_runner(t.product)) == "manual"
         phase = s.phase(t.product, t.phase)
-        phase_hold = phase_refusal(phase, t)
-        phase_hold_kind = "closed" if phase.closed else "frozen"
+        phase_hold = sched.phase_admission_refusal(t)
+        phase_hold_kind = ("closed phase" if phase.closed else "frozen phase" if phase.frozen
+                           else "sequential phase order")
         manual_take_reason = ""
         if manual_runner and t.status.value in ("ready", "changes_requested"):
             if any(run.task_id == t.id for run in rs.active()):
@@ -421,4 +422,5 @@ def _trial_view(trial: Any, runs: list[Any]) -> dict[str, Any] | None:
         row["elapsed"] = run.elapsed_minutes() if run else None
         contenders.append(row)
     return {"status": trial.get("status", ""), "winner": trial.get("winner"), "kept": trial.get("kept"),
+            "wait_reason": trial.get("compare_deferred", ""),
             "contenders": contenders}

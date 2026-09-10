@@ -27,7 +27,7 @@ from .costs import bucket_key, cost_series
 from .criteria import criteria_counts
 from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metrics
 from .inbox import automated_review_is_queued, merge_queue_view, needs_human_info
-from .model import Status, goals_text, phase_refusal
+from .model import Status, goals_text
 from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance
 from .plants import plant_info
 from .runs import Run, RunStore
@@ -345,8 +345,9 @@ def dispatch_lines(sched: Any) -> list[dict[str, Any]]:
         skip = ""
         ph = phases.get(t.key)
         budget = sched.budget_for(t)
-        if ph is not None and phase_refusal(ph, t):
-            skip = "phase closed" if ph.closed else "phase frozen"
+        phase_hold = sched.phase_admission_refusal(t) if ph is not None else ""
+        if phase_hold:
+            skip = phase_hold
         elif budget and sched.spent_for(t.key) >= budget:
             skip = "over budget"
         elif not runner.detached:

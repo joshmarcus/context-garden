@@ -54,7 +54,7 @@ class TrialsMixin:
         # A trial restart closes contender PRs and clears cached lifecycle state before it
         # dispatches fresh contenders.  Check the shared phase gate first so a frozen task
         # remains an intact hold rather than being reset and then refused by dispatch().
-        self._refuse_if_closed_or_frozen(task)
+        self._refuse_if_phase_not_admitted(task)
         if len(contenders) < 2:
             raise RuntimeError("a trial needs at least two contenders")
         default_h = task.harness or self.cfg.product_harness(task.product)
@@ -224,10 +224,17 @@ class TrialsMixin:
                 c["status"] = "env_failed"
                 c["note"] = str(c.get("note") or "").replace("; will retry once it resumes", "")
             changed = True
-        if not changed and not trial.get("compare_paused"):
+        if not changed and not trial.get("compare_paused") and not trial.get("compare_deferred"):
             return False
         base = self.base_for(task)
         if len(with_pr) >= 2:
+            refusal = self.phase_admission_refusal(task)
+            if refusal:
+                trial["status"] = "comparison_deferred"
+                trial["compare_deferred"] = refusal
+                return True  # completed contenders stay intact until this phase is admitted again
+            trial.pop("compare_deferred", None)
+            trial["status"] = "running"
             harness_name = str(self.cfg.get("review.harness") or "")
             if self.is_harness_paused(self.resolved_harness_name(task, harness_name)):
                 trial["compare_paused"] = True

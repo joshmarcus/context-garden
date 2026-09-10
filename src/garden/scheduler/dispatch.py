@@ -28,15 +28,75 @@ class DispatchMixin:
         self.sweep_storage(rep, measure=False)
 
     # ---- dispatch ----------------------------------------------------------
+    def sequential_phase(self, product: str) -> Phase | None:
+        """The phase currently owning new model admission for ``product``, if enabled.
+
+        Store discovery order is the product's configured phase order. A phase remains
+        selected until its durable ``closed`` marker is written; readiness and task
+        completion deliberately do not approximate closure.
+        """
+        if self.effective("phase_execution", "concurrent", product) != "sequential":
+            return None
+        try:
+            phases = next(p.phases for p in self.store.products() if p.name == product)
+        except StopIteration:
+            return None
+        return next((phase for phase in phases if not phase.closed), None)
+
+    def phase_admission_refusal(self, task: Task) -> str:
+        """Explain why a task cannot start new phase-owned model work."""
+        try:
+            phase = self.store.phase(task.product, task.phase)
+        except KeyError:
+            return ""
+        refusal = phase_refusal(phase, task)
+        if refusal:
+            return refusal
+        return self.sequential_phase_refusal(task)
+
+    def sequential_phase_refusal(self, task: Task) -> str:
+        """Explain only a sequential-order hold, for routes allowed on frozen phases."""
+        current = self.sequential_phase(task.product)
+        if current is None or current.name == task.phase:
+            return ""
+        reason = self.sequential_phase_wait_reason(current)
+        return (f"{task.key} waits for sequential phase {current.key} to close; {reason}")
+
+    def sequential_phase_wait_reason(self, phase: Phase) -> str:
+        """A short actionable description of why the selected phase remains open."""
+        if phase.frozen:
+            return f"{phase.key} is frozen ({phase.frozen}); unfreeze it or close it explicitly"
+        waiting = [task.id for task in phase.tasks if task.status == Status.WAITING_HUMAN
+                   or self.state.get(task.id).get("needs_human")]
+        if waiting:
+            return f"owner input is required for {', '.join(waiting)}"
+        tasks = self.store.tasks()
+        later_dependencies = sorted({dep for task in phase.tasks for dep in task.depends_on
+                                     if dep in tasks and tasks[dep].phase != phase.name
+                                     and not tasks[dep].status.terminal})
+        if later_dependencies:
+            return ("cross-phase dependencies are still open: " + ", ".join(later_dependencies)
+                    + "; resolve the dependency or phase order instead of skipping the phase")
+        open_tasks = [task.id for task in phase.tasks if not task.status.terminal]
+        if open_tasks:
+            return f"open work remains: {', '.join(open_tasks)}"
+        return "its required closing review or explicit phase closure is still outstanding"
+
     def _refuse_if_closed_or_frozen(self, task: Task) -> None:
         """The single gate every dispatch (tick, retry, revise, trial, `garden dispatch`/`take`,
         the web dispatch button) passes through: a closed phase always refuses; a frozen one
         refuses unless the task carries a freeze exception."""
         try:
-            ph: Phase | None = self.store.phase(task.product, task.phase)
+            phase = self.store.phase(task.product, task.phase)
         except KeyError:
             return
-        refusal = phase_refusal(ph, task)
+        refusal = phase_refusal(phase, task)
+        if refusal:
+            raise RuntimeError(refusal)
+
+    def _refuse_if_phase_not_admitted(self, task: Task) -> None:
+        """Gate new model admission without constraining recovery/publication paths."""
+        refusal = self.phase_admission_refusal(task)
         if refusal:
             raise RuntimeError(refusal)
 
@@ -66,6 +126,7 @@ class DispatchMixin:
             f"revise round {int(self.state.get(task.id).get('revisions', 0)) + 1} of {max_rev}"
             if mode == "revise" else
             f"priority {task.priority}" + (f" · order {task.order}" if task.order is not None else "")
+            + (f" · waiting: {refusal}" if (refusal := self.phase_admission_refusal(task)) else "")
         )) for task, mode in candidates]
         return queue
 
@@ -91,7 +152,7 @@ class DispatchMixin:
             if self.worker_run_in_flight(task.id):
                 continue  # a recovery API reservation owns this task before preparation ends
             ph = phases.get(task.key)
-            if ph is not None and phase_refusal(ph, task):
+            if ph is not None and self.phase_admission_refusal(task):
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
             if self.budget_exceeded(task):
                 continue
@@ -161,6 +222,8 @@ class DispatchMixin:
                 continue
             if any(run.status in ("requested", "preparing", "running") for run in self.runs.runs_for(task.id)):
                 inv["status"] = "draining"
+                continue
+            if self.sequential_phase_refusal(task):
                 continue
             if self.slots_free() <= 0:
                 continue
@@ -485,10 +548,14 @@ class DispatchMixin:
                   pool_member: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
-        # A read-only local diagnosis may explain work in a held phase. The hold still
-        # applies to every corrective work/revise dispatch that can change product source.
-        if mode != "investigation":
-            self._refuse_if_closed_or_frozen(task)
+        # A read-only local diagnosis may explain work in a closed or frozen phase, but it
+        # is still new phase-owned model work and therefore obeys sequential phase order.
+        if mode == "investigation":
+            refusal = self.sequential_phase_refusal(task)
+            if refusal:
+                raise RuntimeError(refusal)
+        else:
+            self._refuse_if_phase_not_admitted(task)
         if not self.operator_scope_ready(task):
             raise RuntimeError("operator evidence is required before checkout work can dispatch")
         if runner is None:

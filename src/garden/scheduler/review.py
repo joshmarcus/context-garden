@@ -283,6 +283,10 @@ class ReviewMixin:
 
     def _review_item_wait_reason(self, task: Task, item: dict[str, Any]) -> tuple[str, str] | None:
         """Backend-aware item gate shared by queue admission and its user explanation."""
+        current_phase = self.sequential_phase(task.product)
+        phase_hold = self.phase_admission_refusal(task)
+        if current_phase is not None and current_phase.name != task.phase and phase_hold:
+            return "phase", phase_hold
         backend, harness = self._review_item_route(task, item)
         if self.is_harness_paused(harness):
             return "harness", f"{harness} harness paused"
@@ -659,7 +663,7 @@ class ReviewMixin:
         investigation = self.state.get(task.id).get("investigation") or {}
         if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
-        self._refuse_if_closed_or_frozen(task)
+        self._refuse_if_phase_not_admitted(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         review_tier = str(self.effective("review.difficulty", None, task.product)
                           or task.difficulty or "medium")
@@ -983,7 +987,7 @@ class ReviewMixin:
         ensure_open(task)
         if not task.pr:
             raise RuntimeError(f"{task.id} has no PR to review")
-        self._refuse_if_closed_or_frozen(task)
+        self._refuse_if_phase_not_admitted(task)
         st = self.state.get(task.id)
         self._grant_one_more_review_round(st)
         st.pop("needs_human", None)

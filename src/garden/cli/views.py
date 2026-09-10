@@ -75,6 +75,12 @@ def status(
         console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
     for key in kickoff_missing:
         console.print(f"[yellow]{key}: tasks approved with no kickoff report — run `garden kickoff {key}`[/yellow]")
+    for prod in store.products():
+        if product and prod.name != product:
+            continue
+        current = sched.sequential_phase(prod.name)
+        if current is not None:
+            console.print(f"[yellow]{prod.name}: sequential phase {current.name} — {sched.sequential_phase_wait_reason(current)}; later phases wait[/yellow]")
     if closed_phases:
         n = len(closed_phases)
         listing = ", ".join(f"{ph.key} (closed {ph.closed})" for ph in closed_phases)

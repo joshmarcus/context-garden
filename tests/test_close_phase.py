@@ -96,6 +96,8 @@ def test_task_page_labels_a_closed_phase_hold_as_closed(garden):
     page = TestClient(create_app(Store(garden), watch=False)).get("/tasks/DM-001").text
     assert "Held by closed phase" in page
     assert "Held by frozen phase" not in page
+    assert "will not start, revise, review, rebase, or merge" in page
+    assert "Work already in flight may finish and publish" not in page
 
 
 def test_new_task_refuses_closed_phase_without_reopen(garden):

@@ -795,7 +795,9 @@ class Scheduler(
                     if self.reap_check(t, rep):
                         rep.reaped.append(t.id)
                     continue
-                if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in ("running", "comparing"):
+                if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in (
+                    "running", "comparing", "comparison_deferred",
+                ):
                     if self.reap_trial(t, rep):
                         rep.reaped.append(t.id)
                     continue
