@@ -1438,6 +1438,54 @@ def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sc
     assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
 
 
+def test_pushed_completion_waits_for_checkout_storage_then_resumes(
+    sched, fake_github, tmp_path, monkeypatch,
+):
+    """A collected external result waits without spending another attempt."""
+    from garden.scheduler import resources
+    from garden.storage import StorageVolume
+
+    task = sched.store.task("DM-001")
+    branch = "operator/storage-recovery"
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=branch, completion_mode="pushed")
+    clone = tmp_path / "storage-recovery-clone"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(clone)], check=True)
+    gitops.git("config", "user.email", "author@example.com", cwd=clone)
+    gitops.git("config", "user.name", "Author", cwd=clone)
+    gitops.git("checkout", "-q", "-b", branch, cwd=clone)
+    (clone / "result.txt").write_text("durable result\n")
+    gitops.git("add", "result.txt", cwd=clone)
+    gitops.git("commit", "-q", "-m", "external result", cwd=clone)
+    pushed_sha = gitops.git("rev-parse", "HEAD", cwd=clone).strip()
+    gitops.git("push", "-q", "origin", branch, cwd=clone)
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    free = {"bytes": 19 << 30}
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", free["bytes"]),
+    ))
+    attempts = task.attempts
+
+    sched.finish_manual(task, {
+        "status": "done", "summary": "collected", "repository": "test/demo",
+        "branch": branch, "pushed_sha": pushed_sha,
+    })
+
+    saved = sched.runs.latest(task.id)
+    assert saved.status == "done" and saved.result["summary"] == "collected"
+    assert saved.env_snapshot["remote_branch_promoted"] is True
+    assert sched.store.task(task.id).status == Status.RUNNING
+    assert sched.store.task(task.id).attempts == attempts
+    assert not sched.worktree_for(task).exists()
+    assert "remote result checkout materialization" in sched.control()["resource_pressure"]["operation"]
+
+    free["bytes"] = 30 << 30
+    sched.tick()
+
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    assert (sched.worktree_for(task) / "result.txt").read_text() == "durable result\n"
+
+
 @pytest.mark.parametrize(
     ("repository", "branch", "sha", "message"),
     [

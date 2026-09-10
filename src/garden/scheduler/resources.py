@@ -527,4 +527,14 @@ class ResourceMixin:
                 0, int(self.effective("resources.operation_required_bytes", 0) or 0)
             )
             run.save()
+            # Setup and runtime scratch are created by a detached supervisor after this
+            # lock is released.  Preserve the aggregate that this serialized admission
+            # accepted so their fresh physical-space checks include sibling reservations.
+            # A later contender includes this run in its own aggregate, so it cannot race
+            # an older supervisor for the same estimated headroom.
+            run.env_snapshot["disk_recheck_required_bytes"] = sum(
+                max(0, int((active.env_snapshot or {}).get("disk_required_bytes", 0) or 0))
+                for active in self.local_runs_active()
+            )
+            run.save()
             return run

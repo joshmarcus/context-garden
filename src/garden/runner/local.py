@@ -132,7 +132,10 @@ class LocalRunner(Runner):
                               else no_live_garden_root(run.path))
         resources = self.config.get("resources", {})
         reserve = int(resources.get("disk_reserve_bytes", 0) or 0)
-        required = int((run.env_snapshot or {}).get("disk_required_bytes", 0) or 0)
+        required = int((run.env_snapshot or {}).get(
+            "disk_recheck_required_bytes",
+            (run.env_snapshot or {}).get("disk_required_bytes", 0),
+        ) or 0)
         backing = str(resources.get("windows_backing_path", "") or "")
         work_dir = self.config.get("work_dir")
         if work_dir:

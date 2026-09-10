@@ -605,7 +605,11 @@ class ReapMixin:
                 self._retry_or_fail(task, run, rep, run.error)
                 return
             try:
-                if run.pushed_ref:
+                if (run.env_snapshot or {}).get("remote_branch_promoted"):
+                    # A prior finalize pass promoted the exact accepted result, then
+                    # deferred local checkout staging for storage pressure.
+                    ahead = 1
+                elif run.pushed_ref:
                     staged = f"refs/remotes/origin/{run.pushed_ref.removeprefix('refs/heads/')}"
                     remote_head = gitops.git("rev-parse", "--verify", staged, cwd=repo).strip()
                     if not run.pushed_head or remote_head != run.pushed_head:
@@ -635,6 +639,7 @@ class ReapMixin:
                 run.save()
                 self._retry_or_fail(task, run, rep, "remote worker finished without pushing commits")
                 return
+            run.env_snapshot["remote_branch_promoted"] = True
             run.status = "done"
             run.save()
             try:
@@ -642,7 +647,14 @@ class ReapMixin:
                     gitops.git("fetch", "origin", cwd=wt)
                     gitops.git("reset", "-q", "--hard", f"origin/{branch}", cwd=wt)
                 else:
-                    gitops.prepare_worktree(repo, wt, branch, base)
+                    with self._local_staging_admission("remote result checkout materialization"):
+                        gitops.prepare_worktree(repo, wt, branch, base)
+            except ResourcePressureError as e:
+                # The result and promoted branch are already durable.  Leave the task and
+                # terminal run untouched so the normal interrupted-finalize path retries
+                # this controller staging step after storage recovers.
+                self.log(f"{task.id}: {e}; completed remote result remains queued for staging")
+                return
             except gitops.GitError as e:
                 run.status = "failed"
                 run.error = f"could not materialise local worktree: {e}"
