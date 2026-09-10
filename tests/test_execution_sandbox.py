@@ -236,7 +236,11 @@ sys.stdin.read()
     assert (run_dir / "final.md").read_text() == "sandbox result"
     command = (run_dir / "command.txt").read_text()
     assert f"--output-last-message {output}" in command
-    assert f"cp {output} {run_dir / 'final.md'}" in command
+    # The sandbox can write only its narrow output root.  The trusted supervisor reads that
+    # FIFO and publishes the result into the protected controller record; the worker command
+    # never receives a controller-owned copy operation.
+    assert " cp " not in command
+    assert str(run_dir / "final.md") not in command
 
 
 def test_capability_attestation_without_enforcement_is_rejected(
