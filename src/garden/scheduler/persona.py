@@ -54,7 +54,6 @@ class PersonaMixin:
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
         base = self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_phase-{product}-{phase.name}")
-        harness_name = str(self.cfg.get("review.harness") or "")
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
         prepared_run = None
         if runner_name == "local":
