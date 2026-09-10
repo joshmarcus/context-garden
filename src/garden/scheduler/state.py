@@ -10,6 +10,32 @@ from pathlib import Path
 from typing import Any
 
 
+class StateCorruptionError(RuntimeError):
+    """The durable scheduler side-store cannot be safely interpreted."""
+
+
+def _read_state(path: Path) -> dict[str, Any]:
+    """Read an existing state file, refusing to reinterpret corrupt bytes as no state."""
+    try:
+        raw = json.loads(path.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        location = ""
+        if isinstance(exc, json.JSONDecodeError):
+            location = f" at line {exc.lineno} column {exc.colno}"
+        raise StateCorruptionError(
+            f"scheduler state is corrupt: {path}{location}; the file was preserved. "
+            "Repair it in place or move it aside after inspecting/recovering its controls, "
+            "then retry the operation."
+        ) from None
+    if not isinstance(raw, dict):
+        raise StateCorruptionError(
+            f"scheduler state is corrupt: {path} must contain a JSON object; the file was "
+            "preserved. Repair it in place or move it aside after inspecting/recovering its "
+            "controls, then retry the operation."
+        )
+    return raw
+
+
 class _TaskState(dict):
     """dict subclass that records which keys have actually changed since load.
 
@@ -163,14 +189,11 @@ class State:
         self.path = path
         self.data: dict[str, _TaskState] = {}
         if path.exists():
-            try:
-                raw: dict[str, Any] = json.loads(path.read_text())
-                self.data = {
-                    k: _TaskState(v) if isinstance(v, dict) else v
-                    for k, v in raw.items()
-                }
-            except json.JSONDecodeError:
-                self.data = {}
+            raw = _read_state(path)
+            self.data = {
+                k: _TaskState(v) if isinstance(v, dict) else v
+                for k, v in raw.items()
+            }
 
     def get(self, task_id: str) -> _TaskState:
         existing = self.data.get(task_id)
@@ -198,10 +221,7 @@ class State:
             fcntl.flock(lf, fcntl.LOCK_EX)
             disk: dict[str, Any] = {}
             if self.path.exists():
-                try:
-                    disk = json.loads(self.path.read_text())
-                except json.JSONDecodeError:
-                    disk = {}
+                disk = _read_state(self.path)
             for tid, dirty_keys in dirty_by_tid.items():
                 task_disk = disk.setdefault(tid, {})
                 task_mem = self.data[tid]
@@ -230,10 +250,7 @@ class State:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "a") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                disk = json.loads(self.path.read_text()) if self.path.exists() else {}
-            except json.JSONDecodeError:
-                disk = {}
+            disk = _read_state(self.path) if self.path.exists() else {}
             for other_id in task_ids - {task_id}:
                 before = snapshot.get(other_id, {})
                 current = disk.setdefault(other_id, {})

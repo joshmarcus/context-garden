@@ -56,7 +56,7 @@ from .resources import ResourceMixin
 from .retro import RetroMixin
 from .review import ReviewMixin
 from .scope import ScopeMixin
-from .state import State, _TaskState
+from .state import State, StateCorruptionError, _TaskState
 from .trials import TrialsMixin
 from .upgrades import UpgradeMixin
 
@@ -73,7 +73,10 @@ def _tick_thread_lock(path: Path) -> Iterator[None]:
     with lock:
         yield
 
-__all__ = ["REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "TickReport", "_TaskState"]
+__all__ = [
+    "REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "StateCorruptionError",
+    "TickReport", "_TaskState",
+]
 
 WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase", "investigation"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
