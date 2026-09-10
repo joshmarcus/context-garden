@@ -711,6 +711,17 @@ def test_ontologist_named_phase_review_preserves_its_authored_specification(sche
     assert "First run needs a config file" in report
 
 
+def test_ontologist_named_pr_review_posts_its_authored_specification(sched, fake_github):
+    sched.tick()
+    sched.tick()
+
+    sched.dispatch_persona_pr(sched.store.task("DM-001"), "ontologist")
+    sched.tick()
+
+    comment = next(comment for comment in fake_github.comments if "ontologist review of DM-001" in comment)
+    assert "## Ontology specification" in comment
+
+
 def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, monkeypatch):
     sched.tick()
     sched.tick()
