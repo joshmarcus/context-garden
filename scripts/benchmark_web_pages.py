@@ -24,10 +24,40 @@ from garden.runs import RunStore
 from garden.store import Store
 from garden.web.app import create_app
 
-ROUTES = ("/now", "/inbox", "/board", "/tasks/BM-0001", "/runs/BM-0001/seed-0001", "/config")
+_STATIC_ROUTES = ("/now", "/inbox", "/board", "/config")
+
+
+def _routes(tasks: int, runs: int) -> tuple[str, ...]:
+    """Return routes backed by the identities created by ``_fixture``.
+
+    The second task/run keeps the default benchmark's representative routes stable.  Smaller
+    fixtures use their last available identity instead of requesting a route that cannot exist.
+    """
+    task_number = min(1, tasks - 1)
+    run_number = min(1, runs - 1)
+    run_task_number = run_number % tasks
+    return (
+        *_STATIC_ROUTES[:3],
+        f"/tasks/BM-{task_number:04d}",
+        f"/runs/BM-{run_task_number:04d}/seed-{run_number:04d}",
+        _STATIC_ROUTES[3],
+    )
+
+
+def _validate_sizes(tasks: int, runs: int, events: int, repeats: int) -> None:
+    """Reject sizes that cannot produce the benchmark's required representative routes."""
+    if tasks < 1:
+        raise ValueError("--tasks must be at least 1 (the benchmark serves a task route)")
+    if runs < 1:
+        raise ValueError("--runs must be at least 1 (the benchmark serves a run route)")
+    if events < 0:
+        raise ValueError("--events cannot be negative")
+    if repeats < 1:
+        raise ValueError("--repeats must be at least 1")
 
 
 def _fixture(root: Path, tasks: int, runs: int, events: int) -> None:
+    _validate_sizes(tasks, runs, events, repeats=1)
     (root / "garden.yaml").write_text(yaml.safe_dump({
         "name": "web benchmark", "max_parallel": 4, "review": {"enabled": False},
         "products": {"bench": {"repo": str(root), "id_prefix": "BM"}},
@@ -64,9 +94,10 @@ def _summary(samples: list[float]) -> dict[str, float]:
     return {"median_ms": round(statistics.median(samples), 1), "max_ms": round(max(samples), 1)}
 
 
-def _server(root: Path, repeats: int, *, cache_discovery: bool) -> dict[str, dict[str, float]]:
+def _server(root: Path, repeats: int, *, cache_discovery: bool,
+            routes: tuple[str, ...]) -> dict[str, dict[str, float]]:
     output = {}
-    for route in ROUTES:
+    for route in routes:
         app = create_app(Store(root), watch=False, host="testserver")
         client = TestClient(app)
         cold_start = time.perf_counter()
@@ -94,14 +125,15 @@ def _navigation(page, url: str) -> dict[str, float]:
     }}""")
 
 
-def _browser(root: Path, repeats: int, *, cache_discovery: bool) -> dict[str, dict[str, object]]:
+def _browser(root: Path, repeats: int, *, cache_discovery: bool,
+             routes: tuple[str, ...]) -> dict[str, dict[str, object]]:
     from playwright.sync_api import sync_playwright
 
     output = {}
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page()
-        for port, route in enumerate(ROUTES, start=8799):
+        for port, route in enumerate(routes, start=8799):
             app = create_app(Store(root), watch=False, host="127.0.0.1", port=port)
             server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
             thread = threading.Thread(target=server.run)
@@ -138,16 +170,22 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--browser", action="store_true")
     args = parser.parse_args()
+    try:
+        _validate_sizes(args.tasks, args.runs, args.events, args.repeats)
+    except ValueError as exc:
+        parser.error(str(exc))
     with tempfile.TemporaryDirectory(prefix="garden-web-benchmark-") as tmp:
         root = Path(tmp)
         _fixture(root, args.tasks, args.runs, args.events)
+        routes = _routes(args.tasks, args.runs)
         result: dict[str, object] = {"fixture": vars(args)}
         for label, cache_discovery in (("before", False), ("after", True)):
             measurements: dict[str, object] = {
-                "server": _server(root, args.repeats, cache_discovery=cache_discovery),
+                "server": _server(root, args.repeats, cache_discovery=cache_discovery, routes=routes),
             }
             if args.browser:
-                measurements["browser"] = _browser(root, args.repeats, cache_discovery=cache_discovery)
+                measurements["browser"] = _browser(root, args.repeats, cache_discovery=cache_discovery,
+                                                     routes=routes)
             result[label] = measurements
         print(json.dumps(result, indent=2))
 
