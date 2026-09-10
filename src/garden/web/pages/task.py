@@ -19,7 +19,7 @@ from ...criteria import (
 from ...events import EventLog
 from ...graph import dependency_after, dependents, deps_in_later_phase
 from ...inbox import approve_phase_options, decision_card_view, split_log
-from ...model import effective_owner, phase_refusal
+from ...model import effective_owner
 from ...outcomes import base_acceptance
 from ...review import review_to_markdown
 from ...runs import RunStore
