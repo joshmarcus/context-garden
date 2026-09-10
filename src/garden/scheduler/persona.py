@@ -108,7 +108,8 @@ class PersonaMixin:
                 break
         text = pr_brief(self.store, task, name, branch, base, pr_title, pr_body, diff,
                         int(self.cfg.get("review.max_diff_chars", 60000)), captures=captures)
-        review_tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        review_tier = str(self.effective("review.difficulty", None, task.product)
+                          or task.difficulty or "medium")
         member = member if member is not None else self.select_pool_member(task, review_tier, review=True)
         if self.pool_members(review_tier, review=True) and member is None:
             raise RuntimeError("every review pool member is paused")

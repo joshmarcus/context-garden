@@ -196,7 +196,8 @@ class ReviewMixin:
             if runner_name == "local" and self.local_slots_free() <= 0:
                 deferred.append(item)
                 continue
-            tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+            tier = str(self.effective("review.difficulty", None, task.product)
+                       or task.difficulty or "medium")
             member = self.select_pool_member(task, tier, review=True)
             review_harness = (member or {}).get("harness") or harness_name
             if self.pool_members(tier, review=True) and member is None:
@@ -617,7 +618,8 @@ class ReviewMixin:
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         self._refuse_if_closed_or_frozen(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
-        review_tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        review_tier = str(self.effective("review.difficulty", None, task.product)
+                          or task.difficulty or "medium")
         member = member if member is not None else self.select_pool_member(task, review_tier, review=True)
         if self.pool_members(review_tier, review=True) and member is None:
             raise RuntimeError("every review pool member is paused")
