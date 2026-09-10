@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import gzip
+import hashlib
 import json
 import os
+import shutil
 import signal
 import tempfile
 import threading
 import time
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
@@ -32,6 +36,15 @@ from .proctree import process_group_alive as _process_group_alive
 if TYPE_CHECKING:
     from .config import Config
     from .events import EventLog
+
+
+@contextmanager
+def _run_file_lock(path: Path) -> Iterator[None]:
+    # Import lazily: garden.hosts exposes drain accounting that itself reads RunStore.
+    from .hosts.locking import file_lock
+
+    with file_lock(path):
+        yield
 
 
 _INDEXES: dict[Path, _RunIndex] = {}
@@ -178,7 +191,7 @@ class Run:
         # retain a newer worker generation/completion when a scheduler saves an object it
         # read before that request. Lock order is run-mutation.lock, then run.json; callers
         # must not acquire the scheduler tick lock while holding this lock.
-        with file_lock(self.path.parents[2] / "run-mutation.lock"):
+        with _run_file_lock(self.path.parents[2] / "run-mutation.lock"):
             self.save_locked(record)
         # A metadata rewrite does not change the parent directory mtime by itself.  Touch
         # the task bucket so other processes can detect this one changed without statting
@@ -250,7 +263,7 @@ class Run:
         must not acquire the scheduler tick lock, or perform provider/model work, while
         this short transaction is held.
         """
-        with file_lock(path.parents[2] / "run-mutation.lock"):
+        with _run_file_lock(path.parents[2] / "run-mutation.lock"):
             yield cls.load(path)
         path.parent.touch()
         _invalidate_index(path.parents[1], path.parent.name)
@@ -583,8 +596,7 @@ class Run:
         return not alive(self.pid)
 
     def stdout_text(self) -> str:
-        p = self.path / "stdout.json"
-        return p.read_text() if p.exists() else ""
+        return self.read_text("stdout.json")
 
     def stdout_events(self, n: int | None = 50) -> list[dict[str, Any]]:
         """Parse stdout.json as JSONL and return event dicts (the last n, or all when n is None)."""
@@ -602,8 +614,44 @@ class Run:
         return out if n is None else out[-n:]
 
     def stderr_text(self) -> str:
-        p = self.path / "stderr.log"
-        return p.read_text() if p.exists() else ""
+        return self.read_text("stderr.log")
+
+    def read_bytes(self, relative: str | Path) -> bytes:
+        """Read an artifact from a live, legacy-archived, or compact archived run.
+
+        Compact artifacts are verified on every read.  A missing or corrupt blob is an
+        explicit history failure, never an empty transcript.
+        """
+        relative = Path(relative)
+        direct = self.path / relative
+        if direct.exists():
+            return direct.read_bytes()
+        manifest_path = self.path / "archive.json"
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except FileNotFoundError:
+            raise FileNotFoundError(direct) from None
+        except (OSError, TypeError, json.JSONDecodeError) as exc:
+            raise HistoryUnavailable(f"archive manifest is unavailable: {self.task_id}/{self.run_id}") from exc
+        try:
+            entry = manifest["files"][relative.as_posix()]
+        except (KeyError, TypeError):
+            raise FileNotFoundError(direct) from None
+        try:
+            sha = str(entry["sha256"])
+            blob = self.path.parents[1] / "blobs" / sha[:2] / f"{sha}.gz"
+            data = gzip.decompress(blob.read_bytes())
+        except (OSError, EOFError, KeyError, TypeError, gzip.BadGzipFile) as exc:
+            raise HistoryUnavailable(f"archived artifact is unavailable: {self.task_id}/{self.run_id}/{relative}") from exc
+        if len(data) != entry.get("bytes") or hashlib.sha256(data).hexdigest() != sha:
+            raise HistoryUnavailable(f"archived artifact checksum mismatch: {self.task_id}/{self.run_id}/{relative}")
+        return data
+
+    def read_text(self, relative: str | Path) -> str:
+        try:
+            return self.read_bytes(relative).decode()
+        except FileNotFoundError:
+            return ""
 
 
 def _newest_mtime(root: Path) -> float:
@@ -663,6 +711,8 @@ def _history_lock(garden_dir: Path, *, exclusive: bool):
 
 class RunStore:
     MAX_INDEX_AGE_SECONDS = 1.0
+    ARCHIVE_VERSION = 2
+    COMPACT_MIN_BYTES = 4096
 
     def __init__(self, garden_dir: Path):
         self.dir = garden_dir / "runs"
@@ -953,7 +1003,8 @@ class RunStore:
         cutoff), for a spend-rate reading beside the operating profile (CG-221)."""
         return round(sum(r.cost_usd or 0.0 for r in self.all_runs() if (r.finished_at or "") >= since_iso), 4)
 
-    def archive_terminal(self, before: dt.datetime, protected_run_ids: set[str] | None = None) -> int:
+    def archive_terminal(self, before: dt.datetime, protected_run_ids: set[str] | None = None,
+                         limit: int | None = None) -> int:
         """Move old terminal run directories out of the active working set.
 
         Selection is deliberately conservative: a record must have a terminal status,
@@ -967,6 +1018,8 @@ class RunStore:
             terminal = {"done", "blocked", "failed", "timeout", "cancelled", "superseded"}
             moved = 0
             for run in self._active_disk_runs():
+                if limit is not None and moved >= limit:
+                    break
                 if run.status not in terminal or not run.finished_at or run.run_id in protected:
                     continue
                 try:
@@ -980,10 +1033,166 @@ class RunStore:
                 if target.exists():
                     continue
                 os.replace(run.path, target)
+                self._compact_archived_run(target)
                 self._index.dirty_tasks.add(run.task_id)
                 moved += 1
+            # Resume compaction after a crash between the directory move and manifest
+            # commit, and migrate legacy archived directories in bounded per-file steps.
+            legacy = list(self.archive_dir.glob("*/*/run.json"))
+            for run_json in legacy[:limit] if limit is not None else legacy:
+                self._compact_archived_run(run_json.parent)
             self._write_archive_index()
             return moved
+
+    def archive_preview(self, before: dt.datetime, protected_run_ids: set[str] | None = None,
+                        limit: int | None = None) -> dict[str, Any]:
+        """Return a bounded, read-only inventory using the same eligibility rules as apply."""
+        protected = protected_run_ids or set()
+        terminal = {"done", "blocked", "failed", "timeout", "cancelled", "superseded"}
+        report: dict[str, Any] = {"eligible_runs": 0, "eligible_bytes": 0,
+                                  "estimated_stored_bytes": 0, "skipped": {}}
+        for run in self._active_disk_runs():
+            reason = ""
+            if run.status not in terminal:
+                reason = "active"
+            elif not run.finished_at:
+                reason = "not finalized"
+            elif run.run_id in protected:
+                reason = "recovery referenced"
+            else:
+                try:
+                    if dt.datetime.fromisoformat(run.finished_at) >= before:
+                        reason = "retention window"
+                except ValueError:
+                    reason = "invalid finish timestamp"
+            if reason:
+                report["skipped"][reason] = report["skipped"].get(reason, 0) + 1
+                continue
+            report["eligible_runs"] += 1
+            for path in (path for path in run.path.rglob("*") if path.is_file()):
+                size = path.stat().st_size
+                report["eligible_bytes"] += size
+                if size < self.COMPACT_MIN_BYTES or "ui" in path.relative_to(run.path).parts:
+                    report["estimated_stored_bytes"] += size
+                    continue
+                compressor = zlib.compressobj(wbits=31)
+                compressed_size = 0
+                with path.open("rb") as source:
+                    while chunk := source.read(1024 * 1024):
+                        compressed_size += len(compressor.compress(chunk))
+                report["estimated_stored_bytes"] += compressed_size + len(compressor.flush())
+            if limit is not None and report["eligible_runs"] >= limit:
+                break
+        return report
+
+    def archive_report(self) -> dict[str, int]:
+        """Report logical and unique physical blob bytes without reading blob contents."""
+        logical = 0
+        referenced: set[str] = set()
+        for manifest_path in self.archive_dir.glob("*/*/archive.json"):
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                for entry in manifest["files"].values():
+                    logical += int(entry["bytes"])
+                    referenced.add(str(entry["sha256"]))
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise HistoryUnavailable(f"archive manifest is unreadable: {manifest_path}") from exc
+        stored = 0
+        for sha in referenced:
+            try:
+                stored += self._blob_path(sha).stat().st_size
+            except OSError as exc:
+                raise HistoryUnavailable(f"archive blob is unavailable: {sha}") from exc
+        return {"logical_blob_bytes": logical, "stored_blob_bytes": stored,
+                "actual_savings_bytes": logical - stored, "unique_blobs": len(referenced)}
+
+    def _blob_path(self, sha256: str) -> Path:
+        return self.archive_dir / "blobs" / sha256[:2] / f"{sha256}.gz"
+
+    @staticmethod
+    def _durable_replace(path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}-", delete=False) as staged:
+            staged.write(data)
+            staged.flush()
+            os.fsync(staged.fileno())
+            staged_path = Path(staged.name)
+        os.replace(staged_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+    def _compact_archived_run(self, run_dir: Path) -> None:
+        """Transactionally replace large immutable files with verified CAS references."""
+        manifest_path = run_dir / "archive.json"
+        try:
+            manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {
+                "version": self.ARCHIVE_VERSION, "files": {}, "repair": None,
+            }
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(f"archive manifest is unreadable: {manifest_path}") from exc
+        if manifest.get("version") != self.ARCHIVE_VERSION or not isinstance(manifest.get("files"), dict):
+            raise ValueError(f"unsupported archive manifest: {manifest_path}")
+        files: dict[str, dict[str, Any]] = manifest["files"]
+        candidates = sorted(
+            path for path in run_dir.rglob("*")
+            if path.is_file() and path.name not in {"run.json", "archive.json"}
+            and "ui" not in path.relative_to(run_dir).parts
+            and path.stat().st_size >= self.COMPACT_MIN_BYTES
+        )
+        for path in candidates:
+            relative = path.relative_to(run_dir).as_posix()
+            digest = hashlib.sha256()
+            size = 0
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+                    size += len(chunk)
+            sha = digest.hexdigest()
+            blob = self._blob_path(sha)
+            if not blob.exists():
+                blob.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=blob.parent, prefix=f".{blob.name}-", delete=False) as raw:
+                    staged_blob = Path(raw.name)
+                try:
+                    with path.open("rb") as source, staged_blob.open("wb") as raw:
+                        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+                            shutil.copyfileobj(source, compressed, length=1024 * 1024)
+                        raw.flush()
+                        os.fsync(raw.fileno())
+                    os.replace(staged_blob, blob)
+                    blob_dir_fd = os.open(blob.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(blob_dir_fd)
+                    finally:
+                        os.close(blob_dir_fd)
+                finally:
+                    staged_blob.unlink(missing_ok=True)
+            try:
+                reconstructed_digest = hashlib.sha256()
+                reconstructed_size = 0
+                with gzip.open(blob, "rb") as reconstructed:
+                    while chunk := reconstructed.read(1024 * 1024):
+                        reconstructed_digest.update(chunk)
+                        reconstructed_size += len(chunk)
+            except (OSError, EOFError, gzip.BadGzipFile) as exc:
+                manifest["repair"] = {"file": relative, "error": str(exc)}
+                self._durable_replace(manifest_path, json.dumps(manifest, indent=2).encode())
+                raise ValueError(f"archive blob verification failed: {blob}") from exc
+            if reconstructed_size != size or reconstructed_digest.hexdigest() != sha:
+                manifest["repair"] = {"file": relative, "error": "checksum mismatch"}
+                self._durable_replace(manifest_path, json.dumps(manifest, indent=2).encode())
+                raise ValueError(f"archive blob verification failed: {blob}")
+            stat = path.stat()
+            files[relative] = {"sha256": sha, "bytes": size, "mode": stat.st_mode & 0o777,
+                               "mtime_ns": stat.st_mtime_ns, "encoding": "gzip"}
+            manifest["repair"] = None
+            self._durable_replace(manifest_path, json.dumps(manifest, indent=2, sort_keys=True).encode())
+            # The verified manifest and blob are durable before the redundant original
+            # is retired. A failed unlink merely leaves a safe duplicate for the retry.
+            path.unlink()
 
     def restore_archived(self, task_id: str, run_id: str) -> bool:
         """Restore one archived run atomically for recovery or inspection tooling."""
@@ -995,6 +1204,21 @@ class RunStore:
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 return False
+            run = Run.load(source)
+            manifest_path = source / "archive.json"
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text())
+                for relative, entry in manifest.get("files", {}).items():
+                    destination = source / relative
+                    if destination.exists():
+                        continue
+                    data = run.read_bytes(relative)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    self._durable_replace(destination, data)
+                    os.chmod(destination, int(entry.get("mode", 0o644)))
+                    mtime_ns = int(entry.get("mtime_ns", 0))
+                    if mtime_ns:
+                        os.utime(destination, ns=(mtime_ns, mtime_ns))
             os.replace(source, target)
             self._index.dirty_tasks.add(task_id)
             self._write_archive_index()
@@ -1022,7 +1246,7 @@ class RunStore:
         rows.sort(key=lambda row: (row.get("started_at", ""), row.get("task_id", ""), row.get("run_id", "")))
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.archive_dir / "index.json.tmp"
-        tmp.write_text(json.dumps({"version": 1, "runs": rows}, indent=2))
+        tmp.write_text(json.dumps({"version": self.ARCHIVE_VERSION, "runs": rows}, indent=2))
         os.replace(tmp, self.archive_dir / "index.json")
         return len(rows)
 
