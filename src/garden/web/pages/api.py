@@ -449,7 +449,12 @@ def register(app: FastAPI, site: Site) -> None:
             posted = {"result": body.get("result") or {}, "usage": body.get("usage") or {},
                       "cost_usd": body.get("cost_usd"), "final_text": final,
                       "error": str(body.get("error") or ""),
-                      "session_id": str(body.get("session_id") or "")}
+                      "session_id": str(body.get("session_id") or ""),
+                      # Host-side materialisation failures happen before a harness can emit
+                      # its normal result. Preserve the existing bounded environment-error
+                      # contract so reap can retry without blaming source or spending a round.
+                      "env_error": bool(body.get("env_error", False)),
+                      "env_kind": str(body.get("env_kind") or "")}
             if run.host != host.get("name") or not token or not secrets.compare_digest(run.lease_token, token):
                 raise HTTPException(409, "run lease has been replaced")
             if run.process_finished():
@@ -469,7 +474,12 @@ def register(app: FastAPI, site: Site) -> None:
             (run.path / "final.md").write_text(final)
             (run.path / "remote_result.json").write_text(json.dumps(posted))
             if run.mode == "check":
-                (run.path / "checks.json").write_text(json.dumps((body.get("result") or {}).get("checks") or []))
+                checks = (body.get("result") or {}).get("checks") or []
+                if posted["env_error"] and posted["env_kind"] == "materialization":
+                    checks = [{"name": "checks", "status": "error",
+                               "summary": "check execution did not complete",
+                               "details": posted["error"]}]
+                (run.path / "checks.json").write_text(json.dumps(checks))
             run.save()
             # Completion is written last: once visible, claim skips this run and the accepted
             # generation remains immutable until reap promotes its staging commit.
