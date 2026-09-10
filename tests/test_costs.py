@@ -102,6 +102,31 @@ def test_delegated_effort_normalizes_established_action_provenance():
     assert actions["unknown"]["actions"] == 1
 
 
+def test_delegated_effort_attributes_phase_and_global_taskless_actions():
+    tasks = {"DM-001": _tasks()["DM-001"]}
+    events = [
+        {"at": "2026-09-01T10:00:00+00:00", "kind": "dispatch", "task": "DM-001"},
+        {"at": "2026-09-01T10:10:00+00:00", "kind": "budget_set", "task": "",
+         "phase": "demo/p1", "by": "web"},
+        {"at": "2026-09-01T10:20:00+00:00", "kind": "dispatch_paused", "task": "",
+         "by": "web", "reason": "owner pause"},
+        {"at": "2026-09-01T10:30:00+00:00", "kind": "config_override", "task": "",
+         "scope": "global", "by": "operator"},
+        {"at": "2026-09-01T10:40:00+00:00", "kind": "budget_set", "task": "",
+         "phase": "other/p1", "by": "web"},
+        {"at": "2026-09-01T10:50:00+00:00", "kind": "budget_set", "task": "", "by": "web"},
+        {"at": "2026-09-01T12:00:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+        {"at": "2026-09-01T12:10:00+00:00", "kind": "dispatch_resumed", "task": "", "by": "web"},
+    ]
+
+    effort = delegated_effort(events, tasks)
+
+    assert effort["actions"]["human_owner"]["actions"] == 2
+    assert effort["actions"]["delegated_operator"]["actions"] == 1
+    assert effort["action_coverage"] == {"attributed_taskless": 3, "unattributed_taskless": 2}
+
+
 def test_group_by_activity_orders_by_cost_and_folds_unknown_modes():
     series = cost_series(_events(), _tasks(), group_by="activity", bucket="day")
     assert series["groups"] == ["revise", "work", "retro", "check", "other"]

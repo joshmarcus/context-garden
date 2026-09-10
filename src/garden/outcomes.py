@@ -28,10 +28,12 @@ EFFORT_ACTORS = ("human_owner", "delegated_operator", "automated_scheduler", "un
 EFFORT_BY_ACTOR = {
     "human": "human_owner",
     "cli": "human_owner",
+    "web": "human_owner",
     "operator": "delegated_operator",
     "github": "automated_scheduler",
     "probe": "automated_scheduler",
 }
+GLOBAL_EFFORT_ACTION_KINDS = {"dispatch_paused", "dispatch_resumed", "config_override"}
 INTRINSIC_OWNER_ACTIONS = {
     "answer", "decision_accepted", "decision_resolved", "resumed", "moved", "suggestion",
 }
@@ -137,10 +139,10 @@ def delegated_effort(
 ) -> dict[str, Any]:
     """Operating effort for the accepted cohort, without manufacturing human hours.
 
-    Task actions and runs are included through each member's acceptance. Taskless operator
-    ledger rows must name the cohort's product and phase and fall inside its first-dispatch
-    to last-acceptance envelope. That is the narrowest attribution available for historical
-    session records; rows without both labels remain visible as unattributed coverage.
+    Task actions and runs are included through each member's acceptance. Phase actions in
+    the first-dispatch to last-acceptance envelope must match a cohort phase; controls that
+    apply globally are included in that envelope, while unmatched actions remain explicit
+    in coverage. Taskless operator ledger rows require matching product and phase labels.
     """
     cohort = acceptance_cohort(events, tasks, since=since, until=until)
     members = {row["id"]: timestamp(row["accepted_at"]) for row in cohort["tasks"]}
@@ -158,8 +160,31 @@ def delegated_effort(
             starts.append(start)
             leads.append((accepted - start).total_seconds())
 
-    actions = [event for life in histories.values() for event in life
-               if event.get("kind") in EFFORT_ACTION_KINDS]
+    task_actions = [event for life in histories.values() for event in life
+                    if event.get("kind") in EFFORT_ACTION_KINDS]
+
+    end = max((at for at in members.values() if at is not None), default=None)
+    start = min(starts, default=None)
+    products = {str(getattr(tasks[tid], "product", "")) for tid in members}
+    phases = {str(getattr(tasks[tid], "key", "")) for tid in members}
+    taskless_actions: list[dict[str, Any]] = []
+    unattributed_actions: list[dict[str, Any]] = []
+    if start is not None and end is not None:
+        for event in events:
+            at = timestamp(event.get("at"))
+            if (event.get("task") or event.get("kind") not in EFFORT_ACTION_KINDS
+                    or at is None or not start <= at <= end):
+                continue
+            phase_key = attributed_phase_key(event)
+            if (phase_key and phase_key in phases
+                    and (not event.get("product") or str(event.get("product")) in products)):
+                taskless_actions.append(event)
+            elif not phase_key and event.get("kind") in GLOBAL_EFFORT_ACTION_KINDS:
+                taskless_actions.append(event)
+            else:
+                unattributed_actions.append(event)
+
+    actions = task_actions + taskless_actions
     action_rows: dict[str, dict[str, Any]] = {}
     for actor in EFFORT_ACTORS:
         selected = [event for event in actions if effort_actor(event) == actor]
@@ -169,10 +194,6 @@ def delegated_effort(
         action_rows[actor] = {"actions": len(selected), "hours": None,
                               "hours_status": "unavailable", "causes": dict(sorted(causes.items()))}
 
-    end = max((at for at in members.values() if at is not None), default=None)
-    start = min(starts, default=None)
-    products = {str(getattr(tasks[tid], "product", "")) for tid in members}
-    phases = {str(getattr(tasks[tid], "key", "")) for tid in members}
     operator_rows: list[dict[str, Any]] = []
     unattributed_rows: list[dict[str, Any]] = []
     if start is not None and end is not None:
@@ -200,6 +221,8 @@ def delegated_effort(
                     "median_lead_hours": round(median(leads) / 3600, 2) if leads else None,
                     "total_lead_hours": round(sum(leads) / 3600, 2) if leads else None},
         "actions": action_rows,
+        "action_coverage": {"attributed_taskless": len(taskless_actions),
+                            "unattributed_taskless": len(unattributed_actions)},
         "cost": {"known_usd": known_cost, "priced_records": len(priced),
                  "unpriced_records": len(all_cost_rows) - len(priced),
                  "complete": len(priced) == len(all_cost_rows),
