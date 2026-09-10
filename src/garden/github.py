@@ -418,10 +418,20 @@ class GitHub:
                                 "GET", f"/repos/{slug}/commits/{sha}/{suffix}",
                                 params={"per_page": 100, "page": page},
                             ) or {}
-                            batch = payload.get(field, []) if isinstance(payload, dict) else []
+                            batch = payload.get(field) if isinstance(payload, dict) else None
+                            if (not isinstance(batch, list)
+                                    or any(not isinstance(item, dict) for item in batch)):
+                                raise ValueError("malformed paginated GitHub response")
                             items.extend(batch)
-                            total = int(payload.get("total_count") or 0)
-                            if len(batch) < 100 or (total and len(items) >= total):
+                            raw_total = payload.get("total_count")
+                            total = int(raw_total) if raw_total is not None else None
+                            if total is not None and (total < 0 or total < len(items)):
+                                raise ValueError("malformed paginated GitHub response")
+                            if total is not None and len(items) >= total:
+                                break
+                            if not batch and total is not None:
+                                raise ValueError("incomplete paginated GitHub response")
+                            if total is None and len(batch) < 100:
                                 break
                             page += 1
                         if field == "check_runs":
@@ -437,7 +447,7 @@ class GitHub:
                         if ("rate limit" in message.lower()
                                 or re.search(r"rate_limit_reset=(\d+)", message)):
                             break
-            if not errors or (rollup and not self.gh):
+            if not errors:
                 state, failures = _rollup_state(rollup), _rollup_failed(rollup)
             else:
                 messages = [str(exc) for exc in errors]

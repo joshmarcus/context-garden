@@ -408,18 +408,18 @@ def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expect
 
 
 @pytest.mark.parametrize(
-    ("blocked_path", "accessible_path", "accessible_response", "expected", "failed_checks"),
+    ("blocked_path", "accessible_path", "accessible_response"),
     [
         ("/check-runs", "/status", {"statuses": [
             {"context": "external/validation", "state": "failure"}
-        ]}, "FAILURE", ["external/validation"]),
+        ]}),
         ("/status", "/check-runs", {"check_runs": [
             {"name": "actions/unit", "status": "completed", "conclusion": "success"}
-        ]}, "SUCCESS", []),
+        ]}),
     ],
 )
-def test_rest_pr_uses_accessible_check_source_when_other_is_forbidden(
-    monkeypatch, blocked_path, accessible_path, accessible_response, expected, failed_checks
+def test_rest_pr_fails_closed_when_one_check_source_is_forbidden(
+    monkeypatch, blocked_path, accessible_path, accessible_response
 ):
     github = GitHub(use_gh=False, token="scoped-token")
     pull = {
@@ -440,8 +440,55 @@ def test_rest_pr_uses_accessible_check_source_when_other_is_forbidden(
     monkeypatch.setattr(github, "_rest", rest)
 
     pr = github.get_pr("team/repo", 7)
-    assert pr.checks == expected
-    assert pr.failed_checks == failed_checks
+    assert pr.checks == "PERMISSION"
+    assert pr.failed_checks == []
+
+
+@pytest.mark.parametrize("failed_path", ["/check-runs", "/status"])
+def test_rest_pr_fails_closed_when_one_check_source_is_unavailable(monkeypatch, failed_path):
+    github = GitHub(use_gh=False, token="scoped-token")
+
+    def rest(method, path, **kwargs):
+        if path.endswith(failed_path):
+            raise GitHubError(f"GET {path}: 503 synthetic failure")
+        return {"statuses": []} if path.endswith("/status") else {
+            "check_runs": [{
+                "name": "unit", "status": "completed", "conclusion": "success",
+            }]
+        }
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    assert github._checks_for_sha("team/repo", "head-7") == ("UNAVAILABLE", [])
+
+
+@pytest.mark.parametrize(("late_response", "expected"), [
+    pytest.param(GitHubError("GET checks: 503 later page failure"), "UNAVAILABLE",
+                 id="request-failure"),
+    pytest.param({"total_count": 101, "check_runs": "invalid"}, "PENDING",
+                 id="malformed-page"),
+])
+def test_rest_pr_fails_closed_after_an_earlier_successful_page(
+    monkeypatch, late_response, expected
+):
+    github = GitHub(use_gh=False, token="scoped-token")
+
+    def rest(method, path, **kwargs):
+        if path.endswith("/status"):
+            return {"statuses": []}
+        if kwargs["params"]["page"] == 1:
+            return {"total_count": 101, "check_runs": [
+                {"name": f"pass-{i}", "status": "completed", "conclusion": "success"}
+                for i in range(100)
+            ]}
+        if isinstance(late_response, Exception):
+            raise late_response
+        return late_response
+
+    monkeypatch.setattr(github, "_rest", rest)
+
+    state, failures = github._checks_for_sha("team/repo", "head-7")
+    assert state == expected
 
 
 def test_rest_pr_combines_commit_statuses_with_check_runs(monkeypatch):
@@ -721,7 +768,11 @@ def test_exact_head_check_reads_are_coalesced_and_refresh(monkeypatch):
 
     def rest(method, path, **kwargs):
         calls.append((method, path))
-        return {"check_runs": [{"name": "tests", "status": "completed", "conclusion": "success"}]}
+        if path.endswith("/check-runs"):
+            return {"check_runs": [
+                {"name": "tests", "status": "completed", "conclusion": "success"},
+            ]}
+        return {"statuses": []}
 
     monkeypatch.setattr(github, "_rest", rest)
     monkeypatch.setattr("garden.github.time.time", lambda: clock[0])
@@ -742,7 +793,11 @@ def test_rate_limited_check_read_is_pending_until_reset_then_recovers(monkeypatc
         calls[0] += 1
         if calls[0] == 1:
             raise GitHubError("GET checks: 403 API rate limit; rate_limit_reset=120")
-        return {"check_runs": [{"name": "tests", "status": "completed", "conclusion": "success"}]}
+        if path.endswith("/check-runs"):
+            return {"check_runs": [
+                {"name": "tests", "status": "completed", "conclusion": "success"},
+            ]}
+        return {"statuses": []}
 
     monkeypatch.setattr(github, "_rest", rest)
     monkeypatch.setattr("garden.github.time.time", lambda: clock[0])
