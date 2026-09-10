@@ -16,6 +16,7 @@ WORKER_PATHS = frozenset({
 OPERATOR_READ_PATHS = frozenset({
     "/", "/api/control/status", "/api/decisions", "/api/events", "/api/maintenance",
     "/api/operations/{task_id}/{run_id}", "/api/tasks", "/api/workers", "/board", "/config",
+    "/api/worker-diagnostics",
     "/costs", "/design", "/design/{path:path}", "/docs", "/docs/oauth2-redirect", "/events", "/graph", "/herbarium",
     "/inbox", "/investigations/{task_id}/{run_id}/{name}", "/now", "/now/stream", "/now/workers",
     "/now1", "/now2", "/openapi.json", "/partials/board",
