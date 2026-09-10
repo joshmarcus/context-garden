@@ -92,6 +92,11 @@ class InProcessRunner(LocalRunner):
             with patch.dict(os.environ, env, clear=True):
                 from garden.run_supervisor import redact_authority_outputs
 
+                raw_final = Path(env.get("GARDEN_RAW_FINAL_PATH", ""))
+                final_path = Path(env.get("GARDEN_FINAL_PATH", ""))
+                if raw_final.is_file() and str(final_path):
+                    final_path.write_text(raw_final.read_text())
+                    raw_final.unlink()
                 redact_authority_outputs(d)
             (d / "exit_code").write_text(f"{code}\n")  # the completion signal reap waits for
 

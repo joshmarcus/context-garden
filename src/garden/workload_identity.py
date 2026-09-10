@@ -196,6 +196,22 @@ class ResolvedAuthority:
                               key=len, reverse=True))
         return AuthorityRedactor(values)
 
+    def enforce_current(self) -> AuthorityRedactor:
+        """Validate authority during execution and return its current output filter.
+
+        Environment delivery cannot replace a value in an already-running process.  A
+        renewal which rotates a value therefore fails closed; callers terminate the named
+        process and classify the failure as host environment trouble.  Providers which
+        renew the same value can continue safely.
+        """
+        previous = dict(self._authority.values)
+        authority = self._ensure_current()
+        if dict(authority.values) != previous:
+            raise WorkloadIdentityError(
+                f"workload identity {self.request.reference!r} renewed with rotated authority"
+            )
+        return self.redactor()
+
     def close(self) -> None:
         self._closed = True
         self._authority = ProviderAuthority({}, "closed", 0, frozenset(), "", "")
@@ -315,14 +331,15 @@ class WorkloadIdentityResolver:
 @contextmanager
 def subprocess_authority(config: Mapping[str, Any], target: str, run_identity: str,
                          base: Mapping[str, str]) -> Iterator[
-                             tuple[dict[str, str], AuthorityMetadata | None, AuthorityRedactor]
+                             tuple[dict[str, str], AuthorityMetadata | None, AuthorityRedactor,
+                                   ResolvedAuthority | None]
                          ]:
     """Apply the host-configured identity, if any, to exactly one subprocess target."""
     section = config.get("workload_identity") or {}
     boundaries = section.get("boundaries") or {}
     boundary = boundaries.get(target) if isinstance(boundaries, Mapping) else None
     if boundary is None:
-        yield dict(base), None, AuthorityRedactor(())
+        yield dict(base), None, AuthorityRedactor(()), None
         return
     if not isinstance(boundary, Mapping):
         raise WorkloadIdentityError(f"workload identity boundary {target!r} must be a mapping")
@@ -341,4 +358,5 @@ def subprocess_authority(config: Mapping[str, Any], target: str, run_identity: s
         str(boundary.get("reference") or ""), str(boundary.get("operation") or ""),
         str(boundary.get("audience") or ""), run_identity, lifetime, scopes, target=target,
     ) as authority:
-        yield authority.subprocess_env(base, target), authority.metadata, authority.redactor()
+        yield (authority.subprocess_env(base, target), authority.metadata,
+               authority.redactor(), authority)
