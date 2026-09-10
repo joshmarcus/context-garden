@@ -1,5 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Costs{% endblock %}
+{% block head %}{{ super() }}
+<style>
+.cost-comparisons .tiers { margin-top:26px; }
+.cost-comparisons .tiers .lead { margin:4px 0 0; font:italic 13px/1.4 var(--display); color:var(--muted); }
+.cost-comparisons .tier-tables { display:grid; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); gap:16px 28px; margin-top:12px; }
+.cost-comparisons .tier-tables.wide { grid-template-columns:minmax(0, 1fr); }
+.cost-comparisons table.tier { width:100%; border-collapse:collapse; font:12px/1.35 var(--mono); }
+.cost-comparisons table.tier caption { text-align:left; font:500 14px/1.3 var(--display); color:var(--ink); padding:0 0 6px; }
+.cost-comparisons table.tier caption small, .cost-comparisons table.tier td small { color:var(--muted); }
+.cost-comparisons table.tier th { font:400 11px/1.3 var(--mono); text-transform:none; color:var(--muted); text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; vertical-align:bottom; }
+.cost-comparisons table.tier td { padding:5px 6px; border-bottom:1px dashed var(--line); }
+.cost-comparisons table.tier td b { font:400 14px/1.2 var(--display); display:block; white-space:nowrap; }
+.cost-comparisons table.tier td.scaled { background:color-mix(in oklab, var(--cell-bad) calc(var(--k) * 100%), var(--cell-good)); }
+.cost-comparisons table.tier td.thin b { color:var(--muted); font-style:italic; }
+.cost-comparisons .mark { font:700 10px/1 var(--mono); margin-right:4px; }
+@media (max-width:680px) { .cost-comparisons .tier-tables { grid-template-columns:minmax(0, 1fr); } }
+</style>
+{% endblock %}
 {% block body %}
 <div class="page-head"><div><h1>Costs</h1><p>Spend over time, sliced by activity, difficulty, model, harness, phase, task and operator session — the same numbers <code>garden costs</code> prints for the same filters.</p></div></div>
 <div class="panel">
@@ -7,7 +25,7 @@
   <form method="get" action="/costs" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
     <label class="muted" for="c-since">window</label>
     <select id="c-since" name="since" onchange="this.form.submit()">
-      {% for v, label in [("", "all time"), ("today", "today"), ("24h", "24h"), ("3d", "3d"), ("7d", "7d"), ("30d", "30d")] %}<option value="{{ v }}"{% if since == v %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      {% for v, label in [("", "all time"), ("today", "today"), ("24h", "24h"), ("3d", "3d"), ("7d", "Last week"), ("30d", "30d")] %}<option value="{{ v }}"{% if since == v %} selected{% endif %}>{{ label }}</option>{% endfor %}
     </select>
     <label class="muted" for="c-bucket">bucket</label>
     <select id="c-bucket" name="bucket" onchange="this.form.submit()">
@@ -64,6 +82,12 @@
 <div class="panel" style="margin-top:14px">
   <div class="eyebrow">{% if metric == 'per_task' %}Average cost per participating task{% else %}Total cost{% endif %} over time, by {{ by }}</div>
   {{ chart|safe }}
+</div>
+{% from "_cost_comparisons.html" import comparisons with context %}
+<div class="panel cost-comparisons" style="margin-top:14px">
+  <div class="eyebrow">Cost comparisons for this cohort</div>
+  <p class="muted" style="margin:8px 0 0;font-size:12.5px">These use the selected window and applicable task, model, harness and session filters. The spend-over-time chart above is the cost-by-activity view when grouped by activity.</p>
+  {{ comparisons(comparison, f) }}
 </div>
 <div class="panel" style="margin-top:14px">
   <div class="eyebrow">Breakdown</div>

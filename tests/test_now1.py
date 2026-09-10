@@ -90,6 +90,7 @@ def test_resolve_window():
     assert now1.resolve_window("hour", NOW) == ("2026-09-06T01:00:00+00:00", "hour", "hour")
     assert now1.resolve_window("today", NOW) == ("2026-09-06T00:00:00+00:00", "hour", "today")
     assert now1.resolve_window("24h", NOW) == ("2026-09-05T02:00:00+00:00", "hour", "24h")
+    assert now1.resolve_window("week", NOW) == ("2026-08-30T02:00:00+00:00", "day", "week")
     assert now1.resolve_window("phase", NOW, "2026-09-01T00:00:00+00:00") == ("2026-09-01T00:00:00+00:00", "day", "phase")
     # no open phase with a dispatch: the phase window falls back to the last 24 hours
     assert now1.resolve_window("phase", NOW) == ("2026-09-05T02:00:00+00:00", "hour", "24h")
@@ -168,6 +169,16 @@ def test_runs_by_model_is_a_shaded_table_of_mode_by_who():
     assert t["label"] == "cost per run" and t["better"] == "low" and t["n_unit"] == "runs"
     assert now1.runs_by_model([]) == {"label": "cost per run", "unit": "usd", "better": "low", "n_unit": "runs",
                                       "columns": [], "rows": {}, "heads": {}, "thin": 3}
+
+
+def test_runs_by_model_marks_missing_prices_partial_instead_of_zero():
+    table = now1.runs_by_model([
+        {"kind": "run_finished", "mode": "work", "harness": "codex", "model": "terra", "cost_usd": None},
+    ])
+
+    assert table["heads"] == {"codex:terra": "partial $0.00 · 1 run"}
+    assert table["rows"]["work"]["codex:terra"]["value"] == 0.0
+    assert table["rows"]["work"]["codex:terra"]["cost_complete"] is False
 
 
 def test_a_flat_row_is_green_with_no_end_marked():

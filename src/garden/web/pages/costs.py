@@ -4,16 +4,21 @@ phase and task — the same numbers `garden costs` prints for the same filters."
 from __future__ import annotations
 
 import datetime as dt
+from types import SimpleNamespace
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
+from ... import now1
 from ... import operator_spend as ops
 from ...charts import cost_per_task_svg, cost_stack_svg
 from ...costs import GROUP_BY_CHOICES, cost_series
-from ...events import EventLog, metrics, parse_since
+from ...events import EventLog, difficulty_by_model, metrics, parse_since
 from ...outcomes import canonical_phase_key
 from ..common import Site
+
+FORMAT = SimpleNamespace(cell=now1.format_cell)
 
 
 def resolve_since(since: str) -> str:
@@ -23,6 +28,37 @@ def resolve_since(since: str) -> str:
     if since == "today":
         return dt.datetime.now(dt.UTC).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     return parse_since(since) if since else ""
+
+
+def comparison_events(events: list[dict[str, Any]], tasks: dict[str, Any],
+                      *, model: str = "", harness: str = "", session: str = "") -> list[dict[str, Any]]:
+    """Keep a comparison cohort's lifecycle facts while filtering its completed runs."""
+    scoped = [event for event in events if str(event.get("task") or "") in tasks]
+    if not (model or harness or session):
+        return scoped
+    return [
+        event for event in scoped
+        if event.get("kind") != "run_finished"
+        or (not model or str(event.get("model") or "") == model)
+        and (not harness or str(event.get("harness") or "") == harness)
+        and (not session or str(event.get("session") or "") == session)
+    ]
+
+
+def comparison_data(events: list[dict[str, Any]], tasks: dict[str, Any], since: str,
+                    *, model: str = "", harness: str = "", session: str = "") -> dict[str, object]:
+    """The Now comparison tables, scoped to the Costs cohort and its run filters.
+
+    Lifecycle facts stay with their task so accepted-task comparisons retain their history;
+    model, harness and session restrict the runs that supply spend and model credit.
+    """
+    scoped = comparison_events(events, tasks, model=model, harness=harness, session=session)
+    finished = [
+        event for event in scoped
+        if event.get("kind") == "run_finished" and str(event.get("at") or "") >= since
+    ]
+    return {"by_model": now1.runs_by_model(finished),
+            "tiers": difficulty_by_model(scoped, tasks, since)}
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -51,7 +87,17 @@ def register(app: FastAPI, site: Site) -> None:
         selected_tasks = {tid: t for tid, t in tasks.items()
                           if (not product or t.product == product)
                           and (not selected_phase or t.key == selected_phase)}
-        outcomes = metrics(events, selected_tasks, since=window_since)
+        if difficulty:
+            selected_tasks = {tid: t for tid, t in selected_tasks.items() if t.difficulty == difficulty}
+        if task:
+            selected_tasks = {tid: t for tid, t in selected_tasks.items() if tid == task}
+        filtered_comparison_events = comparison_events(
+            events, selected_tasks, model=model, harness=harness, session=session,
+        )
+        comparison = comparison_data(
+            events, selected_tasks, window_since, model=model, harness=harness, session=session,
+        )
+        outcomes = metrics(filtered_comparison_events, selected_tasks, since=window_since)
         runs = [e for e in events if e.get("kind") == "run_finished"]
         models = sorted({str(e["model"]) for e in runs if e.get("model")})
         harnesses = sorted({str(e["harness"]) for e in runs if e.get("harness")})
@@ -71,8 +117,9 @@ def register(app: FastAPI, site: Site) -> None:
             else cost_stack_svg(series, compactions=compactions, annotations=annotations)
         )
         return templates.TemplateResponse(request, "costs.html", ctx(
-            request, page="costs", series=series,
+            request, page="costs", f=FORMAT, series=series,
             outcomes=outcomes,
+            comparison=comparison,
             chart=chart,
             since=since, bucket=bucket, by=by, difficulty=difficulty, model=model, harness=harness,
             phase=phase, product=product, task=task, session=session, metric=metric, models=models,
