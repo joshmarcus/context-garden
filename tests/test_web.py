@@ -6,7 +6,9 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -600,6 +602,78 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size)
           f"max={max(timings):.3f}s scans={rs.scan_count - scans} reads={rs.read_count - reads}")
     assert p95 < 2.0
     assert rs.read_count - reads == history_size + 3
+
+
+def test_now_partial_fanout_shares_one_snapshot_and_skips_global_context(garden, monkeypatch):
+    from garden.web import common
+    from garden.web.pages import now1 as now_page
+
+    original = now_page.now1.snapshot
+    calls = 0
+    call_lock = threading.Lock()
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        with call_lock:
+            calls += 1
+        return original(*args, **kwargs)
+
+    def global_context_work(*_args, **_kwargs):
+        raise AssertionError("a Now partial rebuilt the global Inbox/sidebar context")
+
+    monkeypatch.setattr(now_page.now1, "snapshot", counted)
+    monkeypatch.setattr(common, "build_inbox", global_context_work)
+    c = client(garden)
+    urls = [f"/partials/now/{region}" for region in ("head", "now", "next", "where", "period")]
+    with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+        responses = list(pool.map(c.get, urls))
+
+    assert [response.status_code for response in responses] == [200] * len(urls)
+    assert all(response.content for response in responses)
+    assert calls == 1
+
+
+def test_now_partial_waiter_rebuilds_after_event_during_snapshot_and_windows_stay_distinct(
+    garden, monkeypatch,
+):
+    from garden.web.pages import now1 as now_page
+
+    original = now_page.now1.snapshot
+    first_built = threading.Event()
+    release_first = threading.Event()
+    calls = []
+
+    def held(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append(kwargs.get("window"))
+        if len(calls) == 1:
+            first_built.set()
+            assert release_first.wait(5)
+        return result
+
+    monkeypatch.setattr(now_page.now1, "snapshot", held)
+    c = client(garden)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old_future = pool.submit(c.get, "/partials/now/head?window=hour")
+        assert first_built.wait(5)
+        state_path = garden / ".garden" / "state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        state["_control"] = {"dispatch": "paused", "by": "test", "at": "2026-09-09T19:30:00+00:00"}
+        state_path.write_text(json.dumps(state))
+        events_path = garden / ".garden" / "events.jsonl"
+        with events_path.open("a") as stream:
+            stream.write(json.dumps({"at": "2026-09-09T19:30:00+00:00", "kind": "dispatch_paused"}) + "\n")
+        new_future = pool.submit(c.get, "/partials/now/head?window=hour")
+        release_first.set()
+        old = old_future.result()
+        new = new_future.result()
+
+    other_window = c.get("/partials/now/head?window=today")
+    assert old.status_code == new.status_code == other_window.status_code == 200
+    assert "Dispatch paused" not in old.text
+    assert "Dispatch paused" in new.text
+    assert calls == ["hour", "hour", "today"]
 
 
 def test_page_reader_does_not_run_scheduler_startup_mutations(garden, monkeypatch):

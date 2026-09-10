@@ -290,9 +290,9 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
 
 
 def strips_in_flight(runs: RunStore, tasks: dict[str, Any], events: list[dict[str, Any]], store: Store,
-                     now: dt.datetime) -> list[dict[str, Any]]:
+                     now: dt.datetime, all_runs: list[Run] | None = None) -> list[dict[str, Any]]:
     """Every run in flight as a strip, newest dispatch first, a task's runs kept together."""
-    typical = typical_seconds(runs.all_runs(), now)
+    typical = typical_seconds(all_runs if all_runs is not None else runs.all_runs(), now)
     stage_of_run = {e.get("run"): str(e.get("stage") or "") for e in events if e.get("kind") == "dispatch" and e.get("stage")}
     out = [strip_for_run(r, tasks, store, typical, stage_of_run.get(r.run_id, ""))
            for r in runs.active()]
@@ -601,11 +601,12 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
     op_events = ops.to_cost_events(ops.read_records(ops.default_path(store.root, store.config)))
     control = state.get("_control")
     spent: dict[str, float] = defaultdict(float)
-    for r in runs.all_runs():
+    all_runs = runs.all_runs()
+    for r in all_runs:
         if r.task_id in tasks:
             spent[tasks[r.task_id].key] += float(r.cost_usd or 0.0)
 
-    strips = strips_in_flight(runs, tasks, events, store, now)
+    strips = strips_in_flight(runs, tasks, events, store, now, all_runs)
     # Use the scheduler's admission counters.  The strips intentionally also show manual
     # reservations, while those sessions consume neither automated worker nor review slots.
     worker_busy = len(sched.worker_runs_active())
