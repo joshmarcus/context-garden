@@ -22,6 +22,7 @@ from ..review import (
     enforce_criteria_verdict,
     feedback_from_review,
     interaction_evidence_gaps,
+    is_pending_external_gate,
     parse_review,
     review_brief,
     review_implementation_failure_signal,
@@ -1366,7 +1367,9 @@ class ReviewMixin:
         st.pop("review_fix_reasked", None)
         # repeated blocking findings across rounds = the loop isn't converging
         keys = sorted({f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
-                       for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
+                       for f in review.get("findings") or []
+                       if (isinstance(f, dict) and f.get("severity") == "blocking"
+                           and not is_pending_external_gate(f))})
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
         implementation_keys = sorted({
             f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"

@@ -49,6 +49,13 @@ INTERACTION_PATHS = (
 
 SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
 
+
+def is_pending_external_gate(item: object) -> bool:
+    """Whether a typed review item records a merge gate that is still waiting."""
+    return (isinstance(item, dict)
+            and item.get("failure_category") == PENDING_EXTERNAL_GATE
+            and item.get("gate_state") == "pending")
+
 # The walkthrough deliberately has a larger inventory than a normal PR needs.  Keep this
 # mapping here, beside the review policy, so the check runner and reviewer consume one plan.
 _PAGE_MODULES = {
@@ -658,8 +665,7 @@ def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
         criterion for criterion in review.get("criteria") or []
         if isinstance(criterion, dict)
         and criterion.get("met") is False
-        and not (criterion.get("failure_category") == PENDING_EXTERNAL_GATE
-                 and criterion.get("gate_state") == "pending")
+        and not is_pending_external_gate(criterion)
     ]
     findings = review.setdefault("findings", [])
     if not isinstance(findings, list):
@@ -674,14 +680,11 @@ def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
                              "failure_category": criterion.get("failure_category")})
     blocking = [finding for finding in findings
                 if isinstance(finding, dict) and finding.get("severity") == "blocking"
-                and not (finding.get("failure_category") == PENDING_EXTERNAL_GATE
-                         and finding.get("gate_state") == "pending")]
+                and not is_pending_external_gate(finding)]
     if unmet or blocking:
         review["verdict"] = "request_changes"
     elif review.get("verdict") == "request_changes" and any(
-        isinstance(item, dict)
-        and item.get("failure_category") == PENDING_EXTERNAL_GATE
-        and item.get("gate_state") == "pending"
+        is_pending_external_gate(item)
         for item in [*(review.get("criteria") or []), *findings]
     ):
         # The typed pending requirement remains visible in the review record. It is not
@@ -709,8 +712,7 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
     if criteria:
         out.append("\n**Acceptance criteria**")
         for c in criteria:
-            pending_gate = (c.get("failure_category") == PENDING_EXTERNAL_GATE
-                            and c.get("gate_state") == "pending")
+            pending_gate = is_pending_external_gate(c)
             mark = "✅" if c.get("met") is True else "⏳" if pending_gate else "❌"
             out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
     interaction = rev.get("interaction")
@@ -723,8 +725,7 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
         out += [f"- {item}" for item in limitations]
     findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
     waiting = [f for f in findings if f.get("severity") == "blocking"
-               and f.get("failure_category") == PENDING_EXTERNAL_GATE
-               and f.get("gate_state") == "pending"]
+               and is_pending_external_gate(f)]
     blocking = [f for f in findings if f.get("severity") == "blocking" and f not in waiting]
     high = [f for f in findings if f.get("severity") == "high"]
     nits = [f for f in findings if f.get("severity") not in ("blocking", "high")]
