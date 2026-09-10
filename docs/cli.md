@@ -87,7 +87,7 @@ Use `garden --help` to explore the command groups, and add `--help` to a command
 | `garden tick` | One scheduler pass: collect results, poll PRs, and dispatch eligible work. |
 | `garden observe --follow` | Repeated observations and events; this does not start the scheduler. |
 
-`garden pause` stops new work dispatch while collection, checks, reviews, and merges continue. For installation maintenance, use the separate maintenance protocol in the [operating guide](operations.md#operate-and-recover).
+`garden pause` stops new work dispatch while collection, checks, reviews, and merges continue. For installation maintenance, use the separate maintenance protocol in the [operating guide](operations.md#diagnose-and-recover).
 
 Stopping the foreground controller does not stop detached workers. Use task actions and the maintenance protocol to manage work that is already running. Keep task state consistent through garden commands and the UIs.
 

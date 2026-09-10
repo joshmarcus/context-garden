@@ -1,6 +1,31 @@
 # Operating a garden
 
-For installation and your first project, start with the [README](../README.md).
+For installation and your first project, start with [getting started](getting-started.md).
+This page assumes a garden is configured and covers steady-state operation and recovery.
+
+## Know what needs a person
+
+The scheduler automatically orders dependencies, dispatches eligible tasks, collects runs,
+runs configured checks and reviews, publishes PRs, polls CI, and applies bounded retries.
+The person retains authority over draft scope, worker questions, PR triage, unresolved review
+tradeoffs, protected changes, and merging when automerge is disabled. A delegated operator
+may perform routine actions only within authority already granted by the person.
+
+Use the Inbox as the action queue and the Trellis as the dependency explanation. `blocked`
+is derived when dependencies are unmet; it is not stored as a task status.
+
+| State | Meaning | Typical next actor |
+| --- | --- | --- |
+| `draft` | Proposed work is not approved. | Person approves, edits, or cancels. |
+| `ready` / derived `blocked` | Approved and eligible, or waiting on dependencies/capacity. | Scheduler dispatches when gates clear. |
+| `running` | A work or revision run is active. | Scheduler collects it; person acts only on a stop. |
+| `waiting_human` | The worker asked a question or proposed no change/won't do. | Person answers, accepts, or rejects. |
+| `awaiting_triage` | A draft PR needs the first human look. | Person marks ready or requests changes. |
+| `in_review` | Review and CI gates are being evaluated. | Automation handles feedback; person resolves tradeoffs. |
+| `changes_requested` | Actionable feedback is queued for revision. | Scheduler dispatches a bounded revision. |
+| `merged_into_parent` | A stacked change reached its parent branch, not the product base. | Scheduler waits for the parent to reach the base. |
+| `failed` | A run, closed PR, or bounded loop needs diagnosis. | Person or authorized operator fixes the cause and retries. |
+| `done`, `wont_do`, `cancelled` | Terminal outcome. | No action unless deliberately reopened. |
 
 ## Phase retrospectives
 
@@ -45,12 +70,19 @@ The supported runners are **local**, **ssh** to prepared hosts, **remote** pull-
 workers that claim HTTPS leases, and **manual** for an interactive worker. [Transport
 details](worker-protocol.md#variants-of-the-transport) and [an SSH/non-Python
 configuration example](../examples/garden.work.yaml) cover those options. Automatic AWS
-provisioning, model pools and an OpenRouter adapter are not implemented in this version.
-Their development plans are not configuration options; SSH remains available for a host
-you provision yourself, and the remote runner remains available for an independently
-prepared host running `garden worker`.
+provisioning and an OpenRouter adapter are not standard product capabilities. Their
+development plans are not configuration options. SSH remains available for a host you
+provision yourself, and the remote runner is available for an independently prepared host
+running `garden worker`. Tier and review model pools are supported independently of runner
+choice; see the [README CLI overview](../README.md#use-the-cli).
 
-## Operate and recover
+Worker absence, host pressure, or a full slot pool defers dispatch rather than changing a
+ready task into a failure. Inspect `garden observe`, the Now worker/queue regions, and
+`garden doctor`; then check configured runner hosts and the resource limits described in
+[architecture](architecture.md#dispatch-filling-the-slots). Do not raise concurrency until
+memory, temporary storage, model quota, and worker availability can support it.
+
+## Diagnose and recover
 
 Start with `garden observe --profile quiet`, then open the relevant **Inbox** card or task
 page. The **Board** and **Trellis** show state and dependencies; **Runs** and **Timeline**
@@ -67,6 +99,22 @@ terminal Inbox and task list. Use a task's current state and PR status before ac
 | A stopped task needs recovery | Read its cause and run evidence, fix the cause, then `garden retry ID`; `garden review ID` requests another review |
 | New dispatch should stop | `garden pause`; `garden unpause` resumes it |
 
+For red pre-PR checks or CI, inspect `garden show ID`, `garden runs ID`, the PR check at the
+recorded commit, and the analyser diagnostic. Fix configuration or infrastructure before
+`garden retry ID`; actionable code feedback normally enters the automatic bounded revision
+loop. Review approval alone does not make a PR mergeable: triage, required current-head CI,
+review policy, dependency/base requirements, and queue ownership must all be satisfied.
+
+If the loop pauses because of a phase budget, raise or clear it with `garden budget`; an
+already-running job is not cancelled at the threshold. Harness quota pauses affect that
+harness while eligible alternatives in a configured pool may continue. For a deliberate
+garden-wide dispatch hold use `garden pause`, and reserve maintenance pause for replacing or
+restarting the controller.
+
+`garden freeze product/phase` prevents ordinary approvals and dispatch in one phase;
+`garden unfreeze product/phase` reverses it. This is distinct from `garden pause`, which
+holds dispatch garden-wide, and maintenance pause, which also stops collection and polling.
+
 Normal dispatch pause still permits collection, checks, reviews and merges. For
 installation or service maintenance, use `garden maintenance-pause`, wait for
 `garden maintenance-status` to report quiescence, and let its live-process blockers
@@ -79,6 +127,10 @@ GitHub-client/installer settings require restart. Executable changes can be held
 fenced runs are in flight; inspect Config before deliberately confirming a held reload
 with `garden config accept`. Environment overlays and the exact restart rules are in
 [configuration and environments](architecture.md#configuration-and-environments).
+Precedence is package defaults, tracked `garden.yaml`, optional
+`garden.<GARDEN_ENV>.yaml`, then gitignored `garden.local.yaml`; dictionaries merge while
+lists and scalars replace. Product settings override the corresponding shared settings.
+`garden doctor` prints loaded sources, and the Config page shows effective values.
 Use one long-running controller per garden; CLI actions can run alongside it through the
 scheduler's locks. Do not edit task status or `.garden/state.json` to clear a stop.
 
@@ -92,6 +144,18 @@ single-operator application, not a hosted multi-user service. After a machine re
 inspect recovery diagnostics; uncommitted worker files are preserved in named recovery
 stashes, not automatically included in PRs. [Worker recovery](worker-protocol.md#when-things-go-wrong)
 describes the failure paths.
+
+## Upgrade and roll back
+
+Use `garden maintenance-pause` and wait for quiescence before replacing an installation.
+`garden upgrade` advances the pinned install only to a recorded eligible tool build; an
+automatic upgrade requires `upgrade: auto` and an idle tick boundary. Confirm the installed
+commit in `garden status` and `/healthz`, then run `garden maintenance-resume`. A failed
+replacement retains or restores the previous install where supported and reports its state.
+For a deliberate downgrade, follow the immutable-version rules in the
+[release protocol](release-protocol.md#rollback) and use the pinned-install maintenance
+flow; there is no generic data-schema rollback, so preserve the garden and `.garden/` state
+and verify version compatibility first.
 
 ## Hand off the operator, keep the evidence
 
