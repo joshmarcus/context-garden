@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import no_live_garden_root
-from .runner.base import scrubbed_env
+from .runner.base import scrubbed_env, worker_credentials_dir
 from .sandbox import SandboxPolicy
 
 # Check output is persisted as recovery evidence.  Keep a generous documented ceiling for
@@ -146,6 +146,7 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
                 command, cwd or Path.cwd(),
                 additional_writable_roots=[Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP")
                                            if env.get(name)],
+                readable_roots=[cwd or Path.cwd(), Path(worker_credentials_dir(cwd))],
                 protected_roots=protected,
             )
             env.update(policy.report_env(mechanism))
