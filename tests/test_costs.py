@@ -12,7 +12,7 @@ from garden.charts import cost_stack_svg
 from garden.costs import cost_series
 from garden.events import metrics
 from garden.model import Status, Task
-from garden.outcomes import attributed_phase_key
+from garden.outcomes import attributed_phase_key, delegated_effort
 from garden.store import Store
 
 
@@ -46,6 +46,85 @@ def _events() -> list[dict]:
         # not a run_finished event: must never be counted
         {"at": "2026-09-05T09:35:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
     ]
+
+
+def test_delegated_effort_uses_the_accepted_cohort_and_preserves_unknowns():
+    tasks = {"DM-001": _tasks()["DM-001"]}
+    events = [
+        {"at": "2026-09-01T10:00:00+00:00", "kind": "dispatch", "task": "DM-001", "mode": "work"},
+        {"at": "2026-09-01T10:30:00+00:00", "kind": "run_finished", "task": "DM-001",
+         "mode": "work", "cost_usd": 2.0},
+        {"at": "2026-09-01T11:00:00+00:00", "kind": "retry", "task": "DM-001",
+         "actor": "delegated_operator", "reason": "failed check"},
+        {"at": "2026-09-01T12:00:00+00:00", "kind": "run_finished", "task": "DM-001",
+         "mode": "review", "cost_usd": None},
+        {"at": "2026-09-01T13:00:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+        {"at": "2026-09-01T12:30:00+00:00", "kind": "run_finished", "task": "", "mode": "operator",
+         "product": "demo", "phase": "p1", "cost_usd": 1.0},
+        {"at": "2026-09-01T12:40:00+00:00", "kind": "run_finished", "task": "", "mode": "operator",
+         "cost_usd": 9.0},
+    ]
+
+    effort = delegated_effort(events, tasks, since="2026-09-01T00:00:00+00:00")
+
+    assert effort["accepted"] == 1
+    assert effort["elapsed"] == {"tasks_with_lead_time": 1, "median_lead_hours": 3.0,
+                                  "total_lead_hours": 3.0}
+    assert effort["actions"]["delegated_operator"]["causes"] == {"failed check": 1}
+    assert effort["actions"]["human_owner"]["hours"] is None
+    assert effort["cost"] == {"known_usd": 3.0, "priced_records": 2, "unpriced_records": 1,
+                              "complete": False, "per_accepted_change": None}
+    assert effort["operator"]["unattributed_records"] == 1
+    assert effort["savings"] is None
+
+
+def test_delegated_effort_normalizes_established_action_provenance():
+    tasks = {"DM-001": _tasks()["DM-001"]}
+    events = [
+        {"at": "2026-09-01T10:00:00+00:00", "kind": "dispatch", "task": "DM-001"},
+        {"at": "2026-09-01T10:10:00+00:00", "kind": "answer", "task": "DM-001"},
+        {"at": "2026-09-01T10:20:00+00:00", "kind": "triaged", "task": "DM-001", "by": "human"},
+        {"at": "2026-09-01T10:30:00+00:00", "kind": "retry", "task": "DM-001",
+         "actor": "delegated_operator"},
+        {"at": "2026-09-01T10:40:00+00:00", "kind": "triaged", "task": "DM-001", "by": "github"},
+        {"at": "2026-09-01T10:50:00+00:00", "kind": "automerged", "task": "DM-001"},
+        {"at": "2026-09-01T11:00:00+00:00", "kind": "requeue", "task": "DM-001"},
+        {"at": "2026-09-01T12:00:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+    ]
+
+    actions = delegated_effort(events, tasks)["actions"]
+
+    assert actions["human_owner"]["actions"] == 2
+    assert actions["delegated_operator"]["actions"] == 1
+    assert actions["automated_scheduler"]["actions"] == 2
+    assert actions["unknown"]["actions"] == 1
+
+
+def test_delegated_effort_attributes_phase_and_global_taskless_actions():
+    tasks = {"DM-001": _tasks()["DM-001"]}
+    events = [
+        {"at": "2026-09-01T10:00:00+00:00", "kind": "dispatch", "task": "DM-001"},
+        {"at": "2026-09-01T10:10:00+00:00", "kind": "budget_set", "task": "",
+         "phase": "demo/p1", "by": "web"},
+        {"at": "2026-09-01T10:20:00+00:00", "kind": "dispatch_paused", "task": "",
+         "by": "web", "reason": "owner pause"},
+        {"at": "2026-09-01T10:30:00+00:00", "kind": "config_override", "task": "",
+         "scope": "global", "by": "operator"},
+        {"at": "2026-09-01T10:40:00+00:00", "kind": "budget_set", "task": "",
+         "phase": "other/p1", "by": "web"},
+        {"at": "2026-09-01T10:50:00+00:00", "kind": "budget_set", "task": "", "by": "web"},
+        {"at": "2026-09-01T12:00:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+        {"at": "2026-09-01T12:10:00+00:00", "kind": "dispatch_resumed", "task": "", "by": "web"},
+    ]
+
+    effort = delegated_effort(events, tasks)
+
+    assert effort["actions"]["human_owner"]["actions"] == 2
+    assert effort["actions"]["delegated_operator"]["actions"] == 1
+    assert effort["action_coverage"] == {"attributed_taskless": 3, "unattributed_taskless": 2}
 
 
 def test_group_by_activity_orders_by_cost_and_folds_unknown_modes():

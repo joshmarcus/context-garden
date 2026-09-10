@@ -735,6 +735,18 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                       f"${operator['unattributed_spend']:.2f} "
                       f"({operator['unattributed_priced_records']} priced, "
                       f"{operator['unattributed_unpriced_records']} unpriced records)")
+    effort = m["delegated_effort"]
+    effort_cost = effort["cost"]
+    per_change = (f"${effort_cost['per_accepted_change']:.2f}"
+                  if effort_cost["per_accepted_change"] is not None else "unavailable")
+    console.print(f"Accepted-cohort effort: {effort['accepted']} changes, {per_change} recorded cost/change; "
+                  f"lead time median {effort['elapsed']['median_lead_hours'] if effort['elapsed']['median_lead_hours'] is not None else 'unavailable'} h")
+    for actor, row in effort["actions"].items():
+        causes = ", ".join(f"{cause} ({count})" for cause, count in row["causes"].items()) or "none"
+        console.print(f"  {actor.replace('_', ' ')}: {row['actions']} actions; time unavailable; causes: {causes}")
+    if effort["operator"]["unattributed_records"]:
+        console.print(f"  unattributed operator records excluded: {effort['operator']['unattributed_records']}")
+    console.print("Savings: not estimated (no recorded human-effort baseline)")
     rb = m["rebase"]
     console.print(f"Rebases per merge: {rb['mechanical'] / rb['merges']:.2f} mechanical, "
                   f"{rb['agent'] / rb['merges']:.2f} agent" if rb["merges"] else "Rebases per merge: no merges")
