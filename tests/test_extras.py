@@ -226,8 +226,8 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     rep = sched.tick()  # reap it: real failure -> revise
     assert "DM-001(revise)" in rep.dispatched
     revise = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "revise")
-    brief = (revise.path / "brief.md").read_text()
-    assert "failed checks: build" in brief and "test_x.py::test_y" in brief
+    feedback = (revise.path / "references/context/review-findings.md").read_text()
+    assert "failed checks: build" in feedback and "test_x.py::test_y" in feedback
 
 
 def test_frozen_pr_defers_ci_analysis_until_the_phase_unfreezes(sched, fake_github):
@@ -579,7 +579,9 @@ def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkey
     ph = sched.store.phase("demo", "p1")
     run = sched.dispatch_persona_phase(ph, "usability-expert", file_tasks=True)
     brief = (run.path / "brief.md").read_text()
-    assert "# Persona: Usability expert" in brief and "Body of work" in brief and "DM-001" in brief and "A fake change" in brief
+    evidence = (run.path / "references/evidence/pull-requests.md").read_text()
+    assert "# Persona: Usability expert" in brief and "Explore the phase" in brief
+    assert "DM-001" in evidence and "A fake change" in evidence
     rep = sched.tick()
     reports = list((ph.path / "docs" / "reviews").glob("usability-expert-*.md"))
     assert len(reports) == 1 and "First run needs a config file" in reports[0].read_text()
@@ -735,7 +737,8 @@ def test_persona_pr_review_comments_and_can_request_changes(sched, fake_github, 
     sched.dispatch_persona_pr(sched.store.task("DM-001"), "security", request_changes=True)
     rep = sched.tick()
     assert "DM-001 -> changes_requested (persona security)" in rep.transitions and "DM-001(revise)" in rep.dispatched
-    assert "security persona" in (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    feedback = sched.runs.latest("DM-001").path / "references/context/review-findings.md"
+    assert "security persona" in feedback.read_text()
 
 
 def test_persona_reviews_resolve_model_from_retro_difficulty_not_review_difficulty(sched, fake_github):

@@ -90,7 +90,8 @@ def test_happy_path_dispatch_reap_pr_merge(sched, fake_github):
     assert "garden/dm-001-first-task" in out
     run = sched.runs.latest("DM-001")
     assert run.status == "done" and run.cost_usd == 0.05 and run.usage["input_tokens"] == 1234
-    assert (run.path / "brief.md").exists() and "Do the first thing" in (run.path / "brief.md").read_text()
+    assert (run.path / "brief.md").exists()
+    assert "Do the first thing" in (run.path / "references/context/task.md").read_text()
 
     # nothing new on the PR -> no change
     rep = sched.tick()
@@ -150,8 +151,8 @@ def test_design_context_is_run_scoped_and_referenced_without_dirtying_checkout(s
     context = run.path / "design-context.json"
     assert context.exists()
     brief = (run.path / "brief.md").read_text()
-    assert str(context) in brief
-    assert "controller-owned file is not in your checkout" in brief
+    assert "$GARDEN_CONTEXT_DIR/context/evidence/design-context.json" in brief
+    assert (run.path / "references/context/evidence/design-context.json").exists()
     assert (Path(run.worktree) / "docs" / "design" / "snapshot.json").read_text() == '{"curated": true}\n'
     assert subprocess.run(
         ["git", "status", "--porcelain"], cwd=run.worktree, capture_output=True, text=True, check=True,
@@ -206,9 +207,10 @@ def test_revise_brief_names_rebase_conflict_without_github_feedback(sched):
     state["pending_feedback_rebase"] = True
     sched.dispatch(task, mode="revise")
     brief = (sched.runs.latest(task.id).path / "brief.md").read_text()
-    assert "## Concrete blocker" in brief
-    assert "GitHub has no open review comments" in brief
-    assert "rebase conflict" in brief
+    assert "context/review-findings.md" in brief
+    findings = sched.runs.latest(task.id).path / "references/context/review-findings.md"
+    assert "GitHub has no open review comments" in findings.read_text()
+    assert "rebase conflict" in findings.read_text()
 
 
 def test_oversized_prompt_is_rejected_before_the_runner_starts(sched, monkeypatch):

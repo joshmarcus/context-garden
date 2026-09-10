@@ -167,11 +167,15 @@ def persona(call: Call) -> None:
 
 
 def retro(call: Call) -> None:
-    fsec = re.search(r"## Harvested friction.*?(?=\n## |\Z)", call.brief, flags=re.S)
+    context_dir = Path(call.env.get("GARDEN_CONTEXT_DIR", "."))
+    friction_text = (context_dir / "evidence" / "harvested-friction.md").read_text()
+    tasks_text = (context_dir / "evidence" / "tasks.md").read_text()
+    merged_text = (context_dir / "evidence" / "merged-prs.md").read_text()
+    fsec = re.search(r".*", friction_text, flags=re.S)
     friction_ids = re.findall(r"^### (\S+):", fsec.group(0), flags=re.M) if fsec else []
-    msec = re.search(r"## Merged pull requests.*?(?=\n## |\Z)", call.brief, flags=re.S)
+    msec = re.search(r".*", merged_text, flags=re.S)
     merged_ids = re.findall(r"^- (\S+) —", msec.group(0), flags=re.M) if msec else []
-    tsec = re.search(r"## Phase task list with statuses.*?(?=\n## |\Z)", call.brief, flags=re.S)
+    tsec = re.search(r".*", tasks_text, flags=re.S)
     task_titles = re.findall(r"^- \S+ \[\S+\] (.+)$", tsec.group(0), flags=re.M) if tsec else []
     cycle = ["fixed", "still_true", "outdated", "disputed"]
     recon = []

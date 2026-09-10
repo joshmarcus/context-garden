@@ -16,11 +16,12 @@ def test_brief_sections(garden):
     store = Store(garden)
     b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main")
     assert "# Task DM-001" in b.text
-    assert "## Principles (digest)" in b.text and "be good" in b.text
-    assert "## Product: demo" in b.text and "## Phase goals: p1" in b.text
-    assert "### demo/p1/specs/spec.md" in b.text and "Details." in b.text
+    assert "$GARDEN_CONTEXT_DIR/context/principles.md" in b.text
+    assert "$GARDEN_CONTEXT_DIR/context/product.md" in b.text
+    assert "$GARDEN_CONTEXT_DIR/context/phase-goals.md" in b.text
+    assert "Do the first thing" not in b.text and "Do the first thing" in b.files["context/task.md"]
     assert "garden/x" in b.text and RESULT_MARKER in b.text
-    assert set(b.sections) >= {"head", "rules", "principles", "product", "goals", "task", "reading"}
+    assert set(b.sections) >= {"head", "rules", "launch"}
     assert b.tokens > 100
 
 
@@ -36,7 +37,7 @@ def test_brief_replaces_configured_connection_targets_and_credentials_with_safe_
     brief = build_brief(Store(garden), Store(garden).task("DM-001"))
 
     assert target not in brief.text and "not-for-sharing" not in brief.text
-    assert "boxA" in brief.text and "token=<redacted>" in brief.text
+    assert "boxA" in brief.files["context/task.md"] and "token=<redacted>" in brief.files["context/task.md"]
 
 
 def test_brief_cost_breakdown(garden):
@@ -76,8 +77,7 @@ def test_brief_labels_oversized_garden_reading_as_controller_owned(garden):
     b = build_brief(store, t)
     assert "demo/p1/specs/big.md" in b.controller_owned
     assert "demo/p1/specs/big.md" not in b.referenced
-    assert "## Controller-owned references" in b.text
-    assert "do not try to read these paths from the checkout" in b.text
+    assert "$GARDEN_CONTEXT_DIR/context/reading/demo/p1/specs/big.md" in b.text
     assert b.missing == ["demo/p1/specs/nope.md"]
     assert "`demo/p1/specs/nope.md`" not in b.referenced
     assert "## Brief gaps" in b.text
@@ -109,7 +109,7 @@ def test_brief_keeps_oversized_product_reading_checkout_readable(garden, tmp_pat
 
     assert brief.referenced == ["src/large.py"]
     assert brief.controller_owned == []
-    assert "## Reading list (read from the checkout)" in brief.text
+    assert "## Relevant files" in brief.text
 
 
 def test_brief_directory_reading(garden):
@@ -117,7 +117,7 @@ def test_brief_directory_reading(garden):
     t = store.task("DM-002")
     t.reading = ["demo/p1/specs"]
     b = build_brief(store, t)
-    assert "demo/p1/specs/spec.md" in b.inlined
+    assert "context/reading/demo/p1/specs/spec.md" in b.files
 
 
 def test_parse_result():
@@ -162,7 +162,8 @@ def test_brief_pre_pr_revision(garden):
     assert "## Revision round" in b.text
     assert "pre-PR check failed" in b.text
     assert "This branch already has an open pull request" not in b.text
-    assert "Review feedback to address" in b.text
+    assert "Review findings" in b.text
+    assert b.files["context/review-findings.md"] == "ruff failed\n"
 
 
 def test_brief_pr_revision_requests_improvement_decisions(garden):
@@ -218,7 +219,7 @@ def test_reading_list_resolves_against_the_product_checkout(garden):
     assert repo in product_dirs(store, task)
     assert resolve_reading(store, task, "src/thing.py")[1] == repo
     b = build_brief(store, task)
-    assert "### src/thing.py" in b.text and "VALUE = 1" in b.text
+    assert "`src/thing.py`" in b.text and "VALUE = 1" not in b.text
     assert "src/nowhere.py" in b.missing
     assert "## Brief gaps" in b.text
     assert "- `src/nowhere.py`" in b.text
@@ -237,7 +238,7 @@ def test_brief_never_names_the_garden_root(garden):
     text = build_brief(store, task).text
     assert str(garden) not in text
     assert "context garden root" not in text
-    assert "not in your checkout" in text
+    assert "$GARDEN_CONTEXT_DIR/context/reading/big.md" in text
     assert "Work only in the directory you were started in" in text
 
 
@@ -341,7 +342,7 @@ def test_brief_reads_product_files_from_the_base_commit(garden):
     task.reading = ["README.md"]
     (repo / "README.md").write_text("# dirty\n")
     brief = build_brief(store, task, base="main")
-    assert "# demo" in brief.text
+    assert "`README.md`" in brief.text
     assert "# dirty" not in brief.text
 
 

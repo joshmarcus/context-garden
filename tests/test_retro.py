@@ -193,12 +193,12 @@ def test_reconcile_brief_includes_reported_and_comment_friction():
 
     reported = "## Reported\n\n### 2026-01-01 · cli\n\nThe onboarding doc is stale."
     comment_friction = [(_T("CG-1", "https://example.com/pull/1"), ["Spec had no schema link."])]
-    brief = reconcile_brief(store, phase, "main", [], reported, comment_friction, {}, [], [], "ph2")
-    assert "## Reported friction" in brief
-    assert "The onboarding doc is stale." in brief
-    assert "## Friction reported in PR comments" in brief
-    assert "Spec had no schema link." in brief
-    assert "CG-1" in brief and "https://example.com/pull/1" in brief
+    refs = {}
+    brief = reconcile_brief(store, phase, "main", [], reported, comment_friction, {}, [], [], "ph2", refs)
+    assert "## Evidence index" in brief
+    assert "The onboarding doc is stale." in refs["evidence/reported-friction.md"]
+    assert "Spec had no schema link." in refs["evidence/comment-friction.md"]
+    assert "CG-1" in refs["evidence/comment-friction.md"]
 
 
 def test_reconcile_brief_marks_absent_reported_and_comment_friction():
@@ -212,9 +212,9 @@ def test_reconcile_brief_marks_absent_reported_and_comment_friction():
         config=types.SimpleNamespace(get=lambda key: None),
         rel=lambda path: str(path),
     )
-    brief = reconcile_brief(store, phase, "main", [], "", [], {}, [], [], "ph2")
-    assert "## Reported friction (friction.md '## Reported' log)\n\n(none)" in brief
-    assert "## Friction reported in PR comments\n\n(none)" in brief
+    refs = {}
+    reconcile_brief(store, phase, "main", [], "", [], {}, [], [], "ph2", refs)
+    assert refs["evidence/reported-friction.md"] == "(none)\n"
 
 
 # --------------------------------------------------------------------------- end to end
@@ -734,10 +734,10 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
 
     assert sched.retro_pending(ph.key) == {"done": 8, "total": 8}
     friction, reported, comment_friction, reports, task_rows, merged = sched._retro_materials(ph, names)
-    brief = reconcile_brief(store, ph, "main", friction, reported, comment_friction, reports, task_rows, merged, "p2")
-    assert "(none)" not in brief.split("## Persona reviews")[1].split("## ")[0]
+    refs = {}
+    reconcile_brief(store, ph, "main", friction, reported, comment_friction, reports, task_rows, merged, "p2", refs)
     for name in names:
-        assert name in brief
+        assert f"evidence/personas/{name}.md" in refs
 
     rep = sched.tick()  # every report is in now -> the reconciliation dispatches
     assert not rep.errors, rep.errors
