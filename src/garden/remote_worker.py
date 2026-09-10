@@ -618,27 +618,9 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         push_ref = str(run["push_ref"])
         subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
-<<<<<<< HEAD
         # PID directory names do not describe completion order. Preserve the host's
         # observed write order so the controller can make a later rerun authoritative.
         receipts = _validation_receipts(execution_dir)
-=======
-        receipts = []
-        for receipt_path in sorted(execution_dir.glob("validations/*/result.json")):
-            try:
-                receipt = json.loads(receipt_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(receipt, dict):
-                artifacts = {}
-                for name in ("execution.json", "exit_code", "stderr.log", "validation_timeout.json"):
-                    artifact = receipt_path.parent / name
-                    if artifact.is_file():
-                        # Supervisor metadata and logs are text and bounded by the outer
-                        # run's execution budget.  Retain them with the controller receipt.
-                        artifacts[name] = artifact.read_text(errors="replace")
-                receipts.append({**receipt, "artifacts": artifacts})
->>>>>>> 9c13962d (Bind remote validation evidence to exact heads)
         heartbeat.ensure_current()
         heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
                           "final_text": final, "result": parsed, "usage": usage,
