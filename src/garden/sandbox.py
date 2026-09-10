@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,12 @@ class SandboxError(RuntimeError):
 
 
 _DESTINATION = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?$")
+_CAPABILITY_FLAG = "--garden-sandbox-capabilities"
+_POLICY_FLAG = "--garden-sandbox-policy"
+_REQUIRED_CAPABILITIES = frozenset({
+    "filesystem.readable-roots", "filesystem.writable-roots", "filesystem.protected-roots",
+    "filesystem.resolve-symlinks", "network.destination-allowlist", "process.descendants",
+})
 
 
 @dataclass(frozen=True)
@@ -61,10 +68,10 @@ class SandboxPolicy:
             raise SandboxError(f"harness {harness!r} does not declare an enforceable sandbox capability")
         # The native sandbox is defence in depth. The OS wrapper is the common contract that
         # also confines reads, descendants, symlink resolution, and destination-level network.
-        self._command_prefix()
-        return f"configured-os-wrapper+{native}"
+        _, mechanism = self._command_prefix()
+        return f"{mechanism}+{native}"
 
-    def _command_prefix(self) -> list[str]:
+    def _command_prefix(self) -> tuple[list[str], str]:
         if not self.command:
             raise SandboxError(
                 "sandbox.required execution needs sandbox.command; configure a platform "
@@ -73,19 +80,59 @@ class SandboxPolicy:
         binary = self.command[0]
         if not (Path(binary).is_file() if os.path.isabs(binary) else shutil.which(binary)):
             raise SandboxError(f"sandbox command {binary!r} is not available on this host")
-        return list(self.command)
+        prefix = list(self.command)
+        try:
+            probe = subprocess.run(
+                [*prefix, _CAPABILITY_FLAG], capture_output=True, text=True, check=False, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SandboxError(f"sandbox capability probe failed: {exc}") from exc
+        try:
+            report = json.loads(probe.stdout)
+        except json.JSONDecodeError as exc:
+            raise SandboxError("sandbox command did not return a valid capability report") from exc
+        reported_capabilities = report.get("capabilities") if isinstance(report, dict) else None
+        capabilities = ({item for item in reported_capabilities if isinstance(item, str)}
+                        if isinstance(reported_capabilities, list) else set())
+        mechanism = report.get("mechanism") if isinstance(report, dict) else None
+        version = report.get("contract_version") if isinstance(report, dict) else None
+        if (probe.returncode != 0 or version != 1
+                or not isinstance(mechanism, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", mechanism)
+                or not _REQUIRED_CAPABILITIES <= capabilities):
+            missing = sorted(_REQUIRED_CAPABILITIES - capabilities)
+            detail = f"; missing {', '.join(missing)}" if missing else ""
+            raise SandboxError(f"sandbox command does not attest to contract version 1{detail}")
+        return prefix, mechanism
 
-    def command_argv(self, shell_command: str, writable_root: Path) -> tuple[list[str], str]:
+    def command_argv(self, shell_command: str, writable_root: Path, *,
+                     additional_writable_roots: list[Path] | None = None,
+                     readable_roots: list[Path] | None = None,
+                     protected_roots: list[Path] | None = None) -> tuple[list[str], str]:
         """Wrap an approved command with the configured OS sandbox executable."""
         if not self.required:
             return ["sh", "-c", shell_command], ""
-        prefix = self._command_prefix()
+        prefix, mechanism = self._command_prefix()
+        writable = str(writable_root.resolve())
+        writable_roots = [writable, *[
+            str(path.resolve()) for path in (additional_writable_roots or [])
+            if str(path.resolve()) != writable
+        ]]
+        policy = {
+            "contract_version": 1,
+            "writable_roots": writable_roots,
+            "readable_roots": [str(path.resolve()) for path in (readable_roots or [writable_root])],
+            "protected_roots": [str(path.resolve()) for path in (protected_roots or [])],
+            "network_destinations": list(self.network_destinations),
+            "inherit_to_descendants": True,
+            "resolve_symlinks": True,
+        }
         values = {
-            "writable_root": str(writable_root.resolve()),
+            "writable_root": writable,
             "network_destinations": ",".join(self.network_destinations),
         }
         argv = [part.format(**values) for part in prefix]
-        return [*argv, "--", "sh", "-c", shell_command], "configured-os-wrapper"
+        return [*argv, _POLICY_FLAG, json.dumps(policy, separators=(",", ":")),
+                "--", "sh", "-c", shell_command], mechanism
 
     @staticmethod
     def report_env(mechanism: str) -> dict[str, str]:

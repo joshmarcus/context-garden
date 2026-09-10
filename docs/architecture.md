@@ -67,11 +67,14 @@ flowchart LR
   bypass permission modes and custom harnesses are refused before launch.
   `network_destinations` is an explicit hostname/optional-port allowlist. Claude also receives
   it in native sandbox settings. Planner, setup, model, and command-check execution all require
-  `sandbox.command`, an argv for an installed OS sandbox wrapper. Garden appends
-  `-- sh -c <command>` and expands `{writable_root}` and
-  `{network_destinations}` in wrapper arguments. This makes the wrapper responsible for
-  filesystem, symlink, child-process and network enforcement rather than trusting branch
-  code. SSH is rejected while isolation is required because that runner cannot attest to a
+  `sandbox.command`, an argv for an installed OS sandbox wrapper. Before use, Garden invokes
+  it with `--garden-sandbox-capabilities` and requires a versioned JSON attestation covering
+  readable, writable and protected roots, symlink resolution, descendant inheritance and
+  destination-level network filtering. Each launch receives the concrete JSON policy through
+  `--garden-sandbox-policy`, followed by `-- sh -c <command>`; legacy `{writable_root}` and
+  `{network_destinations}` argument placeholders remain available. This makes the wrapper
+  responsible for filesystem, symlink, child-process and network enforcement rather than
+  trusting branch code. SSH is rejected while isolation is required because that runner cannot attest to a
   remote mechanism; Windows users receive the supported WSL diagnostic. Every protected
   local model run records a host-detail-free `sandbox.json`, and children inherit
   `GARDEN_SANDBOX_ENFORCED=1` plus the mechanism name.
