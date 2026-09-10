@@ -248,10 +248,18 @@ def doctor():
             fail("github")
     harness_names = {str(store.config.get("harness") or "claude")} | {
         str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
+    harness_names |= {str(name) for name in (store.config.data.get("harnesses") or {})}
     runner_names = {str(store.config.get("runner") or "local")} | {
         str(p.get("runner")) for p in store.config.data.get("products", {}).values() if p and p.get("runner")}
     for hn in sorted(harness_names):
         h = store.config.harness(hn)
+        if h.api_key_env and not os.environ.get(h.api_key_env):
+            console.print(
+                f"harness {hn}: [red]{h.api_key_env} is not set[/red]  "
+                f"models={h.cfg.get('models') or 'cli default'}"
+            )
+            fail(f"harness {hn}")
+            continue
         found = shutil.which(h.bin)
         if found:
             # Check login through the same scrubbed environment a worker gets (runner.base.
@@ -260,6 +268,8 @@ def doctor():
             # a custom harness with no such subcommand is checked the same way.
             try:
                 worker_environment = scrubbed_env(store.config.data)
+                if h.api_key_env:
+                    worker_environment[h.api_key_env] = os.environ[h.api_key_env]
             except Exception as exc:  # policy errors are reported without source paths/content
                 console.print(f"harness {hn}: [red]worker configuration unavailable[/red] "
                               f"({type(exc).__name__}: {exc})")

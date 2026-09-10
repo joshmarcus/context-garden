@@ -193,6 +193,28 @@ default remains linked worktrees.
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
 
+### OpenRouter harness
+
+`harnesses.openrouter` uses Codex as the maintained agent and tool loop and points its
+OpenAI-compatible Responses provider at OpenRouter. It is a named harness so work pools,
+review pools, personas, and retros can route to it independently. `api_key_env` defaults to
+`OPENROUTER_API_KEY`; the runner admits that one value only to the harness process, after
+setup, while the ordinary worker environment remains scrubbed. Codex JSONL remains the raw
+`stdout.json` transcript. Its final message becomes `final.md`, and response usage plus the
+provider-reported `usage.cost` are persisted in `run.json`.
+
+```yaml
+harnesses:
+  openrouter:
+    api_key_env: OPENROUTER_API_KEY
+    base_url: https://openrouter.ai/api/v1
+    max_turns: 80
+    models:
+      easy: openrouter/qwen/qwen3-coder
+      medium: openrouter/anthropic/claude-sonnet-4
+      hard: openrouter/openai/gpt-5
+```
+
 Run metadata is indexed in process and shared by scheduler/read facades. A writer in the
 process invalidates its task bucket immediately and touches that bucket for other processes;
 external changes appear within one second. An expiry stats the bounded set of task buckets

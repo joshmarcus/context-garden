@@ -71,6 +71,22 @@ DEFAULT_HARNESSES: dict[str, dict[str, Any]] = {
         "prices": CODEX_PRICES,
         "quota_patterns": ["you've hit your usage limit"],
     },
+    # OpenRouter is an OpenAI-compatible provider, while Codex supplies the maintained
+    # agent/tool loop.  Keeping a named harness makes it independently routable and gives
+    # its credential and provider endpoint an explicit configuration boundary.
+    "openrouter": {
+        "bin": "codex",
+        "output": "codex-jsonl",
+        "permission_mode": "workspace-write",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "models": {},
+        "max_turns": 0,
+        "review_model": "",
+        "retro_model": "",
+        "resume": True,
+        "quota_patterns": ["insufficient credits", "rate limit"],
+    },
 }
 
 DIFFICULTIES = ("easy", "medium", "hard")
@@ -129,6 +145,11 @@ class Harness:
             return int(max_turns.get(difficulty) or max_turns.get("medium") or 0)
         return int(max_turns)
 
+    @property
+    def api_key_env(self) -> str:
+        """The provider credential admitted only for this harness invocation."""
+        return str(self.cfg.get("api_key_env") or "")
+
     # ---- command -----------------------------------------------------------
     def fence_settings(self, deny_paths: list[str] | None, worktree: Path | str | None) -> str:
         """A `--settings` JSON payload that keeps a worker's writes inside its worktree.
@@ -160,7 +181,8 @@ class Harness:
         return json.dumps(settings, separators=(",", ":")) if settings else ""
 
     def command(self, model: str = "", final_path: Path | None = None, difficulty: str = "",
-                deny_paths: list[str] | None = None, worktree: Path | str | None = None) -> list[str]:
+                deny_paths: list[str] | None = None, worktree: Path | str | None = None,
+                permission_override: str = "") -> list[str]:
         """Argv for one headless run. The brief arrives on stdin; cwd is the worktree."""
         if self.cfg.get("command"):
             # fully custom: a list with {model} / {final} placeholders
@@ -170,7 +192,7 @@ class Harness:
                 if a:
                     out.append(a)
             return out
-        mode = str(self.cfg.get("permission_mode") or "")
+        mode = permission_override or str(self.cfg.get("permission_mode") or "")
         if self.output == "claude-json":
             fmt = str(self.cfg.get("output_format") or "json")
             cmd = [self.bin, "-p", "--output-format", fmt]
@@ -249,9 +271,10 @@ class Harness:
             cmd.append(prompt)
             return cmd, ""
         if self.output == "codex-jsonl":
-            cmd = [self.bin, "exec", "--json", "--skip-git-repo-check", "-c", 'approval_policy="never"']
-            if model:
-                cmd += ["-m", model]
+            # Reuse command construction so an OpenRouter probe carries the same provider
+            # selection as a real run, while remaining read-only and tool-free.
+            cmd = self.command(model, permission_override="read-only")
+            cmd = [part for part in cmd if part != "-"]
             cmd.append("-")
             return cmd, prompt
         return [self.bin], prompt  # a fully custom harness: best effort with its default shape
@@ -554,6 +577,11 @@ def _parse_codex(stdout: str, out: dict[str, Any], prices: dict[str, Any] | None
                 "cache_read_input_tokens": u.get("cached_input_tokens", 0),
                 "cache_creation_input_tokens": u.get("cache_write_input_tokens", 0),
             }
+            # OpenRouter includes the charged amount in response usage. Prefer that
+            # authoritative provider value to a garden-side price estimate when Codex
+            # preserves it in its JSONL event.
+            if isinstance(u.get("cost"), (int, float)):
+                out["cost_usd"] = float(u["cost"])
         elif t == "thread.started":
             out["session_id"] = str(ev.get("thread_id") or "")
         elif t in ("error", "turn.failed"):
@@ -562,5 +590,5 @@ def _parse_codex(stdout: str, out: dict[str, Any], prices: dict[str, Any] | None
         out["final_text"] = last_msg
     if reported_model:
         out["model"] = reported_model
-    if out["usage"]:
+    if out["usage"] and out["cost_usd"] is None:
         out["cost_usd"], out["missing_price"] = _usage_cost(out["usage"], str(out["model"]), prices or {})

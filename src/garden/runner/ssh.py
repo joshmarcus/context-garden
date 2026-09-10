@@ -150,6 +150,10 @@ garden_copy_config() {{
   fi
 }}
 garden_scrub() {{
+  garden_harness_key=
+  if [ "${{1:-}}" = harness ] && [ -n {api_key_env} ]; then
+    eval "garden_harness_key=\${{{api_key_env}:-}}"
+  fi
   set -f  # keep `for pat in $GARDEN_ENV_ALLOW` below from globbing a bare `*` against the worktree
   for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
     keep=0
@@ -165,6 +169,9 @@ garden_scrub() {{
 {config_files}
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
+  if [ "${{1:-}}" = harness ] && [ -n {api_key_env} ] && [ -n "$garden_harness_key" ]; then
+    export {api_key_env}="$garden_harness_key"
+  fi
   export GARDEN_VALIDATION_TIMEOUT_SECONDS={validation_timeout}
 }}
 # Reconciliation is per run, bounded, and followed by the same clean/branch readiness
@@ -189,7 +196,7 @@ if [ -n "$GARDEN_SETUP_CMD" ] && [ "$(cat "$GARDEN_SETUP_MARKER" 2>/dev/null)" !
   if ( garden_scrub; $GARDEN_SETUP_RUN "$GARDEN_SETUP_CMD" >&2 ); then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed (or timed out after ${{GARDEN_SETUP_TIMEOUT}}s)" >&2; exit 3; fi
 fi
 set +e
-( garden_scrub; {harness} < "$GARDEN_RUN_DIR/brief.md" )
+( garden_scrub harness; {harness} < "$GARDEN_RUN_DIR/brief.md" )
 RC=$?
 set -e
 rm -rf "$GARDEN_RUN_DIR"
@@ -265,6 +272,9 @@ class SSHRunner(Runner):
         if "GARDEN_BRIEF_EOF" in brief_text:
             raise RunnerError("brief contains the heredoc delimiter")
         harness_cmd = self.harness_shell(run, None)
+        api_key_env = self.harness.api_key_env
+        if api_key_env and (not api_key_env.replace("_", "a").isalnum() or api_key_env[0].isdigit()):
+            raise RunnerError("harness api_key_env must be an environment variable name")
         setup = self._setup_for(host)
         checkout = dict(self.config.get("checkout") or {})
         setup_cmd = str(setup.get("command") or "").strip()
@@ -298,6 +308,7 @@ class SSHRunner(Runner):
             reconcile_timeout=shlex.quote(str(int(checkout.get("reconcile_timeout_seconds") or 600))),
             active_run_ids=shlex.quote(" ".join(str(item) for item in
                                                 run.env_snapshot.get("canonical_active_run_ids", []))),
+            api_key_env=api_key_env,
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")

@@ -37,7 +37,7 @@ def test_codex_command():
 
 def test_fake_openrouter_smoke():
     fake = Path(__file__).with_name("fake_openrouter.py")
-    harness = Harness("codex", {"bin": str(fake), "base_url": "http://openrouter.test/api/v1"})
+    harness = Harness("openrouter", {"bin": str(fake), "base_url": "http://openrouter.test/api/v1"})
     command = harness.command("openai/gpt-5.2-codex")
 
     completed = subprocess.run(
@@ -45,15 +45,35 @@ def test_fake_openrouter_smoke():
         input="# Smoke brief\nReturn the required result marker.",
         capture_output=True,
         text=True,
+        env={"OPENROUTER_API_KEY": "test-key"},
         check=False,
     )
     parsed = harness.parse(completed.stdout, completed.stderr)
 
     assert completed.returncode == 0
-    assert parsed["session_id"] == "openrouter-smoke"
-    assert parsed["result"] == {
-        "status": "done", "summary": "OpenRouter adapter smoke passed",
+    assert parsed["session_id"] == "openrouter-fake"
+    assert parsed["usage"] == {
+        "input_tokens": 100, "output_tokens": 30,
+        "cache_read_input_tokens": 20, "cache_creation_input_tokens": 0,
     }
+    assert parsed["cost_usd"] == 0.0042
+    assert parsed["result"] == {
+        "status": "done", "summary": "OpenRouter completed the run",
+        "pr_title": "OpenRouter change", "pr_body": "body",
+    }
+
+
+def test_openrouter_defaults_and_probe_use_provider_configuration():
+    harness = Harness("openrouter", {"models": {
+        "easy": "openrouter/qwen/qwen3-coder", "medium": "openrouter/openai/gpt-5",
+    }})
+    assert harness.api_key_env == "OPENROUTER_API_KEY"
+    assert harness.max_turns_for("easy") == 0
+    argv, prompt = harness.login_probe()
+    assert prompt == "Reply with the single word: ready."
+    assert 'model_provider="openrouter"' in argv
+    assert 'sandbox_mode="read-only"' in argv
+    assert argv[argv.index("-m") + 1] == "openrouter/qwen/qwen3-coder"
 
 
 def test_claude_spend_limit_is_a_quota_env_error():
