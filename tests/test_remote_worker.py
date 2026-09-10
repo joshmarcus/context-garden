@@ -29,6 +29,7 @@ from garden.remote_worker import (
     _LeaseHeartbeat,
     _validation_receipts,
     _persist_active_claim,
+    _persist_pending_result,
     _wait_for_process,
     deliver_pending_results,
     doctor_worker,
@@ -253,6 +254,81 @@ def test_replacement_daemon_collects_surviving_supervisor_once(tmp_path, monkeyp
     assert published[0]["final"] == "survived"
     assert published[0]["rc"] == 0
     assert recover_active_claims(root, ReplacementClient()) == 0
+
+
+class HealthyHeartbeatClient:
+    events = None
+
+    def post(self, path, _payload):
+        assert path == "/api/runs/run-1/heartbeat"
+        return 200, {}
+
+
+def recovered_execution(tmp_path, monkeypatch):
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-complete"
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "exit_code").write_text("0")
+    (execution_dir / "stdout.log").write_text("survived")
+    (execution_dir / "stderr.log").write_text("")
+    final_path = repo.parent / "run-1-final.md"
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 30, "recovery_seconds": 0, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    _persist_active_claim(root, run, execution_dir, repo, final_path, 99999999)
+    monkeypatch.setattr(
+        Harness, "parse",
+        lambda *_args, **_kwargs: {
+            "final_text": "survived", "result": {"status": "done"}, "usage": {},
+            "cost_usd": 0.0, "error": "",
+        },
+    )
+    return root
+
+
+@pytest.mark.parametrize("failure", [
+    WorkerRequestError(401, "enrollment rejected"),
+    WorkerRequestError(403, "enrollment rejected"),
+    WorkerRequestError(409, "lease replaced"),
+])
+def test_recovered_finish_terminal_rejection_is_quarantined_once(tmp_path, monkeypatch, failure):
+    root = recovered_execution(tmp_path, monkeypatch)
+    publications = []
+
+    def reject(_run, result_root, _repo, _heartbeat, **_kwargs):
+        publications.append(str(_run["id"]))
+        _persist_pending_result(result_root, str(_run["id"]), {"lease_token": "stale"})
+        raise failure
+
+    monkeypatch.setattr("garden.remote_worker._publish_claim_result", reject)
+
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert publications == ["run-1"]
+    assert (root / "active-claims" / "quarantine" / "run-1.json").exists()
+    assert (root / "pending-results" / "quarantine" / "run-1.json").exists()
+
+
+def test_recovered_finish_transient_exhaustion_defers_without_reentry(tmp_path, monkeypatch):
+    root = recovered_execution(tmp_path, monkeypatch)
+    publications = []
+
+    def unavailable(_run, result_root, _repo, _heartbeat, **_kwargs):
+        publications.append(str(_run["id"]))
+        _persist_pending_result(result_root, str(_run["id"]), {"lease_token": "current"})
+        raise WorkerRequestError(503, "controller unavailable")
+
+    monkeypatch.setattr("garden.remote_worker._publish_claim_result", unavailable)
+
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert publications == ["run-1"]
+    assert not (root / "active-claims" / "run-1.json").exists()
+    assert (root / "pending-results" / "run-1.json").exists()
 
 
 def test_pending_finish_retries_transient_failure_without_blocking_startup(tmp_path):
