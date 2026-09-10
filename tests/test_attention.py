@@ -415,7 +415,7 @@ def test_interrupted_check_keeps_source_and_review_blockers_separate(garden):
     assert f'/runs/DM-001/{run.run_id}' in html and "Current PR at abcdef12" in html
 
 
-def test_plain_interrupted_check_is_operator_owned(garden):
+def test_plain_interrupted_check_renders_and_runs_only_preserved_retry(garden, monkeypatch):
     store = Store(garden)
     _set_task(store, "DM-001", Status.CHANGES_REQUESTED)
     _set_state(garden, "DM-001", needs_human={"kind": "check_did_not_run", "reason": "check timed out twice"},
@@ -424,6 +424,27 @@ def test_plain_interrupted_check_is_operator_owned(garden):
     card = next(item for item in build_inbox(sched.store, sched) if item["task"] == "DM-001")
     assert card["group"] == "operator" and len(card["blockers"]) == 1
     assert card["recommendation"] == "Retry the interrupted check"
+    recovery_actions = [action["kind"] for action in card["actions"]
+                        if action["kind"] in {"recover", "recover-check", "resume", "retry"}]
+    assert recovery_actions == ["recover"]
+
+    launches = []
+    monkeypatch.setattr(
+        Scheduler, "_dispatch_check_run",
+        lambda *args, **kwargs: launches.append((args, kwargs)),
+    )
+    client = TestClient(create_app(Store(garden), watch=False))
+    page = client.get("/").text
+    assert "Retry the interrupted check" in page
+    assert 'action="/tasks/DM-001/recover"' in page
+    assert 'action="/tasks/DM-001/recover-check"' not in page
+
+    response = client.post("/tasks/DM-001/recover")
+    assert response.status_code == 200
+    assert len(launches) == 1
+    assert launches[0][1]["specs"] == [{"name": "unit", "command": "pytest"}]
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert not state.get("needs_human") and not state.get("recovery_check")
 
 
 def test_stale_successful_check_stop_can_be_cleared_without_rerunning(garden):

@@ -392,7 +392,6 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     )
     delegated = bool(info.get("delegated_recovery")) or info["kind"] == "check_did_not_run"
     reviewer_owned = info["kind"] == "review_clarification"
-    check_recovery = info["kind"] == "check_did_not_run"
     investigation = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
     investigation_pending = info["kind"] == "investigation" and not investigation.get("report")
     if investigation_pending:
@@ -418,17 +417,6 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             "label": "Investigate missing check provenance", "kind": "investigate",
             "command": f'garden investigate {t.id} "recover immutable check provenance"',
             "detail": "records a bounded read-only operator investigation; the original stop, result, PR, feedback, and counters remain preserved",
-        })
-    elif check_recovery and not stale_check_stop:
-        actionable = bool(str(st.get("pending_feedback") or "").strip()) or (
-            str(st.get("checks") or "").upper() == "FAILURE"
-        ) or bool(st.get("failed_checks"))
-        actions.append({
-            "label": "Recover check and continue revision" if actionable else "Recover check and resume pipeline",
-            "kind": "recover-check", "command": f"garden recover-check {t.id}",
-            "detail": ("clears this terminal check pointer and retains the current feedback/check failure for "
-                       "an existing-branch revision" if actionable else
-                       "clears this terminal check pointer and resumes pipeline progression without an implementation run"),
         })
     troubled = info["kind"] in ("troubled_task", "investigation_report")
     if info["kind"] == "revision_cap" and not delegated:
