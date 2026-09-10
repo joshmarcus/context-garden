@@ -3,7 +3,6 @@
 from .command import CommandProvider, CommandResult, CommandTransport
 from .config import pool_from_dict
 from .core import EnvironmentStop, HostLifecycle, JsonStateStore
-from .drain import WorkerDrainStore
 from .models import (
     CONTRACT_VERSION,
     EnvironmentProfile,
@@ -26,6 +25,19 @@ from .scale import (
     durable_worker_readiness,
     status_dict,
 )
+
+
+def __getattr__(name: str):
+    """Load the run-backed drain bridge only when a caller requests it.
+
+    ``garden.runs`` uses ``hosts.locking``.  Importing the bridge while this package is
+    initializing would therefore ask for ``RunStore`` before that module has finished
+    defining it.
+    """
+    if name == "WorkerDrainStore":
+        from .drain import WorkerDrainStore
+        return WorkerDrainStore
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "CONTRACT_VERSION",

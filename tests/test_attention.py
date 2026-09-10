@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from garden.github import PRInfo
-from garden.inbox import attention_view, build_inbox, needs_human_info
+from garden.inbox import attention_view, build_inbox, decisions, needs_human_info
 from garden.model import Status
 from garden.runs import RunStore
 from garden.scheduler import Scheduler, State
@@ -354,6 +354,41 @@ def test_inbox_defer_requires_reason_and_uses_troubled_defer_action(garden):
     state = State(garden / ".garden" / "state.json").get("DM-001")
     assert state["troubled_deferred"]["reason"] == "wait for the upstream parser release"
     assert not state.get("investigation")
+
+
+def test_saved_troubled_deferral_is_a_notice_until_deliberately_reconsidered(garden):
+    """A saved owner deferral keeps its execution hold without renewing the decision badge."""
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "deferred: wait for the parser release"},
+               troubled_deferred={"reason": "wait for the parser release", "at": "2026-09-10T00:00:00+00:00", "counter": 6})
+    sched = Scheduler(Store(garden), github=FakeGitHub())
+
+    items = build_inbox(Store(garden), sched)
+    item = next(item for item in items if item["task"] == "DM-001")
+    assert item["group"] == "deferred"
+    assert item["kind"] == "troubled_deferred"
+    assert item["reason"] == "wait for the parser release"
+    assert item["evidence"][0] == "execution hold source: saved owner deferral"
+    assert [action["kind"] for action in item["actions"] if action["kind"] != "discuss"] == ["troubled-reconsider"]
+    assert not decisions([item])
+
+    client = TestClient(create_app(Store(garden), watch=False))
+    page = client.get("/inbox").text
+    assert 'action="/tasks/DM-001/troubled-reconsider"' in page
+    assert 'action="/tasks/DM-001/troubled-continue"' not in page
+    assert '/tasks/DM-001/move' not in page
+    response = client.post("/tasks/DM-001/troubled-reconsider", follow_redirects=False)
+    assert response.status_code == 303
+
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert state["needs_human"]["kind"] == "troubled_task"
+    assert not state.get("troubled_deferred")
+    reconsidered = next(item for item in build_inbox(Store(garden), Scheduler(Store(garden), github=FakeGitHub()))
+                        if item["task"] == "DM-001")
+    assert reconsidered["group"] == "attention"
+    assert not RunStore(garden / ".garden").runs_for("DM-001")
 
 
 def test_parent_closed_card(garden):

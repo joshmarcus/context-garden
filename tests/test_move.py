@@ -214,3 +214,4 @@ def test_inbox_offers_move_for_a_draft_in_a_frozen_phase(garden):
     assert "need you</div>" in html and '<div class="v">0</div><div class="l">need you' in html
     assert "Move to p2" in html
     assert '/tasks/DM-003/move' in html and 'value="demo/p2"' in html
+    assert '/tasks/DM-003/troubled-reconsider' not in html

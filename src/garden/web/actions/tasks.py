@@ -338,6 +338,11 @@ def troubled_defer(s: Store, sched: Scheduler, t: Task, note: str, applies_to: s
     sched.defer_troubled(t, note)
 
 
+@action("troubled-reconsider")
+def troubled_reconsider(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
+    sched.reconsider_troubled(t)
+
+
 @action("troubled-cancel")
 def troubled_cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.cancel_troubled(t, note)
