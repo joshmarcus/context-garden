@@ -879,6 +879,7 @@ take effect within one tick.
 | a harness (another agent CLI) | a block under `harnesses:` with `bin`, `command` or argument shape, `output` format, a tier-to-model map, optional `resume_command` | none |
 | a runner (another place to run) | a subclass of `runner.base.Runner` with `start` and `collect`, registered in `runner/__init__.py` | one class |
 | a check (token-free) | `{name, command}` or `{name, python: "module:function"}` under `checks.pre_pr` or `checks.ci`; helpers in `checks.py` for log analysers | none, or one function |
+| source control | a `SourceControlProvider` adapter returning neutral change-request metadata; register it with an endpoint-scoped `ConnectionPolicy` | one adapter |
 | a persona | a markdown file under `personas/` | none |
 | context | markdown under the garden; the planner and the briefs pick it up | none |
 
