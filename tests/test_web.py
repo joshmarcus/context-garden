@@ -656,13 +656,37 @@ def test_now_partial_fanout_shares_one_snapshot_and_skips_global_context(garden,
     monkeypatch.setattr(now_page.now1, "snapshot", counted)
     monkeypatch.setattr(common, "build_inbox", global_context_work)
     c = client(garden)
-    urls = [f"/partials/now/{region}" for region in ("head", "now", "next", "where", "period")]
+    urls = [f"/partials/now/{region}?burst=event-1"
+            for region in ("head", "now", "next", "where", "period")]
     with ThreadPoolExecutor(max_workers=len(urls)) as pool:
         responses = list(pool.map(c.get, urls))
 
     assert [response.status_code for response in responses] == [200] * len(urls)
     assert all(response.content for response in responses)
     assert calls == 1
+
+
+def test_now_partial_burst_identity_outlives_fallback_ttl(garden, monkeypatch):
+    """A slow request queue does not split one explicitly identified browser fanout."""
+    from garden.web.pages import now1 as now_page
+
+    original = now_page.now1.snapshot
+    calls = 0
+    monotonic = 10.0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(now_page.now1, "snapshot", counted)
+    monkeypatch.setattr(now_page, "_monotonic", lambda: monotonic)
+    c = client(garden)
+    assert c.get("/partials/now/head?burst=event-1").status_code == 200
+    monotonic += 1.0
+    assert c.get("/partials/now/period?burst=event-1").status_code == 200
+    assert c.get("/partials/now/head?burst=event-2").status_code == 200
+    assert calls == 2
 
 
 def test_now_partial_waiter_rebuilds_after_event_during_snapshot_and_windows_stay_distinct(

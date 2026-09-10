@@ -21,6 +21,7 @@ from ..common import Site
 
 WINDOW_KEYS = {key for key, _ in now1.WINDOWS}
 REGIONS = ("head", "now", "next", "where", "period")
+_monotonic = time.monotonic
 
 
 def _chart(p: dict[str, Any], width: int = 640) -> Markup:
@@ -56,7 +57,7 @@ def register(app: FastAPI, site: Site) -> None:
     def page_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
         return ctx(request, page="now", f=FORMAT, snap=snap(window), **kw)
 
-    def partial_snap(window: str) -> dict[str, Any]:
+    def partial_snap(window: str, burst: str) -> dict[str, Any]:
         with partial_lock:
             # Sample after acquiring the lock.  If another event arrived while this request
             # waited for an earlier build, its log/state signature forces a follow-up build
@@ -70,30 +71,34 @@ def register(app: FastAPI, site: Site) -> None:
                 except OSError:
                     signatures.extend((0, 0))
             selected = window if window in WINDOW_KEYS else "hour"
-            key = (selected, *signatures)
+            # The browser gives every event fanout an explicit id.  That is the operation
+            # boundary: all regions for one event share a reading even when the server cannot
+            # schedule their requests inside the fallback TTL, while a later event cannot
+            # reuse it merely because it arrived quickly.
+            key = (selected, burst, *signatures)
             cached = partial_cache.get(key)
-            if cached is not None and cached[0] >= time.monotonic():
+            if cached is not None and (bool(burst) or cached[0] >= _monotonic()):
                 return cached[1]
             reading = snap(selected)
             partial_cache.clear()
-            partial_cache[key] = (time.monotonic() + burst_seconds, reading)
+            partial_cache[key] = (_monotonic() + burst_seconds, reading)
             return reading
 
-    def partial_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
+    def partial_ctx(request: Request, window: str, burst: str, **kw: Any) -> dict[str, Any]:
         # Region templates use only request, the Now formatters and the snapshot.  Rebuilding
         # Site.ctx here would also rebuild the global rail and Inbox even though neither is in
         # a partial response.
-        return {"request": request, "f": FORMAT, "snap": partial_snap(window), **kw}
+        return {"request": request, "f": FORMAT, "snap": partial_snap(window, burst), **kw}
 
     def cached_typical(runs: RunStore) -> dict[str, float]:
         nonlocal typical_cache
         with typical_lock:
-            if typical_cache is not None and typical_cache[0] >= time.monotonic():
+            if typical_cache is not None and typical_cache[0] >= _monotonic():
                 return typical_cache[1]
             import datetime as dt
 
             reading = now1.typical_seconds(runs.all_runs(), dt.datetime.now(dt.UTC))
-            typical_cache = (time.monotonic() + burst_seconds, reading)
+            typical_cache = (_monotonic() + burst_seconds, reading)
             return reading
 
     @app.get("/now", response_class=HTMLResponse)
@@ -107,10 +112,10 @@ def register(app: FastAPI, site: Site) -> None:
         return RedirectResponse(f"/now{query}", status_code=308)
 
     @app.get("/partials/now/{region}", response_class=HTMLResponse)
-    def now1_partial(request: Request, region: str, window: str = "hour"):
+    def now1_partial(request: Request, region: str, window: str = "hour", burst: str = ""):
         if region not in REGIONS:
             raise HTTPException(404)
-        return templates.TemplateResponse(request, f"_now1_{region}.html", partial_ctx(request, window))
+        return templates.TemplateResponse(request, f"_now1_{region}.html", partial_ctx(request, window, burst))
 
     @app.get("/partials/now/strip/{task_id}/{run_id}", response_class=HTMLResponse)
     def now1_strip(request: Request, task_id: str, run_id: str):
