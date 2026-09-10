@@ -20,6 +20,15 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .source_control import (
+    AuthenticationFailure,
+    CertificateFailure,
+    ConnectionPolicy,
+    ProviderUnavailable,
+    ProxyFailure,
+    SourceControlError,
+)
+
 API = "https://api.github.com"
 
 # A bot comment matching one of these (case-insensitive substring) is a notice, not a
@@ -36,7 +45,7 @@ DEFAULT_BOT_NOTICE_PATTERNS = [
 FINDING_MARKER_RE = re.compile(r"\[P\d+\]")
 
 
-class GitHubError(Exception):
+class GitHubError(SourceControlError):
     pass
 
 
@@ -275,6 +284,7 @@ class GitHub:
         host: str = "github.com",
         api_base: str = "",
         token_env: str = "",
+        connection_policy: ConnectionPolicy | None = None,
     ):
         self.host = host.lower().rstrip(".")
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", self.host):
@@ -288,6 +298,11 @@ class GitHub:
             or parsed_api.query or parsed_api.fragment or parsed_api.port not in (None, 443)
         ):
             raise ValueError("github api_base must be an HTTPS URL for the configured GitHub host")
+        self.connection_policy = connection_policy or ConnectionPolicy(
+            web_url=f"https://{self.host}", api_url=self.api_base,
+        )
+        if self.connection_policy.authority != parsed_api.hostname:
+            raise ValueError("connection policy authority does not match github api_base")
         # A product that names a token environment has deliberately scoped its
         # credential. Do not fall through to a public/default token if it is missing.
         self.token = token or (os.environ.get(token_env) if token_env else (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")))
@@ -340,11 +355,25 @@ class GitHub:
         if path == "/graphql" and self.host != "github.com":
             # Enterprise GraphQL is a sibling of the REST v3 endpoint.
             base = base.removesuffix("/v3")
-        r = httpx.request(method, base + path, headers=headers, timeout=30, **kw)
+        try:
+            r = httpx.request(
+                method, base + path, headers=headers, timeout=30,
+                **self.connection_policy.request_options(), **kw,
+            )
+        except httpx.ProxyError as exc:
+            raise ProxyFailure("source-control proxy connection failed") from exc
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            message = str(exc).lower()
+            if "certificate" in message or "ssl" in message:
+                raise CertificateFailure("source-control certificate verification failed") from exc
+            raise ProviderUnavailable("source-control provider unavailable") from exc
+        self.connection_policy.validate_response(r)
         if r.status_code >= 400:
             reset = r.headers.get("x-ratelimit-reset", "")
             suffix = f"; rate_limit_reset={reset}" if reset else ""
-            raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}{suffix}")
+            if r.status_code in (401, 403):
+                raise AuthenticationFailure(f"source-control authentication failed ({r.status_code})")
+            raise GitHubError(f"source-control request failed ({r.status_code}){suffix}")
         return r.json() if r.content else None
 
     def _rest_pages(self, path: str) -> list[dict[str, Any]]:
@@ -381,11 +410,41 @@ class GitHub:
                     "-f", "per_page=100",
                 ) or "{}")
             else:
-                payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/check-runs",
-                                     params={"per_page": 100}) or {}
-                status_payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/status",
-                                            params={"per_page": 100}) or {}
-            runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+                errors: list[GitHubError] = []
+                runs = []
+                page = 1
+                while True:
+                    try:
+                        checks_payload = self._rest(
+                            "GET", f"/repos/{slug}/commits/{sha}/check-runs",
+                            params={"per_page": 100, "page": page},
+                        ) or {}
+                    except GitHubError as exc:
+                        if "rate limit" in str(exc).lower():
+                            raise
+                        errors.append(exc)
+                        break
+                    batch = checks_payload.get("check_runs", [])
+                    runs.extend(batch)
+                    if len(batch) < 100:
+                        break
+                    page += 1
+                try:
+                    status_payload = self._rest(
+                        "GET", f"/repos/{slug}/commits/{sha}/status",
+                        params={"per_page": 100},
+                    ) or {}
+                except GitHubError as exc:
+                    errors.append(exc)
+                    status_payload = {}
+                if len(errors) == 2:
+                    state = _check_error_state(errors[0])
+                    self._check_cache[key] = (now + 10.0, state, [])
+                    return state, []
+                if any("rate limit" in str(exc).lower() for exc in errors):
+                    raise errors[0]
+            if self.gh:
+                runs = checks_payload.get("check_runs", []) if isinstance(checks_payload, dict) else []
             rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"),
                        "state": c.get("status")} for c in runs]
             statuses = status_payload.get("statuses", []) if isinstance(status_payload, dict) else []
