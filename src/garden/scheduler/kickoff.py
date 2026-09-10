@@ -40,7 +40,6 @@ class KickoffMixin:
         probe = Task(path=self.store.root, id=f"_kickoff-{product}-{phase.name}", title="",
                      product=product, phase=phase.name)
         self._refuse_if_phase_not_admitted(probe)
-        repo = self.repo_for(probe)
         base = self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_kickoff-{product}-{phase.name}")
         difficulty = str(self.cfg.get("retro.difficulty") or "hard")
