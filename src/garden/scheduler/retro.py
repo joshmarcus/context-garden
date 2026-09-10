@@ -229,6 +229,14 @@ class RetroMixin:
                             entry.pop("preparation_pid", None)
                             self.state.save()
                             continue
+                        current_evidence = str(policy.get("evidence") or "")
+                        if str(entry.get("evidence") or "") != current_evidence:
+                            entry.update(stage="queued", evidence=current_evidence, source="",
+                                         waiting_reason="accepted stabilization evidence changed; re-preparing")
+                            entry.pop("preparation_claim", None)
+                            entry.pop("preparation_pid", None)
+                            self.state.save()
+                            continue
                     if entry.get("automatic") and self._current_phase_source(phase) != source:
                         entry.update(stage="queued", waiting_reason="accepted phase source changed during preparation")
                         entry.pop("preparation_claim", None)
@@ -471,15 +479,80 @@ class RetroMixin:
         if not missing:
             self._dispatch_reconcile(entry)
         else:
-            for n in missing:
-                if n in entry["persona_runs"]:
-                    continue
-                run = self.dispatch_persona_phase(phase, n)
-                entry["persona_runs"][n] = run.run_id
             entry["stage"] = "personas"
-            self.events.emit("retro_started", "", phase=phase.key, personas=",".join(names),
-                             running=",".join(missing), reuse=",".join(n for n in names if n in have))
+            launched = self._dispatch_retro_personas(phase, entry, missing)
+            if launched:
+                self.events.emit("retro_started", "", phase=phase.key, personas=",".join(names),
+                                 running=",".join(launched), reuse=",".join(n for n in names if n in have))
         self.state.save()
+
+    def _phase_persona_probe(self, phase: Phase) -> Task:
+        return Task(path=self.store.root, id=f"_{phase.product}-{phase.name}", title="",
+                    product=phase.product, phase=phase.name)
+
+    def _reconcile_phase_persona_run(self, phase: Phase, entry: dict[str, Any], name: str) -> bool:
+        """Reconnect a persisted role reservation to the durable run/aux records.
+
+        The retro request is saved before launch. If the controller exits after the run is
+        created, the same run id is adopted here instead of starting a second model job.
+        """
+        run_id = str((entry.get("persona_runs") or {}).get(name) or "")
+        if not run_id:
+            return False
+        probe = self._phase_persona_probe(phase)
+        run = next((candidate for candidate in self.runs.runs_for(probe.id)
+                    if candidate.run_id == run_id), None)
+        if run is None:
+            return False
+        if not any(aux.get("run_id") == run_id for aux in self._aux_list()):
+            self._aux_list().append({
+                "run_id": run_id, "task": probe.id, "kind": "persona", "id": probe.id,
+                "product": phase.product, "phase": phase.name, "persona": name,
+                "target": "phase", "file_tasks": False, "min_severity": "low",
+            })
+            self.state.save()
+        return True
+
+    def _dispatch_retro_personas(self, phase: Phase, entry: dict[str, Any], names: list[str]) -> list[str]:
+        """Fill currently admitted review slots, durably reserving each role before launch."""
+        launched: list[str] = []
+        probe = self._phase_persona_probe(phase)
+        for name in names:
+            if self._reconcile_phase_persona_run(phase, entry, name):
+                continue
+            if self.review_slots_free_for(probe) <= 0:
+                entry["waiting_reason"] = (
+                    f"waiting for review capacity ({len(self.review_runs_active())}/"
+                    f"{self.review_parallel_limit()} running)"
+                )
+                break
+            runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
+            if runner_name == "local" and self.local_slots_free(probe.id) <= 0:
+                entry["waiting_reason"] = "waiting for local execution capacity"
+                break
+            run_id = f"retro-persona-{uuid.uuid4().hex}"
+            entry.setdefault("persona_runs", {})[name] = run_id
+            entry.setdefault("persona_launch_claims", {})[name] = {
+                "run_id": run_id, "claimed_at": now_iso(),
+            }
+            self.state.save()
+            try:
+                run = self.dispatch_persona_phase(phase, name, run_id=run_id)
+            except Exception as exc:  # launch races are durable waiting state, not a lost retro
+                # The durable role remains reserved. A later tick either adopts the run
+                # record created by the failed launch or retries the same run identity.
+                if not self._reconcile_phase_persona_run(phase, entry, name):
+                    entry["persona_runs"].pop(name, None)
+                    entry.get("persona_launch_claims", {}).pop(name, None)
+                entry["waiting_reason"] = f"persona `{name}` launch deferred: {exc}"
+                self.state.save()
+                break
+            entry["persona_runs"][name] = run.run_id
+            entry.get("persona_launch_claims", {}).pop(name, None)
+            entry.pop("waiting_reason", None)
+            self.state.save()
+            launched.append(name)
+        return launched
 
     def _record_retro_persona_failure(self, run: Run, name: str, detail: str) -> bool:
         """Attach a failed phase-persona run to its owning retro request, if any."""
@@ -567,7 +640,7 @@ class RetroMixin:
             phase = self.store.phase(entry["product"], entry["phase_name"])
             have = self._reports_for_entry(phase, entry)
             pending: dict[str, Any] = {"done": len(have), "total": len(entry["personas"])}
-            if entry.get("waiting_reason"):
+            if len(have) < len(entry["personas"]) and entry.get("waiting_reason"):
                 pending["reason"] = str(entry["waiting_reason"])
             return pending
         return None
@@ -583,6 +656,8 @@ class RetroMixin:
                     phase = self.store.phase(entry["product"], entry["phase_name"])
                     have = self._reports_for_entry(phase, entry)
                     if len(have) < len(entry["personas"]):
+                        missing = [name for name in entry["personas"] if name not in have]
+                        self._dispatch_retro_personas(phase, entry, missing)
                         continue
                     admission_probe = Task(
                         path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
@@ -596,6 +671,7 @@ class RetroMixin:
                             )
                         continue
                     entry.pop("reconcile_phase_wait", None)
+                    entry.pop("waiting_reason", None)
                     probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                                 product=entry["self_product"], phase="")
                     harness_name = self.resolved_harness_name(probe, str(self.cfg.get("review.harness") or ""))

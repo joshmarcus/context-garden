@@ -659,8 +659,9 @@ class Scheduler(
         tasks = self.store.tasks()
         project_active = sum(
             1 for run in self.review_runs_active()
-            if (active_task := tasks.get(run.task_id)) is not None
-            and active_task.product == task.product
+            if ((active_task := tasks.get(run.task_id)) is not None
+                and active_task.product == task.product)
+            or (active_task is None and run.env_snapshot.get("product") == task.product)
         )
         return max(0, min(self.review_slots_free(),
                           self.review_parallel_limit_for(task) - project_active))
