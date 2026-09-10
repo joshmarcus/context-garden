@@ -37,23 +37,6 @@ from .resources import ResourcePressureError
 
 
 class ReviewMixin:
-    def _review_ci_ready(self, task: Task) -> bool:
-        """Required exact-head validation must land before an automated code review."""
-        policy = self.cfg.product_ci_policy(task.product)
-        provider = str(policy.get("status_provider") or "github")
-        required = bool(policy.get("required"))
-        if not required:
-            return True
-        st = self.state.get(task.id)
-        status = st.get("ci_status") or {}
-        head = str(st.get("head_sha") or "")
-        if provider == "worker_check":
-            from ..ci_status import worker_check_status
-            status = worker_check_status(self.cfg.garden_dir, task.id, head,
-                                         dict(policy.get("worker_check", {}) or {})).to_dict()
-            st["ci_status"] = status
-        return bool(status.get("green") and status.get("queried_sha") == head)
-
     # ---- automated review --------------------------------------------------
     def _review_round_pending(self, st: dict[str, Any], product: str | None = None) -> bool:
         """True when `_maybe_review` will still dispatch (or queue) an automated review round
@@ -201,9 +184,6 @@ class ReviewMixin:
             if item["kind"] == "review" and any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
                 deferred.append(item)
                 continue
-            if item["kind"] == "review" and not self._review_ci_ready(task):
-                deferred.append(item)
-                continue
             if self.review_slots_free_for(task) <= 0:
                 deferred.append(item)
                 continue
@@ -334,8 +314,6 @@ class ReviewMixin:
         harness_reason = next((reason for reason in item_reasons if reason[0] == "harness"), None)
         if harness_reason is not None:
             return harness_reason
-        if any(item.get("kind") == "review" for item in pending) and not self._review_ci_ready(task):
-            return "ci", "waits for required exact-head CI evidence"
         predecessor = self._queued_review_predecessor(task)
         if predecessor is not None:
             return "queue", (f"queued behind {predecessor.id} (priority {predecessor.priority}; "
@@ -417,8 +395,6 @@ class ReviewMixin:
         for item in st.get("pending_reviews") or []:
             if item.get("kind") == "review":
                 if any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
-                    continue
-                if not self._review_ci_ready(task):
                     continue
             if self._review_item_wait_reason(task, item) is None:
                 return True
