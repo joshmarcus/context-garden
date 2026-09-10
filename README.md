@@ -29,6 +29,14 @@ The scheduler itself uses **no model tokens**: it polls, orders tasks, collects 
 
 ![Now showing parallel agent runs, progress excerpts, review work, and the last 24 hours of activity in the real development garden](docs/screenshots/now-light.png)
 
+### Handle the decisions that need you
+
+The **Inbox** brings worker questions, draft approvals, and PR triage together. Answer a question to resume the work, approve the next tasks, or send a draft PR back with feedback.
+
+![Example Inbox with a worker question, an answer field, and draft tasks to approve](docs/screenshots/inbox-light.png)
+
+*This small example garden shows a worker asking about export behavior and two tasks awaiting approval.*
+
 ### Shape the plan across phases
 
 The **Board** backlog puts upcoming work in phase order, with controls to change priority and move tasks between phases. Switch to columns for state or to the list for a compact view of tasks and PRs.
@@ -62,18 +70,16 @@ The per-run comparison separates work, revision, review, and other activities by
 
 ### Keep the context and decisions within reach
 
-The **Trellis** makes dependencies visible. Task pages keep the brief, acceptance criteria, worker questions, and recorded usage together. The **Inbox** gathers the decisions that need you. Phase pages connect the work to goals and specs; closed phases remain available in the **Herbarium**.
+The **Trellis** makes dependencies visible. Task pages keep the brief, acceptance criteria, worker questions, and recorded usage together. Phase pages connect the work to goals and specs; closed phases remain available in the **Herbarium**.
 
 <details>
-<summary>Explore the Trellis, task page, Inbox, and phase page</summary>
+<summary>Explore the Trellis, task page, and phase page</summary>
 
-These four captures use a small fictional Fieldnotes project to make the individual features easy to read.
+These three captures use the same fictional Fieldnotes project as the Inbox above to make the individual features easy to read.
 
 ![Trellis showing dependencies across an example project's tasks](docs/screenshots/trellis-light.png)
 
 ![Dark task page with a worker question, acceptance criteria, and recorded usage](docs/screenshots/task-dark.png)
-
-![Example Inbox with a worker question and draft tasks to approve](docs/screenshots/inbox-light.png)
 
 ![Example phase page with progress, task status, and its specification](docs/screenshots/phase-light.png)
 

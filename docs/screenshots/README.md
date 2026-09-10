@@ -20,7 +20,7 @@ The script only reads pages; it never submits a garden action. The selected Boar
 
 ## Small example garden
 
-The Inbox, Trellis, dark task, and phase images in the expandable section use a fictional Fieldnotes project. They show the app at source revision `6851d128`, captured on 2026-09-09. Tasks, run results, merge history, and $1.01 of recorded spend are sample data.
+The visible Inbox image and the Trellis, dark task, and phase images in the expandable section use a fictional Fieldnotes project. They show the app at source revision `6851d128`, captured on 2026-09-09. Tasks, run results, merge history, and $1.01 of recorded spend are sample data.
 
 The fixture uses a temporary garden, a local bare Git remote, and an in-memory GitHub adapter. It serves with the scheduler loop off and automatic dispatch disabled. It does not invoke a model. Stop the server with Ctrl+C to remove the temporary garden.
 
