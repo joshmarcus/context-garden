@@ -107,7 +107,7 @@ def test_scripted_client_uses_remaining_flow_budget_for_each_request(monkeypatch
     assert observed == [26.0]
 
 
-def test_scripted_client_reports_request_and_flow_deadlines_separately(monkeypatch):
+def test_scripted_client_reports_flow_expiry_during_request(monkeypatch):
     class FakeHTTPClient:
         def __init__(self, **kwargs):
             pass
@@ -122,7 +122,7 @@ def test_scripted_client_reports_request_and_flow_deadlines_separately(monkeypat
     client = Client("http://example.test", timeout=30)
     try:
         client.begin_flow()
-        with pytest.raises(FlowFailed, match="request deadline expired"):
+        with pytest.raises(FlowFailed, match="flow deadline expired during request"):
             client.get("/")
     finally:
         client.close()

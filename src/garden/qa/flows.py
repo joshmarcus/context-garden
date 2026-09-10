@@ -50,7 +50,7 @@ class Client:
         try:
             return self.http.request(method, path, timeout=self._remaining(), **kwargs)
         except httpx.TimeoutException as e:
-            raise FlowFailed(f"request deadline expired before the flow deadline: {e}") from e
+            raise FlowFailed(f"flow deadline expired during request: {e}") from e
 
     def _record(self, method: str, path: str, status: int) -> None:
         self.events.append({"at": time.time(), "method": method, "url": str(self.http.base_url.join(path)),
