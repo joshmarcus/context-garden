@@ -45,8 +45,10 @@ DEFAULT_BOT_NOTICE_PATTERNS = [
 FINDING_MARKER_RE = re.compile(r"\[P\d+\]")
 
 
-class GitHubError(SourceControlError):
-    pass
+# Compatibility name for callers and adapters written against the original GitHub-only
+# boundary. Typed provider failures all derive from this same neutral base, so existing
+# scheduler catches retain their fail-closed behavior.
+GitHubError = SourceControlError
 
 
 @dataclass
