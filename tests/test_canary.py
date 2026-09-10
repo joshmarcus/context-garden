@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from garden import canary
+from garden import canary, qa
 from garden import runner as runner_registry
 from garden.cli import app
 from garden.runner.local import LocalRunner
@@ -38,26 +38,65 @@ def test_scenarios_pass_on_a_good_build(tmp_path):
     assert all(r["ok"] for r in rows), rows
 
 
-def test_self_check_passes_on_the_current_build(tmp_path):
+def _passing_qa_report(out):
+    return qa.QAReport(out=out, result={}, findings=[], flows=[
+        {"name": flow.name, "ok": True, "page": flow.page, "note": ""}
+        for flow in qa.FLOWS
+    ])
+
+
+def test_self_check_composes_injected_results(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_qa(out, *, scripted, log):
+        calls.append(("qa", out, scripted))
+        return _passing_qa_report(out)
+
+    scenario_rows = [
+        {"name": "stacked child survives the parent's merge", "ok": True, "detail": "retargeted"},
+        {"name": "merge queue merges through a pending rollup", "ok": True, "detail": "settled"},
+    ]
+
+    def fake_scenarios(out, log):
+        calls.append(("scenarios", out))
+        return scenario_rows
+
+    monkeypatch.setattr(qa, "run_qa", fake_qa)
+    monkeypatch.setattr(canary, "run_scenarios", fake_scenarios)
+
     r = run(tmp_path, "canary", "--skip-install", "--out", str(tmp_path / "canary"))
     assert r.exit_code == 0, r.output
     assert "every check passed" in r.output
     assert "scripted QA flows" in r.output
     assert "stacked child survives" in r.output and "merge queue merges" in r.output
+    assert [call[0] for call in calls] == ["qa", "scenarios"]
+    assert calls[0][2] is True
 
 
-def test_exits_non_zero_when_a_scenario_fails(tmp_path, monkeypatch):
-    """A regression in the build must make the canary fail. Simulate one by having a scenario
-    report a failure (a real broken build fails the same way: e.g. the child is orphaned)."""
-    def broken_stacked(root, log):
-        return {"name": "stacked child survives the parent's merge", "ok": False,
-                "detail": "the child PR is closed after the parent merged (orphaned by the base deletion)"}
+@pytest.mark.parametrize(
+    "scenario_rows, diagnostic",
+    [
+        (
+            [{"name": "stacked child survives the parent's merge", "ok": False,
+              "detail": "the child PR was orphaned"}],
+            "the child PR was orphaned",
+        ),
+        (
+            [{"name": "stacked child survives the parent's merge"}],
+            "FAIL stacked child survives",
+        ),
+    ],
+    ids=["scenario-failure", "malformed-scenario-result"],
+)
+def test_exits_non_zero_for_injected_scenario_result(tmp_path, monkeypatch, scenario_rows, diagnostic):
+    """Injected orchestration results retain canary failure diagnostics and exit semantics."""
+    monkeypatch.setattr(qa, "run_qa", lambda out, *, scripted, log: _passing_qa_report(out))
+    monkeypatch.setattr(canary, "run_scenarios", lambda out, log: scenario_rows)
 
-    monkeypatch.setattr(canary, "_scenario_stacked", broken_stacked)
     r = run(tmp_path, "canary", "--skip-install", "--out", str(tmp_path / "canary"))
     assert r.exit_code == 1, r.output
     assert "canary: FAILED" in r.output
-    assert "FAIL stacked child survives" in r.output
+    assert diagnostic in r.output
 
 
 def test_run_canary_reports_an_install_failure(tmp_path, monkeypatch):
