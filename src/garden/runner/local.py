@@ -31,9 +31,15 @@ class LocalRunner(Runner):
         assert self.harness is not None
         deny = list(run.fence_paths or [])
         if run.mode == "resume" and run.session_id:
-            cmd = self.harness.resume_command(run.session_id, run.model, final_path, deny_paths=deny, worktree=worktree)
+            cmd = self.harness.resume_command(
+                run.session_id, run.model, final_path, run.difficulty,
+                deny_paths=deny, worktree=worktree,
+            )
         else:
-            cmd = self.harness.command(run.model, final_path, deny_paths=deny, worktree=worktree)
+            cmd = self.harness.command(
+                run.model, final_path, run.difficulty,
+                deny_paths=deny, worktree=worktree,
+            )
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
             cmd = [resolved] + cmd[1:]

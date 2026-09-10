@@ -255,10 +255,12 @@ class Harness:
             cmd += [str(a) for a in (self.cfg.get("extra_args") or [])]
             cmd.append("-")  # prompt from stdin
             if self.name == "openrouter":
+                max_turns = self.max_turns_for(difficulty or "medium")
                 cmd = [
                     sys.executable, "-m", "garden.openrouter_adapter",
                     "--base-url", base_url,
                     "--api-key-env", self.api_key_env,
+                    "--max-turns", str(max_turns),
                     "--", *cmd,
                 ]
             return cmd

@@ -89,9 +89,41 @@ class UsageTotals:
                 self.values[key] = self.values.get(key, 0) + value
 
 
-def _handler(upstream: str, api_key: str, totals: UsageTotals) -> type[BaseHTTPRequestHandler]:
+class TurnLimit:
+    """Reserve at most ``maximum`` provider Responses calls for one adapter run."""
+
+    def __init__(self, maximum: int) -> None:
+        self.maximum = maximum
+        self.count = 0
+        self.exceeded = threading.Event()
+        self._lock = threading.Lock()
+
+    def reserve(self) -> bool:
+        with self._lock:
+            if self.maximum > 0 and self.count >= self.maximum:
+                self.exceeded.set()
+                return False
+            self.count += 1
+            return True
+
+
+def _handler(upstream: str, api_key: str, totals: UsageTotals,
+             turns: TurnLimit) -> type[BaseHTTPRequestHandler]:
     class ProxyHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
+            if self.path.rstrip("/").endswith("/responses") and not turns.reserve():
+                body = json.dumps({
+                    "error": {
+                        "message": f"OpenRouter run exceeded max_turns={turns.maximum}",
+                        "type": "garden_max_turns",
+                    }
+                }).encode()
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             length = int(self.headers.get("Content-Length", "0"))
             headers = {
                 key: value for key, value in self.headers.items()
@@ -125,6 +157,7 @@ def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key-env", required=True)
+    parser.add_argument("--max-turns", type=int, default=0)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -132,7 +165,10 @@ def run(argv: list[str] | None = None) -> int:
     if not api_key:
         parser.error(f"{args.api_key_env} is not set")
     totals = UsageTotals()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(args.base_url, api_key, totals))
+    turns = TurnLimit(max(args.max_turns, 0))
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), _handler(args.base_url, api_key, totals, turns)
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     local_url = f"http://127.0.0.1:{server.server_port}"
@@ -143,14 +179,22 @@ def run(argv: list[str] | None = None) -> int:
     ]
     try:
         child_env = {**os.environ, args.api_key_env: "garden-local-openrouter-proxy"}
-        completed = subprocess.run(command, stdin=sys.stdin, env=child_env, check=False)
+        child = subprocess.Popen(command, stdin=sys.stdin, env=child_env)
+        while child.poll() is None:
+            if turns.exceeded.wait(0.05):
+                child.terminate()
+                break
+        return_code = child.wait()
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
+    if turns.exceeded.is_set():
+        print(f"garden_max_turns: OpenRouter run exceeded max_turns={turns.maximum}",
+              file=sys.stderr, flush=True)
     if totals.values:
         print(json.dumps({"type": "turn.completed", "usage": totals.values}), flush=True)
-    return completed.returncode
+    return return_code or (1 if turns.exceeded.is_set() else 0)
 
 
 if __name__ == "__main__":

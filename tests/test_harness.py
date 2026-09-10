@@ -98,6 +98,51 @@ def test_fake_openrouter_smoke(tmp_path):
     }
 
 
+def test_openrouter_adapter_stops_codex_when_turn_cap_is_exceeded(tmp_path):
+    fake_codex = Path(__file__).with_name("fake_openrouter_codex.py")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    harness = Harness("openrouter", {
+        "bin": str(fake_codex),
+        "base_url": f"http://127.0.0.1:{server.server_port}/api/v1",
+        "max_turns": {"easy": 1, "medium": 3},
+    })
+    argv = harness.command("openrouter/openai/test", difficulty="easy")
+    assert argv[argv.index("--max-turns") + 1] == "1"
+    resumed = harness.resume_command("thread-1", "openrouter/openai/test", difficulty="easy")
+    assert resumed[resumed.index("--max-turns") + 1] == "1"
+
+    credential_read, credential_write = os.pipe()
+    os.write(credential_write, b"offline-test-key")
+    os.close(credential_write)
+    env = {
+        **os.environ,
+        "GARDEN_HARNESS_API_KEY_FD": str(credential_read),
+        "GARDEN_HARNESS_API_KEY_NAME": "OPENROUTER_API_KEY",
+        "FAKE_OPENROUTER_REQUESTS": "2",
+    }
+    env.pop("OPENROUTER_API_KEY", None)
+    try:
+        completed = subprocess.run(
+            argv, input="brief", capture_output=True, text=True, env=env,
+            pass_fds=(credential_read,), cwd=tmp_path, check=False,
+        )
+    finally:
+        os.close(credential_read)
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    assert completed.returncode != 0
+    assert "garden_max_turns" in completed.stderr
+    assert json.loads(completed.stdout.splitlines()[-1]) == {
+        "type": "turn.completed",
+        "usage": {"input_tokens": 120, "output_tokens": 30,
+                  "cached_input_tokens": 20, "cost": 0.0042},
+    }
+
+
 def test_remote_credential_stream_does_not_write_key_to_script(tmp_path, monkeypatch, capsys):
     script = tmp_path / "remote.sh"
     marker = "__GARDEN_TEST_KEY__"

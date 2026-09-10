@@ -36,12 +36,14 @@ if any(b"offline-test-key" in environment for environment in ancestor_environmen
     raise SystemExit("provider key leaked through a Codex ancestor environment")
 base_url = config(args, "model_providers.openrouter.base_url")
 model = args[args.index("-m") + 1]
-request = urllib.request.Request(f"{base_url}/responses",
-    data=json.dumps({"model": model, "input": sys.stdin.read()}).encode(),
-    headers={"Authorization": "Bearer not-the-provider-key", "Content-Type": "application/json"})
-with urllib.request.urlopen(request) as response:
-    if b"response.completed" not in response.read():
-        raise SystemExit("provider did not return a Responses stream")
+brief = sys.stdin.read()
+for _ in range(int(os.environ.get("FAKE_OPENROUTER_REQUESTS", "1"))):
+    request = urllib.request.Request(f"{base_url}/responses",
+        data=json.dumps({"model": model, "input": brief}).encode(),
+        headers={"Authorization": "Bearer not-the-provider-key", "Content-Type": "application/json"})
+    with urllib.request.urlopen(request) as response:
+        if b"response.completed" not in response.read():
+            raise SystemExit("provider did not return a Responses stream")
 final = 'GARDEN_RESULT: {"status":"done","summary":"adapter completed"}'
 print(json.dumps({"type": "thread.started", "thread_id": "fake-codex"}))
 print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": final}}))
