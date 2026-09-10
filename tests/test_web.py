@@ -3638,6 +3638,15 @@ def test_web_route_policy_fails_closed_for_additions(garden, monkeypatch):
         create_app(Store(garden), watch=False)
 
 
+def test_worker_diagnostics_route_is_operator_read(garden):
+    from garden.web.access import OPERATOR_READ, route_access
+
+    app = create_app(Store(garden), watch=False)
+
+    assert app is not None
+    assert route_access("GET", "/api/worker-diagnostics") == OPERATOR_READ
+
+
 def test_loopback_listener_keeps_explicit_local_only_mode(garden):
     c = TestClient(create_app(Store(garden), watch=False, host="127.0.0.1"))
     assert c.get("/api/tasks").status_code == 200
