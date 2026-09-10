@@ -207,7 +207,7 @@ def test_sweep_retains_candidate_claimed_by_unrelated_pr_after_inventory(sched, 
 
     pr = sched.github.create_pr("example/demo", task.branch, "main", "Claim", "body")
     pr.author = "unrelated-collaborator"
-    monkeypatch.setattr(sched, "branch_cleanup_inventory", lambda: inventory)
+    monkeypatch.setattr(sched, "branch_cleanup_inventory", lambda **_kwargs: inventory)
 
     result = sched.sweep_worker_branches(type("Report", (), {"transitions": []})(), limit=20)
 
@@ -238,3 +238,55 @@ def test_partial_failures_are_reported_without_hiding_success(sched, monkeypatch
     assert result["outcome"] == "partial"
     assert result["removed"] == ["remote"]
     assert result["errors"] == ["local: locked"]
+
+
+def test_large_history_uses_one_remote_snapshot_per_repository_per_tick(sched, monkeypatch):
+    task = sched.store.tasks()["DM-001"]
+    for number in range(600):
+        _record_branch(sched, task.id, f"garden/historical-{number:03d}")
+    calls = 0
+    original = gitops.git
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        if args[:2] == ("ls-remote", "--heads"):
+            calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "git", counted)
+    with gitops.tick_read_cache():
+        first = sched.branch_cleanup_inventory()
+        second = sched.branch_cleanup_inventory()
+
+    assert len(first) == len(second) == 600
+    assert calls == 1
+
+
+def test_failed_remote_snapshot_preserves_every_historical_branch(sched, monkeypatch):
+    task = sched.store.tasks()["DM-001"]
+    for number in range(20):
+        _record_branch(sched, task.id, f"garden/historical-{number:03d}")
+    monkeypatch.setattr(
+        gitops, "remote_branch_heads",
+        lambda *args, **kwargs: (_ for _ in ()).throw(gitops.GitError("timed out")),
+    )
+
+    rows = sched.branch_cleanup_inventory()
+
+    assert len(rows) == 20
+    assert all(row.classification == "uncertain" for row in rows)
+    assert all("timed out" in row.reason for row in rows)
+
+
+def test_zero_cleanup_limits_skip_inventory_before_automatic_work(sched, monkeypatch):
+    sched.cfg.data["branches"] = {"cleanup_limit": 0}
+    sched.cfg.data["storage_cleanup"] = {"limit": 0}
+    monkeypatch.setattr(
+        sched, "branch_cleanup_inventory",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("inventory must not run")),
+    )
+    report = type("Report", (), {"transitions": []})()
+
+    assert sched.sweep_worker_branches(report) == []
+    assert sched.sweep_storage(report)["status"] == "disabled"
+    sched._sweep_terminal_worktrees(report)

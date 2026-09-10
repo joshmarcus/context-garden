@@ -215,6 +215,12 @@ DEFAULTS: dict[str, Any] = {
         "audit_keep": 20,           # bounded durable sweep receipts
         "inventory_limit": 2000,    # maximum owned paths classified by one pass
     },
+    "branches": {
+        "remote": "origin",
+        "protected": [],
+        "cleanup_limit": 20,
+        "remote_timeout_seconds": 5,
+    },
     "doctor": {"min_free_mb": 2048},
     "name": "garden",
     "principles_digest": "principles/00-index.md",
@@ -941,6 +947,10 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
     cleanup_limit = branches.get("cleanup_limit", 20)
     if isinstance(cleanup_limit, bool) or not isinstance(cleanup_limit, int) or cleanup_limit < 0:
         raise ValueError("branches.cleanup_limit must be a non-negative integer")
+    remote_timeout = branches.get("remote_timeout_seconds", 5)
+    if (isinstance(remote_timeout, bool) or not isinstance(remote_timeout, (int, float))
+            or remote_timeout <= 0):
+        raise ValueError("branches.remote_timeout_seconds must be a positive number")
     storage = data.get("storage_cleanup") or {}
     if not isinstance(storage, dict):
         raise ValueError("storage_cleanup must be a mapping")

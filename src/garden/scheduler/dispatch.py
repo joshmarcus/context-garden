@@ -25,6 +25,8 @@ MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 class DispatchMixin:
     def _sweep_terminal_worktrees(self, rep: TickReport) -> None:
         """Reconcile terminal worktrees and their caches through the guarded storage sweep."""
+        if int(self.cfg.get("storage_cleanup.limit", 20) or 0) <= 0:
+            return
         self.sweep_storage(rep, measure=False)
 
     # ---- dispatch ----------------------------------------------------------

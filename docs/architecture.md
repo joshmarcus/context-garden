@@ -287,6 +287,10 @@ guest filesystem free space and, under WSL when PowerShell is available, separat
 Windows system-volume free space; Garden never resizes or compacts either disk.
 Inventory classification is capped by `storage_cleanup.inventory_limit`; a truncated report
 says so explicitly so the operator can increase the bound for a larger owned root.
+Set both `storage_cleanup.limit` and `branches.cleanup_limit` to zero to disable automatic
+cleanup during recovery; the ordinary tick checks these switches before building inventory.
+Branch inventory observes all heads in one request per repository, bounded by
+`branches.remote_timeout_seconds`, and conservatively retains branches when that snapshot fails.
 
 Fence manifests protect live config, state and concurrently active run evidence. They are
 stored once under `.garden/fence-guard-manifests/` and referenced by digest from state while
