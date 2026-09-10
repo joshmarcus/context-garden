@@ -324,6 +324,24 @@ def test_archive_health_reports_missing_or_corrupt_index(tmp_path: Path):
         rs.totals()
 
 
+def test_legacy_archive_ledger_remains_readable(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "legacy", 3.25)
+    row = run.__dict__.copy()
+    row.pop("_loaded_fields")
+    (rs.archive_dir / run.task_id).mkdir(parents=True)
+    run.path.rename(rs.archive_dir / run.task_id / run.run_id)
+    (rs.archive_dir / "index.json").write_text(json.dumps({"version": 1, "runs": [row]}))
+
+    fresh = RunStore(tmp_path / "fresh")
+    fresh.dir = rs.dir
+    fresh.archive_dir = rs.archive_dir
+    fresh._index = type(rs._index)()
+
+    assert fresh.totals()["cost_usd"] == 3.25
+    assert fresh.all_runs()[0].run_id == run.run_id
+
+
 def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):
     rs = RunStore(tmp_path)
     bad = rs.archive_dir / "CG-001" / "bad" / "run.json"
@@ -355,9 +373,48 @@ def test_archived_cost_backfill_updates_manifest_and_fresh_store(tmp_path: Path)
             return Harness()
 
     assert rs.backfill_codex_costs(Config()) == 1
-    manifest = json.loads((rs.archive_dir / "index.json").read_text())
+    manifest = json.loads((rs.archive_dir / "CG-001" / "index.json").read_text())
     assert manifest["runs"][0]["cost_usd"] == 4.5
     assert RunStore(tmp_path).totals()["cost_usd"] == 4.5
+
+
+def test_external_archive_update_refreshes_only_changed_archive_bucket(tmp_path, monkeypatch):
+    rs = RunStore(tmp_path)
+    first = _finished(rs, "CG-001", "first", 1.0)
+    second = _finished(rs, "CG-002", "second", 2.0)
+    first.runner = second.runner = "remote"
+    first.claim_request_id = "first-request"
+    second.claim_request_id = "second-request"
+    first.save()
+    second.save()
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 2
+    assert rs.claim_request("second-request") is not None
+
+    subprocess.run([sys.executable, "-c", """
+import sys
+from pathlib import Path
+from garden.runs import RunStore
+store = RunStore(Path(sys.argv[1]))
+run = store.runs_for("CG-001")[0]
+run.cost_usd = 3.0
+store.update_archived(run)
+""", str(tmp_path)], check=True, timeout=10)
+
+    read_tasks: list[str] = []
+    original_read = rs._archived_task_runs
+
+    def bounded_read(task: str):
+        read_tasks.append(task)
+        assert task != "CG-002", "refreshed unrelated archived bucket"
+        return original_read(task)
+
+    monkeypatch.setattr(rs, "_archived_task_runs", bounded_read)
+    monkeypatch.setattr(rs, "MAX_INDEX_AGE_SECONDS", -1)
+    replay = rs.claim_request("second-request")
+
+    assert replay is not None and replay.run_id == second.run_id
+    assert read_tasks == ["CG-001"]
+    assert rs.totals()["cost_usd"] == 5.0
 
 
 @pytest.mark.parametrize("expire", [False, True])
