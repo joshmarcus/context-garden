@@ -654,7 +654,6 @@ def main() -> int:
     # that deliberately create another session; other POSIX kernels provide no equivalent.
     child = subprocess.Popen(
         ["sh", "-c", script],
-        env=dict(os.environ),
         pass_fds=_preserved_child_fds(),
         start_new_session=True,
         env=child_env,
