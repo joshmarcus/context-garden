@@ -886,7 +886,7 @@ class ReviewMixin:
                             reference_files=reference_files)
         from ..reference_snapshot import write_reference_files
 
-        write_reference_files(run.path, reference_files)
+        write_reference_files(run.path, reference_files, self.cfg.data)
         ci_status = self.state.get(task.id).get("ci_status") or {}
         if ci_status:
             text += ("\n\n## Exact-head CI evidence\n\nThe controller admitted this review with "

@@ -234,8 +234,9 @@ class TrialsMixin:
                 return True  # the contenders are done; the comparison waits for the harness
             trial.pop("compare_paused", None)
             diffs = {c["label"]: gitops.diff(Path(c["worktree"]), base) for c in with_pr}
+            histories = {c["label"]: gitops.log_summary(Path(c["worktree"]), base) for c in with_pr}
             references: dict[str, str] = {}
-            text = compare_brief(self.store, task, with_pr, diffs, base,
+            text = compare_brief(self.store, task, with_pr, diffs, histories, base,
                                  int(self.cfg.get("review.max_diff_chars", 60000)), references)
             trial["status"] = "comparing"
             self.dispatch_aux("compare", task, text, Path(with_pr[0]["worktree"]), {"trial_id": trial["id"]},

@@ -55,7 +55,7 @@ class AuxMixin:
         if reference_files:
             from ..reference_snapshot import write_reference_files
 
-            write_reference_files(run.path, reference_files)
+            write_reference_files(run.path, reference_files, self.cfg.data)
         canonical = self.prepare_canonical_run(probe, run, runner, run.branch, run.base)
         if canonical is not None:
             worktree = canonical

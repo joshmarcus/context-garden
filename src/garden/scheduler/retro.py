@@ -242,7 +242,7 @@ class RetroMixin:
                                reports, task_rows, merged, entry["next_phase"], references)
         from ..reference_snapshot import write_reference_files
 
-        write_reference_files(run.path, references)
+        write_reference_files(run.path, references, self.cfg.data)
         run.worktree = str(wt)
         run.brief_tokens = max(1, len(text) // 4)
         run.save()

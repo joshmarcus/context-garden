@@ -6,11 +6,15 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .host_identity import scrub_shared_text
+
 REFERENCE_DIR = "references"
 
 
-def write_reference_files(run_path: Path, files: dict[str, str]) -> Path | None:
-    """Materialize trusted text below a run-owned directory without following escapes."""
+def write_reference_files(
+    run_path: Path, files: dict[str, str], config: dict[str, Any] | None = None,
+) -> Path | None:
+    """Materialize scrubbed text below a run-owned directory without following escapes."""
     if not files:
         return None
     root = run_path / REFERENCE_DIR
@@ -22,7 +26,7 @@ def write_reference_files(run_path: Path, files: dict[str, str]) -> Path | None:
         if not path.is_relative_to(root.resolve()):
             raise ValueError(f"reference path escapes snapshot: {rel}")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        path.write_text(scrub_shared_text(content, config or {}))
         path.chmod(0o444)
     for directory, _, _ in os.walk(root, topdown=False):
         Path(directory).chmod(0o555)

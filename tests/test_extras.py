@@ -274,6 +274,15 @@ def test_trial_end_to_end(sched, fake_github, monkeypatch):
     assert len(fake_github.created) == 2 and all(c["title"].startswith("[trial ") for c in fake_github.created)
     trial = sched.state.get("DM-001")["trial"]
     assert trial["status"] == "comparing" and all(c["status"] == "pr" for c in trial["contenders"])
+    comparison = sched.runs.latest("DM-001")
+    comparison_brief = (comparison.path / "brief.md").read_text()
+    for index, contender in enumerate(trial["contenders"], start=1):
+        source_dir = comparison.path / "references" / "evidence" / "contenders" / f"{index:02d}"
+        assert (source_dir / "diff.patch").read_text()
+        assert (source_dir / "history.txt").read_text()
+        assert (source_dir / "pr-description.md").read_text()
+        assert contender["worktree"] not in comparison_brief
+        assert f"$GARDEN_CONTEXT_DIR/evidence/contenders/{index:02d}/diff.patch" in comparison_brief
     rep = sched.tick()  # comparison reaped -> winner kept, loser closed
     assert "DM-001 -> in_review (trial winner claude:opus)" in rep.transitions
     t = sched.store.task("DM-001")
@@ -570,6 +579,22 @@ def test_phase_persona_runs_are_keyed_by_phase(sched):
     assert first.task_id == "_demo-p1"
     assert second.task_id == "_demo-p2"
     assert first.path.parent != second.path.parent
+
+
+def test_phase_persona_reference_snapshot_scrubs_controller_secrets(sched):
+    from tests.conftest import write
+
+    target = "operator@private-builder.internal"
+    sched.cfg.data["ssh"] = {"hosts": [{"name": "build-a", "host": target}]}
+    goals = sched.store.root / "demo" / "p1" / "goals.md"
+    write(goals, f"# p1\n\nInvestigate {target} with token=phase-secret.\n")
+    sched.store.invalidate()
+
+    run = sched.dispatch_persona_phase(sched.store.phase("demo", "p1"), "security")
+    snapshot = (run.path / "references" / "context" / "phase-goals.md").read_text()
+
+    assert target not in snapshot and "phase-secret" not in snapshot
+    assert "build-a" in snapshot and "token=<redacted>" in snapshot
 
 
 def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkeypatch):
