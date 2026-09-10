@@ -130,9 +130,19 @@ class LocalRunner(Runner):
         # ordinary worktree fence still prevents writes there.
         env["GARDEN_ROOT"] = (str(run.path.parents[3]) if run.mode == "investigation"
                               else no_live_garden_root(run.path))
+        resources = self.config.get("resources", {})
+        reserve = int(resources.get("disk_reserve_bytes", 0) or 0)
+        required = int((run.env_snapshot or {}).get("disk_required_bytes", 0) or 0)
+        backing = str(resources.get("windows_backing_path", "") or "")
         work_dir = self.config.get("work_dir")
         if work_dir:
             temp_dir = run_temp_dir(work_dir, run)
+            try:
+                require_storage(tuple(path for path in (wt, temp_dir) if path is not None),
+                                reserve_bytes=reserve, required_bytes=required,
+                                windows_backing_path=backing, operation="local runtime scratch")
+            except StorageAdmissionError as exc:
+                raise RunnerError(str(exc)) from exc
             temp_dir.mkdir(parents=True, exist_ok=True)
             env["TMPDIR"] = str(temp_dir)
             env["PYTEST_DEBUG_TEMPROOT"] = str(temp_dir)
@@ -145,10 +155,9 @@ class LocalRunner(Runner):
         env["GARDEN_VALIDATION_TIMEOUT_SECONDS"] = str(
             int(self.config.get("checks", {}).get("timeout_seconds", 900) or 900)
         )
-        resources = self.config.get("resources", {})
-        env["GARDEN_DISK_RESERVE_BYTES"] = str(int(resources.get("disk_reserve_bytes", 0) or 0))
-        env["GARDEN_DISK_REQUIRED_BYTES"] = str(int((run.env_snapshot or {}).get("disk_required_bytes", 0) or 0))
-        env["GARDEN_WINDOWS_BACKING_PATH"] = str(resources.get("windows_backing_path", "") or "")
+        env["GARDEN_DISK_RESERVE_BYTES"] = str(reserve)
+        env["GARDEN_DISK_REQUIRED_BYTES"] = str(required)
+        env["GARDEN_WINDOWS_BACKING_PATH"] = backing
         return env
 
     def harness_environment(self, env: dict[str, str]) -> dict[str, str]:
