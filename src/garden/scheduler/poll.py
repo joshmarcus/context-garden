@@ -131,7 +131,12 @@ class PollMixin:
 
                 slug = RepositoryIdentity(route["repository"], route["provider"])
             try:
-                prs = self.github.list_open_prs(slug, self.cfg.product_project_users(product))
+                if route["provider"] == "github":
+                    prs = self.github.list_open_prs(
+                        slug, self.cfg.product_project_users(product),
+                    )
+                else:
+                    prs = self.github.list_open_prs(slug)
                 old_rows = {int(row["number"]): row for row in prior.get("prs", [])}
                 rows = []
                 for pr in prs:
