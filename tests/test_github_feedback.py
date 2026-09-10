@@ -188,6 +188,40 @@ def test_exclude_logins_and_since_still_apply(monkeypatch):
     assert [i["body"] for i in fb.items] == ["new and mine"]
 
 
+def test_incremental_feedback_uses_cursor_queries_and_keeps_equal_timestamps(monkeypatch):
+    gh = GitHub(use_gh=True)
+    calls = []
+
+    def fake_gh(*args, input_=None):
+        calls.append(args)
+        if args[1] == "user":
+            return "josh"
+        if args[:2] == ("api", "graphql"):
+            return json.dumps({"data": {"repository": {"pullRequest": {"reviews": {
+                "pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": [{
+                    "databaseId": 3, "author": {"login": "josh"}, "submittedAt": "2026-09-04T10:00:00Z",
+                    "state": "COMMENTED", "body": "review", "commit": {"oid": "abc"},
+                }],
+            }}}}})
+        if "/comments?" in args[1]:
+            return json.dumps([[{
+                "id": 4 if "/pulls/" in args[1] else 5, "user": {"login": "josh"},
+                "created_at": "2026-09-04T10:00:00Z", "body": "comment",
+            }]])
+        raise AssertionError(args)
+
+    monkeypatch.setattr(gh, "_gh", fake_gh)
+    gh.gh = "/usr/bin/gh"
+    fb = gh.incremental_feedback_since("o/r", 7, "2026-09-04T10:00:00Z")
+
+    assert [item["id"] for item in fb.items] == ["review:3", "line:4", "comment:5"]
+    assert fb.high_water == "2026-09-04T10:00:00Z"
+    feedback_calls = [call for call in calls if call[1] != "user"]
+    assert feedback_calls[0][:2] == ("api", "graphql")
+    assert all("--paginate" in call for call in feedback_calls[1:])
+    assert all("since=2026-09-04T09%3A59%3A59Z" in call[1] for call in feedback_calls[1:])
+
+
 def test_complete_feedback_reads_all_pages_and_keeps_old_unresolved_thread(monkeypatch):
     gh = GitHub(use_gh=False, token="test", trusted_authors=["alice"])
     gh._me = "owner"

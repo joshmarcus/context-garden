@@ -188,6 +188,10 @@ class MemoryGitHub:
     def feedback_since(self, slug: str, number: int, since_iso: str, exclude_logins: set[str] | None = None) -> Feedback:
         return Feedback()
 
+    def incremental_feedback_since(self, slug: str, number: int, since_iso: str,
+                                   exclude_logins: set[str] | None = None) -> Feedback:
+        return Feedback()
+
     def complete_feedback(self, slug: str, number: int) -> dict[str, Any]:
         return {"repository": slug, "pr": number, "fetched_at": now_iso(),
                 "complete": True, "errors": [], "items": []}

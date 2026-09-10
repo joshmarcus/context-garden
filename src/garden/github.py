@@ -15,7 +15,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import httpx
 
@@ -73,6 +73,10 @@ class Feedback:
     # comment by an author the garden does not trust (`reason: untrusted`). Not feedback,
     # but worth a line in the task log so a human can see what was skipped and why.
     ignored: list[dict[str, Any]] = field(default_factory=list)
+    # The newest provider timestamp completely read to produce this response.  It is
+    # deliberately independent of the filtered items: an excluded author must not make
+    # the scheduler reread the same provider range forever.
+    high_water: str = ""
 
     def __bool__(self) -> bool:
         return bool(self.items)
@@ -254,7 +258,10 @@ class GitHubLike(Protocol):
     def create_pr(self, slug: str, head: str, base: str, title: str, body: str,
                   draft: bool = ..., reviewers: list[str] | None = ...) -> PRInfo: ...
     def feedback_since(self, slug: str, number: int, since_iso: str,
-                       exclude_logins: set[str] | None = ...) -> Feedback: ...
+                       exclude_logins: set[str] | None = ..., *,
+                       inclusive: bool = ...) -> Feedback: ...
+    def incremental_feedback_since(self, slug: str, number: int, since_iso: str,
+                                   exclude_logins: set[str] | None = ...) -> Feedback: ...
     def complete_feedback(self, slug: str, number: int) -> dict[str, Any]: ...
     def update_pr(self, slug: str, number: int, title: str = ..., body: str = ..., base: str = ...) -> None: ...
     def mark_ready(self, slug: str, number: int) -> None: ...
@@ -347,12 +354,13 @@ class GitHub:
             raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
         return r.json() if r.content else None
 
-    def _rest_pages(self, path: str) -> list[dict[str, Any]]:
+    def _rest_pages(self, path: str, *, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
         """Collect every page from a REST list endpoint."""
         items: list[dict[str, Any]] = []
         page = 1
         while True:
-            batch = self._rest("GET", path, params={"per_page": 100, "page": page}) or []
+            query = {"per_page": 100, "page": page, **(params or {})}
+            batch = self._rest("GET", path, params=query) or []
             items.extend(batch)
             if len(batch) < 100:
                 return items
@@ -659,7 +667,8 @@ class GitHub:
                 pass
         return self._pr_from_rest(p)
 
-    def feedback_since(self, slug: str, number: int, since_iso: str, exclude_logins: set[str] | None = None) -> Feedback:
+    def feedback_since(self, slug: str, number: int, since_iso: str,
+                       exclude_logins: set[str] | None = None, *, inclusive: bool = False) -> Feedback:
         """Reviews, review (line) comments and issue comments newer than `since_iso`, from
         trusted authors only (see `is_trusted`); the rest is returned as `ignored`."""
         # The garden's own comments are recognised by GARDEN_MARKER, not by login: the person
@@ -671,7 +680,7 @@ class GitHub:
         ignored: list[dict[str, Any]] = []
 
         def newer(created: str) -> bool:
-            return created > since_iso if since_iso else True
+            return created >= since_iso if since_iso and inclusive else (created > since_iso if since_iso else True)
 
         def keep(author: str, created: str, body: str) -> bool:
             if not body.strip() or GARDEN_MARKER in body:
@@ -695,9 +704,9 @@ class GitHub:
             return any(p in low for p in self.bot_notice_patterns)
 
         if self.gh:
-            reviews = json.loads(self._gh("api", f"repos/{slug}/pulls/{number}/reviews", "--paginate") or "[]")
-            comments = json.loads(self._gh("api", f"repos/{slug}/pulls/{number}/comments", "--paginate") or "[]")
-            issue_comments = json.loads(self._gh("api", f"repos/{slug}/issues/{number}/comments", "--paginate") or "[]")
+            reviews = self._gh_pages(f"repos/{slug}/pulls/{number}/reviews")
+            comments = self._gh_pages(f"repos/{slug}/pulls/{number}/comments")
+            issue_comments = self._gh_pages(f"repos/{slug}/issues/{number}/comments")
         else:
             reviews = self._rest_pages(f"/repos/{slug}/pulls/{number}/reviews")
             comments = self._rest_pages(f"/repos/{slug}/pulls/{number}/comments")
@@ -733,7 +742,136 @@ class GitHub:
                     items.append({"id": f"comment:{c.get('id', '')}", "kind": "comment", "author": author, "body": body, "created": c["created_at"]})
         items.sort(key=lambda i: i.get("created", ""))
         ignored.sort(key=lambda i: i.get("created", ""))
-        return Feedback(items=items, ignored=ignored)
+        timestamps = [str(row.get("submitted_at") or row.get("created_at") or "")
+                      for row in [*reviews, *comments, *issue_comments]]
+        return Feedback(items=items, ignored=ignored, high_water=max(timestamps, default=""))
+
+    def incremental_feedback_since(self, slug: str, number: int, since_iso: str,
+                                   exclude_logins: set[str] | None = None) -> Feedback:
+        """Read feedback added at or after a durable high-water timestamp.
+
+        The two comment endpoints provide a ``since`` filter.  Reviews do not, so use
+        GraphQL's backwards pagination and stop once the oldest returned review predates
+        the cursor.  Keeping the cursor timestamp inclusive and letting stable IDs
+        deduplicate it prevents a same-second comment from being lost after a restart.
+        """
+        if not since_iso:
+            return self.feedback_since(slug, number, "", exclude_logins)
+        # GitHub's REST ``since`` is exclusive. Request one second earlier so comments
+        # sharing the cursor timestamp arrive for identity-based deduplication.
+        try:
+            since = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
+            request_since = (since.astimezone(UTC).timestamp() - 1)
+            request_since_iso = datetime.fromtimestamp(request_since, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            # Older test providers sometimes use synthetic timestamps. They still get
+            # the safe complete path rather than a cursor that could skip feedback.
+            return self.feedback_since(slug, number, "", exclude_logins)
+        reviews = self._reviews_since(slug, number, since_iso)
+        query = urlencode({"since": request_since_iso, "per_page": "100"})
+        review_path = f"repos/{slug}/pulls/{number}/comments?{query}"
+        issue_path = f"repos/{slug}/issues/{number}/comments?{query}"
+        if self.gh:
+            comments = self._gh_pages(review_path)
+            issue_comments = self._gh_pages(issue_path)
+        else:
+            comments = self._rest_pages(f"/repos/{slug}/pulls/{number}/comments",
+                                        params={"since": request_since_iso})
+            issue_comments = self._rest_pages(f"/repos/{slug}/issues/{number}/comments",
+                                              params={"since": request_since_iso})
+        return self._feedback_from_rows(reviews, comments, issue_comments, since_iso,
+                                        exclude_logins, inclusive=True)
+
+    def _gh_pages(self, path: str) -> list[dict[str, Any]]:
+        """Read all CLI pages as one JSON document, including a cursor boundary page."""
+        data = json.loads(self._gh("api", path, "--paginate", "--slurp") or "[]")
+        return [row for page in data for row in page] if data and isinstance(data[0], list) else data
+
+    def _reviews_since(self, slug: str, number: int, since_iso: str) -> list[dict[str, Any]]:
+        owner, name = slug.split("/", 1)
+        query = """query($owner:String!,$name:String!,$number:Int!,$before:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(last:100,before:$before){pageInfo{hasPreviousPage startCursor}nodes{databaseId author{login} submittedAt state body commit{oid}}}}}}"""
+        before: str | None = None
+        rows: list[dict[str, Any]] = []
+        while True:
+            if self.gh:
+                args = ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
+                        "-f", f"name={name}", "-F", f"number={number}"]
+                if before:
+                    args += ["-f", f"before={before}"]
+                data = json.loads(self._gh(*args) or "{}")
+            else:
+                data = self._rest("POST", "/graphql", json={"query": query, "variables": {
+                    "owner": owner, "name": name, "number": number, "before": before,
+                }}) or {}
+            if data.get("errors"):
+                raise GitHubError(str(data["errors"])[:300])
+            reviews = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviews") or {}
+            batch = reviews.get("nodes") or []
+            rows.extend({"id": row.get("databaseId"), "user": row.get("author") or {},
+                         "submitted_at": row.get("submittedAt") or "", "state": row.get("state") or "",
+                         "body": row.get("body") or "", "commit_id": (row.get("commit") or {}).get("oid")}
+                        for row in batch)
+            created = [str(row.get("submittedAt") or "") for row in batch]
+            page = reviews.get("pageInfo") or {}
+            if not page.get("hasPreviousPage") or not created or min(created) < since_iso:
+                return rows
+            before = page.get("startCursor")
+            if not before:
+                raise GitHubError("review pagination returned no cursor")
+
+    def _feedback_from_rows(self, reviews: list[dict[str, Any]], comments: list[dict[str, Any]],
+                            issue_comments: list[dict[str, Any]], since_iso: str,
+                            exclude_logins: set[str] | None, *, inclusive: bool) -> Feedback:
+        """Filter provider rows consistently for full and cursor-based fetches."""
+        exclude = set(exclude_logins or set()) | self.bot_logins
+        items: list[dict[str, Any]] = []
+        ignored: list[dict[str, Any]] = []
+
+        def newer(created: str) -> bool:
+            return created >= since_iso if inclusive else created > since_iso
+
+        def accepted(author: str, created: str, body: str) -> bool:
+            return bool(body.strip()) and GARDEN_MARKER not in body and author not in exclude and newer(created)
+
+        def skipped(author: str, created: str, body: str) -> bool:
+            if self.is_trusted(author):
+                return False
+            ignored.append({"author": author, "body": body, "created": created, "reason": "untrusted"})
+            return True
+
+        def notice(author: str, body: str) -> bool:
+            return (author.endswith("[bot]") and not FINDING_MARKER_RE.search(body)
+                    and any(pattern in body.lower() for pattern in self.bot_notice_patterns))
+
+        for row in reviews:
+            author = str((row.get("user") or {}).get("login") or "")
+            created, body, state = str(row.get("submitted_at") or ""), str(row.get("body") or ""), str(row.get("state") or "")
+            changes_requested = state == "CHANGES_REQUESTED" and newer(created) and author not in exclude
+            if changes_requested and not skipped(author, created, body or "(changes requested)"):
+                items.append({"id": f"review:{row.get('id', '')}", "kind": "review", "state": state, "author": author,
+                              "body": body or "(changes requested)", "created": created, "commit_id": row.get("commit_id")})
+            elif accepted(author, created, body) and not skipped(author, created, body):
+                entry = {"id": f"review:{row.get('id', '')}", "kind": "review", "state": state, "author": author,
+                         "body": body, "created": created, "commit_id": row.get("commit_id")}
+                (ignored if notice(author, body) else items).append(
+                    {"author": author, "body": body, "created": created, "reason": "notice"} if notice(author, body) else entry)
+        for row in comments:
+            author, created, body = str((row.get("user") or {}).get("login") or ""), str(row.get("created_at") or ""), str(row.get("body") or "")
+            if accepted(author, created, body) and not skipped(author, created, body):
+                items.append({"id": f"line:{row.get('id', '')}", "kind": "line comment", "author": author, "body": body,
+                              "path": row.get("path"), "line": row.get("line") or row.get("original_line"), "created": created,
+                              "commit_id": row.get("commit_id") or row.get("original_commit_id")})
+        for row in issue_comments:
+            author, created, body = str((row.get("user") or {}).get("login") or ""), str(row.get("created_at") or ""), str(row.get("body") or "")
+            if accepted(author, created, body) and not skipped(author, created, body):
+                entry = {"id": f"comment:{row.get('id', '')}", "kind": "comment", "author": author, "body": body, "created": created}
+                (ignored if notice(author, body) else items).append(
+                    {"author": author, "body": body, "created": created, "reason": "notice"} if notice(author, body) else entry)
+        timestamps = [str(row.get("submitted_at") or row.get("created_at") or "")
+                      for row in [*reviews, *comments, *issue_comments]]
+        return Feedback(items=sorted(items, key=lambda item: item.get("created", "")),
+                        ignored=sorted(ignored, key=lambda item: item.get("created", "")),
+                        high_water=max(timestamps, default=""))
 
     def _all_rest(self, path: str) -> list[dict[str, Any]]:
         """Read every REST page. This is deliberately separate from incremental polling."""
