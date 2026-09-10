@@ -84,6 +84,70 @@ def test_run_save_invalidates_index_and_results_are_isolated(tmp_path: Path):
     assert rs.totals()["cost_usd"] == 2.5
 
 
+def test_claim_request_index_tracks_history_and_refreshes_changed_bucket(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = rs.new_run("CG-001", "remote", run_id="claim-generation")
+    run.claim_request_id = "current-request-identity"
+    run.claim_history = [{"claim_request_id": "prior-request-identity"}]
+    run.save()
+
+    assert rs.claim_request("current-request-identity").run_id == run.run_id
+    assert rs.claim_request("prior-request-identity").run_id == run.run_id
+    assert rs.claim_request("unknown-request-identity") is None
+
+    current = Run.load(run.path)
+    current.claim_history.append({"claim_request_id": "newly-persisted-identity"})
+    current.save()
+
+    refreshed = rs.claim_request("newly-persisted-identity")
+    assert refreshed is not None and refreshed.run_id == run.run_id
+
+
+def test_claim_request_index_preserves_archived_identity_and_oldest_collision(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    oldest = rs.new_run("CG-001", "remote", run_id="oldest-claim")
+    oldest.claim_request_id = "colliding-request-identity"
+    oldest.started_at = "2026-01-01T00:00:00+00:00"
+    oldest.status = "done"
+    oldest.finished_at = "2026-01-01T00:00:00+00:00"
+    oldest.save()
+    newer = rs.new_run("CG-002", "remote", run_id="newer-claim")
+    newer.claim_request_id = oldest.claim_request_id
+    newer.started_at = "2026-01-02T00:00:00+00:00"
+    newer.save()
+
+    assert rs.claim_request(oldest.claim_request_id).run_id == oldest.run_id
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 1
+    replay = RunStore(tmp_path).claim_request(oldest.claim_request_id)
+
+    assert replay is not None and replay.run_id == oldest.run_id
+    assert replay.path.is_relative_to(rs.archive_dir)
+
+
+def test_claim_request_lookup_copies_only_matching_run(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    for number in range(200):
+        _finished(rs, "CG-001", f"terminal-{number:04d}")
+    claimed = rs.new_run("CG-002", "remote", run_id="claimed")
+    claimed.claim_request_id = "durable-request-identity"
+    claimed.save()
+    assert rs.claim_request("unknown-request-identity") is None
+
+    copied: list[str] = []
+    from copy import deepcopy as copy_value
+
+    def observe_copy(value):
+        if isinstance(value, Run):
+            copied.append(value.run_id)
+        return copy_value(value)
+
+    monkeypatch.setattr("garden.runs.deepcopy", observe_copy)
+    replay = rs.claim_request("durable-request-identity")
+
+    assert replay is not None and replay.run_id == claimed.run_id
+    assert copied == [claimed.run_id]
+
+
 def test_stale_scheduler_save_preserves_authenticated_worker_completion(tmp_path: Path):
     rs = RunStore(tmp_path)
     run = rs.new_run("CG-001", "remote", run_id="20260101T000000Z-work")

@@ -55,6 +55,7 @@ class _RunIndex:
     built_at: float = 0.0
     runs: tuple[Run, ...] = ()
     by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
+    by_claim_request: dict[str, Run] = field(default_factory=dict)
     active: tuple[Run, ...] = ()
     totals: dict[str, Any] = field(default_factory=dict)
     task_fingerprints: dict[str, tuple[int, int]] = field(default_factory=dict)
@@ -726,6 +727,20 @@ class RunStore:
         for run in found:
             grouped.setdefault(run.task_id, []).append(run)
         idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
+        by_claim_request: dict[str, Run] = {}
+        for run in found:
+            if run.runner != "remote":
+                continue
+            identities = [run.claim_request_id, *(
+                str(item.get("claim_request_id") or "") for item in run.claim_history
+            )]
+            for request_id in identities:
+                if request_id:
+                    # Preserve the historical lookup's oldest-match collision behavior.
+                    # The API rejects an identity that no longer names the current claim
+                    # generation rather than allowing it to allocate new work.
+                    by_claim_request.setdefault(request_id, run)
+        idx.by_claim_request = by_claim_request
         idx.active = tuple(
             run for run in found if run.status in ("requested", "preparing", "running")
         )
@@ -902,6 +917,17 @@ class RunStore:
         idx = self._ensure_index()
         with idx.lock:
             return deepcopy(list(idx.by_task.get(task_id, ())))
+
+    def claim_request(self, request_id: str) -> Run | None:
+        """Return the durable run that has ever recorded one remote claim request.
+
+        The identity map is rebuilt at the same freshness boundaries as the run index.
+        Copying just the match keeps idle polling independent of terminal-history size.
+        """
+        idx = self._ensure_index()
+        with idx.lock:
+            run = idx.by_claim_request.get(request_id)
+            return deepcopy(run) if run is not None else None
 
     def latest(self, task_id: str) -> Run | None:
         runs = self.runs_for(task_id)
