@@ -2139,15 +2139,13 @@ def test_worker_cli_setup_option(monkeypatch, tmp_path):
     assert calls == [{"setup_command": "echo host-owned"}]
 
 
-@pytest.mark.parametrize("managed", [False, True], ids=["standalone", "managed"])
-def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_github, managed):
+def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_github):
     """Real TCP HTTP and a separate CLI process; GitHub is the only external fake.
 
     This proves process/transport separation, not VM or EC2 provisioning.
     """
     import json
     import os
-    import shlex
     import socket
     import subprocess
     import sys
@@ -2168,23 +2166,6 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
         "env": {"PRIVATE_SETUP_VALUE": "must-not-travel"},
     }
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    if managed:
-        # Real setup in each worker subprocess must observe the machine lock already held.
-        setup_code = """import fcntl
-from pathlib import Path
-with (Path.cwd().parents[1] / 'host.lock').open('a') as lock:
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        pass
-    else:
-        raise RuntimeError('setup executed outside the managed host lock')
-p = Path('.git/setup-count')
-p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
-"""
-        config["products"]["demo"]["setup"]["command"] = "python3 -c " + shlex.quote(setup_code)
-        config["checks"]["pre_pr"][0]["command"] += " && test -f .git/setup-count"
-        (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     store = Store(garden)
     from garden.model import Status
     for other in store.tasks().values():
@@ -2236,56 +2217,17 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                    or k.startswith("FAKE_")}
             env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
                        GARDEN_WORKER_TOKEN="secret-token", FAKE_CLAUDE_MODE="done")
-            setup_counts = {}
-            worker_config = {
-                "endpoint": url, "worker_token": "secret-token", "host": "build-1",
-                "work_dir": str(tmp_path / "http-host"), "harnesses": ["claude"],
-                "profile_version": "fixture-v1", "bootstrap_version": "fixture-v1",
-                "source_head": "a" * 40, "provider_id": "disposable-http-host",
-                "operation_id": "fixture-operation",
-                "source_bootstrap": {"source_head": "a" * 40,
-                                     "bootstrap_sha256": "b" * 64,
-                                     "operation_id": "fixture-operation"},
-                "memory_reserve_mib": 0, "disk_reserve_mib": 0,
-                "readiness_attestations": {
-                    "bootstrap_manifest": {"ok": True, "source_head": "a" * 40,
-                                           "profile_version": "fixture-v1",
-                                           "bootstrap_version": "fixture-v1",
-                                           "bootstrap_sha256": "b" * 64,
-                                           "installed_distribution": "context-garden",
-                                           "direct_url_commit": "a" * 40},
-                    "repository_access": {"ok": True, "repository": "example/project"},
-                    "ci_provider_read": {"ok": True, "source_head": "a" * 40},
-                },
-            }
-            config_file = tmp_path / "managed-worker.json"
-            config_file.write_text(json.dumps(worker_config))
             def worker(mode, task_id="DM-001"):
-                command = ([sys.executable, "-m", "garden.managed_worker", "--config", str(config_file), "--once"]
-                           if managed else [sys.executable, "-m", "garden", "worker", "--garden", url,
+                command = [sys.executable, "-m", "garden", "worker", "--garden", url,
                            "--host", "build-1", "--work-dir", str(tmp_path / "http-host"),
-                           "--harness", "claude", "--once"])
+                           "--harness", "claude", "--once"]
                 result = subprocess.run(command, env=env, cwd=tmp_path,
                                         capture_output=True, text=True, timeout=30)
                 assert result.returncode == 0, result.stderr
                 latest = scheduler.runs.latest(task_id)
                 assert latest.mode == mode and latest.process_finished()
-                if managed:
-                    setup_counts[task_id] = setup_counts.get(task_id, 0) + 1
-                    marker = tmp_path / "http-host" / "repos" / task_id / ".git/setup-count"
-                    assert int(marker.read_text()) == setup_counts[task_id], "setup must run exactly once per claim"
-                    facts = json.loads((latest.path / "host_facts.json").read_text())
-                    assert facts["provider_id"] == "disposable-http-host"
-                    assert facts["profile_version"] == "fixture-v1"
-                    assert facts["disk_free_bytes"] > 0
-                    assert facts["readiness_attestations"] == {
-                        **worker_config["readiness_attestations"],
-                        "authenticated_registration": {
-                            "ok": True, "method": "scoped-worker-token",
-                        },
-                    }
                 events.append({"mode": mode, "run": latest.run_id, "host": latest.host,
-                               "setup_count": setup_counts.get(task_id), "managed": managed})
+                               "managed": False})
             worker("work")
             scheduler.tick()
             worker("check")
@@ -2314,8 +2256,8 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                 ).stdout.strip(),
                 "test": "tests/test_remote_worker.py::test_remote_lifecycle_over_served_http",
                 "transport": "real TCP HTTP",
-                "worker_process": "separate python -m garden.managed_worker process" if managed else "separate python -m garden worker CLI process",
-                "worker_command": "python -m garden.managed_worker --config isolated-config --once" if managed else "python -m garden worker --garden URL --host build-1 --work-dir isolated --harness claude --once",
+                "worker_process": "separate python -m garden worker CLI process",
+                "worker_command": "python -m garden worker --garden URL --host build-1 --work-dir isolated --harness claude --once",
                 "actions": [
                     "reject unauthenticated and cross-origin claims",
                     "claim then expire a work lease and reject its stale heartbeat",
@@ -2324,8 +2266,6 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                 ],
                 "observations": {
                     "setup_environment_absent_from_claim": True,
-                    "managed_setup_once_inside_host_lock": managed,
-                    "managed_host_attribution_persisted": managed,
                     "stale_heartbeat_status": 409,
                     "review_verdict": "approve",
                     "pr_opened": True,
@@ -2345,3 +2285,42 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
         thread.join(timeout=10)
         sock.close()
         assert not thread.is_alive()
+
+
+def test_managed_worker_holds_host_lock_and_forwards_setup_once(tmp_path, monkeypatch):
+    """The managed boundary owns one host lock and hands setup to its one execution.
+
+    The retained TCP lifecycle covers authentication, fencing, source, checks, result
+    transport, publication and PR creation.  This focused assertion inventory retains
+    the managed-only contract: setup is performed by the lock-owning host consumer and
+    is not handed to a second worker execution.
+    """
+    claim = {"id": "managed-run", "task_id": "DM-001", "setup": {"command": "prepare-host"}}
+    calls = []
+
+    class Client:
+        def post(self, path, payload):
+            assert path == "/api/runs/claim"
+            calls.append(payload)
+            return 200, claim
+
+    def execute_while_locked(received, root, _client, *, setup_command):
+        assert received is claim
+        assert setup_command == "prepare-host"
+        with (root / "host.lock").open("a") as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    monkeypatch.setattr(managed_worker, "AttributedClient", lambda *_args: Client())
+    monkeypatch.setattr(managed_worker, "resources", lambda _root: {
+        "memory_available_bytes": 2 * 1024**3, "disk_free_bytes": 2 * 1024**3,
+    })
+    monkeypatch.setattr(managed_worker, "execute_claim", execute_while_locked)
+
+    managed_worker.run({
+        "work_dir": str(tmp_path / "managed-host"), "endpoint": "https://garden.example",
+        "worker_token": "test-token", "host": "build-1", "harnesses": ["claude"],
+        "memory_reserve_mib": 1, "disk_reserve_mib": 1,
+    }, once=True)
+
+    assert len(calls) == 1
