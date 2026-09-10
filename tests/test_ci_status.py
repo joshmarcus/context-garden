@@ -120,6 +120,21 @@ def test_worker_check_newest_matching_truncated_receipt_supersedes_older_success
     assert status.state == "malformed" and status.exists_for_sha and not status.green
 
 
+def test_worker_check_newest_pre_identity_truncation_supersedes_older_success(tmp_path):
+    validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
+    older = validations / "remote-20" / "result.json"
+    newer = validations / "remote-3" / "result.json"
+    write_receipt(older, receipt())
+    newer.parent.mkdir(parents=True)
+    newer.write_text('{"version": 1, "source_')
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.state == "malformed" and not status.exists_for_sha and not status.green
+
+
 def test_worker_check_newer_truncated_other_source_does_not_block_valid_receipt(tmp_path):
     validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
     older = validations / "remote-20" / "result.json"
