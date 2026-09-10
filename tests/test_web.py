@@ -3499,13 +3499,23 @@ def test_exposed_listener_rejects_shared_operator_and_worker_secret(garden, monk
         create_app(Store(garden), watch=False, host="0.0.0.0")
 
 
-def test_web_route_policy_fails_closed_for_additions():
+def test_web_route_policy_fails_closed_for_additions(garden, monkeypatch):
     import pytest
 
-    from garden.web.access import route_access
+    from garden.web import app as web_app
+
+    original_register = web_app.pages.register
+
+    def register_with_unclassified_route(app, site):
+        original_register(app, site)
+
+        @app.get("/api/new-control")
+        def new_control():
+            return {"ok": True}
 
     with pytest.raises(RuntimeError, match="not classified"):
-        route_access("GET", "/api/new-control")
+        monkeypatch.setattr(web_app.pages, "register", register_with_unclassified_route)
+        create_app(Store(garden), watch=False)
 
 
 def test_loopback_listener_keeps_explicit_local_only_mode(garden):
