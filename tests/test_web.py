@@ -970,6 +970,17 @@ def test_task_design_files_show_only_the_current_pr_and_shared_references(garden
     assert c.get(f"/design/parent.md?ref=origin%2F{parent}&product=demo").status_code == 200
     assert c.get(f"/design/reference.md?ref=origin%2F{parent}&product=demo").status_code == 200
 
+    # Deleted designs are not PR output because their head-revision links would not resolve.
+    subprocess.run(["git", "checkout", child], cwd=repo, check=True)
+    (repo / "docs" / "design" / "parent.md").unlink()
+    commit("remove parent design")
+    subprocess.run(["git", "push"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True)
+
+    deleted_design_page = c.get(f"/tasks/{task.id}").text
+    assert f"/design/parent.md?ref={child_ref}" not in deleted_design_page
+    assert deleted_design_page.count(f"/design/parent.md?ref={parent_ref}") == 1
+
     # A branch with no changed designs has no PR-output panel, even if it reads shared art.
     no_design = store.task("DM-001")
     no_design.branch = "garden/no-design"
