@@ -260,6 +260,17 @@ def test_archive_health_reports_missing_or_corrupt_index(tmp_path: Path):
         rs.totals()
 
 
+def test_incomplete_archive_migration_never_silently_omits_history(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    rs.archive_dir.mkdir()
+    (rs.archive_dir / "index.json").write_text('{"version": 2, "runs": []}')
+    (rs.archive_dir / "pending.json").write_text('{"run_id": "run-1"}')
+
+    assert "incomplete" in rs.archive_health()
+    with pytest.raises(HistoryUnavailable, match="incomplete"):
+        rs.all_runs()
+
+
 def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):
     rs = RunStore(tmp_path)
     bad = rs.archive_dir / "CG-001" / "bad" / "run.json"
