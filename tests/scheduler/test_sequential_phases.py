@@ -86,6 +86,10 @@ def test_sequential_queue_waits_for_explicit_close_and_reopening(garden, sched):
 
 
 def test_sequential_gate_covers_direct_model_routes_and_keeps_active_runs(garden, sched):
+    from fastapi.testclient import TestClient
+
+    from garden.store import Store
+    from garden.web.app import create_app
     from tests.conftest import write
 
     _add_second_phase(garden, write)
@@ -95,8 +99,18 @@ def test_sequential_gate_covers_direct_model_routes_and_keeps_active_runs(garden
     active.status = "running"
     active.save()
     _sequential(sched)
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["phase_execution"] = "sequential"
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
 
     assert sched.runs.latest(later.id).status == "running"
+    page = TestClient(create_app(Store(garden), watch=False, host="testserver")).get(
+        f"/tasks/{later.id}"
+    ).text
+    assert "Held by sequential phase order" in page
+    assert "will not start, revise, review, or rebase" in page
+    assert "Work already in flight may finish and publish" in page
+    assert "or merge" not in page
     # Collection/publication recovery retains the pre-existing closed/frozen-only gate.
     sched._refuse_if_closed_or_frozen(later)
     for dispatch in (

@@ -14,7 +14,11 @@
 {% if phase_hold %}
 <div class="panel" style="border-color:var(--warn);margin-bottom:14px">
   <div class="eyebrow" style="color:var(--warn)">Held by {{ phase_hold_kind }}</div>
+  {% if phase_hold_kind == 'sequential phase order' %}
+  <p style="margin:6px 0 0">This task remains <b>{{ task.status.value.replace('_', ' ') }}</b>; it will not start, revise, review, or rebase while {{ phase_hold }}. Work already in flight may finish and publish.</p>
+  {% else %}
   <p style="margin:6px 0 0">This task remains <b>{{ task.status.value.replace('_', ' ') }}</b>; it will not start, revise, review, rebase, or merge while {{ phase_hold }}.</p>
+  {% endif %}
 </div>
 {% endif %}
 {% if task.status.value == 'awaiting_triage' %}
