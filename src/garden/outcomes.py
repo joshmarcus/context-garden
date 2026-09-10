@@ -25,6 +25,16 @@ EFFORT_ACTION_KINDS = {
     "automerged",
 }
 EFFORT_ACTORS = ("human_owner", "delegated_operator", "automated_scheduler", "unknown")
+EFFORT_BY_ACTOR = {
+    "human": "human_owner",
+    "cli": "human_owner",
+    "operator": "delegated_operator",
+    "github": "automated_scheduler",
+    "probe": "automated_scheduler",
+}
+INTRINSIC_OWNER_ACTIONS = {
+    "answer", "decision_accepted", "decision_resolved", "resumed", "moved", "suggestion",
+}
 
 
 def canonical_phase_key(product: str, phase: str) -> str:
@@ -152,9 +162,7 @@ def delegated_effort(
                if event.get("kind") in EFFORT_ACTION_KINDS]
     action_rows: dict[str, dict[str, Any]] = {}
     for actor in EFFORT_ACTORS:
-        selected = [event for event in actions
-                    if str(event.get("actor") or
-                           ("automated_scheduler" if event.get("kind") == "automerged" else "unknown")) == actor]
+        selected = [event for event in actions if effort_actor(event) == actor]
         causes = defaultdict(int)
         for event in selected:
             causes[str(event.get("reason") or event.get("kind") or "unknown")] += 1
@@ -204,6 +212,22 @@ def delegated_effort(
         "savings_status": "not_estimated_without_a_human_effort_baseline",
         "contract": cohort["contract"] + "; attributed operator rows in cohort effort envelope",
     }
+
+
+def effort_actor(event: dict[str, Any]) -> str:
+    """Normalize established action provenance without guessing legacy unknowns."""
+    actor = str(event.get("actor") or "")
+    if actor in EFFORT_ACTORS:
+        return actor
+    by_actor = EFFORT_BY_ACTOR.get(str(event.get("by") or ""))
+    if by_actor:
+        return by_actor
+    kind = str(event.get("kind") or "")
+    if kind == "automerged":
+        return "automated_scheduler"
+    if kind in INTRINSIC_OWNER_ACTIONS:
+        return "human_owner"
+    return "unknown"
 
 
 def timestamp(value: Any) -> dt.datetime | None:

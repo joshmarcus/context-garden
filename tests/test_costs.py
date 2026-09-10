@@ -79,6 +79,29 @@ def test_delegated_effort_uses_the_accepted_cohort_and_preserves_unknowns():
     assert effort["savings"] is None
 
 
+def test_delegated_effort_normalizes_established_action_provenance():
+    tasks = {"DM-001": _tasks()["DM-001"]}
+    events = [
+        {"at": "2026-09-01T10:00:00+00:00", "kind": "dispatch", "task": "DM-001"},
+        {"at": "2026-09-01T10:10:00+00:00", "kind": "answer", "task": "DM-001"},
+        {"at": "2026-09-01T10:20:00+00:00", "kind": "triaged", "task": "DM-001", "by": "human"},
+        {"at": "2026-09-01T10:30:00+00:00", "kind": "retry", "task": "DM-001",
+         "actor": "delegated_operator"},
+        {"at": "2026-09-01T10:40:00+00:00", "kind": "triaged", "task": "DM-001", "by": "github"},
+        {"at": "2026-09-01T10:50:00+00:00", "kind": "automerged", "task": "DM-001"},
+        {"at": "2026-09-01T11:00:00+00:00", "kind": "requeue", "task": "DM-001"},
+        {"at": "2026-09-01T12:00:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+    ]
+
+    actions = delegated_effort(events, tasks)["actions"]
+
+    assert actions["human_owner"]["actions"] == 2
+    assert actions["delegated_operator"]["actions"] == 1
+    assert actions["automated_scheduler"]["actions"] == 2
+    assert actions["unknown"]["actions"] == 1
+
+
 def test_group_by_activity_orders_by_cost_and_folds_unknown_modes():
     series = cost_series(_events(), _tasks(), group_by="activity", bucket="day")
     assert series["groups"] == ["revise", "work", "retro", "check", "other"]
