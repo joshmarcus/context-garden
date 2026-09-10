@@ -307,6 +307,62 @@ def test_source_control_route_cannot_fall_back_to_ambient_gh(garden, monkeypatch
     assert client.token is None
 
 
+def test_legacy_github_route_uses_scoped_http_client(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"]["github"] = {
+        "slug": "team/repo", "host": "forge.test",
+        "api_base": "https://forge.test/api/v3",
+        "token_env": "SCOPED_GITHUB_TOKEN", "proxy": "https://proxy.test",
+    }
+    monkeypatch.setenv("SCOPED_GITHUB_TOKEN", "scoped-token")
+    monkeypatch.setattr("garden.github.shutil.which", lambda _name: "/usr/bin/gh")
+    requests = []
+
+    def request(method, url, **kwargs):
+        requests.append((method, url, kwargs))
+        return httpx.Response(200, json={"login": "fixture"}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr("garden.github.httpx.request", request)
+    sched = Scheduler(store, read_only=True)
+    client = sched.github.routes[("forge.test", "team/repo")]
+
+    assert client.gh is None
+    assert client.me() == "fixture"
+    assert requests[0][1] == "https://forge.test/api/v3/user"
+    assert requests[0][2]["headers"]["Authorization"] == "Bearer scoped-token"
+    assert requests[0][2]["proxy"] == "https://proxy.test"
+    assert requests[0][2]["follow_redirects"] is False
+
+
+@pytest.mark.parametrize("policy", [
+    {"token_env": "SCOPED_GITHUB_TOKEN"},
+    {"proxy": "https://proxy.test"},
+    {"ca_bundle": "bundle.pem"},
+])
+def test_each_legacy_scoped_policy_setting_disables_ambient_gh(
+    garden, monkeypatch, tmp_path, policy,
+):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    if "ca_bundle" in policy:
+        bundle = tmp_path / policy["ca_bundle"]
+        bundle.write_text(VALID_TEST_CA)
+        policy["ca_bundle"] = str(bundle)
+    store = Store(garden)
+    store.config.data["products"]["demo"]["github"] = {
+        "slug": "team/repo", **policy,
+    }
+    monkeypatch.setattr("garden.github.shutil.which", lambda _name: "/usr/bin/gh")
+
+    sched = Scheduler(store, read_only=True)
+
+    assert sched.github.routes[("github.com", "team/repo")].gh is None
+
+
 def test_source_control_route_applies_checkout_identity_guard(garden, monkeypatch):
     from garden.gitops import GitError
     from garden.scheduler import Scheduler

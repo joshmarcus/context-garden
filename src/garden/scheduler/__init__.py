@@ -158,6 +158,9 @@ class Scheduler(
                 route = self.cfg.product_source_control(str(product))
                 configured = self.cfg.product(str(product))
                 explicit_source = isinstance(configured.get("source_control"), dict)
+                scoped_transport = explicit_source or any(
+                    route.get(key) for key in ("token_env", "ca_bundle", "proxy")
+                )
                 policy = None
                 if explicit_source:
                     policy = ConnectionPolicy(
@@ -184,7 +187,7 @@ class Scheduler(
                         proxy=route.get("proxy", ""),
                     )
                     routes[(host, route["repository"])] = GitHub(
-                        **{**common, "use_gh": False if explicit_source else common["use_gh"]},
+                        **{**common, "use_gh": False if scoped_transport else common["use_gh"]},
                         host=host, api_base=api_base,
                         token_env=route.get("token_env", ""),
                         connection_policy=policy,
