@@ -58,7 +58,8 @@ class InProcessRunner(LocalRunner):
             data = json.loads(setup_input.read_text())
             run_setup(worktree, data.get("setup", data), log_path=d / "setup.log", env=env,
                       config=data.get("config", {}) if "setup" in data else {})
-        argv = self.harness_argv(run, worktree, d / "final.md")
+        model_output = self.harness_output_path(run, worktree)
+        argv = self.harness_argv(run, worktree, model_output)
         # What the shell wrapper records for a real run: the resolved command line.
         (d / "command.txt").write_text(" ".join(shlex.quote(c) for c in argv) + "\n")
         run.pid = os.getpid()
@@ -79,6 +80,8 @@ class InProcessRunner(LocalRunner):
                                   f"known: {', '.join(sorted(FAKES))}")
         else:
             stdout, stderr, code = fake(argv[1:], brief_path.read_text(), worktree, env)
+        if model_output != d / "final.md" and model_output.exists():
+            shutil.copyfile(model_output, d / "final.md")
         (d / "stdout.json").write_text(stdout)
         (d / "stderr.log").write_text(stderr)
         if code is not None:
