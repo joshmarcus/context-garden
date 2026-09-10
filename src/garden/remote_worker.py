@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import fcntl
 import fnmatch
 import hashlib
@@ -11,6 +12,7 @@ import re
 import random
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -24,6 +26,7 @@ from typing import Any, TextIO
 
 from .brief import parse_result
 from .harness import Harness
+from .proctree import pid_alive
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 from .worker_diagnostics import WorkerEventLog, endpoint_class, safe_correlation_id
@@ -408,13 +411,44 @@ def _collect_supervised_result(
 
 
 def _process_alive(pid: int) -> bool:
+    return pid_alive(pid)
+
+
+def _stop_recovered_supervisor(supervisor_pid: int, *, sleep=time.sleep) -> None:
+    """Stop a detached supervisor after its recovered claim loses authority."""
+    if not _process_alive(supervisor_pid):
+        return
     try:
-        os.kill(pid, 0)
+        os.kill(supervisor_pid, signal.SIGTERM)
     except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        return
+    except PermissionError as exc:
+        raise RuntimeError("cannot terminate recovered claim supervisor") from exc
+    deadline = time.monotonic() + 5
+    while _process_alive(supervisor_pid) and time.monotonic() < deadline:
+        sleep(0.05)
+    if _process_alive(supervisor_pid):
+        try:
+            os.kill(supervisor_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise RuntimeError("cannot kill recovered claim supervisor") from exc
+
+
+def _recovered_heartbeat_cause(run: dict[str, Any], failure: BaseException) -> str:
+    if isinstance(failure, WorkerRequestError):
+        if failure.status in {401, 403}:
+            return "authentication"
+        if failure.status == 409:
+            try:
+                deadline = dt.datetime.fromisoformat(str(run.get("execution_deadline_at") or ""))
+                if deadline <= dt.datetime.now(dt.UTC):
+                    return "execution_deadline"
+            except (TypeError, ValueError):
+                pass
+            return "stale_or_rejected_generation"
+    return "controller_unavailable"
 
 
 class _LeaseHeartbeat:
@@ -765,8 +799,35 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
                 )
             exit_path = execution_dir / "exit_code"
             while not exit_path.exists() and _process_alive(supervisor_pid):
-                heartbeat.ensure_not_failed()
+                try:
+                    heartbeat.ensure_not_failed()
+                except BaseException as exc:
+                    _stop_recovered_supervisor(supervisor_pid, sleep=sleep)
+                    quarantine = path.parent / "quarantine"
+                    quarantine.mkdir(exist_ok=True)
+                    path.replace(quarantine / path.name)
+                    failure = heartbeat.failure or exc
+                    cause = _recovered_heartbeat_cause(run, failure)
+                    if client.events:
+                        client.events.emit(
+                            "execution_recovery_quarantined", run_id=str(run["id"]),
+                            work_state="recovering", cause=cause,
+                            exit_reason=("execution_deadline_expired"
+                                         if cause == "execution_deadline"
+                                         else "terminal_heartbeat_failure"),
+                            exception=(f"http_{failure.status}"
+                                       if isinstance(failure, WorkerRequestError)
+                                       else type(failure).__name__),
+                            recovery_outcome="supervisor_terminated_without_replay",
+                            operator_action=(
+                                "verify lease generation and execution deadline, then inspect "
+                                "the quarantined active claim"
+                            ),
+                        )
+                    break
                 sleep(0.1)
+            if not path.exists():
+                continue
             if not exit_path.exists():
                 if client.events:
                     client.events.emit(
