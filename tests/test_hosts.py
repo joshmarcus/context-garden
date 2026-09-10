@@ -266,6 +266,8 @@ def test_spot_policy_is_capability_checked_priced_and_explicit(tmp_path):
         lifecycle.plan(replace(spec, profile=profile(persistent=True)))
     with pytest.raises(ValueError, match="hourly_usd"):
         lifecycle.plan(replace(spec, on_demand_fallback=True))
+    with pytest.raises(ValueError, match="positive finite price"):
+        lifecycle.plan(replace(spec, provider_options={**spec.provider_options, "spot_hourly_usd": float("nan")}))
 
 
 def test_spot_shortage_fallback_is_opt_in_and_uses_bounded_plan_price(tmp_path):
@@ -299,6 +301,34 @@ def test_spot_shortage_fallback_is_opt_in_and_uses_bounded_plan_price(tmp_path):
     assert len(client.calls) == 3
     assert "InstanceMarketOptions" not in client.calls[-1]
     assert client.calls[-1]["ClientToken"].endswith("-ondemand")
+
+
+def test_on_demand_capacity_error_is_not_reported_as_spot_shortage(tmp_path):
+    class Shortage(StubEC2):
+        def run_instances(self, **kwargs):
+            raise NoSpotCapacity("none")
+
+    spec = replace(
+        pool(
+            provider="ec2",
+            enabled=True,
+            desired=1,
+            profile=replace(profile(), endpoint="", enrollment_secret_ref=""),
+        ),
+        provider_options={
+            "instance_type": "m6i.xlarge",
+            "subnet_id": "subnet-test",
+            "security_group_ids": ["sg-test"],
+            "instance_profile_arn": "arn:role",
+            "hourly_usd": 0.20,
+        },
+    )
+    lifecycle = HostLifecycle(
+        {"ec2": EC2Provider(Shortage())}, JsonStateStore(tmp_path / "state.json")
+    )
+
+    with pytest.raises(RuntimeError, match="EC2 launch failed"):
+        lifecycle.reconcile(spec)
 
 
 def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliation(tmp_path):

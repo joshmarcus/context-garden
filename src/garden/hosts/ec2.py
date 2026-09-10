@@ -9,6 +9,7 @@ instance role and secret reference, never controller credentials or secret value
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
 import time
@@ -92,7 +93,11 @@ class EC2Provider:
             raise ValueError("ec2.hourly_usd is required to price on-demand fallback")
         # Admission uses the expensive path when fallback is allowed, so the spend
         # envelope remains safe even if Spot has no capacity.
-        return float(options["hourly_usd"] if declaration.pool.on_demand_fallback else options[price_key])
+        selected_price_key = "hourly_usd" if declaration.pool.on_demand_fallback else price_key
+        price = float(options[selected_price_key])
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError(f"ec2.{selected_price_key} must be a positive finite price")
+        return price
 
     def discover(self, owner: str, pool: str) -> list[HostFacts]:
         response = self.client.describe_instances(
@@ -235,7 +240,7 @@ class EC2Provider:
                     response = self.client.run_instances(**args)
                 except Exception as fallback_exc:
                     raise ProviderError(f"EC2 on-demand fallback failed: {fallback_exc}") from fallback_exc
-            elif no_spot_capacity:
+            elif declaration.pool.purchase_policy == "spot" and no_spot_capacity:
                 raise ProviderError("EC2 Spot capacity is unavailable and fallback is disabled") from exc
             else:
                 raise ProviderError(f"EC2 launch failed: {exc}") from exc
