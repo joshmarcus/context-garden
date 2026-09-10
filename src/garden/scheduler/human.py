@@ -540,8 +540,24 @@ class HumanMixin:
         if not reason.strip():
             raise RuntimeError("a defer reason is required")
         st["troubled_deferred"] = {"reason": reason.strip(), "at": now_iso(), "counter": int(st.get("substantive_revisions", 0))}
-        self._set_needs_human(task, "troubled_task", f"deferred: {reason.strip()}")
+        self._set_needs_human(task, "troubled_deferred", reason.strip())
         self.events.emit("troubled_deferred", task.id, reason=reason.strip())
+        self.state.save()
+
+    def reconsider_troubled(self, task: Task) -> None:
+        """Return a saved deferral to its preserved decision without dispatching work."""
+        ensure_open(task)
+        st = self.state.get(task.id)
+        deferred = st.get("troubled_deferred")
+        info = st.get("needs_human")
+        if not isinstance(deferred, dict) or not str(deferred.get("reason") or "").strip():
+            raise RuntimeError(f"{task.id} has no saved troubled-work deferral to reconsider")
+        if not isinstance(info, dict) or info.get("kind") not in ("troubled_deferred", "troubled_task"):
+            raise RuntimeError(f"{task.id}'s saved deferral is no longer its active execution hold")
+        reason = str(deferred["reason"])
+        st.pop("troubled_deferred", None)
+        self._set_needs_human(task, "troubled_task", f"reconsidered saved deferral: {reason}")
+        self.events.emit("troubled_reconsidered", task.id, reason=reason)
         self.state.save()
 
     def change_troubled_approach(self, task: Task, approach: str, allowance: int = 1) -> None:

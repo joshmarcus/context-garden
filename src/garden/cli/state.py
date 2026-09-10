@@ -352,6 +352,18 @@ def troubled_defer(task_id: str, reason: str = typer.Argument(...)):
     console.print(f"{task_id}: deferred with work preserved")
 
 
+@app.command("troubled-reconsider", rich_help_panel=PANEL_DECIDE)
+def troubled_reconsider(task_id: str):
+    """Return saved troubled work to its preserved decision without dispatching it."""
+    store = _store()
+    try:
+        _scheduler(store).reconsider_troubled(_task(store, task_id))
+    except RuntimeError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"{task_id}: saved deferral reconsidered; choose the next task action")
+
+
 @app.command("troubled-cancel", rich_help_panel=PANEL_DECIDE)
 def troubled_cancel(task_id: str, reason: str = typer.Argument(...)):
     """Cancel a drained troubled task with a durable reason, retaining its work."""

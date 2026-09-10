@@ -25,7 +25,7 @@ GROUPS = [
     ("review", "Review and merge", "Ready for review on GitHub. Comments you leave become a revise run; merging unblocks dependents.", "decision"),
     ("operator", "Operator recovery", "A bounded repair has an explicit owner and preserves the task's current evidence. You do not need to make a product decision.", "notice"),
     ("automated_review", "Automated review", "The scheduler owns this review state. It records the queue, resource wait, and most recent verdict without asking a person to clear it.", "notice"),
-    ("deferred", "Deferred work", "This draft is intentionally frozen by phase policy. Move it deliberately when the policy changes; it never needs approval or cancellation merely to clear a badge.", "notice"),
+    ("deferred", "Deferred work", "This work is intentionally paused by phase policy or a saved owner deferral. Reconsider it deliberately when that policy changes; it never needs approval or cancellation merely to clear a badge.", "notice"),
     ("attention", "Needs your decision", "The loop stopped because an unresolved product judgment needs you.", "decision"),
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
@@ -103,6 +103,7 @@ ATTENTION_KINDS = {
     "explicit_hold": ("Owner authorization required", "An explicit hold reserves this step for the owner. The garden will not treat approval as routine operator recovery."),
     "review_recovery_exhausted": ("Automatic review recovery exhausted", "The scheduler preserved and retried the review request, but its bounded repair budget is spent. Repair review capacity or the reviewer environment, then request one more review."),
     "troubled_task": ("Troubled task", "Substantive revisions are not converging. New implementation dispatch is paused for an explicit bounded decision."),
+    "troubled_deferred": ("Troubled work deferred", "A saved owner deferral preserves the work and its execution hold until you deliberately reconsider it."),
     "investigation": ("Investigation requested", "Implementation and review mutations are paused while the preserved work reaches a safe boundary for diagnosis."),
     "investigation_report": ("Investigation report ready", "Diagnosis is complete. The report does not restart, cancel, or merge the task; choose the next action explicitly."),
 }
@@ -121,6 +122,7 @@ ATTENTION_OWNERS = {
     "review_recovery_exhausted": ("Interrupted review infrastructure", "review operator", "Restore review capacity, then retry"),
     "review_cap": ("Unresolved review decision", "you", "Review the current PR"),
     "stall": ("Unresolved implementation decision", "you", "Decide whether the unchanged result is acceptable"),
+    "troubled_deferred": ("Saved owner deferral", "saved policy", "Reconsider the deferred work when its reason no longer applies"),
 }
 
 
@@ -371,6 +373,12 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if t.status.terminal:
         return None
     info = needs_human_info(st.get("needs_human"))
+    saved_deferral = st.get("troubled_deferred")
+    # Older snapshots recorded a troubled-task stop alongside the saved deferral.  Treat
+    # that combination as the same durable policy as the newer explicit stop kind.
+    if (info and info["kind"] == "troubled_task" and isinstance(saved_deferral, dict)
+            and str(saved_deferral.get("reason") or "").strip()):
+        info = {**info, "kind": "troubled_deferred", "reason": str(saved_deferral["reason"])}
     if info and info["kind"] == "review_cap" and any(row["state"] != "posted" for row in required_evidence_rows(required_evidence(t.body, t.extra.get("requires")), st)):
         return None
     can_resume = info is not None
@@ -383,6 +391,8 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     category, owner, recommendation = ATTENTION_OWNERS.get(
         info["kind"], ("Unclassified stop", "you", "Inspect the task before continuing"))
     evidence = _evidence_lines(t, st, runs)
+    if info["kind"] == "troubled_deferred":
+        evidence.insert(0, "execution hold source: saved owner deferral")
     evidence_links = _evidence_links(t, st, runs)
     resume_to = _resume_target(t, st, info)
     retry_detail = ("keeps the PR and queues a revise run on this branch to address what is outstanding; it does not start the work over"
@@ -429,6 +439,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             "detail": "records a bounded read-only operator investigation; the original stop, result, PR, feedback, and counters remain preserved",
         })
     troubled = info["kind"] in ("troubled_task", "investigation_report")
+    saved_troubled_deferral = info["kind"] == "troubled_deferred"
     if info["kind"] == "revision_cap" and not delegated:
         owner = "you"
         recommendation = "Authorize one more bounded revision"
@@ -470,6 +481,10 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             actions.append({"label": "Publish investigation report", "kind": "investigation-report",
                             "command": f'garden investigation-report {t.id} "..."',
                             "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
+    elif saved_troubled_deferral:
+        actions.append({"label": "Reconsider deferred work", "kind": "troubled-reconsider",
+                        "command": f"garden troubled-reconsider {t.id}",
+                        "detail": "returns this task to its preserved troubled-task decision; it does not start a run"})
     elif troubled:
         tiers = ("easy", "medium", "hard")
         actions.append({"label": "Continue one revision", "kind": "troubled-continue", "command": f"garden troubled-continue {t.id}",
@@ -491,10 +506,11 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     if not missing_check_provenance:
         actions.append({"label": "Discuss", "kind": "discuss", "command": f"garden discuss {t.id}",
                         "detail": "a ready-made prompt with the task, the reason and the evidence, for a chat session or `garden take`"})
-    cancel_command = f'garden troubled-cancel {t.id} "..."' if troubled else f"garden cancel {t.id}"
-    actions.append({"label": "Cancel", "kind": "troubled-cancel" if troubled else "cancel", "command": cancel_command,
-                    "detail": ("requires a reason and closes only after the writer drains; branch, PR, runs and artifacts stay preserved"
-                               if troubled else "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else ""))})
+    if not saved_troubled_deferral:
+        cancel_command = f'garden troubled-cancel {t.id} "..."' if troubled else f"garden cancel {t.id}"
+        actions.append({"label": "Cancel", "kind": "troubled-cancel" if troubled else "cancel", "command": cancel_command,
+                        "detail": ("requires a reason and closes only after the writer drains; branch, PR, runs and artifacts stay preserved"
+                                   if troubled else "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else ""))})
     if t.pr:
         actions.append({"label": "Open PR", "kind": "link", "href": t.pr, "detail": "the pull request on GitHub"})
     if investigation.get("report"):
@@ -531,6 +547,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         "rebase_failed": "The automated conflict repair did not complete after its bounded retry.",
         "review_cap": "The automated review allowance is spent and the current PR needs judgment.",
         "stall": "The same implementation outcome returned unchanged, so automatic work stopped.",
+        "troubled_deferred": f"Saved owner deferral: {info['reason']}",
         "investigation": f"A bounded investigation is {str(investigation.get('status') or 'requested')}; implementation and review work remain paused.",
     }.get(info["kind"], kind_blurb or info["reason"])
     return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
@@ -590,7 +607,8 @@ def decision_card_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[s
         }
     attention = attention_view(t, st, runs)
     if attention is not None:
-        title = (f"Needs your decision: {attention['kind_title']}" if attention["user_decision"]
+        title = (f"Deferred work: {attention['kind_title']}" if attention["kind"] == "troubled_deferred"
+                 else f"Needs your decision: {attention['kind_title']}" if attention["user_decision"]
                  else f"Operator recovery: {attention['kind_title']}")
         return {"type": "attention", "title": title,
                 "reason": attention["happened"], "blurb": attention["kind_blurb"], "final": "",
@@ -804,7 +822,11 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 or t.status == Status.FAILED):
             att = attention_view(t, st, runs)
             if att:
-                add("operator" if att.get("delegated") else "attention", t,
+                group = (
+                    "deferred" if att["kind"] == "troubled_deferred"
+                    else "operator" if att.get("delegated") else "attention"
+                )
+                add(group, t,
                     f"{att['kind_title']} — {att['reason'][:140]}", att["actions"],
                     **{k: att[k] for k in ("kind", "kind_title", "kind_blurb", "reason", "category",
                                            "owner", "recommendation", "happened", "effect", "user_decision",
