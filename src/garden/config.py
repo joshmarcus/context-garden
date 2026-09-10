@@ -644,12 +644,18 @@ class Config:
             raise ValueError(
                 f"products.{name}.source_control requires provider and repository"
             )
+        web_url = str(value.get("web_url") or "")
+        api_url = str(value.get("api_url") or "")
+        if not web_url or not api_url:
+            raise ValueError(
+                f"products.{name}.source_control requires web_url and api_url"
+            )
         return {
             "provider": provider,
             "repository": repository,
             "host": str(value.get("host") or ""),
-            "web_url": str(value.get("web_url") or ""),
-            "api_base": str(value.get("api_url") or ""),
+            "web_url": web_url,
+            "api_base": api_url,
             "token_env": str(value.get("credential_env") or ""),
             "ca_bundle": str(value.get("ca_bundle") or ""),
             "proxy": str(value.get("proxy") or ""),
