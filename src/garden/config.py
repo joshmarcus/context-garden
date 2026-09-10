@@ -19,6 +19,7 @@ from .configuration import (
     apply_changes,
     assert_inherited_locks_unchanged,
     assert_mutation_allowed,
+    product_configuration,
     resolve_value,
     revision,
     validate_configuration,
@@ -26,6 +27,31 @@ from .configuration import (
 from .github import is_git_remote_url
 
 CONFIG_NAME = "garden.yaml"
+
+
+def _value_at(data: dict[str, Any], dotted: str) -> tuple[bool, Any]:
+    current: Any = data
+    for part in dotted.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def _merge_source_owners(current: Any, override: Any, source: str) -> Any:
+    """Mirror ``_merge`` while retaining the owner of each surviving value leaf."""
+    if not isinstance(override, dict):
+        return source
+    owners = dict(current) if isinstance(current, dict) else {}
+    for key, value in override.items():
+        owners[key] = _merge_source_owners(owners.get(key), value, source)
+    return owners or source
+
+
+def _owner_names(owners: Any) -> set[str]:
+    if isinstance(owners, dict):
+        return {name for owner in owners.values() for name in _owner_names(owner)}
+    return {owners} if isinstance(owners, str) else set()
 
 # Config keys read once at startup — either when the Scheduler is constructed or when the
 # watch/serve loop first computes its sleep interval — and so NOT picked up by the per-tick
@@ -329,6 +355,7 @@ class Config:
     data: dict[str, Any] = field(default_factory=dict)
     sources: list[str] = field(default_factory=list)
     env: str = ""
+    source_documents: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     @classmethod
     def load(cls, root: Path, env: str | None = None) -> Config:
@@ -340,6 +367,7 @@ class Config:
         env = os.environ.get("GARDEN_ENV", "") if env is None else env
         data = dict(DEFAULTS)
         sources: list[str] = []
+        documents: list[tuple[str, dict[str, Any]]] = [("default", DEFAULTS)]
         for name in _source_names(env):
             p = root / name
             if p.exists():
@@ -348,9 +376,60 @@ class Config:
                     raise ValueError(f"{name}: top level must be a mapping")
                 data = _merge(data, raw)
                 sources.append(name)
+                documents.append((name, raw))
         _validate_product_policies(data)
         validate_configuration(data)
-        return cls(root=root, data=data, sources=sources, env=env)
+        return cls(root=root, data=data, sources=sources, env=env,
+                   source_documents=documents)
+
+    def editable(self) -> Config:
+        """The defaults plus the document the Configuration page can actually change."""
+        path = self.root / CONFIG_NAME
+        raw = yaml.safe_load(path.read_text()) if path.exists() else {}
+        raw = raw or {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"{CONFIG_NAME}: top level must be a mapping")
+        documents = [("default", DEFAULTS)]
+        sources: list[str] = []
+        if path.exists():
+            documents.append((CONFIG_NAME, raw))
+            sources.append(CONFIG_NAME)
+        return type(self)(self.root, _merge(dict(DEFAULTS), raw), sources, self.env,
+                          documents)
+
+    def setting_source(self, key: str, product: str | None = None) -> str:
+        """Name the source documents that contribute the resolved saved value."""
+        project_has_override = product is not None and key in product_configuration(
+            self.data, product
+        )[0]
+        resolved_lock = (
+            product_configuration(self.data, product)[1].get(key)
+            if product is not None
+            else None
+        )
+        policy_supplies_value = isinstance(resolved_lock, dict) and "value" in resolved_lock
+        owners: Any = None
+        last_present_source = "default"
+        for name, document in self.source_documents:
+            if policy_supplies_value:
+                _, locks = product_configuration(document, product or "")
+                policy = locks.get(key)
+                present = isinstance(policy, dict) and "value" in policy
+                value = policy.get("value") if present else None
+            elif project_has_override:
+                overrides, _ = product_configuration(document, product or "")
+                present = key in overrides
+                value = overrides.get(key)
+            else:
+                present, value = _value_at(document, key)
+            if not present:
+                continue
+            owners = _merge_source_owners(owners, value, name)
+            last_present_source = name
+
+        contributing = _owner_names(owners) or {last_present_source}
+        names = [name for name, _ in self.source_documents if name in contributing]
+        return " + ".join(names) if names else "default"
 
     def source_names(self) -> list[str]:
         """The garden.yaml / garden.<env>.yaml / garden.local.yaml file names this config is

@@ -35,7 +35,7 @@ def action(name: str) -> Callable[[TaskAction], TaskAction]:
 
 
 def register(app: FastAPI, site: Site) -> None:
-    from . import control, decisions, friction, phases, tasks
+    from . import configuration, control, decisions, friction, phases, tasks
 
-    for module in (control, tasks, decisions, phases, friction):
+    for module in (control, configuration, tasks, decisions, phases, friction):
         module.register(app, site)

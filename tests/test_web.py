@@ -15,6 +15,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from garden.config import Config
 from garden.github import GitHubError, PRInfo
 from garden.gitops import head_sha
 from garden.model import Status
@@ -2451,6 +2452,264 @@ def test_config_page_renders(garden):
     assert "Rounds and loop friction" in r.text
     assert "null</code> for unlimited automated rounds" in r.text
     assert "review_parallel" in r.text
+
+
+def test_config_editor_covers_metadata_and_saves_global_and_project_values(garden):
+    from garden.configuration import CONFIG_FIELDS, ConfigScope
+
+    c = client(garden)
+    page = c.get("/config").text
+    for key, field in CONFIG_FIELDS.items():
+        if ConfigScope.DERIVED not in field.scopes:
+            assert f'id="setting-{key.replace(".", "-")}"' in page
+            assert field.help in page
+
+    import re
+
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "review.ladder", "value": "[easy, hard]", "revision": token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).get("review.ladder") == ["easy", "hard"]
+
+    project_page = c.get("/config?product=demo").text
+    token = re.search(r'name="revision" value="([^"]+)"', project_page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "3", "product": "demo", "revision": token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).setting("max_parallel", "demo").value == 3
+    project_page = c.get("/config?product=demo").text
+    assert "Reset to inherited" in project_page
+    token = re.search(r'name="revision" value="([^"]+)"', project_page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "3", "product": "demo", "revision": token, "reset": "true"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).setting("max_parallel", "demo").source == "global"
+
+
+def test_config_editor_separates_editable_value_from_masking_overlay(garden, monkeypatch):
+    import re
+
+    monkeypatch.setenv("GARDEN_ENV", "work")
+    (garden / "garden.work.yaml").write_text("max_parallel: 7\n")
+    c = client(garden)
+    page = c.get("/config").text
+    setting = page.split('id="setting-max_parallel"', 1)[1].split("</section>", 1)[0]
+
+    assert "Editable value: <strong class=\"mono\">2</strong>" in setting
+    assert "source: <strong>garden.yaml</strong>" in setting
+    assert "effective now: <strong class=\"mono\">7</strong>" in setting
+    assert "from <strong>garden.work.yaml</strong>" in setting
+    assert "currently masks that value" in setting
+
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "4", "revision": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert yaml.safe_load((garden / "garden.yaml").read_text())["max_parallel"] == 4
+    assert Config.load(garden).get("max_parallel") == 7
+
+
+def test_config_editor_round_trips_empty_and_yaml_sensitive_strings(garden):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    values = {"operating_profile": "", "work_dir": "true", "upgrade.package": "a: b"}
+    data["operating_profile"] = values["operating_profile"]
+    data["work_dir"] = values["work_dir"]
+    data.setdefault("upgrade", {})["package"] = values["upgrade.package"]
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+
+    for key, value in values.items():
+        page = c.get("/config").text
+        token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+        response = c.post(
+            "/config/save", data={"key": key, "value": value, "revision": token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert Config.load(garden).get(key) == value
+
+
+@pytest.mark.parametrize("value", ["", "true", "123", "a: b"])
+def test_config_editor_round_trips_yaml_sensitive_string_or_list_scalars(garden, value):
+    import re
+
+    c = client(garden)
+    page = c.get("/config").text
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "upgrade.pip", "revision": token, "collection_kind": "scalar",
+              "collection_value": value},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert Config.load(garden).get("upgrade.pip") == value
+
+
+@pytest.mark.parametrize("value, kind, form_values", [
+    (None, "unset", []),
+    ("", "scalar", [""]),
+    ("uv pip", "scalar", ["uv pip"]),
+    (["uv", "pip"], "list", ["uv", "pip"]),
+])
+def test_config_editor_round_trips_optional_string_or_list_modes(
+    garden, value, kind, form_values,
+):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data.setdefault("upgrade", {})["pip"] = value
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+    page = c.get("/config").text
+    setting = page.split('id="setting-upgrade-pip"', 1)[1].split("</section>", 1)[0]
+    assert f'<option value="{kind}" selected>' in setting
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+
+    response = c.post(
+        "/config/save",
+        data={"key": "upgrade.pip", "revision": token, "collection_kind": kind,
+              "collection_value": form_values},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert Config.load(garden).get("upgrade.pip") == value
+
+
+def test_config_editor_saves_structured_list_and_mapping_rows(garden):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["budgets"] = {"demo": 5, "extension": {"soft": 2}}
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+    page = c.get("/config").text
+    assert "Add item" in page and "Add entry" in page
+    assert 'name="collection_key" value="demo"' in page
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "review.ladder", "revision": token, "collection_kind": "list",
+              "collection_value": ["easy", "hard"]},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).get("review.ladder") == ["easy", "hard"]
+
+    token = re.search(r'name="revision" value="([^"]+)"', c.get("/config").text).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "budgets", "revision": token, "collection_kind": "mapping",
+              "collection_key": ["demo", "extension"],
+              "collection_value": ["12.5", "{soft: 4, owner: ops}"]},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).get("budgets") == {
+        "demo": 12.5, "extension": {"soft": 4, "owner": "ops"},
+    }
+
+
+def test_config_editor_labels_scalar_union_values(garden):
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data.setdefault("observe", {})["phases"] = "active"
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    page = client(garden).get("/config").text
+    setting = page.split('id="setting-observe-phases"', 1)[1].split("</section>", 1)[0]
+    label_target = re.search(r'<label for="([^"]+)">', setting).group(1)
+    assert f'id="{label_target}" name="collection_value"' in setting
+    assert 'aria-describedby="config-help-' in setting
+    assert 'data-value-id="config-value-' in setting
+    assert 'data-help-id="config-help-' in setting
+
+    data["observe"]["phases"] = ["active", "done"]
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    list_setting = (
+        client(garden).get("/config").text.split('id="setting-observe-phases"', 1)[1]
+        .split("</section>", 1)[0]
+    )
+    assert f'data-value-id="{label_target}"' in list_setting
+    assert 'data-help-id="config-help-' in list_setting
+
+
+def test_config_editor_scalar_union_can_build_multi_item_list(garden):
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data.setdefault("observe", {})["phases"] = "active"
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    page = client(garden).get("/config").text
+    setting = page.split('id="setting-observe-phases"', 1)[1].split("</section>", 1)[0]
+    assert '<button type="button" data-add-row hidden disabled>Add item</button>' in setting
+    assert 'addButton.hidden = mode.value !== "list"' in page
+    assert 'addButton.disabled = mode.value !== "list"' in page
+    assert 'rows.appendChild(row)' in page
+
+
+def test_config_editor_rejects_stale_invalid_and_locked_edits_without_partial_save(garden):
+    import re
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["products"]["demo"]["configuration"] = {
+        "locks": {"max_parallel": {"reason": "Protect shared capacity", "value": 2}},
+    }
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    c = client(garden)
+    page = c.get("/config?product=demo").text
+    assert "Locked by project policy" in page and "Protect shared capacity" in page
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+
+    before = path.read_text()
+    locked = c.post(
+        "/config/save",
+        data={"key": "max_parallel", "value": "4", "product": "demo", "revision": token},
+        follow_redirects=False,
+    )
+    assert locked.status_code == 303 and path.read_text() == before
+    assert "Protect+shared+capacity" in locked.headers["location"]
+
+    invalid = c.post(
+        "/config/save",
+        data={"key": "review.ladder", "value": "[easy", "revision": token},
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 303 and path.read_text() == before
+
+    changed = yaml.safe_load(path.read_text())
+    changed["auto_revise"] = False
+    path.write_text(yaml.safe_dump(changed, sort_keys=False))
+    stale = c.post(
+        "/config/save",
+        data={"key": "auto_dispatch", "value": "false", "revision": token},
+        follow_redirects=False,
+    )
+    assert stale.status_code == 303
+    assert "changed+since" in stale.headers["location"]
+    assert Config.load(garden).get("auto_dispatch") is True
 
 
 def test_task_page_names_the_review_ladder_rung(garden):

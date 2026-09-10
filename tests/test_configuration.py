@@ -37,6 +37,78 @@ def configured() -> dict:
     }
 
 
+def test_config_reports_editable_and_layered_setting_sources(tmp_path, monkeypatch):
+    (tmp_path / "garden.yaml").write_text("max_parallel: 3\n")
+    (tmp_path / "garden.work.yaml").write_text("max_parallel: 5\n")
+    (tmp_path / "garden.local.yaml").write_text("max_parallel: 7\n")
+    monkeypatch.setenv("GARDEN_ENV", "work")
+
+    layered = Config.load(tmp_path)
+    editable = layered.editable()
+
+    assert editable.get("max_parallel") == 3
+    assert editable.setting_source("max_parallel") == "garden.yaml"
+    assert layered.get("max_parallel") == 7
+    assert layered.setting_source("max_parallel") == "garden.local.yaml"
+    assert layered.setting_source("auto_dispatch") == "default"
+
+
+def test_config_reports_only_surviving_mapping_contributors(tmp_path):
+    (tmp_path / "garden.yaml").write_text(
+        "budgets:\n  alpha: 10\n  replaced: 5\n"
+    )
+    (tmp_path / "garden.work.yaml").write_text("budgets:\n  replaced: 8\n")
+    (tmp_path / "garden.local.yaml").write_text("budgets:\n  replaced: 13\n")
+
+    config = Config.load(tmp_path, env="work")
+
+    assert config.get("budgets") == {"alpha": 10, "replaced": 13}
+    assert config.setting_source("budgets") == "garden.yaml + garden.local.yaml"
+
+
+def test_config_reports_winning_list_source(tmp_path):
+    (tmp_path / "garden.yaml").write_text("github:\n  reviewers: [alice]\n")
+    (tmp_path / "garden.local.yaml").write_text("github:\n  reviewers: [bob, cam]\n")
+
+    config = Config.load(tmp_path)
+
+    assert config.get("github.reviewers") == ["bob", "cam"]
+    assert config.setting_source("github.reviewers") == "garden.local.yaml"
+
+
+def test_plain_project_lock_keeps_inherited_value_source_separate(tmp_path):
+    (tmp_path / "garden.yaml").write_text(
+        "max_parallel: 3\nproducts:\n  demo:\n    configuration:\n"
+        "      locks:\n        max_parallel: capacity policy\n"
+    )
+    (tmp_path / "garden.work.yaml").write_text("max_parallel: 7\n")
+
+    config = Config.load(tmp_path, env="work")
+    provenance = config.setting("max_parallel", "demo")
+
+    assert provenance.locked and provenance.policy_source == (
+        "products.demo.configuration.locks"
+    )
+    assert config.setting_source("max_parallel", "demo") == "garden.work.yaml"
+
+
+def test_enforced_project_value_reports_its_policy_layer(tmp_path):
+    (tmp_path / "garden.yaml").write_text(
+        "max_parallel: 3\nproducts:\n  demo:\n    configuration:\n"
+        "      locks:\n        max_parallel:\n          reason: capacity policy\n"
+        "          value: 2\n"
+    )
+    (tmp_path / "garden.local.yaml").write_text(
+        "products:\n  demo:\n    configuration:\n      locks:\n"
+        "        max_parallel:\n          value: 1\n"
+    )
+
+    config = Config.load(tmp_path)
+
+    assert config.setting("max_parallel", "demo").value == 1
+    assert config.setting_source("max_parallel", "demo") == "garden.local.yaml"
+
+
 def test_metadata_inventory_describes_every_value_on_configuration_page():
     displayed = {
         "max_parallel", "review_parallel", "auto_dispatch", "auto_revise", "stack",

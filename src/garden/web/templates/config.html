@@ -9,6 +9,73 @@
   <div class="eyebrow">Release identity</div>
   <h3>Installed package</h3>
   <p class="muted" style="margin:0">Version <strong>{{ tool_build.get('installed_version', 'unknown') }}</strong> · installed source <span class="mono">{{ tool_build.get('active', '')[:12] or 'unknown' }}</span>. {% if tool_build.get('sha') %}Available source update: <span class="mono">{{ tool_build.sha[:12] }}</span> (not installed; not a published release).{% else %}No newer source update has been recorded by this scheduler.{% endif %}</p>
+  <div class="eyebrow" style="margin-top:18px">Saved configuration</div>
+  <h2 style="margin-bottom:6px">Settings</h2>
+  <p class="muted" style="margin:0 0 12px">Each save is validated and replaces <span class="mono">garden.yaml</span> atomically. Open forms carry a revision token, so a stale tab cannot overwrite a newer edit. Add, edit, or remove collection rows below; mapping values accept YAML scalars or nested values.</p>
+  {% if saved_pending %}<p class="warn" role="status"><strong>Saved changes are waiting to be adopted.</strong> The values below are on disk; “effective now” still reflects the scheduler’s accepted configuration. Restart-only fields need a process restart, and a safety-sensitive reload may be held while a run is active.</p>{% endif %}
+  <form method="get" action="/config" class="actions" style="margin-bottom:14px">
+    <label for="configuration-scope"><strong>Scope</strong></label>
+    <select id="configuration-scope" name="product" onchange="this.form.submit()">
+      <option value="" {% if not selected_product %}selected{% endif %}>Global garden</option>
+      {% for product in configuration_products %}<option value="{{ product }}" {% if selected_product == product %}selected{% endif %}>Project: {{ product }}</option>{% endfor %}
+    </select>
+    <noscript><button>Show</button></noscript>
+  </form>
+  <div class="config-editor">
+  {% for row in editor_rows %}
+    <section class="config-setting" id="setting-{{ row.field.key|replace('.', '-') }}">
+      <div class="config-setting-head">
+        <div><h3><code>{{ row.field.key }}</code></h3><p class="muted" id="config-help-{{ loop.index }}">{{ row.field.help }}</p></div>
+        <span class="pill">{{ row.field.apply.value|replace('_', ' ') }}</span>
+      </div>
+      <p class="metadata">
+        Editable value: <strong class="mono">{{ row.display }}</strong> · source: <strong>{{ row.source }}</strong>
+        · effective now: <strong class="mono">{{ row.effective }}</strong> from <strong>{{ row.effective_source }}</strong>
+        {% if row.field.units %} · units: {{ row.field.units }}{% endif %}
+      </p>
+      {% if row.masked %}<p class="warn" role="note">Saving this field changes <code>garden.yaml</code>, but <strong>{{ row.effective_source }}</strong> currently masks that value.</p>{% endif %}
+      {% if row.locked %}
+      <p class="warn" role="note"><strong>Locked by project policy.</strong> {{ row.reason }}{% if row.policy_source %} · {{ row.policy_source }}{% endif %}</p>
+      {% elif selected_product and not row.editable %}
+      <p class="muted">This setting is global-only. Switch to Global garden to edit it.</p>
+      {% else %}
+      <form method="post" action="/config/save" class="actions config-setting-form">
+        <input type="hidden" name="key" value="{{ row.field.key }}">
+        <input type="hidden" name="product" value="{{ selected_product }}">
+        <input type="hidden" name="revision" value="{{ config_revision }}">
+        <label for="config-value-{{ loop.index }}">Value for {{ row.field.key }}</label>
+        {% if row.field.value_type == "boolean" %}
+        <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}"><option value="true" {% if row.rendered == 'true' %}selected{% endif %}>true</option><option value="false" {% if row.rendered == 'false' %}selected{% endif %}>false</option></select>
+        {% elif row.choices %}
+        <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}">{% for choice in row.choices %}<option value="{{ choice }}" {% if row.rendered == choice|string %}selected{% endif %}>{{ choice if choice != '' else '(empty)' }}</option>{% endfor %}</select>
+        {% elif row.collection_kind %}
+        {% set setting_index = loop.index %}
+        {% if row.collection_choice %}<select {% if row.collection_kind == 'unset' %}id="config-value-{{ setting_index }}" aria-describedby="config-help-{{ setting_index }}" {% endif %}name="collection_kind" data-collection-mode aria-label="Value type for {{ row.field.key }}">{% if row.field.value_type.startswith('optional_') %}<option value="unset" {% if row.collection_kind == 'unset' %}selected{% endif %}>Unset</option>{% endif %}<option value="scalar" {% if row.collection_kind == 'scalar' %}selected{% endif %}>Single value</option><option value="list" {% if row.collection_kind == 'list' %}selected{% endif %}>List</option></select>{% endif %}
+        {% if row.collection_kind == "scalar" %}
+        <div data-collection-rows data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"><input id="config-value-{{ setting_index }}" name="collection_value" value="{{ row.rendered }}" aria-describedby="config-help-{{ setting_index }}"></div>
+        <button type="button" data-add-row hidden disabled>Add item</button>
+        {% elif row.collection_kind == "unset" %}
+        <div data-collection-rows data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"></div>
+        <button type="button" data-add-row hidden disabled>Add item</button>
+        {% elif row.collection_kind == "list" %}
+        {% if not row.collection_choice %}<input type="hidden" name="collection_kind" value="list">{% endif %}
+        <div data-collection-rows class="config-collection"{% if row.collection_choice %} data-value-id="config-value-{{ setting_index }}" data-help-id="config-help-{{ setting_index }}"{% endif %}>{% for item in row.list_items %}<div class="config-collection-row config-list-row"><input name="collection_value" value="{{ item }}" aria-label="Item {{ loop.index }}"><button type="button" data-remove-row aria-label="Remove item {{ loop.index }}">×</button></div>{% endfor %}</div>
+        <button type="button" data-add-row>Add item</button>
+        {% elif row.collection_kind == "mapping" %}
+        <input type="hidden" name="collection_kind" value="mapping">
+        <div data-collection-rows class="config-collection">{% for item in row.mapping_items %}<div class="config-collection-row"><input name="collection_key" value="{{ item.key }}" placeholder="Key" aria-label="Key {{ loop.index }}" required><input name="collection_value" value="{{ item.value }}" placeholder="Value" aria-label="Value for {{ item.key }}" required><button type="button" data-remove-row aria-label="Remove {{ item.key }}">×</button></div>{% endfor %}</div>
+        <button type="button" data-add-row>Add entry</button>
+        {% endif %}
+        {% else %}
+        <input id="config-value-{{ loop.index }}" name="value" type="{{ 'password' if row.field.secret else ('number' if 'integer' in row.field.value_type or row.field.value_type == 'number' else 'text') }}" value="{{ row.rendered }}" aria-describedby="config-help-{{ loop.index }}" {% if row.field.minimum is not none %}min="{{ row.field.minimum }}"{% endif %} {% if row.field.secret %}autocomplete="new-password" placeholder="Enter a replacement; saved value is hidden"{% endif %}>
+        {% endif %}
+        <button class="primary">Save</button>
+        {% if selected_product and row.overridden %}<button name="reset" value="true">Reset to inherited</button>{% endif %}
+      </form>
+      {% endif %}
+    </section>
+  {% endfor %}
+  </div>
 </div>
 
 {% if config_hold %}
@@ -218,4 +285,44 @@
   </dl>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll(".config-setting-form").forEach(form => {
+  const rows = form.querySelector("[data-collection-rows]");
+  if (!rows) return;
+  const mode = form.querySelector("[data-collection-mode]");
+  const addButton = form.querySelector("[data-add-row]");
+  const bindRemove = row => row.querySelector("[data-remove-row]")?.addEventListener("click", () => row.remove());
+  rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
+  addButton?.addEventListener("click", () => {
+    const mapping = form.querySelector('input[name="collection_kind"]')?.value === "mapping";
+    const row = document.createElement("div");
+    row.className = "config-collection-row" + (mapping ? "" : " config-list-row");
+    row.innerHTML = mapping
+      ? '<input name="collection_key" placeholder="Key" aria-label="New key" required><input name="collection_value" placeholder="Value" aria-label="Value for new key" required><button type="button" data-remove-row aria-label="Remove entry">×</button>'
+      : '<input name="collection_value" aria-label="New item"><button type="button" data-remove-row aria-label="Remove item">×</button>';
+    bindRemove(row); rows.appendChild(row); row.querySelector("input").focus();
+  });
+  mode?.addEventListener("change", () => {
+    const valueId = rows.dataset.valueId;
+    const helpId = rows.dataset.helpId;
+    mode.toggleAttribute("id", mode.value === "unset");
+    mode.toggleAttribute("aria-describedby", mode.value === "unset");
+    if (mode.value === "unset") {
+      mode.id = valueId;
+      mode.setAttribute("aria-describedby", helpId);
+    }
+    rows.innerHTML = mode.value === "list"
+      ? '<div class="config-collection-row config-list-row"><input name="collection_value" aria-label="Item 1"><button type="button" data-remove-row aria-label="Remove item 1">×</button></div>'
+      : mode.value === "scalar"
+        ? `<input id="${valueId}" name="collection_value" aria-describedby="${helpId}">`
+        : "";
+    rows.querySelectorAll(".config-collection-row").forEach(bindRemove);
+    addButton.hidden = mode.value !== "list";
+    addButton.disabled = mode.value !== "list";
+  });
+});
+</script>
 {% endblock %}
