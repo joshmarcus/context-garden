@@ -1679,9 +1679,8 @@ def test_review_brief_marks_an_amended_criterion(garden):
     assert "amended — The original was false." in text
 
 
-def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatch):
-    """A revise round with a blocking code finding is a real review round, so it keeps
-    the task's own tier rather than dropping to easy."""
+def test_revise_with_code_finding_escalates_task_tier(sched, fake_github, monkeypatch):
+    """A blocking code finding escalates the revision instead of dropping it to easy."""
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
@@ -1691,11 +1690,16 @@ def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatc
     assert "DM-001(revise)" in rep.dispatched
     run = sched.runs.latest("DM-001")
     assert run.mode == "revise"
-    assert run.model == "sonnet"  # the task's own (medium) tier
-    assert run.difficulty == "medium"
+    assert run.model == "opus"
+    assert run.difficulty == "hard"
     sched.store.invalidate()
     task = sched.store.task("DM-001")
+    assert task.difficulty == "hard"
     assert "description only; easy tier" not in task.body
+    escalation = sched.state.get("DM-001")["implementation_failure_escalations"][-1]
+    assert escalation["signal"] == "verification_rejected"
+    assert escalation["prior_tier"] == "medium" and escalation["new_tier"] == "hard"
+    assert escalation["prior_model"] == "sonnet" and escalation["model"] == "opus"
 
 
 def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):
