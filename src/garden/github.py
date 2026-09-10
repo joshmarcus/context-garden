@@ -386,26 +386,75 @@ class GitHub:
             wait = max(1, int(self._rate_limit_until - now))
             return "PENDING", [f"GitHub status unavailable; rate limit resets in {wait}s"]
         try:
+            rollup: list[dict[str, Any]] = []
+            errors: list[GitHubError] = []
             if self.gh:
-                checks_payload = json.loads(self._gh(
-                    "api", f"repos/{slug}/commits/{sha}/check-runs", "-X", "GET",
-                    "-f", "per_page=100",
-                ) or "{}")
-                status_payload = json.loads(self._gh(
-                    "api", f"repos/{slug}/commits/{sha}/status", "-X", "GET",
-                    "-f", "per_page=100",
-                ) or "{}")
+                try:
+                    payload = json.loads(self._gh(
+                        "api", f"repos/{slug}/commits/{sha}/check-runs", "-X", "GET",
+                        "-f", "per_page=100",
+                    ) or "{}")
+                    runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+                    rollup.extend({"name": item.get("name"),
+                                   "conclusion": item.get("conclusion"),
+                                   "state": item.get("status")} for item in runs)
+                except GitHubError as exc:
+                    errors.append(exc)
+                try:
+                    status_payload = json.loads(self._gh(
+                        "api", f"repos/{slug}/commits/{sha}/status", "-X", "GET",
+                        "-f", "per_page=100",
+                    ) or "{}")
+                    statuses = (status_payload.get("statuses", [])
+                                if isinstance(status_payload, dict) else [])
+                    rollup.extend({"name": item.get("context"), "state": item.get("state")}
+                                  for item in statuses)
+                except GitHubError as exc:
+                    errors.append(exc)
             else:
-                payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/check-runs",
-                                     params={"per_page": 100}) or {}
-                status_payload = self._rest("GET", f"/repos/{slug}/commits/{sha}/status",
-                                            params={"per_page": 100}) or {}
-            runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
-            rollup = [{"name": c.get("name"), "conclusion": c.get("conclusion"),
-                       "state": c.get("status")} for c in runs]
-            statuses = status_payload.get("statuses", []) if isinstance(status_payload, dict) else []
-            rollup.extend({"name": s.get("context"), "state": s.get("state")} for s in statuses)
-            state, failures = _rollup_state(rollup), _rollup_failed(rollup)
+                for suffix, field in (("check-runs", "check_runs"), ("status", "statuses")):
+                    try:
+                        items: list[dict[str, Any]] = []
+                        page = 1
+                        while True:
+                            payload = self._rest(
+                                "GET", f"/repos/{slug}/commits/{sha}/{suffix}",
+                                params={"per_page": 100, "page": page},
+                            ) or {}
+                            batch = payload.get(field, []) if isinstance(payload, dict) else []
+                            items.extend(batch)
+                            total = int(payload.get("total_count") or 0)
+                            if len(batch) < 100 or (total and len(items) >= total):
+                                break
+                            page += 1
+                        if field == "check_runs":
+                            rollup.extend({"name": item.get("name"),
+                                           "conclusion": item.get("conclusion"),
+                                           "state": item.get("status")} for item in items)
+                        else:
+                            rollup.extend({"name": item.get("context"),
+                                           "state": item.get("state")} for item in items)
+                    except GitHubError as exc:
+                        errors.append(exc)
+                        message = str(exc)
+                        if ("rate limit" in message.lower()
+                                or re.search(r"rate_limit_reset=(\d+)", message)):
+                            break
+            if rollup or not errors:
+                state, failures = _rollup_state(rollup), _rollup_failed(rollup)
+            else:
+                messages = [str(exc) for exc in errors]
+                reset = next((match for message in messages
+                              if (match := re.search(r"rate_limit_reset=(\d+)", message))), None)
+                if reset or any("rate limit" in message.lower() for message in messages):
+                    self._rate_limit_until = max(
+                        now + 10.0, float(reset.group(1)) if reset else now + 60.0,
+                    )
+                    state, failures = "PENDING", ["GitHub status unavailable; rate limited"]
+                else:
+                    states = [_check_error_state(exc) for exc in errors]
+                    state = "PERMISSION" if "PERMISSION" in states else "UNAVAILABLE"
+                    failures = []
             self._check_cache[key] = (now + 10.0, state, failures)
             return state, failures
         except (GitHubError, ValueError, TypeError, json.JSONDecodeError) as exc:
