@@ -433,16 +433,16 @@ def test_no_external_ci_policy_does_not_treat_absent_rollup_as_missing(sched, fa
     assert sched.state.get(task.id)["ci_missing"] is False
 
 
-def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched, fake_github):
+def test_worker_check_waits_independently_of_source_review_and_recovers(sched, fake_github):
     sched.cfg.data["ci"] = {"status_provider": "worker_check", "required": True,
                             "worker_check": {"command": "pytest -q"}}
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     sched.tick()
     rep = sched.tick()
-    assert "DM-001(review)" not in rep.dispatched
+    assert "DM-001(review)" in rep.dispatched
     st = sched.state.get("DM-001")
     assert st["ci_status"]["state"] == "missing"
-    assert st.get("pending_reviews")
+    assert not st.get("pending_reviews")
 
     work = next(run for run in sched.runs.runs_for("DM-001") if run.mode == "work")
     receipt = work.path / "validations" / "123" / "result.json"
@@ -455,6 +455,7 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
     rep = sched.tick()
     assert "DM-001(review)" not in rep.dispatched
     assert sched.state.get("DM-001")["ci_status"]["state"] == "malformed"
+    assert sched.state.get("DM-001")["last_review"]["verdict"] == "approve"
 
     requested = ["pytest", "-q"]
     effective = [*requested, *POLICY_ADDOPTS]
@@ -475,8 +476,9 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
     (receipt.parent / "exit_code").write_text("0")
     (receipt.parent / "stderr.log").write_text("")
     rep = sched.tick()
-    assert "DM-001(review)" in rep.dispatched
+    assert "DM-001(review)" not in rep.dispatched
     assert sched.state.get("DM-001")["ci_status"]["green"] is True
+    assert sched.state.get("DM-001")["review_rounds"] == 1
 
 
 def test_product_command_policy_selects_worker_receipt_for_exact_command(sched, fake_github):

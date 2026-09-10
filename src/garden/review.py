@@ -21,6 +21,7 @@ from .store import Store
 REVIEW_MARKER = "GARDEN_REVIEW:"
 
 IMPLEMENTATION_FAILURE = "implementation"
+PENDING_EXTERNAL_GATE = "external_gate"
 
 INTERACTION_PATHS = (
     "src/garden/browser.py", "src/garden/canary.py", "src/garden/checkrun.py",
@@ -478,12 +479,16 @@ source revision to repackage it.
 
 For a material UI, CLI, or workflow change, choose a direct verification of the named
 affected behavior when needed. Say what you inspected in `attestation`, `summary`, criterion
-reasons, or any optional evidence fields you find useful. An explicitly unmet criterion
-must remain visible and blocking. For every unmet criterion and blocking finding, set
-`failure_category` to exactly one of `implementation`, `infrastructure`, `admission`,
-`stale_check`, `unavailable_evidence`, or `owner_input`. Use `implementation` only when the
-reviewed source owns a defect or unmet required outcome; the other categories identify
-conditions that can still block review but must not escalate the author's model. Use
+reasons, or any optional evidence fields you find useful. An explicitly unmet source
+outcome or failed requirement must remain visible and blocking. For every unmet criterion and blocking finding, set
+`failure_category` to exactly one of `implementation`, `external_gate`, `infrastructure`,
+`admission`, `stale_check`, `unavailable_evidence`, or `owner_input`. Use `implementation`
+only when the reviewed source owns a defect or unmet required outcome. Use `external_gate`
+with `gate_state: "pending"` only for a source-bound merge requirement (such as exact-head
+CI) that has not finished yet: preserve that requirement, but approve source that is
+otherwise accepted because the controller independently enforces the gate before merge.
+The other categories identify conditions that can still block review but must not escalate
+the author's model. A failed external check is not pending; report the concrete failure. Use
 `findings` with severity `blocking` for changes needed before merge and `nit` for optional
 improvements. A missing `fix` field does not invalidate an otherwise clear finding.
 Description feedback is always advisory and must not be the sole reason for
@@ -492,7 +497,7 @@ Description feedback is always advisory and must not be the sole reason for
 End your final message with exactly one line. Only `verdict` is mechanically required;
 the other fields are optional and may be omitted when they add no value:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "attestation": "<what you tested or inspected and the result>", "criteria": [{{"criterion": "<criterion>", "met": true | false, "failure_category": "<required when met is false>", "evidence": "<optional evidence>", "reason": "<optional reason>"}}], "findings": [{{"severity": "blocking" | "nit", "failure_category": "<required when blocking>", "file": "<path or empty>", "line": <number or null>, "summary": "<concrete issue>", "fix": "<optional fix>"}}], "description_ok": true | false, "description_feedback": "<optional editorial advice>", "improvements": []}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "attestation": "<what you tested or inspected and the result>", "criteria": [{{"criterion": "<criterion>", "met": true | false, "failure_category": "<required when met is false>", "gate_state": "<pending only for external_gate>", "evidence": "<optional evidence>", "reason": "<optional reason>"}}], "findings": [{{"severity": "blocking" | "nit", "failure_category": "<required when blocking>", "file": "<path or empty>", "line": <number or null>, "summary": "<concrete issue>", "fix": "<optional fix>"}}], "description_ok": true | false, "description_feedback": "<optional editorial advice>", "improvements": []}}
 
 The JSON must be on one line.
 """
@@ -654,6 +659,8 @@ def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
         criterion for criterion in review.get("criteria") or []
         if isinstance(criterion, dict)
         and criterion.get("met") is False
+        and not (criterion.get("failure_category") == PENDING_EXTERNAL_GATE
+                 and criterion.get("gate_state") == "pending")
     ]
     findings = review.setdefault("findings", [])
     if not isinstance(findings, list):
@@ -667,9 +674,20 @@ def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
                              "fix": "Make the intended outcome pass or explain why the task should change.",
                              "failure_category": criterion.get("failure_category")})
     blocking = [finding for finding in findings
-                if isinstance(finding, dict) and finding.get("severity") == "blocking"]
+                if isinstance(finding, dict) and finding.get("severity") == "blocking"
+                and not (finding.get("failure_category") == PENDING_EXTERNAL_GATE
+                         and finding.get("gate_state") == "pending")]
     if unmet or blocking:
         review["verdict"] = "request_changes"
+    elif review.get("verdict") == "request_changes" and any(
+        isinstance(item, dict)
+        and item.get("failure_category") == PENDING_EXTERNAL_GATE
+        and item.get("gate_state") == "pending"
+        for item in [*(review.get("criteria") or []), *findings]
+    ):
+        # The typed pending requirement remains visible in the review record. It is not
+        # author work; exact-head merge eligibility continues to enforce it independently.
+        review["verdict"] = "approve"
     elif review.get("description_ok") is False:
         # Editorial presentation is useful advice, but it cannot send correct source through
         # an unchanged implementation round.
@@ -692,7 +710,9 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
     if criteria:
         out.append("\n**Acceptance criteria**")
         for c in criteria:
-            mark = "✅" if c.get("met") is True else "❌"
+            pending_gate = (c.get("failure_category") == PENDING_EXTERNAL_GATE
+                            and c.get("gate_state") == "pending")
+            mark = "✅" if c.get("met") is True else "⏳" if pending_gate else "❌"
             out.append(f"- {mark} {c.get('criterion', '')}" + (f" — {c['reason']}" if c.get("reason") else ""))
     interaction = rev.get("interaction")
     unverified = (interaction.get("unverified") or []) if isinstance(interaction, dict) else []
@@ -703,12 +723,18 @@ def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
         out.append("\n**Limitations and follow-ups**")
         out += [f"- {item}" for item in limitations]
     findings = [f for f in (rev.get("findings") or []) if isinstance(f, dict)]
-    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    waiting = [f for f in findings if f.get("severity") == "blocking"
+               and f.get("failure_category") == PENDING_EXTERNAL_GATE
+               and f.get("gate_state") == "pending"]
+    blocking = [f for f in findings if f.get("severity") == "blocking" and f not in waiting]
     high = [f for f in findings if f.get("severity") == "high"]
     nits = [f for f in findings if f.get("severity") not in ("blocking", "high")]
     if blocking:
         out.append("\n**Blocking**")
         out += [_finding_line(f) for f in blocking]
+    if waiting:
+        out.append("\n**Waiting for external gate**")
+        out += [_finding_line(f) for f in waiting]
     if high:
         out.append("\n**High priority**")
         out += [_finding_line(f) for f in high]
