@@ -356,6 +356,8 @@ DEFAULTS: dict[str, Any] = {
         "trusted_origins": [],    # origins besides the server's own loopback host whose POSTs
                                   # `garden serve` accepts, e.g. [https://garden.internal] behind a
                                   # reverse proxy, or a LAN address the browser reaches it by
+        "operator_token_env": "", # operator bearer token; required beyond loopback
+        "worker_ingress": False,  # require it on a loopback bind published to remote workers
     },
     "observe": {
         "interval": "30m",        # `garden observe --follow`: seconds between passes (30m, 2h, ... or a bare number of seconds)

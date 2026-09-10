@@ -3451,6 +3451,79 @@ def test_trusted_origins_from_config_are_accepted(garden):
     assert c.post("/tick", headers={"Origin": "https://other.internal"}, follow_redirects=False).status_code == 403
 
 
+def test_exposed_listener_separates_worker_and_operator_authority(garden, monkeypatch):
+    import yaml
+
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["web"] = {"operator_token_env": "TEST_OPERATOR_TOKEN"}
+    cfg["workers"] = {"hosts": [{"name": "build-1", "token_env": "TEST_WORKER_TOKEN"}]}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    monkeypatch.setenv("TEST_OPERATOR_TOKEN", "operator-secret")
+    monkeypatch.setenv("TEST_WORKER_TOKEN", "worker-secret")
+    c = TestClient(create_app(Store(garden), watch=False, host="0.0.0.0"))
+
+    assert c.get("/healthz").status_code == 200
+    missing = c.get("/api/tasks")
+    assert missing.status_code == 401
+    assert missing.headers["WWW-Authenticate"] == "Bearer"
+    assert missing.text == "operator authentication required"
+    # Neither a worker credential nor proxy headers can confer operator authority.
+    spoofed = {"Authorization": "Bearer worker-secret", "X-Forwarded-For": "127.0.0.1",
+               "X-Forwarded-Host": "localhost", "X-Forwarded-Proto": "http"}
+    assert c.get("/api/tasks", headers=spoofed).status_code == 403
+    assert c.post("/tick", headers=spoofed, follow_redirects=False).status_code == 403
+    operator = {"Authorization": "Bearer operator-secret"}
+    assert c.get("/api/tasks", headers=operator).status_code == 200
+    assert c.post("/tick", headers=operator, follow_redirects=False).status_code == 303
+    # The operator token is a different authority and is refused at worker ingress.
+    assert c.post("/api/runs/claim", headers=operator, json={}).status_code == 403
+
+
+def test_exposed_listener_requires_configured_operator_auth(garden):
+    import pytest
+
+    with pytest.raises(RuntimeError, match="operator authentication is required"):
+        create_app(Store(garden), watch=False, host="0.0.0.0")
+
+
+def test_exposed_listener_rejects_shared_operator_and_worker_secret(garden, monkeypatch):
+    import pytest
+    import yaml
+
+    cfg = yaml.safe_load((garden / "garden.yaml").read_text())
+    cfg["web"] = {"operator_token_env": "TEST_SHARED_TOKEN"}
+    cfg["workers"] = {"hosts": [{"name": "build-1", "token_env": "TEST_SHARED_TOKEN"}]}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(cfg))
+    monkeypatch.setenv("TEST_SHARED_TOKEN", "shared-secret")
+    with pytest.raises(RuntimeError, match="must be different"):
+        create_app(Store(garden), watch=False, host="0.0.0.0")
+
+
+def test_web_route_policy_fails_closed_for_additions(garden, monkeypatch):
+    import pytest
+
+    from garden.web import app as web_app
+
+    original_register = web_app.pages.register
+
+    def register_with_unclassified_route(app, site):
+        original_register(app, site)
+
+        @app.get("/api/new-control")
+        def new_control():
+            return {"ok": True}
+
+    with pytest.raises(RuntimeError, match="not classified"):
+        monkeypatch.setattr(web_app.pages, "register", register_with_unclassified_route)
+        create_app(Store(garden), watch=False)
+
+
+def test_loopback_listener_keeps_explicit_local_only_mode(garden):
+    c = TestClient(create_app(Store(garden), watch=False, host="127.0.0.1"))
+    assert c.get("/api/tasks").status_code == 200
+    assert c.post("/tick", follow_redirects=False).status_code == 303
+
+
 def test_origin_check_resists_dns_rebinding(garden):
     """The allowlist is the bound address, not the request's Host: a page whose name was
     rebound to the loopback address carries its own Origin, which is not a bound one, so its
