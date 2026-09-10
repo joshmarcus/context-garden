@@ -97,6 +97,26 @@ def test_fresh_materialization_recheck_detects_growing_usage(sched, monkeypatch)
         sched._recheck_local_materialization(run, "checkout materialization")
 
 
+def test_disk_growth_during_dispatch_closes_reservation_and_leaves_task_queued(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    readings = iter((30 << 30, 19 << 30))
+    import garden.scheduler.resources as resources
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", next(readings)),
+    ))
+    task = sched.store.task("DM-001")
+
+    with pytest.raises(ResourcePressureError, match="work checkout materialization"):
+        sched.dispatch(task)
+
+    run = sched.runs.latest(task.id)
+    assert run is not None and run.status == "failed" and run.pid is None
+    assert task.status.value == "ready" and task.attempts == 0
+    finished = [event for event in sched.events.read()
+                if event["kind"] == "run_finished" and event.get("run") == run.run_id]
+    assert len(finished) == 1
+
+
 def _claim_slot(root: str, start, outcomes) -> None:
     from garden.scheduler import Scheduler
     from garden.store import Store
