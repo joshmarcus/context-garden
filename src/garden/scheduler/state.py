@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import gzip
+import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +209,119 @@ class State:
             self.data[task_id] = ts
             return ts
         return existing
+
+    # These values grow with review history but are not control-plane inputs once a task is
+    # terminal.  They remain losslessly available through ``historical`` and are restored
+    # before a task is allowed to become operational again.
+    HISTORICAL_KEYS = frozenset({
+        "feedback_ignored", "persona_reviews", "rebase_artifacts", "review_feedback_history",
+        "review_heads", "stashes", "verification_advisories",
+    })
+
+    @property
+    def history_dir(self) -> Path:
+        return self.path.parent / "state-history"
+
+    def _history_index(self) -> dict[str, Any]:
+        path = self.history_dir / "index.json"
+        if not path.exists():
+            return {"version": 1, "tasks": {}}
+        value = json.loads(path.read_text())
+        if value.get("version") != 1 or not isinstance(value.get("tasks"), dict):
+            raise StateCorruptionError(f"scheduler state history index is corrupt: {path}")
+        return value
+
+    def historical(self, task_id: str) -> _TaskState:
+        """Return one task's complete state without scanning other historical payloads."""
+        current = dict(self.get(task_id))
+        reference = current.get("_history_ref")
+        if not isinstance(reference, dict):
+            return _TaskState(current)
+        sha = str(reference.get("sha256") or "")
+        blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+        try:
+            raw = gzip.decompress(blob.read_bytes())
+        except (OSError, EOFError, gzip.BadGzipFile) as exc:
+            raise StateCorruptionError(f"scheduler state history blob is unavailable: {sha}") from exc
+        if hashlib.sha256(raw).hexdigest() != sha:
+            raise StateCorruptionError(f"scheduler state history checksum mismatch: {sha}")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise StateCorruptionError(f"scheduler state history payload is corrupt: {sha}")
+        return _TaskState({**payload, **current})
+
+    def restore_operational(self, task_ids: set[str]) -> int:
+        """Rehydrate archived fields for tasks that may participate in scheduling again."""
+        restored = 0
+        for task_id in task_ids:
+            current = self.get(task_id)
+            if "_history_ref" not in current:
+                continue
+            complete = self.historical(task_id)
+            current.pop("_history_ref", None)
+            current.update({key: value for key, value in complete.items() if key in self.HISTORICAL_KEYS})
+            restored += 1
+        return restored
+
+    def archive_completed(self, task_ids: set[str], *, limit: int) -> dict[str, int]:
+        """Move bounded terminal-task payloads to a durable, indexed compressed CAS."""
+        report = {"tasks": 0, "logical_bytes": 0, "stored_bytes": 0}
+        if limit <= 0:
+            return report
+        lock_path = self.path.parent / "state-history.lock"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            index = self._history_index()
+            for task_id in sorted(task_ids):
+                if report["tasks"] >= limit:
+                    break
+                current = self.get(task_id)
+                payload = {key: current[key] for key in self.HISTORICAL_KEYS if key in current}
+                if not payload:
+                    continue
+                raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+                sha = hashlib.sha256(raw).hexdigest()
+                blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+                blob.parent.mkdir(parents=True, exist_ok=True)
+                if not blob.exists():
+                    compressed = gzip.compress(raw, mtime=0)
+                    self._durable_bytes(blob, compressed)
+                    # Verify the production reader before publishing a reference.
+                    if gzip.decompress(blob.read_bytes()) != raw:
+                        raise StateCorruptionError(f"scheduler state history verification failed: {sha}")
+                index["tasks"][task_id] = {"sha256": sha, "keys": sorted(payload)}
+                self._durable_bytes(
+                    self.history_dir / "index.json",
+                    (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
+                )
+                current["_history_ref"] = index["tasks"][task_id]
+                for key in payload:
+                    current.pop(key, None)
+                report["tasks"] += 1
+                report["logical_bytes"] += len(raw)
+                report["stored_bytes"] += blob.stat().st_size
+            # The archive and its index are durable before compact references replace data.
+            self.save()
+        return report
+
+    @staticmethod
+    def _durable_bytes(path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}-", delete=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+            staged = Path(stream.name)
+        os.replace(staged, path)
+        try:
+            descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            pass
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -148,7 +148,7 @@ def register(app: FastAPI, site: Site) -> None:
         rs = RunStore(s.config.garden_dir)
         runs = rs.runs_for(t.id)
         latest_run = rs.latest(t.id)
-        st = State(s.config.garden_dir / "state.json").get(t.id)
+        st = State(s.config.garden_dir / "state.json").historical(t.id)
         manual_return_guard = hub.reader().manual_return_guard(t)
         _, log = split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
