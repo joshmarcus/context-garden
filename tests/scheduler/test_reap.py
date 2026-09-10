@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from garden import gitops
 from garden.model import Status
 from garden.preflight import PREFLIGHT_ITEMS
@@ -15,7 +17,9 @@ from garden.review import review_brief
 from garden.runner.base import run_setup, setup_marker
 from garden.runner.manual import ManualRunner
 from garden.scheduler.report import TickReport
+from garden.scheduler.resources import ResourcePressureError
 from garden.scheduler.snapshot import write_snapshot
+from garden.storage import StorageVolume
 from tests.conftest import git, write
 from tests.scheduler.conftest import make_idle, statuses
 
@@ -342,6 +346,32 @@ def test_missing_setup_command_in_real_base_probe_uses_bounded_check_recovery(sc
             "details": probe.result["checks"][0]["details"],
             "origin": "infrastructure", "exit_code": 127, "unavailable": True,
         }]
+
+
+def test_base_probe_low_space_denial_precedes_git_staging(sched, monkeypatch):
+    """The base-probe reservation is acquired before fetch or worktree writes."""
+    sched.cfg.data["stack"] = False
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    monkeypatch.setattr("garden.scheduler.resources.measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", 19 << 30),
+    ))
+    task = sched.store.task("DM-001")
+    branch, base = task.default_branch(), "main"
+    worktree = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), branch, base)
+    writes: list[str] = []
+    monkeypatch.setattr(gitops, "fetch", lambda *_args, **_kwargs: writes.append("fetch"))
+    monkeypatch.setattr(gitops, "remove_worktree", lambda *_args, **_kwargs: writes.append("remove"))
+    monkeypatch.setattr(gitops, "add_detached_worktree", lambda *_args, **_kwargs: writes.append("add"))
+
+    with pytest.raises(ResourcePressureError, match="local filesystem has"):
+        sched._handle_failed_checks(
+            task, None, worktree, branch, base,
+            [{"name": "guard", "status": "fail", "summary": "exit 1", "details": ""}],
+            TickReport(), {"cost": 0.0, "diff_h": "", "body_h": ""},
+        )
+
+    assert writes == []
+    assert not sched.runs.runs_for(task.id)
 
 
 def test_recreated_base_probe_reruns_setup_through_check_payload(sched, fake_github, tmp_path):
