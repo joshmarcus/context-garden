@@ -3,15 +3,234 @@
 from __future__ import annotations
 
 import json
+import time
+from itertools import chain
+from pathlib import Path
 from typing import Any
 
+from .. import gitops
 from ..branch_cleanup import BranchDisposition, classify_branches, delete_disposition
 from ..github import GitHubError
-from ..model import now_iso
+from ..model import Status, now_iso
+from ..storage_cleanup import (
+    DISPOSABLE_HOME_PATHS,
+    StorageItem,
+    cleanup_home_caches,
+    owned_child,
+    remove_owned_tree,
+    space_status,
+    tree_bytes,
+    write_audit,
+)
 from .report import TickReport
 
 
 class CleanupMixin:
+    def storage_inventory(self, *, measure: bool = True) -> dict[str, Any]:
+        """Account for bounded Garden-owned worktrees, isolated homes and run temp data."""
+        self.runs.invalidate()
+        self.store.invalidate_tasks()
+        tasks = self.store.tasks()
+        runs = self.runs.all_runs()
+        active = {run.task_id for run in self.runs.active()}
+        runs_by_worktree_name: dict[str, list[Any]] = {}
+        for run in runs:
+            if run.worktree:
+                runs_by_worktree_name.setdefault(Path(run.worktree).name, []).append(run)
+        branch_rows = {(row.product, row.branch): row for row in self.branch_cleanup_inventory()}
+        keep_days = float(self.cfg.get("worktrees.keep_days", 2) or 0)
+        home_keep_days = float(self.cfg.get("storage_cleanup.home_keep_days", keep_days) or 0)
+        now = time.time()
+        items: list[StorageItem] = []
+        inventory_limit = int(self.cfg.get("storage_cleanup.inventory_limit", 2000) or 0)
+        truncated = False
+
+        def size(path: Path) -> int:
+            return tree_bytes(path) if measure else 0
+
+        roots = {self.cfg.worktrees_dir, self.cfg.garden_dir / "worktrees"}
+        for root in roots:
+            if not root.is_dir() or root.is_symlink():
+                continue
+            for path in sorted(root.iterdir()):
+                if len(items) >= inventory_limit:
+                    truncated = True
+                    break
+                if path.is_symlink():
+                    items.append(StorageItem(str(path), "foreign/link", "unknown", 0, False,
+                                             "symlink is never followed"))
+                    continue
+                if not path.is_dir():
+                    continue
+                if path.name.startswith(".garden-home-"):
+                    worktree_name = path.name.removeprefix(".garden-home-")
+                    matching_runs = runs_by_worktree_name.get(worktree_name, [])
+                    task_id = matching_runs[-1].task_id if matching_runs else worktree_name
+                    task = tasks.get(task_id)
+                    worktree = root / worktree_name
+                    age = self._storage_age_days(path, now)
+                    terminal_owner = bool(task and task.status.terminal) or bool(
+                        matching_runs and all(run.status not in ("requested", "preparing", "running")
+                                              and run.completion_mode == "managed" for run in matching_runs)
+                    )
+                    eligible = bool(terminal_owner and task_id not in active and not worktree.exists()
+                                    and age >= home_keep_days)
+                    disposable = any((path / relative).is_dir() and not (path / relative).is_symlink()
+                                     for relative in DISPOSABLE_HOME_PATHS)
+                    eligible = eligible and disposable
+                    reason = ("completed task has no remaining worktree; disposable caches eligible" if eligible
+                              else "no disposable cache; private data retained" if terminal_owner and not disposable
+                              else self._home_retention_reason(task, task_id, active, worktree, age, home_keep_days))
+                    items.append(StorageItem(str(path), "worker_home", task_id, size(path), eligible, reason))
+                    continue
+                task = tasks.get(path.name)
+                if task is None:
+                    items.append(StorageItem(str(path), "worktree", "unknown", size(path), False,
+                                             "no Garden task provenance"))
+                    continue
+                eligible, reason = self._worktree_disposition(task, path, active, branch_rows, now, keep_days)
+                items.append(StorageItem(str(path), "worktree", task.id, size(path), eligible, reason))
+                if task.status.terminal and task.id not in active:
+                    caches = chain((path / ".venv", path / ".pytest_cache"), path.rglob("__pycache__"))
+                    for cache in caches:
+                        if len(items) >= inventory_limit:
+                            truncated = True
+                            break
+                        if cache.is_dir() and not cache.is_symlink():
+                            items.append(StorageItem(str(cache), "worktree_cache", task.id,
+                                                     size(cache), True,
+                                                     "disposable cache in inactive terminal worktree"))
+        tmp_root = self.cfg.work_dir / "tmp"
+        known_runs = {run.run_id: run for run in self.runs.all_runs()}
+        if tmp_root.is_dir() and not tmp_root.is_symlink():
+            for path in sorted(tmp_root.iterdir()):
+                if len(items) >= inventory_limit:
+                    truncated = True
+                    break
+                if not path.is_dir() or path.is_symlink():
+                    continue
+                run = known_runs.get(path.name)
+                eligible = bool(run and run.status != "running" and run.process_finished())
+                reason = ("terminal local run" if eligible else
+                          "active run" if run and run.status == "running" else
+                          "no terminal Garden run provenance")
+                items.append(StorageItem(str(path), "run_temp", run.task_id if run else "unknown",
+                                         size(path), eligible, reason))
+        return {"space": space_status(self.cfg.work_dir, probe_host=measure),
+                "items": [item.to_dict() for item in items],
+                "truncated": truncated, "inventory_limit": inventory_limit,
+                "bytes": {category: sum(item.bytes for item in items if item.category == category)
+                          for category in sorted({item.category for item in items})}}
+
+    @staticmethod
+    def _storage_age_days(path: Path, now: float) -> float:
+        try:
+            return max(0.0, (now - path.stat(follow_symlinks=False).st_mtime) / 86400)
+        except OSError:
+            return 0.0
+
+    @staticmethod
+    def _home_retention_reason(task: Any, task_id: str, active: set[str], worktree: Path,
+                               age: float, keep_days: float) -> str:
+        if task is None:
+            return "no Garden task provenance; private data retained"
+        if task_id in active:
+            return "active or queued run"
+        if not task.status.terminal:
+            return f"task is {task.status.value}"
+        if worktree.exists():
+            return "worktree must be reconciled first"
+        if age < keep_days:
+            return f"retained for {keep_days:g} days"
+        return "uncertain ownership"
+
+    def _worktree_disposition(self, task: Any, path: Path, active: set[str],
+                              branches: dict[tuple[str, str], BranchDisposition], now: float,
+                              keep_days: float) -> tuple[bool, str]:
+        if task.id in active or self._manual_reserved(task):
+            return False, "active, queued or manually reserved run"
+        if task.status not in (Status.DONE, Status.CANCELLED):
+            return False, f"task is {task.status.value}"
+        if str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place":
+            return False, "canonical/external checkout ownership"
+        if gitops.has_uncommitted_changes(path):
+            return False, "dirty worktree"
+        age = self._storage_age_days(path, now)
+        if age < keep_days:
+            return False, f"retained for {keep_days:g} days"
+        row = branches.get((task.product, task.branch)) if task.branch else None
+        checked_out_only = bool(row and row.classification == "needed"
+                                and row.reason == "the branch is checked out in a worktree")
+        if row and row.classification == "needed" and not checked_out_only:
+            return False, f"branch retained: {row.reason}"
+        if row is None or row.classification == "uncertain" or checked_out_only:
+            try:
+                base = gitops.base_ref(path, self.cfg.product_base_branch(task.product))
+                if not gitops.is_ancestor(path, "HEAD", base):
+                    detail = f": {row.reason}" if row else ""
+                    return False, f"worktree head has unique unmerged commits{detail}"
+            except gitops.GitError as exc:
+                return False, f"Git ownership could not be proven: {exc}"
+        return True, "clean terminal worktree with preserved/reachable head"
+
+    def sweep_storage(self, rep: TickReport, *, apply: bool = True,
+                      limit: int | None = None, measure: bool = True) -> dict[str, Any]:
+        """Preview or incrementally reclaim eligible storage, with immediate rechecks."""
+        limit = int(self.cfg.get("storage_cleanup.limit", 20) or 0) if limit is None else max(0, limit)
+        before = self.storage_inventory(measure=measure)
+        results: list[dict[str, Any]] = []
+        if apply:
+            for item in before["items"]:
+                if len(results) >= limit or not item["eligible"]:
+                    continue
+                path = Path(str(item["path"]))
+                current = next((row for row in self.storage_inventory(measure=False)["items"]
+                                if row["path"] == str(path)), None)
+                if not current or not current["eligible"]:
+                    results.append({"path": str(path), "outcome": "retained",
+                                    "reason": current["reason"] if current else "ownership changed"})
+                    continue
+                if item["category"] == "worktree":
+                    task = self.store.task(str(item["owner"]))
+                    size = tree_bytes(path)
+                    gitops.remove_worktree(self.repo_for(task), path)
+                    outcome = "removed" if not path.exists() else "failed"
+                    results.append({"path": str(path), "outcome": outcome,
+                                    "bytes_reclaimed": size if outcome == "removed" else 0,
+                                    **({"error": "worktree remained after Git removal"} if outcome == "failed" else {})})
+                elif item["category"] == "worker_home":
+                    remaining = limit - len(results)
+                    results.extend(cleanup_home_caches(path, path.parent, limit=remaining))
+                elif item["category"] == "run_temp":
+                    size = tree_bytes(path)
+                    try:
+                        reclaimed = remove_owned_tree(path.parent, path)
+                        results.append({"path": str(path), "outcome": "removed",
+                                        "bytes_reclaimed": reclaimed})
+                    except (OSError, ValueError) as exc:
+                        results.append({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
+                                        "bytes_before": size, "error": str(exc)})
+                elif item["category"] == "worktree_cache":
+                    size = tree_bytes(path)
+                    try:
+                        root = next(root for root in (self.cfg.worktrees_dir,
+                                                     self.cfg.garden_dir / "worktrees")
+                                    if owned_child(root, path))
+                        reclaimed = remove_owned_tree(root, path)
+                        results.append({"path": str(path), "outcome": "removed",
+                                        "bytes_reclaimed": reclaimed})
+                    except (OSError, ValueError) as exc:
+                        results.append({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
+                                        "bytes_before": size, "error": str(exc)})
+        report = {"at": now_iso(), "preview": not apply, "limit": limit, "inventory": before,
+                  "results": results, "bytes_reclaimed": sum(int(row.get("bytes_reclaimed", 0)) for row in results)}
+        audit_keep = int(self.cfg.get("storage_cleanup.audit_keep", 20) or 1)
+        report["audit_path"] = str(write_audit(self.cfg.garden_dir, report, keep=audit_keep))
+        self.state.get("__storage_cleanup__")["last_sweep"] = report
+        for row in results:
+            rep.transitions.append(f"{row['path']}: storage cleanup {row['outcome']}")
+        return report
+
     def _branch_cleanup_remote(self) -> str:
         return str(self.cfg.get("branches.remote", "origin") or "origin")
 

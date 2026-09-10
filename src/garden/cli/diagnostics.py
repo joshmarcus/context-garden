@@ -129,6 +129,37 @@ def cleanup_branches(
             console.print(f"{result['branch']}: {result['outcome']}")
 
 
+@app.command("cleanup-storage", rich_help_panel=PANEL_DIAG)
+def cleanup_storage(
+    apply: bool = typer.Option(False, "--apply", help="Remove eligible items after guarded rechecks."),
+    limit: int = typer.Option(20, min=1, help="Maximum directories/caches to process."),
+):
+    """Inventory Garden-owned local storage and optionally sweep eligible leftovers.
+
+    Preview is the default. Active, dirty, unique, external and recovery-owned work is
+    retained with a concrete reason; each invocation writes a durable JSON audit record.
+    """
+    from ..scheduler import State
+    from ..scheduler.report import TickReport
+
+    store = _store()
+    scheduler = _scheduler(store)
+    with scheduler.tick_lock():
+        store.invalidate_tasks()
+        scheduler.state = State(scheduler.state.path)
+        report = scheduler.sweep_storage(TickReport(), apply=apply, limit=limit)
+        scheduler.state.save()
+    table = Table("category", "bytes", "eligible", "path", "reason")
+    for row in report["inventory"]["items"]:
+        table.add_row(str(row["category"]), str(row["bytes"]), "yes" if row["eligible"] else "no",
+                      str(row["path"]), str(row["reason"]))
+    console.print(table)
+    space = report["inventory"]["space"]
+    console.print(f"guest free: {space.get('guest_free_bytes')} bytes; "
+                  f"host free: {space.get('host_free_bytes')} bytes ({space.get('host_reason')})")
+    console.print(f"reclaimed {report['bytes_reclaimed']} bytes; audit: {report['audit_path']}")
+
+
 @app.command("restore-run", rich_help_panel=PANEL_DIAG)
 def restore_run(task_id: str, run_id: str):
     """Restore one archived run to the active run directory for recovery work."""
