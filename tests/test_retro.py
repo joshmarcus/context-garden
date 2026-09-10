@@ -22,7 +22,7 @@ from garden.retro import (
     render_retro_doc,
     resolve_features,
 )
-from garden.scheduler import Scheduler
+from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
 from tests.conftest import FAKE_CLAUDE
 
@@ -915,6 +915,69 @@ def _retro_entry(sched: Scheduler, phase_key: str) -> dict:
     """tick() replaces `sched.state` with a fresh read from disk, so a dict handed back by
     `start_retro` before a tick is a stale copy afterwards; re-fetch it from the live list."""
     return next(e for e in sched._retro_list() if e["phase"] == phase_key)
+
+
+def test_auto_closing_review_waits_for_terminal_tasks_and_is_idempotently_queued(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    sched.cfg.data["retro"]["auto_start"] = True
+    status = sched.closing_review_status(phase)
+    assert not status["eligible"] and "non-terminal tasks" in status["reason"]
+
+    for task in phase.tasks:
+        task.status = task.status.CANCELLED
+        sched.store.save(task)
+    sched.store.invalidate_tasks()
+    phase = sched.store.phase("demo", "p1")
+    monkeypatch.setattr(sched, "_self_product", lambda: "demo")
+    rep = TickReport()
+    sched.queue_eligible_closing_reviews(rep)
+    sched.queue_eligible_closing_reviews(rep)
+
+    entries = [entry for entry in sched._retro_list() if entry["phase"] == phase.key]
+    assert len(entries) == 1
+    assert entries[0]["stage"] == "queued"
+    assert entries[0]["source"]
+    assert rep.transitions == ["retro demo/p1 queued"]
+
+
+def test_auto_closing_review_exposes_freeze_prerequisite_and_owner_holds(sched):
+    phase = sched.store.phase("demo", "p1")
+    sched.cfg.data["retro"].update({
+        "auto_start": True,
+        "prerequisites": {"demo/p1": ["demo/p2"]},
+        "require_owner_approval": True,
+    })
+    sched.store.set_phase_frozen(phase, "owner hold")
+    phase = sched.store.phase("demo", "p1")
+    status = sched.closing_review_status(phase)
+    assert not status["eligible"]
+    assert "phase frozen" in status["reason"]
+    assert "prerequisite demo/p2 is not closed" in status["reason"]
+    assert "owner approval is required" in status["reason"]
+
+
+def test_manual_start_claims_an_automatically_queued_review(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {}, "no_file": False}
+    sched._retro_list().append(entry)
+    started = []
+    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append((ph.key, queued)))
+    assert sched.start_retro(phase) is entry
+    assert started == [(phase.key, entry)]
+
+
+def test_automatic_review_reuses_only_reports_for_its_accepted_source(sched):
+    phase = sched.store.phase("demo", "p1")
+    reviews = phase.path / "docs" / "reviews"
+    reviews.mkdir(parents=True, exist_ok=True)
+    report = reviews / "designer-2026-09-10.md"
+    report.write_text("review\n\n_garden phase source " + "a" * 40 + "_\n\n_garden persona run run-one_\n")
+    entry = {"personas": ["designer"], "automatic": True, "source": "b" * 40}
+    assert sched._reports_for_entry(phase, entry) == {}
+    entry["source"] = "a" * 40
+    assert sched._reports_for_entry(phase, entry) == {"designer": report}
 
 
 # ---- quota/pause handling in the retro flow (CG-227) --------------------------------------
