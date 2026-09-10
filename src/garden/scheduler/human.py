@@ -548,14 +548,18 @@ class HumanMixin:
         """Queue one preserved revision with the owner's distinct revised approach."""
         if not approach.strip():
             raise RuntimeError("the changed approach is required")
-        st = self.state.get(task.id)
-        info = st.get("needs_human")
-        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
-            raise RuntimeError(f"{task.id} has no troubled-task decision to change")
-        old_feedback = str(st.get("pending_feedback") or "").strip()
-        st["pending_feedback"] = (old_feedback + "\n\n## Owner-selected change of approach\n\n" + approach.strip()).strip()
-        st.setdefault("approach_changes", []).append({"at": now_iso(), "approach": approach.strip()})
-        self.continue_troubled(task, allowance=allowance)
+        if allowance <= 0 or allowance > 3:
+            raise RuntimeError("allowance must be between 1 and 3")
+        with self._controller_lock():
+            current, st = self._current_troubled_decision(task.id, action="change")
+            old_feedback = str(st.get("pending_feedback") or "").strip()
+            st["pending_feedback"] = (
+                old_feedback + "\n\n## Owner-selected change of approach\n\n" + approach.strip()
+            ).strip()
+            st.setdefault("approach_changes", []).append(
+                {"at": now_iso(), "approach": approach.strip()}
+            )
+            self._continue_troubled_locked(current, st, allowance=allowance)
 
     def cancel_troubled(self, task: Task, reason: str) -> None:
         """Cancel from a troubled decision while retaining all branch/run artifacts."""
@@ -572,13 +576,36 @@ class HumanMixin:
 
     def continue_troubled(self, task: Task, allowance: int = 1, difficulty: str = "") -> None:
         """Idempotently grant bounded preserved revisions without erasing lifetime history."""
+        with self._controller_lock():
+            current, st = self._current_troubled_decision(task.id, action="continue")
+            self._continue_troubled_locked(
+                current, st, allowance=allowance, difficulty=difficulty
+            )
+
+    def _current_troubled_decision(
+        self, task_id: str, *, action: str
+    ) -> tuple[Task, _TaskState]:
+        """Reload and validate the decision while its controller transaction is held."""
+        self.store.invalidate_tasks()
+        self.state = State(self.state.path)
+        task = self.store.task(task_id)
         ensure_open(task)
-        if allowance <= 0 or allowance > 3:
-            raise RuntimeError("allowance must be between 1 and 3")
+        if any(run.status in ("requested", "preparing", "running")
+               for run in self.runs.runs_for(task.id)):
+            raise RuntimeError(f"{task.id} has a run in flight; troubled-task decision is stale")
         st = self.state.get(task.id)
         raw = st.get("needs_human")
-        if not raw or (isinstance(raw, dict) and raw.get("kind") not in ("revision_cap", "troubled_task", "investigation_report")):
-            raise RuntimeError(f"{task.id} has no troubled-task decision to continue")
+        allowed = ("revision_cap", "troubled_task", "investigation_report")
+        if not raw or (isinstance(raw, dict) and raw.get("kind") not in allowed):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to {action}")
+        return task, st
+
+    def _continue_troubled_locked(
+        self, task: Task, st: _TaskState, *, allowance: int, difficulty: str = ""
+    ) -> None:
+        """Apply one bounded grant and acknowledge its current policy boundary atomically."""
+        if allowance <= 0 or allowance > 3:
+            raise RuntimeError("allowance must be between 1 and 3")
         if difficulty:
             levels = ("easy", "medium", "hard")
             floor = str(st.get("difficulty_floor") or task.difficulty)
@@ -592,6 +619,21 @@ class HumanMixin:
             st["difficulty_floor"] = difficulty
         decision = {"at": now_iso(), "allowance": allowance, "difficulty": task.difficulty,
                     "counter": int(st.get("substantive_revisions", st.get("revisions", 0)))}
+        policy = self.cfg.revision_policy()
+        if policy["enabled"]:
+            count = int(decision["counter"])
+            every = int(policy["every"])
+            if count >= every and count % every == 0:
+                thresholds = list(st.get("revision_thresholds") or [])
+                if count not in thresholds:
+                    thresholds.append(count)
+                    st["revision_thresholds"] = thresholds
+            decision_after = int(policy["decision_after"])
+            if count >= decision_after:
+                decision_thresholds = list(st.get("revision_decision_thresholds") or [])
+                if decision_after not in decision_thresholds:
+                    decision_thresholds.append(decision_after)
+                    st["revision_decision_thresholds"] = decision_thresholds
         st.setdefault("troubled_decisions", []).append(decision)
         st["revision_allowance"] = int(st.get("revision_allowance", 0)) + allowance
         investigation = st.get("investigation")
@@ -613,7 +655,8 @@ class HumanMixin:
         st.pop("needs_human", None)
         st.pop("troubled", None)
         st.pop("investigation", None)
-        self._grant_one_more_round(st)
+        if not policy["enabled"]:
+            self._grant_one_more_round(st)
         self._transition(task, Status.CHANGES_REQUESTED, f"troubled task continued with {allowance} bounded revision(s) at {task.difficulty}")
         self.events.emit("troubled_continued", task.id, **decision)
         self.state.save()

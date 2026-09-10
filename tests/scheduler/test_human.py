@@ -585,14 +585,16 @@ def test_troubled_continue_preserves_lifetime_counter_and_rejects_double_action(
     st["substantive_revisions"] = 7
     st["pending_feedback"] = "- retain me"
     st["needs_human"] = {"kind": "troubled_task", "reason": "not converging"}
+    sched.state.save()
     sched.continue_troubled(task, allowance=1, difficulty="hard")
+    st = sched.state.get(task.id)
     assert st["substantive_revisions"] == 7
     assert st["pending_feedback"] == "- retain me"
     assert st["revision_allowance"] == 1
     assert st["difficulty_floor"] == "hard"
     with pytest.raises(RuntimeError, match="below the durable hard escalation floor"):
-        sched.set_difficulty(task, "medium", actor="test")
-    assert task.difficulty == "hard"
+        sched.set_difficulty(sched.store.task(task.id), "medium", actor="test")
+    assert sched.store.task(task.id).difficulty == "hard"
     with pytest.raises(RuntimeError, match="no troubled-task decision"):
         sched.continue_troubled(task)
 
@@ -608,6 +610,74 @@ def test_exhausted_troubled_allowance_stops_before_another_dispatch(sched):
     with pytest.raises(RuntimeError, match="allowance is exhausted"):
         sched._apply_revision_policy(task, st)
     assert st["needs_human"]["kind"] == "troubled_task"
+
+
+@pytest.mark.parametrize("recorded_thresholds,count", [([4, 6], 8), ([4, 6, 8], 8), ([4, 6], 7)])
+def test_troubled_grant_dispatches_once_before_next_genuine_stop(
+    sched, fake_github, monkeypatch, recorded_thresholds, count
+):
+    """A grant acknowledges only its current boundary and survives a controller restart."""
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 6}
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    task.difficulty = "hard"
+    task.branch = "garden/preserved-revision"
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({
+        "revisions": count,
+        "substantive_revisions": count,
+        "pending_feedback": "- preserve the current finding",
+        "head_sha": "current-pr-head",
+        "last_review_head": "current-pr-head",
+        "needs_human": {"kind": "troubled_task", "reason": "choose a recovery"},
+        "revision_thresholds": recorded_thresholds,
+        "revision_decision_thresholds": [6],
+    })
+    sched.state.save()
+
+    sched.continue_troubled(task, allowance=1)
+    granted = sched.state.get(task.id)
+    assert granted["revisions"] == count
+    assert granted["substantive_revisions"] == count
+    assert granted["pending_feedback"] == "- preserve the current finding"
+    assert granted["revision_allowance"] == 1
+    assert granted["revision_thresholds"] == ([4, 6, 8] if count == 8 else [4, 6])
+    assert granted["head_sha"] == granted["last_review_head"] == "current-pr-head"
+    current_task = sched.store.task(task.id)
+    assert current_task.branch == "garden/preserved-revision"
+    assert current_task.pr == "https://example.com/pull/101"
+
+    fresh = Scheduler(Store(sched.store.root), github=fake_github, log=print)
+    fresh.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 6}
+    runner = fresh.runner_for(fresh.store.task(task.id))
+
+    def start(run, _cwd, _prompt):
+        run.status = "running"
+        run.save()
+
+    monkeypatch.setattr(runner, "start", start)
+    run = fresh.dispatch(fresh.store.task(task.id), mode="revise", runner=runner)
+    after_dispatch = fresh.state.get(task.id)
+    assert run.mode == "revise"
+    assert after_dispatch["revision_allowance"] == 0
+    assert after_dispatch["substantive_revisions"] == count + 1
+
+    run.status = "done"
+    run.save()
+    current = fresh.store.task(task.id)
+    current.status = Status.CHANGES_REQUESTED
+    fresh.store.save(current)
+    after_dispatch["pending_feedback"] = "- a later unresolved finding"
+    fresh.state.save()
+
+    with pytest.raises(RuntimeError, match="allowance is exhausted"):
+        fresh.dispatch(fresh.store.task(task.id), mode="revise", runner=runner)
+    stopped = fresh.state.get(task.id)
+    assert stopped["revision_allowance"] == 0
+    assert stopped["substantive_revisions"] == count + 1
+    assert stopped["pending_feedback"] == "- a later unresolved finding"
 
 
 def test_already_hard_threshold_stops_once_and_survives_restart(sched, fake_github):
@@ -639,15 +709,19 @@ def test_troubled_change_approach_and_cancel_require_current_drained_decision(sc
     st = sched.state.get(task.id)
     st.update({"needs_human": {"kind": "troubled_task", "reason": "not converging"},
                "pending_feedback": "keep this finding", "substantive_revisions": 6})
+    sched.state.save()
 
     sched.change_troubled_approach(task, "replace the parser, keeping its public API")
+    st = sched.state.get(task.id)
     assert "replace the parser" in st["pending_feedback"]
     assert st["approach_changes"][-1]["approach"].startswith("replace")
     assert task.branch == "garden/preserved" and task.pr.endswith("/101")
     with pytest.raises(RuntimeError, match="no troubled-task decision"):
         sched.change_troubled_approach(task, "stale second click")
 
+    st = sched.state.get(task.id)
     st["needs_human"] = {"kind": "troubled_task", "reason": "still not converging"}
+    sched.state.save()
     active = sched.runs.new_run(task.id, "local", mode="revise", initial_status="running")
     with pytest.raises(RuntimeError, match="run in flight"):
         sched.cancel_troubled(task, "not worth further work")
@@ -733,6 +807,7 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     sched.retry_investigation_publication(task)
     assert st["investigation"]["publication"]["commit"] == "abc123"
     sched.continue_troubled(task)
+    st = sched.state.get(task.id)
     assert "stale verification fixture" in st["investigation_handoff"]["diagnosis"]
     assert "base comparison" in st["investigation_handoff"]["diagnosis"]
 
