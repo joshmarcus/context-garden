@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import re
+import ssl
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
+
+_PEM_CERTIFICATE = re.compile(
+    r"-----BEGIN CERTIFICATE-----\s+"
+    r"[A-Za-z0-9+/=\r\n]+"
+    r"-----END CERTIFICATE-----"
+)
 
 
 class SourceControlError(Exception):
@@ -132,8 +139,16 @@ class ConnectionPolicy:
                 content = bundle.read_text(encoding="ascii")
             except (OSError, UnicodeError) as exc:
                 raise ValueError("ca_bundle is not a readable PEM certificate bundle") from exc
-            if "-----BEGIN CERTIFICATE-----" not in content or "-----END CERTIFICATE-----" not in content:
+            certificates = list(_PEM_CERTIFICATE.finditer(content))
+            remainder = _PEM_CERTIFICATE.sub("", content)
+            if not certificates or remainder.strip():
                 raise ValueError("ca_bundle is not a PEM certificate bundle")
+            try:
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                for certificate in certificates:
+                    context.load_verify_locations(cadata=certificate.group())
+            except (OSError, ssl.SSLError) as exc:
+                raise ValueError("ca_bundle contains an invalid PEM certificate") from exc
 
     @property
     def authority(self) -> str:
