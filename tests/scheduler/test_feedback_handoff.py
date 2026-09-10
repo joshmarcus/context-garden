@@ -339,7 +339,7 @@ def test_controller_owned_ci_diagnostic_is_head_bound_and_redacted_for_revision(
     run.env_snapshot["ci_head"] = pr.head_sha
     run.save()
     sched._after_ci_check(task, run, [{
-        "name": "actions", "status": "fail", "summary": "test failure",
+        "name": "actions", "status": "fail", "summary": "token=controller-secret test failure",
         "details": "token=controller-secret\\nfailed test_example",
     }], check["cont"], TickReport())
     assert "test_example" in sched.state.get(task.id)["pending_feedback"]

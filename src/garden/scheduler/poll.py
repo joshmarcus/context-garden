@@ -451,7 +451,13 @@ class PollMixin:
             ci_note = ""
         elif check_failures(results):
             safe_results = [
-                {**result, "details": worker_diagnostic_excerpt(result.get("details"), self.cfg.data)}
+                {
+                    **result,
+                    **{
+                        field: worker_diagnostic_excerpt(result.get(field), self.cfg.data)
+                        for field in ("name", "status", "summary", "details")
+                    },
+                }
                 for result in results
             ]
             ci_note += (f"\n\n- **CI diagnostic source** `{head}`.\n"
