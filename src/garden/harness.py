@@ -148,7 +148,10 @@ class Harness:
     @property
     def api_key_env(self) -> str:
         """The provider credential admitted only for this harness invocation."""
-        return str(self.cfg.get("api_key_env") or "")
+        name = str(self.cfg.get("api_key_env") or "")
+        if name and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError("harness api_key_env must be an environment variable name")
+        return name
 
     # ---- command -----------------------------------------------------------
     def fence_settings(self, deny_paths: list[str] | None, worktree: Path | str | None) -> str:
