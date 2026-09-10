@@ -47,6 +47,22 @@ def test_scheduler_health_reports_singleton_duplicate_stale_failed_and_missing(t
     assert scheduler_health(tmp_path, now=NOW, process_matches=lambda pid, identity: False)["kind"] == "failed"
 
 
+def test_scheduler_health_preserves_starting_until_running_or_tick_evidence(tmp_path):
+    watchers = tmp_path / "watchers"
+    _lease(watchers, 1, state="starting")
+
+    starting = scheduler_health(tmp_path, now=NOW, process_matches=lambda pid, identity: True)
+    assert starting["kind"] == "starting"
+    assert starting["label"] == "standalone watcher starting"
+
+    record = json.loads((watchers / "1-watch.json").read_text())
+    record["last_tick"] = NOW.isoformat()
+    (watchers / "1-watch.json").write_text(json.dumps(record))
+    assert scheduler_health(
+        tmp_path, now=NOW, process_matches=lambda pid, identity: True
+    )["kind"] == "healthy"
+
+
 def test_scheduler_health_bounds_lease_reads(tmp_path):
     for pid in range(MAX_WATCHERS + 5):
         _lease(tmp_path / "watchers", pid)
@@ -94,6 +110,17 @@ def test_web_reports_standalone_health_separately_from_embedded_watch(garden):
 
     heartbeat.write("running")
     assert "scheduler: standalone watcher healthy · embedded watch off" in client.get("/").text
+    heartbeat.remove()
+
+
+def test_web_reports_standalone_starting_separately_from_embedded_watch(garden):
+    heartbeat = WatchHeartbeat(Store(garden).config.garden_dir, 60)
+    heartbeat.write("starting")
+
+    page = TestClient(create_app(Store(garden), watch=False, host="testserver")).get("/").text
+
+    assert "scheduler: standalone watcher starting · embedded watch off" in page
+    assert "standalone watcher healthy" not in page
     heartbeat.remove()
 
 

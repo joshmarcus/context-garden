@@ -91,7 +91,8 @@ def scheduler_health(
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             continue
 
-    live: list[dict[str, Any]] = []
+    healthy: list[dict[str, Any]] = []
+    starting: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
     watcher_processes = 0
@@ -106,8 +107,10 @@ def scheduler_health(
                 stale.append(record)
         elif record.get("state") == "failed" or not alive:
             failed.append(record)
+        elif record.get("state") == "starting" and not record.get("last_tick"):
+            starting.append(record)
         else:
-            live.append(record)
+            healthy.append(record)
 
     # A live but stale process is still a watcher process, so include it when detecting a
     # duplicate. Failed evidence from a recently exited process is not a duplicate, but it
@@ -116,7 +119,8 @@ def scheduler_health(
     if watcher_processes > 1:
         details = ", ".join(
             part for part in (
-                f"{len(live)} healthy" if live else "",
+                f"{len(healthy)} healthy" if healthy else "",
+                f"{len(starting)} starting" if starting else "",
                 f"{len(failed)} failed" if failed else "",
                 f"{len(stale)} stale" if stale else "",
             ) if part
@@ -126,9 +130,11 @@ def scheduler_health(
         kind, label = "failed", "standalone watcher failed"
     elif stale:
         kind, label = "stale", "standalone watcher stale"
-    elif len(live) == 1:
+    elif starting:
+        kind, label = "starting", "standalone watcher starting"
+    elif len(healthy) == 1:
         kind, label = "healthy", "standalone watcher healthy"
     else:
         kind, label = "missing", "no standalone watcher detected"
-    evidence = [*live, *failed, *stale]
+    evidence = [*healthy, *starting, *failed, *stale]
     return {"kind": kind, "label": label, "records": evidence, "checked_at": now.isoformat()}
