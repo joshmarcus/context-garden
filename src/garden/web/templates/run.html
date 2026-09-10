@@ -7,7 +7,7 @@
     <h1>{{ run.run_id }}</h1>
     <p style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <span class="pill s-{{ 'running' if run.status == 'running' else ('done' if run.status == 'done' else ('waiting_human' if run.status == 'waiting' else 'failed')) }}">{{ run.status }}</span>
-      <span class="muted">{{ run.mode }} · {% if mechanical %}git · no model{% else %}{{ run.harness or 'harness' }}{% if run.model %}:{{ run.model }}{% endif %}{% endif %}{% if run.host %} @{{ run.host }}{% endif %} · {{ '%.0f' % run.elapsed_minutes() }} min{% if run.cost_usd is not none %} · ${{ '%.2f' % run.cost_usd }}{% endif %}</span>
+      <span class="muted">{{ run.mode }} · {{ run.execution_location }} · {% if mechanical %}git · no model{% else %}{{ run.harness or 'harness' }}{% if run.model %}:{{ run.model }}{% endif %}{% endif %} · {{ '%.0f' % run.elapsed_minutes() }} min{% if run.cost_usd is not none %} · ${{ '%.2f' % run.cost_usd }}{% endif %}</span>
     </p>
   </div>
   <div class="tools"><a class="btn" href="/tasks/{{ task_id }}">Back to task</a>{% if run.branch %}<span class="badge" title="branch">{{ run.branch }}</span>{% endif %}</div>

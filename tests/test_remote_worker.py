@@ -2427,7 +2427,8 @@ run.save()
     modes = {run.mode: run for run in RunStore(store.config.garden_dir).runs_for("DM-001")}
     assert modes["check"].result["checks"][0]["status"] == "pass"
     assert modes["review"].status == "done"
-    assert "@build-1" in client.get(f"/runs/DM-001/{saved.run_id}").text
+    assert saved.host == "build-1"
+    assert "Remote · build-1" in client.get(f"/runs/DM-001/{saved.run_id}").text
 
 
 @pytest.mark.parametrize("checkout_state", ["untracked", "tracked-dirty", "unmerged"])
@@ -3151,7 +3152,8 @@ def test_remote_lifecycle_over_served_http(garden, monkeypatch, tmp_path, fake_g
             scheduler.tick()
             assert scheduler.runs.latest(phase_run.task_id).status == "done"
             assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
-            assert "@build-1" in client.get(f"/runs/DM-001/{run.run_id}").text
+            assert run.host == "build-1"
+            assert "Remote · build-1" in client.get(f"/runs/DM-001/{run.run_id}").text
             artifact = {
                 "source_head": subprocess.run(
                     ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,

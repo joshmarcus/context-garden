@@ -166,6 +166,30 @@ class Run:
         return self.runner not in {"manual", "remote", "ssh"}
 
     @property
+    def execution_location(self) -> str:
+        """A durable, operator-facing account of where this run executed.
+
+        This deliberately reads the run record rather than current runner configuration or
+        worker presence.  A remote host can disappear or be renamed after completing a run,
+        but the recorded host remains the history the operator needs to inspect.
+        """
+        if self.runner == "manual":
+            return "Manual / external"
+        if self.execution_remote is True or self.runner in {"remote", "ssh"}:
+            if self.host:
+                return f"Remote · {self.host}"
+            if self.runner == "remote" and self.status in {"requested", "preparing", "running"}:
+                return "Remote · awaiting worker claim"
+            return "Unknown · remote worker not recorded"
+        if self.execution_remote is False or self.runner == "local":
+            # A local reservation can fail during setup before the wrapper records its PID.
+            # Its terminal status is not proof that a worker actually launched.
+            if self.pid is None:
+                return "Unknown · local launch not recorded"
+            return "Local"
+        return "Unknown · legacy location not recorded"
+
+    @property
     def lifecycle_state(self) -> str:
         """Stable control-plane state; terminal result variants collapse to finished."""
         return self.status if self.status in ("requested", "preparing", "running") else "finished"

@@ -2377,6 +2377,49 @@ def _record_run(garden, *, status="done", harness="claude", stdout="", brief="",
     return run
 
 
+def test_runs_show_recorded_execution_location_without_current_worker_configuration(garden):
+    """Run history keeps its recorded placement, including non-executing reservations."""
+    runs = RunStore(Store(garden).config.garden_dir)
+    local = runs.new_run("DM-001", "local", "work")
+    local.status, local.pid = "done", 42
+    local.save()
+
+    remote = runs.new_run("DM-001", "remote", "work")
+    remote.host, remote.status = "retired-worker-with-a-long-name", "failed"
+    remote.save()
+
+    queued = runs.new_run("DM-001", "remote", "work")
+    queued.status = "running"
+    queued.save()
+
+    manual = runs.new_run("DM-001", "manual", "work")
+    manual.status = "running"
+    manual.save()
+
+    missing_local = runs.new_run("DM-001", "local", "work")
+    missing_local.status = "running"
+    missing_local.save()
+
+    failed_before_launch = runs.new_run("DM-001", "local", "work")
+    failed_before_launch.status = "failed"
+    failed_before_launch.save()
+
+    legacy = runs.new_run("DM-001", "retired-runner", "work")
+    legacy.status = "done"
+    legacy.save()
+
+    page = client(garden).get("/runs").text
+    assert "Local" in page
+    assert "Remote · retired-worker-with-a-long-name" in page
+    assert "Remote · awaiting worker claim" in page
+    assert "Manual / external" in page
+    assert page.count("Unknown · local launch not recorded") == 2
+    assert "Unknown · legacy location not recorded" in page
+
+    detail = client(garden).get(f"/runs/DM-001/{remote.run_id}").text
+    assert "Remote · retired-worker-with-a-long-name" in detail
+
+
 def test_run_page_stream_json(garden):
     """A stream-json run page renders the transcript (assistant text, tool calls with their
     command, tool results and the result), plus brief, final message and stderr tabs. The
