@@ -842,6 +842,75 @@ def test_design_files_are_safe_and_use_the_product_checkout(garden):
     assert c.get("/design/%2Fetc%2Fpasswd").status_code == 404
 
 
+def test_task_design_files_show_only_the_current_pr_and_shared_references(garden):
+    """A stacked PR excludes its parent's designs and uses its refreshed remote branch."""
+    repo = garden.parent / "repo"
+
+    def commit(message: str) -> None:
+        subprocess.run(["git", "add", "docs/design"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True)
+
+    (repo / "docs" / "design").mkdir(parents=True)
+    (repo / "docs" / "design" / "shared.md").write_text("# Shared")
+    (repo / "docs" / "design" / "reference.md").write_text("# Reference")
+    commit("add shared design")
+    subprocess.run(["git", "push", "origin", "main"], cwd=repo, check=True)
+
+    parent = "garden/parent-design"
+    child = "garden/child-design"
+    subprocess.run(["git", "checkout", "-b", parent], cwd=repo, check=True)
+    (repo / "docs" / "design" / "parent.md").write_text("# Parent")
+    commit("add parent design")
+    subprocess.run(["git", "push", "-u", "origin", parent], cwd=repo, check=True)
+
+    subprocess.run(["git", "checkout", "-b", child], cwd=repo, check=True)
+    (repo / "docs" / "design" / "shared.md").write_text("# Shared, updated")
+    (repo / "docs" / "design" / "variant-dark.md").write_text("# Dark variant")
+    commit("update shared design and add variant")
+    subprocess.run(["git", "push", "-u", "origin", child], cwd=repo, check=True)
+
+    # An unpushed local commit must not be mistaken for current PR output.
+    (repo / "docs" / "design" / "stale-local.md").write_text("# Stale local")
+    commit("unpublished local design")
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True)
+
+    store = Store(garden)
+    task = store.task("DM-002")
+    task.branch = child
+    task.reading = ["docs/design/parent.md", "docs/design/parent.md", "docs/design/reference.md"]
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    state.get(task.id)["pr_base"] = parent
+    state.save()
+
+    c = client(garden)
+    page = c.get(f"/tasks/{task.id}").text
+    assert "Design files in this PR" in page
+    assert "docs/design/shared.md" in page and "docs/design/variant-dark.md" in page
+    child_ref = f"origin/{child}".replace("/", "%2F")
+    parent_ref = f"origin/{parent}".replace("/", "%2F")
+    assert f"/design/parent.md?ref={child_ref}" not in page
+    assert f"/design/parent.md?ref={parent_ref}" in page
+    assert "docs/design/stale-local.md" not in page
+    assert page.count("docs/design/shared.md") == 1
+    assert "Relevant shared design files" in page
+    assert page.count(f"/design/parent.md?ref={parent_ref}") == 1
+    assert page.count(f"/design/reference.md?ref={parent_ref}") == 1
+    assert c.get(f"/design/shared.md?ref=origin%2F{child}&product=demo").status_code == 200
+    assert c.get(f"/design/parent.md?ref=origin%2F{parent}&product=demo").status_code == 200
+    assert c.get(f"/design/reference.md?ref=origin%2F{parent}&product=demo").status_code == 200
+
+    # A branch with no changed designs has no PR-output panel, even if it reads shared art.
+    no_design = store.task("DM-001")
+    no_design.branch = "garden/no-design"
+    no_design.reading = ["docs/design/parent.md"]
+    store.save(no_design)
+    subprocess.run(["git", "branch", "garden/no-design", "origin/main"], cwd=repo, check=True)
+    no_design_page = c.get(f"/tasks/{no_design.id}").text
+    assert "Design files in this PR" not in no_design_page
+    assert "Relevant shared design files" in no_design_page
+
+
 def test_design_routes_select_the_requested_product(garden):
     """CG-318: a task and walkthrough for a second product never read the first one's art."""
     import yaml

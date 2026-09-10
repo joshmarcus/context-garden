@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
@@ -51,19 +51,47 @@ def _return_to(request: Request, task_id: str) -> str:
     return urlunsplit(("", "", origin.path, origin.query, origin.fragment))
 
 
-def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
-    """Design paths changed by the task branch, using the local checkout when available."""
+def _design_href(path: str, ref: str, product: str) -> str:
+    """Return a design link whose path and query values cannot change its destination."""
+    relative = path.removeprefix("docs/design/")
+    return f"/design/{quote(relative, safe='/')}?{urlencode({'ref': ref, 'product': product})}"
+
+
+def _design_files(task: Any, store: Any, state: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
+    """Return this PR's changed designs and its separately linked shared references.
+
+    PR branches are remote-tracking refs after a refresh, rather than potentially stale local
+    branches.  A stacked PR compares against its recorded PR base, so its parent's designs are
+    not presented as this PR's output.
+    """
     if not task.branch:
-        return []
+        return {"changed": [], "shared": []}
     from ... import gitops
     try:
         repo = gitops.ensure_repo(store.config.product_repo(task.product), store.config.repos_dir)
-        base = store.config.product_base_branch(task.product)
-        names = gitops.git("diff", "--name-only", f"{base}...{task.branch}", cwd=repo, check=False).splitlines()
+        gitops.fetch(repo)
+        base = str(state.get("pr_base") or store.config.product_base_branch(task.product))
+        base_ref = gitops.base_ref(repo, base)
+        try:
+            gitops.git("rev-parse", "--verify", f"refs/remotes/origin/{task.branch}", cwd=repo)
+            head_ref = f"origin/{task.branch}"
+        except gitops.GitError:
+            gitops.git("rev-parse", "--verify", task.branch, cwd=repo)
+            head_ref = task.branch
+        names = gitops.git("diff", "--name-only", f"{base_ref}...{head_ref}", cwd=repo).splitlines()
     except Exception:  # noqa: BLE001
-        return []
-    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}&product={task.product}"}
-            for name in names if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
+        return {"changed": [], "shared": []}
+
+    changed = sorted({name for name in names if _is_design_path(name)})
+    shared = sorted({path for path in task.reading if _is_design_path(path)} - set(changed))
+    return {
+        "changed": [{"name": name, "href": _design_href(name, head_ref, task.product)} for name in changed],
+        "shared": [{"name": name, "href": _design_href(name, base_ref, task.product)} for name in shared],
+    }
+
+
+def _is_design_path(path: str) -> bool:
+    return path.startswith("docs/design/") and path != "docs/design/" and ".." not in path
 
 
 def register(app: FastAPI, site: Site) -> None:
@@ -182,7 +210,7 @@ def register(app: FastAPI, site: Site) -> None:
             trial_view=trial_view,
             owner=effective_owner(t, phase)[0],
             owner_source=effective_owner(t, phase)[1],
-            design_files=_design_files(t, s),
+            design_files=_design_files(t, s, st),
             return_to=_return_to(request, task_id),
         ))
 
