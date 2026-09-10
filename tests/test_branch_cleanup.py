@@ -107,6 +107,22 @@ def test_inventory_preserves_external_and_recovery_owned_branches(sched):
     assert "recovery state" in rows["garden/recovery"].reason
 
 
+def test_superseded_attempt_branch_is_removable_after_task_completes(sched):
+    task = sched.store.tasks()["DM-001"]
+    task.status = Status.DONE
+    task.branch = "garden/current-attempt"
+    sched.store.save(task)
+    repo = sched.repo_for(task)
+    _make_branch(repo, "garden/superseded-attempt")
+    run = _record_branch(sched, task.id, "garden/superseded-attempt")
+    run.status = "superseded"
+    run.save()
+
+    row = next(row for row in sched.branch_cleanup_inventory()
+               if row.branch == "garden/superseded-attempt")
+    assert row.classification == "removable"
+
+
 def test_guarded_delete_removes_remote_and_local_and_is_idempotent(sched):
     task = sched.store.tasks()["DM-001"]
     repo = sched.repo_for(task)
