@@ -17,6 +17,7 @@ from ..config import no_live_garden_root
 from ..runs import Run
 from ..sandbox import SandboxPolicy
 from ..validation import bounded_validation_timeout_seconds
+from ..workload_identity import WorkloadIdentityError, subprocess_authority
 from .base import (
     Runner,
     RunnerError,
@@ -25,7 +26,6 @@ from .base import (
     worker_credentials_dir,
     worker_home,
 )
-from ..workload_identity import WorkloadIdentityError, subprocess_authority
 
 
 class LocalRunner(Runner):
@@ -247,6 +247,11 @@ class LocalRunner(Runner):
             env.update(policy.report_env(mechanism))
             (d / "sandbox.json").write_text(policy.summary(mechanism) + "\n")
         env["GARDEN_HEAVY_EXECUTION"] = "1"
+        # A supported validation launched by this check inherits the check run's host
+        # slot.  Without the owner scope it tries to acquire a second slot while this
+        # supervisor still owns the first, making a short focused check wait behind
+        # itself whenever shared admission is full.
+        env["GARDEN_OWNER_SCOPED"] = "1"
         execution_timeout = bounded_validation_timeout_seconds(env.get("GARDEN_VALIDATION_TIMEOUT_SECONDS"))
         env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{execution_timeout:g}"
         env["GARDEN_EXECUTION_TIMEOUT_KIND"] = "validation"

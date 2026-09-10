@@ -853,6 +853,58 @@ def test_local_worker_env_carries_execution_budget(tmp_path):
     assert "GARDEN_EXECUTION_TIMEOUT_SECONDS" not in env
 
 
+def test_check_validation_inherits_its_check_run_slot(tmp_path, monkeypatch):
+    """A focused check runs while another admitted check is waiting externally."""
+    from garden.runs import Run
+
+    release = tmp_path / "release-external-wait"
+    target = tmp_path / "test_focused.py"
+    marker = tmp_path / "focused-ran"
+    target.write_text(
+        "from pathlib import Path\n\n"
+        "def test_focused():\n"
+        f"    Path({str(marker)!r}).touch()\n"
+    )
+    runner = LocalRunner({"resources": {"heavy_test_parallel": 2},
+                          "checks": {"timeout_seconds": 5}}, None)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+
+    waiting_dir = tmp_path / "external-check"
+    focused_dir = tmp_path / "focused-check"
+    waiting_dir.mkdir()
+    focused_dir.mkdir()
+    waiting = Run(task_id="T-wait", run_id="external", dir=str(waiting_dir), runner="local")
+    focused = Run(task_id="T-focused", run_id="focused", dir=str(focused_dir), runner="local")
+    waiting_payload = {
+        "specs": [{"name": "external", "command": f"while [ ! -e {shlex.quote(str(release))} ]; do sleep .01; done"}],
+        "cwd": str(tmp_path), "setup": {}, "config": {}, "timeout": 5,
+    }
+    focused_payload = {
+        "specs": [{"name": "focused", "command": (
+            f"{shlex.quote(sys.executable)} -m garden.validation -- "
+            f"{shlex.quote(sys.executable)} -m pytest {shlex.quote(str(target))} -q"
+        )}],
+        "cwd": str(tmp_path), "setup": {}, "config": {}, "timeout": 5,
+    }
+    try:
+        runner.start_checks(waiting, tmp_path, waiting_payload)
+        runner.start_checks(focused, tmp_path, focused_payload)
+        deadline = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists(), "focused validation waited for a second lease held by its check run"
+        outer = json.loads((focused.path / "execution.json").read_text())
+        assert outer["owner_scoped"] is True
+        nested = list((focused.path / "validations").glob("*/execution.json"))
+        assert len(nested) == 1
+        assert json.loads(nested[0].read_text())["inherited_lease"] is True
+    finally:
+        release.touch()
+        for run in (waiting, focused):
+            _wait_for_local_run(run, timeout=5)
+            assert run.read_exit_code() == 0
+
+
 def test_openrouter_key_is_added_only_to_harness_environment(tmp_path, monkeypatch):
     from garden.harness import Harness
     from garden.runs import Run
