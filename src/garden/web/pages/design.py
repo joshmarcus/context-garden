@@ -3,28 +3,23 @@
 from __future__ import annotations
 
 import html
-import mimetypes
 import subprocess
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
 
 from ...runs import Run
 from ...store import Store
+from ..artifacts import artifact_response
 from ..common import Site, product_checkout, product_design_root, render_md
 from ..trust import safe_relative_path
 
 # These are the artifacts a UI check or design task can render for a person.  Run directories
 # also contain transcripts, briefs and run metadata; those are never captures merely because a
 # worker mentions them in its result.
-CAPTURE_SUFFIXES = frozenset({".gif", ".htm", ".html", ".jpeg", ".jpg", ".md", ".markdown", ".png", ".webp"})
+CAPTURE_SUFFIXES = frozenset({".gif", ".htm", ".html", ".jpeg", ".jpg", ".md", ".markdown", ".png", ".svg", ".webp"})
 INTERNAL_CAPTURE_NAMES = frozenset({"brief.md", "exit_code", "final.md", "run.json", "stderr.log", "stdout.json"})
-CAPTURE_MEDIA_TYPES = {
-    ".gif": "image/gif", ".htm": "text/html", ".html": "text/html",
-    ".jpeg": "image/jpeg", ".jpg": "image/jpeg", ".md": "text/markdown",
-    ".markdown": "text/markdown", ".png": "image/png", ".webp": "image/webp",
-}
 
 
 def _design_root(store: Store, product: str) -> Path:
@@ -40,14 +35,6 @@ def _git_file(repo: Path, ref: str, relative: str) -> bytes | None:
                               capture_output=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
-
-
-def _media(path: str) -> str:
-    # The OS MIME database is not consistent: a stock macOS install, for example, does
-    # not identify Markdown. Captures support a closed suffix set, so make those responses
-    # deterministic and leave mimetypes only for design documents outside that set.
-    return CAPTURE_MEDIA_TYPES.get(Path(path).suffix.lower(),
-                                   mimetypes.guess_type(path)[0] or "application/octet-stream")
 
 
 def recorded_captures(run: Run) -> list[Path]:
@@ -82,6 +69,42 @@ def recorded_captures(run: Run) -> list[Path]:
     return sorted(paths)
 
 
+def _worktree_file(store: Store, product: str, ref: str, relative: str) -> bytes | None:
+    """Read an active task's checked-out design file, including uncommitted changes."""
+    task_id = ref.removeprefix("worktree:")
+    if task_id == ref:
+        return None
+    try:
+        task = store.task(task_id)
+    except KeyError:
+        return None
+    if task.product != product or not task.branch:
+        return None
+    worktree = store.config.worktree_path(task_id).resolve()
+    try:
+        root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=worktree,
+                                   capture_output=True, text=True, check=True).stdout.strip()).resolve()
+        branch = subprocess.run(["git", "branch", "--show-current"], cwd=worktree,
+                                capture_output=True, text=True, check=True).stdout.strip()
+        common_text = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=worktree,
+                                     capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    common = Path(common_text)
+    if not common.is_absolute():
+        common = (worktree / common).resolve()
+    if root != worktree or branch != task.branch or common != product_checkout(store, product).resolve() / ".git":
+        return None
+    target = (worktree / "docs" / "design" / relative).resolve()
+    design_root = (worktree / "docs" / "design").resolve()
+    if design_root not in target.parents or not target.is_file():
+        return None
+    try:
+        return target.read_bytes()
+    except OSError:
+        return None
+
+
 def register(app: FastAPI, site: Site) -> None:
     hub, templates, ctx = site.hub, site.templates, site.ctx
 
@@ -97,7 +120,7 @@ def register(app: FastAPI, site: Site) -> None:
             root = product_design_root(store, selected)
             files = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
             links = "<h1>Design</h1><ul>" + "".join(
-                f'<li><a href="/design/{html.escape(f, quote=True)}?product={html.escape(selected, quote=True)}">{html.escape(f)}</a></li>' for f in files
+                f'<li><a href="/design/{html.escape(f, quote=True)}?{html.escape(urlencode({"product": selected}), quote=True)}">{html.escape(f)}</a></li>' for f in files
             ) + "</ul>"
             return templates.TemplateResponse(request, "design.html", ctx(request, page="design", name="Design", content=links, ref=ref))
         store = hub.fresh()
@@ -105,7 +128,11 @@ def register(app: FastAPI, site: Site) -> None:
         root = _design_root(store, selected)
         if ref.startswith("-"):
             raise HTTPException(404)
-        if ref:
+        if ref.startswith("worktree:"):
+            data = _worktree_file(store, selected, ref, relative)
+            if data is None:
+                raise HTTPException(404)
+        elif ref:
             data = _git_file(root, ref, relative)
             if data is None:
                 raise HTTPException(404)
@@ -115,12 +142,14 @@ def register(app: FastAPI, site: Site) -> None:
             if design_root not in target.parents or not target.is_file():
                 raise HTTPException(404)
             data = target.read_bytes()
-        media = _media(relative)
-        if media == "text/markdown" or relative.lower().endswith((".md", ".markdown")):
+        if relative.lower().endswith((".md", ".markdown")):
+            try:
+                content = render_md(data.decode("utf-8"))
+            except UnicodeDecodeError:
+                return artifact_response(data, relative)
             return templates.TemplateResponse(request, "design.html", ctx(
-                request, page="design", name=relative, content=render_md(data.decode("utf-8")), ref=ref))
-        return Response(data, media_type=media, headers={"Content-Security-Policy": "sandbox"}
-                        if media == "text/html" else {})
+                request, page="design", name=relative, content=content, ref=ref))
+        return artifact_response(data, relative)
 
     @app.get("/runs/{task_id}/{run_id}/captures/{path:path}")
     def capture_file(task_id: str, run_id: str, path: str):
@@ -135,6 +164,4 @@ def register(app: FastAPI, site: Site) -> None:
         target = (run.path / relative).resolve()
         if target not in recorded_captures(run):
             raise HTTPException(404)
-        media = _media(relative)
-        headers = {"Content-Security-Policy": "sandbox"} if media == "text/html" else {}
-        return Response(target.read_bytes(), media_type=media, headers=headers)
+        return artifact_response(target.read_bytes(), relative)

@@ -833,11 +833,13 @@ def test_design_files_are_safe_and_use_the_product_checkout(garden):
     assert c.get("/design").status_code == 200
     html = c.get("/design/mock.html")
     assert html.status_code == 200 and "<script>bad()</script>" in html.text
-    assert html.headers["content-security-policy"] == "sandbox"
+    assert html.headers["content-security-policy"].startswith("sandbox;")
+    assert html.headers["x-content-type-options"] == "nosniff"
     markdown = c.get("/design/notes.md")
     assert markdown.status_code == 200 and "<h1>Notes</h1>" in markdown.text
     image = c.get("/design/pixel.png")
     assert image.status_code == 200 and image.content == b"PNG bytes"
+    assert image.headers["content-security-policy"].startswith("sandbox;")
     assert c.get("/design/%2e%2e/README.md").status_code == 404
     assert c.get("/design/%2Fetc%2Fpasswd").status_code == 404
 
@@ -900,16 +902,82 @@ def test_run_page_links_and_serves_every_capture_type(garden):
     assert page.status_code == 200
     assert "page.png" in page.text and "page.html" in page.text and "notes.md" in page.text
     assert "/ui/{" not in page.text
-    for name, content_type in (("ui/page.png", "image/png"), ("ui/page.html", "text/html"), ("notes.md", "text/markdown")):
+    for name, content_type in (("ui/page.png", "image/png"), ("ui/page.html", "text/html"), ("notes.md", "text/html")):
         response = c.get(f"/runs/DM-001/capture-run/captures/{name}")
         assert response.status_code == 200 and response.content
         assert response.headers["content-type"].startswith(content_type)
     assert c.get("/runs/DM-001/capture-run/captures/../run.json").status_code == 404
     html = c.get("/runs/DM-001/capture-run/captures/ui/page.html")
-    assert html.headers["content-security-policy"] == "sandbox"
+    assert html.headers["content-security-policy"].startswith("sandbox;")
+    assert html.headers["x-content-type-options"] == "nosniff"
     assert c.get("/runs/DM-001/capture-run/captures/run.json").status_code == 404
     (run_dir / "garden.yaml").write_text("token: secret")
     assert c.get("/runs/DM-001/capture-run/captures/garden.yaml").status_code == 404
+
+
+def test_artifact_preview_policy_sandboxes_active_files_and_downloads_ambiguous_bytes(garden):
+    repo = garden.parent / "repo"
+    design = repo / "docs" / "design"
+    design.mkdir(parents=True)
+    (design / "script.svg").write_text('<svg onload="bad()"><script>bad()</script></svg>')
+    (design / "polyglot.png").write_text("<script>bad()</script>")
+    (design / "report.pdf").write_bytes(b"%PDF-1.7")
+    c = client(garden)
+
+    for name, media_type in (("script.svg", "image/svg+xml"), ("polyglot.png", "image/png")):
+        response = c.get(f"/design/{name}")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(media_type)
+        assert response.headers["content-security-policy"].startswith("sandbox;")
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["content-disposition"].startswith("inline;")
+
+    download = c.get("/design/report.pdf", headers={"range": "bytes=0-3"})
+    assert download.status_code == 200 and download.content == b"%PDF-1.7"
+    assert download.headers["content-type"].startswith("application/octet-stream")
+    assert download.headers["content-disposition"].startswith("attachment;")
+
+
+def test_active_worktree_design_files_are_inert_and_visible_from_the_task(garden):
+    repo = garden.parent / "repo"
+    worktree = garden / ".garden" / "worktrees" / "DM-001"
+    subprocess.run(["git", "worktree", "add", "-q", "-b", "garden/dm-001", str(worktree)], cwd=repo, check=True)
+    try:
+        draft = worktree / "docs" / "design" / "draft.html"
+        draft.parent.mkdir(parents=True)
+        draft.write_text('<a href="https://example.invalid" target="_top">outside</a><script>bad()</script>')
+        store = Store(garden)
+        task = store.task("DM-001")
+        task.branch = "garden/dm-001"
+        store.save(task)
+
+        c = client(garden)
+        page = c.get("/tasks/DM-001")
+        assert "worktree%3ADM-001" in page.text and "draft.html" in page.text
+        response = c.get("/design/draft.html?ref=worktree%3ADM-001&product=demo")
+        assert response.status_code == 200 and "target=\"_top\"" in response.text
+        assert response.headers["content-security-policy"].startswith("sandbox;")
+        assert response.headers["content-disposition"].startswith("inline;")
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo, check=True)
+
+
+def test_archived_capture_uses_the_same_inert_preview_policy(garden):
+    archive = garden / ".garden" / "run-archive" / "DM-001" / "archived-capture"
+    run = Run(task_id="DM-001", run_id="archived-capture", dir=str(archive), runner="local",
+              started_at="2026-01-01T00:00:00+00:00", status="done",
+              result={"captures": ["ui/active.svg"]})
+    run.save()
+    (archive / "ui").mkdir()
+    (archive / "ui" / "active.svg").write_text('<svg onload="bad()" />')
+    RunStore(garden / ".garden").rebuild_archive_index()
+
+    response = client(garden).get("/runs/DM-001/archived-capture/captures/ui/active.svg")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert response.headers["content-security-policy"].startswith("sandbox;")
+    assert response.headers["x-content-type-options"] == "nosniff"
 
 
 def test_task_page_shows_required_evidence_states(garden):
