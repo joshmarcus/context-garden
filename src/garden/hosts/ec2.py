@@ -412,6 +412,28 @@ class EC2Provider:
         return replace(after, retained_resources=tuple(retained),
                        detail="termination observed; retained AWS resources inventoried")
 
+    def orphaned_resources(self, owner: str, pool: str) -> tuple[str, ...]:
+        """Read back owned billable resources that survived instance teardown."""
+        filters = [
+            {"Name": f"tag:{OWNED_TAG}", "Values": ["true"]},
+            {"Name": f"tag:{OWNER_TAG}", "Values": [owner]},
+            {"Name": f"tag:{POOL_TAG}", "Values": [pool]},
+        ]
+        volumes = self.client.describe_volumes(Filters=filters).get("Volumes", [])
+        interfaces = self.client.describe_network_interfaces(Filters=filters).get(
+            "NetworkInterfaces", []
+        )
+        addresses = self.client.describe_addresses(Filters=filters).get("Addresses", [])
+        return tuple(
+            str(value)
+            for value in (
+                *(row.get("VolumeId") for row in volumes),
+                *(row.get("NetworkInterfaceId") for row in interfaces),
+                *(row.get("AllocationId") or row.get("PublicIp") for row in addresses),
+            )
+            if value
+        )
+
     @staticmethod
     def _user_data(declaration: HostDeclaration) -> str:
         profile = declaration.pool.profile

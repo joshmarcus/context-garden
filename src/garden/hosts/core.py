@@ -456,7 +456,74 @@ class HostLifecycle:
 
     def inspect(self, pool: PoolDeclaration) -> list[HostFacts]:
         self.validate(pool)
-        return self._provider(pool).discover(pool.owner, pool.name)
+        hosts = self._provider(pool).discover(pool.owner, pool.name)
+        # Provider inventory reports the machine state, not the controller's admission
+        # fence.  Preserve a durable drain marker so a status read after a controller
+        # restart does not misleadingly show a still-draining host as ready for work.
+        saved = self.state.read().get("pools", {})
+        recorded = saved.get(pool.name, {}) if isinstance(saved, dict) else {}
+        rows = recorded.get("hosts", []) if isinstance(recorded, dict) else []
+        draining = {
+            str(row.get("operation_id"))
+            for row in rows
+            if isinstance(row, dict) and row.get("state") == HostState.DRAINING
+        }
+        return [
+            replace(host, state=HostState.DRAINING,
+                    detail=host.detail or "operator-requested pool drain")
+            if host.operation_id in draining and host.state != HostState.TERMINATED else host
+            for host in hosts
+        ]
+
+    def drain(self, pool: PoolDeclaration, *, deadline: str, detail: str) -> list[HostFacts]:
+        """Stop new work, then retire hosts once their current work has drained.
+
+        A lifecycle consumer supplies ``interruption_drain`` when it can fence worker
+        admission and observe active work.  The portable lifecycle remains usable by
+        other consumers: without that bridge there is no active-work protocol to wait
+        for, so retirement proceeds immediately.
+        """
+        self.validate(pool)
+        provider = self._provider(pool)
+        hosts = sorted(provider.discover(pool.owner, pool.name), key=lambda host: host.host_id)
+        events: list[HostEvent] = []
+        result: list[HostFacts] = []
+        for host in hosts:
+            if host.state == HostState.TERMINATED:
+                result.append(host)
+                continue
+            ready_to_retire = self.interruption_drain is None or self.interruption_drain(
+                host, deadline, detail
+            )
+            if not ready_to_retire:
+                draining = replace(host, state=HostState.DRAINING, detail=detail)
+                result.append(draining)
+                events.append(HostEvent("draining", host.host_id, draining.state, detail))
+                continue
+            self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
+            retired = provider.destroy(
+                host.provider_id, delete_storage=not pool.profile.persistent_workspace
+            )
+            result.append(retired)
+            events.append(HostEvent("retired", retired.host_id, retired.state, detail))
+            clearer = getattr(self.interruption_drain, "clear", None)
+            if clearer is not None:
+                clearer(host.operation_id)
+        self._record(pool, result, events, self.plan(pool))
+        return result
+
+    def orphaned_resources(self, pool: PoolDeclaration) -> tuple[str, ...]:
+        """Inventory billable resources left after owned hosts have terminated.
+
+        Providers may not support this optional read-only reconciliation.  Returning an
+        empty tuple in that case deliberately means "none reported", not "billing is
+        settled"; callers keep the delayed-billing notice in their status.
+        """
+        provider = self._provider(pool)
+        inventory = getattr(provider, "orphaned_resources", None)
+        if inventory is None:
+            return ()
+        return tuple(sorted(set(inventory(pool.owner, pool.name))))
 
     def provision(self, pool: PoolDeclaration, slot: int = 0) -> HostFacts:
         """Provision one stable slot after the caller has explicitly enabled the pool."""

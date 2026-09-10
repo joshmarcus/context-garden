@@ -679,6 +679,21 @@ def test_ec2_retirement_reports_real_retained_resources():
     assert modifications[0]["BlockDeviceMappings"][0]["Ebs"]["DeleteOnTermination"] is False
 
 
+def test_ec2_orphan_inventory_is_scoped_to_owned_pool_resources():
+    client = StubEC2()
+    client.describe_volumes = lambda **_kwargs: {"Volumes": [{"VolumeId": "vol-owned"}]}
+    client.describe_network_interfaces = lambda **_kwargs: {
+        "NetworkInterfaces": [{"NetworkInterfaceId": "eni-owned"}]
+    }
+    client.describe_addresses = lambda **_kwargs: {
+        "Addresses": [{"AllocationId": "eip-owned"}]
+    }
+
+    inventory = EC2Provider(client).orphaned_resources("owner", "pool")
+
+    assert inventory == ("vol-owned", "eni-owned", "eip-owned")
+
+
 def test_endpoint_bootstrap_requires_prebuilt_contract():
     from garden.hosts.models import HostDeclaration
     with pytest.raises(ValueError, match="verified prebuilt AMI"):

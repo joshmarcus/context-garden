@@ -119,7 +119,9 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
     lifecycle = HostLifecycle(
         {"ec2": provider}, JsonStateStore(lifecycle_path),
         health_check=durable_worker_readiness(garden_dir),
-        interruption_drain=WorkerDrainStore(garden_dir) if event_source is not None else None,
+        # The same durable fence covers provider interruptions and deliberate drains.
+        # It is useful for on-demand pools too, even when they have no Spot event source.
+        interruption_drain=WorkerDrainStore(garden_dir),
     )
     return ScaleOperation(
         lifecycle, operation_path, resolver,
@@ -134,6 +136,8 @@ def scale(
     deadline: str = typer.Option("", help="Future absolute ISO-8601 termination deadline."),
     continue_operation: bool = typer.Option(False, "--continue", help="Resume convergence."),
     cleanup: bool = typer.Option(False, help="Drain and tear down this operation."),
+    emergency_stop: bool = typer.Option(False, "--emergency-stop",
+        help="Immediately tear down capacity, interrupting active work."),
     aggregate_limit: float = typer.Option(80.0, help="Aggregate admitted worker allocation."),
     state: Path | None = typer.Option(None),
     enrollment_dir: Path | None = typer.Option(None,
@@ -145,8 +149,8 @@ def scale(
     try:
         pool = pool_from_dict(json.loads(specification.read_text()))
         operation_path = state or Path(f".garden/hosts/{pool.name}-scale.json")
-        if sum((bool(deadline), cleanup, continue_operation)) > 1:
-            raise ValueError("choose one of --deadline, --continue or --cleanup")
+        if sum((bool(deadline), cleanup, continue_operation, emergency_stop)) > 1:
+            raise ValueError("choose one of --deadline, --continue, --cleanup or --emergency-stop")
         operation = _build_operation(pool, operation_path, enrollment_dir, enrollment_config)
         if deadline:
             parsed = dt.datetime.fromisoformat(deadline.replace("Z", "+00:00"))
@@ -154,6 +158,8 @@ def scale(
                                        aggregate_spend_limit_usd=aggregate_limit)
         elif cleanup:
             status = operation.cleanup(pool)
+        elif emergency_stop:
+            status = operation.emergency_stop(pool)
         elif continue_operation:
             status = operation.continue_(pool)
         else:

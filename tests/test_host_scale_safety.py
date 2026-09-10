@@ -65,6 +65,64 @@ def test_cleanup_and_duplicate_request_keep_admitted_cost(tmp_path):
     assert json.loads(op.state_path.read_text()) == saved
 
 
+def test_cleanup_drains_before_retiring_and_emergency_stop_is_explicit(tmp_path):
+    class Drain:
+        ready = False
+        cleared = []
+
+        def __call__(self, _host, _deadline, _detail):
+            return self.ready
+
+        def clear(self, operation_id):
+            self.cleared.append(operation_id)
+
+    provider = FakeProvider()
+    drain = Drain()
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "life.json"),
+                              interruption_drain=drain)
+    op = ScaleOperation(lifecycle, tmp_path / "scale.json",
+                        CleanEnrollments({"workers-0": ready_enrollment()}),
+                        now=lambda: dt.datetime(2026, 9, 10, tzinfo=dt.UTC))
+    spec = requested()
+    op.request(spec, deadline=op.now() + dt.timedelta(hours=1))
+    op.continue_(spec)
+
+    draining = op.cleanup(spec)
+    assert draining.phase == "cleaning"
+    assert draining.hosts[0].state == HostState.DRAINING
+    # The durable lifecycle record keeps a restarted controller from advertising the
+    # provider's still-running machine as available during its drain.
+    restarted = ScaleOperation(
+        HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "life.json"),
+                      interruption_drain=drain),
+        tmp_path / "scale.json", op.enrollments, now=op.now,
+    )
+    assert restarted.status(spec).hosts[0].state == HostState.DRAINING
+
+    stopped = restarted.emergency_stop(spec)
+    assert stopped.phase == "cleaned"
+    assert stopped.healthy == stopped.pending == 0
+    assert provider.destroy_calls == [("fake-1", True)]
+    assert drain.cleared
+
+
+def test_cleanup_inventories_orphaned_resources_and_keeps_cost_notice(tmp_path):
+    class Provider(FakeProvider):
+        def orphaned_resources(self, _owner, _pool):
+            return ("vol-retained", "eip-retained")
+
+    op = operation(tmp_path, provider=Provider())
+    spec = requested()
+    op.request(spec, deadline=op.now() + dt.timedelta(hours=1))
+    op.continue_(spec)
+
+    status = op.cleanup(spec)
+
+    assert status.phase == "cleaning"
+    assert status.retained_resources == ("eip-retained", "vol-retained")
+    assert "billing can arrive after teardown" in status.delayed_cost_notice
+
+
 def test_noncontiguous_enrollment_can_progress_without_unenrolled_launch(tmp_path):
     provider = FakeProvider()
     enrollments = Enrollments({"workers-1": ready_enrollment("workers-1")})
