@@ -2321,6 +2321,13 @@ def test_stdout_partial(garden):
     assert "Bash" in r.text and "ls" in r.text
 
 
+def test_folded_rail_stays_at_content_height():
+    base = (Path(__file__).parents[1] / "src/garden/web/templates/base.html").read_text()
+    responsive_shell = base[base.index("@media (max-width: 1000px) { .shell"):base.index("\n", base.index("@media (max-width: 1000px) { .shell"))]
+
+    assert ".rail { position:static; height:auto; align-self:start; }" in responsive_shell
+
+
 def test_stdout_partial_handles_string_and_list_tool_result_content(garden):
     """A stream-json run mixes tool_result.content shapes (string and list of blocks); the
     task page must render both instead of 500ing (CG-104)."""
