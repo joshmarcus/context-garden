@@ -79,7 +79,27 @@ workers:
     - name: build-1
       token_env: GARDEN_BUILD_1_TOKEN
       max_parallel: 2
+web:
+  # Required when the listener is not loopback-only. Keep it distinct from worker tokens.
+  operator_token_env: GARDEN_OPERATOR_TOKEN
 ```
+
+The worker endpoints and operator surface are separate authorization classes. Only
+`POST /api/runs/claim`, `POST /api/runs/<id>/heartbeat`, and
+`POST /api/runs/<id>/finish` accept worker credentials; worker tokens do not authenticate
+pages, read APIs, configuration, decisions, maintenance, merges, or other controls.
+Operator routes on a non-loopback bind require `Authorization: Bearer <operator token>`.
+Set `web.worker_ingress: true` when a nominally loopback bind is deliberately published or
+tunnelled to workers; this enables the same requirement. Startup refuses either exposure
+when `web.operator_token_env` is absent or its environment variable is empty.
+
+The application does not trust `Forwarded` or `X-Forwarded-*` for authentication or for
+deciding whether a request is local. A reverse proxy may terminate TLS and inject the
+operator Authorization header, but must strip client-supplied Authorization itself and be
+the only network peer able to reach the garden listener. Browser mutations retain the
+independent `Origin`/`Referer` allowlist check. Headerless direct requests therefore cannot
+bypass operator authentication on an exposed listener. The default `127.0.0.1` bind is the
+explicit development mode and leaves operator routes locally accessible.
 
 `garden worker --garden URL --host build-1 --doctor --repo REPO --harness claude` checks
 the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
