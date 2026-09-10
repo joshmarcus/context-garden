@@ -7,7 +7,7 @@ Choose the shortest path for what you are doing:
 | Understand the product | [README](../README.md) | [Design and vocabulary](design.md) |
 | Run a first project | [Getting started](getting-started.md) | [CLI guide](cli.md) |
 | Operate or troubleshoot a garden | [Operations](operations.md) | [Worker recovery](worker-protocol.md#when-things-go-wrong) |
-| Add a review perspective | [Persona reviews](personas.md) | [Worker protocol](worker-protocol.md#review-and-revision) |
+| Add a review perspective | [Persona reviews](personas.md) | [Review evidence](worker-protocol.md#review-evidence) |
 | Contribute to context-garden | [Contributor guide](contributing.md) | [Architecture](architecture.md) and [test suites](test-suites.md) |
 | Configure Codex | [Codex setup](codex.md) | [Worker protocol](worker-protocol.md) |
 
