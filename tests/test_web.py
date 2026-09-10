@@ -583,6 +583,50 @@ def test_page_store_snapshot_scans_once_and_refreshes_next_request(garden, monke
     assert "Fresh task title" in response.text
 
 
+def test_read_generation_is_copy_on_write_across_an_action(garden):
+    """An action publishes a new complete generation without changing a reader it overlaps."""
+    hub = Hub(Store(garden), watch=False)
+
+    reader = hub.begin_request()
+    before = hub.fresh()
+    assert before.task("DM-001").title == "First task"
+
+    action = hub.begin_action_request()
+    writable = hub.fresh()
+    changed = writable.task("DM-001")
+    changed.title = "Changed by action"
+    writable.save(changed)
+    hub.end_request(action)
+
+    # The first request still holds its original objects even after the action publishes.
+    assert before.task("DM-001").title == "First task"
+    hub.end_request(reader)
+
+    next_reader = hub.begin_request()
+    assert hub.fresh().task("DM-001").title == "Changed by action"
+    hub.end_request(next_reader)
+
+
+def test_read_generation_skips_discovery_fingerprints_until_a_watch_event(garden, monkeypatch):
+    """Repeated reads reuse a generation without walking every discovered file's metadata."""
+    calls = 0
+    original = Store._discovery_signature
+
+    def counted_signature(self):
+        nonlocal calls
+        calls += 1
+        return original(self)
+
+    monkeypatch.setattr(Store, "_discovery_signature", counted_signature)
+    c = client(garden)
+    assert c.get("/board").status_code == 200
+    initial_calls = calls
+    assert initial_calls >= 2  # stable scan protection still applies when a generation is built
+
+    assert c.get("/board").status_code == 200
+    assert calls == initial_calls
+
+
 def test_task_page_shows_exact_head_ci_freshness_and_absence(garden):
     scheduler = Scheduler(Store(garden), read_only=True)
     scheduler.state.get("DM-001")["ci_status"] = {

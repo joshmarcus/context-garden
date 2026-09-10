@@ -6,8 +6,11 @@ All logic lives in store/graph/scheduler; the web package only renders and forwa
 
 from __future__ import annotations
 
+import ctypes
 import datetime as dt
 import logging
+import os
+import select
 import threading
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -40,6 +43,72 @@ COLUMNS = ["draft", "blocked", "ready", "running", "waiting_human", "awaiting_tr
 LIST_ORDER = ["waiting_human", "awaiting_triage", "changes_requested", "failed", "running", "in_review", "ready", "blocked", "draft", "done", "wont_do"]
 
 LOGGER = logging.getLogger("garden.web")
+
+
+class _DiscoveryWatch:
+    """A small Linux inotify invalidator for the shared discovery generation.
+
+    It observes directories, rather than statting every discovered file for every web
+    request.  A platform without inotify falls back to Store's conservative signature
+    check, retaining correctness where the cheap notification mechanism is unavailable.
+    """
+
+    _MASK = 0x00000002 | 0x00000004 | 0x00000008 | 0x00000040 | 0x00000080 | 0x00000100 | 0x00000200 | 0x00000400 | 0x00000800
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.fd = -1
+        self._libc: Any | None = None
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+            if fd < 0:
+                return
+            self.fd = fd
+            self._libc = libc
+            self.rebuild()
+        except (AttributeError, OSError):
+            self.close()
+
+    @property
+    def available(self) -> bool:
+        return self.fd >= 0 and self._libc is not None
+
+    def rebuild(self) -> None:
+        if not self.available:
+            return
+        # Recreate the descriptor so removed directories cannot leave stale watches behind.
+        old_fd = self.fd
+        self.fd = self._libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        os.close(old_fd)
+        if self.fd < 0:
+            return
+        for directory, names, _files in os.walk(self.root):
+            names[:] = [name for name in names if name not in {".git", ".garden", ".venv", "node_modules"}]
+            self._libc.inotify_add_watch(self.fd, os.fsencode(directory), self._MASK)
+
+    def changed(self) -> bool:
+        if not self.available:
+            return False
+        try:
+            if not select.select([self.fd], [], [], 0)[0]:
+                return False
+            while True:
+                try:
+                    if not os.read(self.fd, 65536):
+                        break
+                except BlockingIOError:
+                    break
+            return True
+        except OSError:
+            # A broken watcher must never make a stale view look current.
+            return True
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd)
+        self.fd = -1
+        self._libc = None
 
 
 def product_checkout(store: Store, product: str) -> Path:
@@ -82,8 +151,10 @@ class Hub:
         # template share one stable discovery snapshot.  The scheduler/watch thread keeps using
         # ``self.store`` and continues to invalidate it at the start of a pass.
         self._request_store: ContextVar[Store | None] = ContextVar("garden_web_request_store", default=None)
+        self._request_is_read_only: ContextVar[bool] = ContextVar("garden_web_request_is_read_only", default=False)
         self._discovery_lock = threading.Lock()
         self._page_store = Store(store.root, config=store.config)
+        self._discovery_watch = _DiscoveryWatch(store.root)
         self.github = github
         self.lock = threading.Lock()  # held only by tick(): one scheduler pass at a time
         # A short lock around an action so two POSTs don't clobber one task, held *only* for
@@ -125,26 +196,42 @@ class Hub:
         return Scheduler(store,
                          github=self.github, log=lambda m: None, read_only=True)
 
-    def begin_request(self) -> Token[Store | None]:
-        """Install a fresh, request-local Store and return its context token.
+    def begin_request(self) -> tuple[Token[Store | None], Token[bool]]:
+        """Install a read-only request Store backed by the shared generation."""
+        return self._begin_request(read_only=True)
 
-        Creating the Store without loading config keeps the scheduler's config-reload gate in
-        charge of executable config changes.  Its empty discovery cache means every request
-        still sees task files written by other processes before the request began.
+    def begin_action_request(self) -> tuple[Token[Store | None], Token[bool]]:
+        """Install an isolated Store for an action that may mutate task models."""
+        return self._begin_request(read_only=False)
+
+    def _begin_request(self, read_only: bool) -> tuple[Token[Store | None], Token[bool]]:
+        """Install a request Store and return its context tokens.
+
+        A read-only request borrows the current discovery generation in ``fresh``.  An action
+        gets an independent Store: its scheduler is free to mutate task models before saving,
+        without changing an in-flight reader's view.
         """
         snapshot = Store(self.store.root, config=self.store.config)
         # Store.__init__ samples the current config mtime. Keep the shared Store's accepted
         # signature instead: a POST /tick still needs to notice an edit made before this
         # request and route it through the scheduler's fence-aware reload gate.
         snapshot._config_sig = self.store._config_sig
-        return self._request_store.set(snapshot)
+        return self._request_store.set(snapshot), self._request_is_read_only.set(read_only)
 
-    def end_request(self, token: Token[Store | None]) -> None:
-        self._request_store.reset(token)
+    def end_request(self, tokens: tuple[Token[Store | None], Token[bool]]) -> None:
+        if not self._request_is_read_only.get():
+            # An action may have written a task, phase, or config file.  Publish no partial
+            # update: readers retain their old generation until the next complete scan swaps it.
+            with self._discovery_lock:
+                self._page_store.invalidate_tasks()
+        store_token, read_only_token = tokens
+        self._request_store.reset(store_token)
+        self._request_is_read_only.reset(read_only_token)
 
     def stop(self) -> None:
         """End the watch loop (a test or `garden qa` shutting the server down)."""
         self._stop.set()
+        self._discovery_watch.close()
 
     def _log(self, msg: str) -> None:
         self.events.append({"at": now_iso(), "msg": msg})
@@ -153,6 +240,8 @@ class Hub:
     def tick(self) -> str:
         with self.lock:
             rep = self.scheduler().tick()
+            with self._discovery_lock:
+                self._page_store.invalidate_tasks()
             self.last_tick = now_iso()
             self.tick_seq += 1
             self.tick_record = {"seq": self.tick_seq, "at": self.last_tick, "duration_s": round(rep.duration_s, 2),
@@ -246,15 +335,27 @@ class Hub:
         """
         store = self._request_store.get()
         if store is not None:
+            if not self._request_is_read_only.get():
+                return store
             if store._products is None:
                 with self._discovery_lock:
                     if self._page_store.config is not self.store.config:
                         self._page_store.config = self.store.config
                         self._page_store.invalidate_tasks()
-                    products, tasks, duplicate_ids = self._page_store.discovery_snapshot()
-                store._products = products
-                store._tasks = tasks
-                store._duplicate_ids = duplicate_ids
+                    if self._discovery_watch.changed():
+                        self._page_store.invalidate_tasks()
+                        self._discovery_watch.rebuild()
+                    # On platforms without inotify, retain Store's old conservative external
+                    # edit detection. Linux web requests take the notification path above.
+                    if not self._discovery_watch.available:
+                        self._page_store.refresh_tasks_if_changed()
+                    self._page_store.tasks()
+                # The page Store is immutable to read handlers by convention; mutations receive
+                # their own Store above. Sharing this completed generation avoids a per-request
+                # deepcopy of every Product, Phase, and Task.
+                store._products = self._page_store._products
+                store._tasks = self._page_store._tasks
+                store._duplicate_ids = self._page_store._duplicate_ids
             return store
         self.store.invalidate_tasks()
         return self.store
