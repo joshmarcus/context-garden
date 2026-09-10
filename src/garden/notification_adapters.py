@@ -216,7 +216,7 @@ class NotificationDelivery:
         results: list[str] = []
         try:
             records = self.store.read()
-        except OSError:
+        except (OSError, UnicodeError):
             LOGGER.warning("notification delivery ledger could not be read; retries skipped")
             return results
         for record in records.values():

@@ -110,6 +110,23 @@ def test_scheduler_tick_ignores_malformed_ledger_record_and_retries_valid_one(sc
     assert next(iter(persisted.values()))["reason"] == "destination revoked"
 
 
+def test_scheduler_tick_contains_invalid_utf8_notification_ledger(sched, caplog):
+    ledger = sched.cfg.garden_dir / "notifications.json"
+    malformed = b'{"private diagnostic":"\xff"}'
+    ledger.write_bytes(malformed)
+    sched.cfg.data["notify"] = {"destinations": {
+        "operator": {"adapter": "synthetic"},
+    }}
+    before = statuses(sched)
+
+    sched.tick(dispatch=False)
+
+    assert statuses(sched) == before
+    assert ledger.read_bytes() == malformed
+    assert "notification delivery ledger could not be read; retries skipped" in caplog.text
+    assert "private diagnostic" not in caplog.text
+
+
 def test_notify_on_waiting_human_transition(sched, fake_github, tmp_path):
     notify_file = tmp_path / "notify.txt"
     # Use env vars in a script to test the notification hook
