@@ -41,4 +41,3 @@ def test_descendants_uses_one_portable_process_snapshot(monkeypatch):
     monkeypatch.setattr(proctree, "_ps_children", lambda: {1: [2, 3], 2: [4]})
 
     assert proctree.descendants(1) == [2, 3, 4]
-
