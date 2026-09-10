@@ -91,7 +91,11 @@ class PersonaMixin:
                    if runner_name == "remote" else self._new_local_run(task.id, "persona", "persona"))
             run.branch, run.base = branch, base
             canonical = self.prepare_canonical_run(task, run, runner, branch, base)
-        wt = canonical or gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        if canonical is not None:
+            wt = canonical
+        else:
+            with self._local_staging_admission("persona checkout materialization"):
+                wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         if run is not None:
             run.worktree = str(wt)
             run.save()
