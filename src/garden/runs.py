@@ -1024,8 +1024,15 @@ class RunStore:
         d = self.dir / task_id / run_id
 
         def exists_anywhere(candidate: str) -> bool:
-            return d.exists() or (self.dir.exists() and any(
-                (task_dir / candidate).exists() for task_dir in self.dir.iterdir() if task_dir.is_dir()))
+            live = self.dir.exists() and any(
+                (task_dir / candidate).exists() for task_dir in self.dir.iterdir() if task_dir.is_dir()
+            )
+            archived = self.archive_dir.exists() and any(
+                (task_dir / candidate).exists()
+                for task_dir in self.archive_dir.iterdir()
+                if task_dir.is_dir() and task_dir.name != "blobs"
+            )
+            return d.exists() or live or archived
 
         n = 1
         while exists_anywhere(run_id):
