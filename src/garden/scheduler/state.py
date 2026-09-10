@@ -311,48 +311,90 @@ class State:
     def commit_completed(
         self, prepared: dict[str, dict[str, Any]], task_ids: set[str]
     ) -> dict[str, int]:
-        """Publish prepared references only when task eligibility and payload still match."""
+        """Publish prepared references only when durable payloads still match.
+
+        Preparation intentionally happens without the state write lock.  At commit, re-read
+        and compact ``state.json`` while holding that lock so an independent State writer
+        cannot have its newer historical payload replaced by this instance's stale view.
+        """
         report = {"tasks": 0, "logical_bytes": 0, "stored_bytes": 0}
         if not prepared:
             return report
-        lock_path = self.path.parent / "state-history.lock"
+        history_lock_path = self.path.parent / "state-history.lock"
+        state_lock_path = self.path.parent / (self.path.name + ".lock")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(lock_path, "a") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        with open(history_lock_path, "a") as history_lock:
+            fcntl.flock(history_lock, fcntl.LOCK_EX)
             index = self._history_index()
-            for task_id, plan in prepared.items():
-                if task_id not in task_ids:
-                    continue
-                current = self.get(task_id)
-                payload = {key: current[key] for key in self.HISTORICAL_KEYS if key in current}
-                if not payload:
-                    continue
-                raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-                sha = hashlib.sha256(raw).hexdigest()
-                if sha != plan["sha256"] or sorted(payload) != plan["keys"]:
-                    continue
-                blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
-                try:
-                    blob_stat = blob.stat()
-                except FileNotFoundError:
-                    raise StateCorruptionError(
-                        f"scheduler state history blob is unavailable: {sha}"
-                    ) from None
-                if (blob_stat.st_size, blob_stat.st_mtime_ns) != tuple(plan["blob_identity"]):
-                    raise StateCorruptionError(f"scheduler state history blob changed: {sha}")
-                index["tasks"][task_id] = {"sha256": sha, "keys": plan["keys"]}
-                self._durable_bytes(
-                    self.history_dir / "index.json",
-                    (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
-                )
-                current["_history_ref"] = index["tasks"][task_id]
-                for key in payload:
-                    current.pop(key, None)
-                report["tasks"] += 1
-                report["logical_bytes"] += int(plan["logical_bytes"])
-                report["stored_bytes"] += int(plan["stored_bytes"])
-            # The archive and its index are durable before compact references replace data.
-            self.save()
+            with open(state_lock_path, "a") as state_lock:
+                fcntl.flock(state_lock, fcntl.LOCK_EX)
+                disk = _read_state(self.path) if self.path.exists() else {}
+                committed: dict[str, tuple[dict[str, Any], set[str]]] = {}
+                for task_id, plan in prepared.items():
+                    if task_id not in task_ids:
+                        continue
+                    current = self.get(task_id)
+                    current_payload = {
+                        key: current[key] for key in self.HISTORICAL_KEYS if key in current
+                    }
+                    current_raw = json.dumps(
+                        current_payload, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                    if (
+                        hashlib.sha256(current_raw).hexdigest() != plan["sha256"]
+                        or sorted(current_payload) != plan["keys"]
+                    ):
+                        continue
+                    durable = disk.get(task_id)
+                    if not isinstance(durable, dict):
+                        continue
+                    payload = {
+                        key: durable[key] for key in self.HISTORICAL_KEYS if key in durable
+                    }
+                    if not payload:
+                        continue
+                    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+                    sha = hashlib.sha256(raw).hexdigest()
+                    if sha != plan["sha256"] or sorted(payload) != plan["keys"]:
+                        continue
+                    blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+                    try:
+                        blob_stat = blob.stat()
+                    except FileNotFoundError:
+                        raise StateCorruptionError(
+                            f"scheduler state history blob is unavailable: {sha}"
+                        ) from None
+                    if (blob_stat.st_size, blob_stat.st_mtime_ns) != tuple(
+                        plan["blob_identity"]
+                    ):
+                        raise StateCorruptionError(
+                            f"scheduler state history blob changed: {sha}"
+                        )
+                    reference = {"sha256": sha, "keys": plan["keys"]}
+                    index["tasks"][task_id] = reference
+                    # Keep the archive/index durable before replacing its source bytes.
+                    self._durable_bytes(
+                        self.history_dir / "index.json",
+                        (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
+                    )
+                    durable["_history_ref"] = reference
+                    for key in payload:
+                        durable.pop(key, None)
+                    committed[task_id] = (reference, set(payload))
+                    report["tasks"] += 1
+                    report["logical_bytes"] += int(plan["logical_bytes"])
+                    report["stored_bytes"] += int(plan["stored_bytes"])
+                if committed:
+                    self._durable_bytes(
+                        self.path,
+                        json.dumps(disk, indent=2, sort_keys=True).encode(),
+                    )
+                    for task_id, (reference, keys) in committed.items():
+                        current = self.get(task_id)
+                        current["_history_ref"] = reference
+                        for key in keys:
+                            current.pop(key, None)
+                        current.flushed(keys | {"_history_ref"})
         return report
 
     def archive_completed(self, task_ids: set[str], *, limit: int) -> dict[str, int]:
