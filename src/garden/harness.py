@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -253,6 +254,13 @@ class Harness:
                 cmd += ["--output-last-message", str(final_path)]
             cmd += [str(a) for a in (self.cfg.get("extra_args") or [])]
             cmd.append("-")  # prompt from stdin
+            if self.name == "openrouter":
+                cmd = [
+                    sys.executable, "-m", "garden.openrouter_adapter",
+                    "--base-url", base_url,
+                    "--api-key-env", self.api_key_env,
+                    "--", *cmd,
+                ]
             return cmd
         cmd = [self.bin, *[str(a) for a in (self.cfg.get("args") or [])]]
         if model and self.cfg.get("model_flag"):

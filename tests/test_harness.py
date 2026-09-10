@@ -1,5 +1,8 @@
 import json
+import os
 import subprocess
+import threading
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -10,6 +13,7 @@ from garden.personas import parse_persona
 from garden.review import parse_review
 from garden.runs import Run
 from garden.suggestions import parse_edit
+from tests.fake_openrouter import Handler
 
 
 def test_claude_command_and_models():
@@ -36,31 +40,32 @@ def test_codex_command():
 
 
 def test_fake_openrouter_smoke(tmp_path):
-    fake = Path(__file__).with_name("fake_openrouter.py")
-    harness = Harness("openrouter", {"bin": str(fake), "base_url": "http://openrouter.test/api/v1"})
-    command = harness.command("openai/gpt-5.2-codex")
-
-    completed = subprocess.run(
-        command,
-        input="# Smoke brief\nReturn the required result marker.",
-        capture_output=True,
-        text=True,
-        env={"OPENROUTER_API_KEY": "test-key"},
-        cwd=tmp_path,
-        check=False,
-    )
+    fake_codex = Path(__file__).with_name("fake_openrouter_codex.py")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    harness = Harness("openrouter", {"bin": str(fake_codex),
+        "base_url": f"http://127.0.0.1:{server.server_port}/api/v1"})
+    try:
+        completed = subprocess.run(harness.command("openai/gpt-5.2-codex"),
+            input="# Smoke brief\nReturn the required result marker.", capture_output=True,
+            text=True, env={**os.environ, "OPENROUTER_API_KEY": "offline-test-key"},
+            cwd=tmp_path, check=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
     parsed = harness.parse(completed.stdout, completed.stderr)
 
     assert completed.returncode == 0
-    assert parsed["session_id"] == "openrouter-fake"
+    assert parsed["session_id"] == "fake-codex"
     assert parsed["usage"] == {
         "input_tokens": 100, "output_tokens": 30,
         "cache_read_input_tokens": 20, "cache_creation_input_tokens": 0,
     }
     assert parsed["cost_usd"] == 0.0042
     assert parsed["result"] == {
-        "status": "done", "summary": "OpenRouter completed the run",
-        "pr_title": "OpenRouter change", "pr_body": "body",
+        "status": "done", "summary": "adapter completed",
     }
 
 
@@ -74,7 +79,7 @@ def test_openrouter_defaults_and_probe_use_provider_configuration():
     assert prompt == "Reply with the single word: ready."
     assert 'model_provider="openrouter"' in argv
     assert 'sandbox_mode="read-only"' in argv
-    assert argv[argv.index("-m") + 1] == "qwen/qwen3-coder"
+    assert argv[argv.index("--") + 1:][argv[argv.index("--") + 1:].index("-m") + 1] == "qwen/qwen3-coder"
 
 
 def test_openrouter_rejects_unsafe_api_key_environment_name():

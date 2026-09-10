@@ -5,7 +5,7 @@ from pathlib import Path
 from garden.model import Status
 from garden.personas import parse_persona
 
-FAKE_OPENROUTER = Path(__file__).with_name("fake_openrouter.py")
+FAKE_OPENROUTER = Path(__file__).with_name("fake_openrouter_cli.py")
 MODEL = "openrouter/qwen/qwen3-coder"
 
 
