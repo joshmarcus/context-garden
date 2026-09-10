@@ -472,7 +472,7 @@ class GardenTUI(App):
         if not r:
             detail.update("_no runs_")
             return
-        final = (r.path / "final.md").read_text() if (r.path / "final.md").exists() else ""
+        final = r.read_text("final.md")
         stderr = r.stderr_text()[-3000:]
         detail.update(f"# {t.id} run {r.run_id}\n\nstatus {r.status} · {r.dir}\n\n## Final message\n\n{final or '_none_'}\n\n## stderr\n\n```\n{stderr}\n```")
 
