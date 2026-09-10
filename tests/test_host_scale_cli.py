@@ -42,6 +42,7 @@ def test_single_scale_cli_reports_bounded_resumable_operation(tmp_path, monkeypa
     output = json.loads(result.output)
     assert output["desired"] == 2 and output["healthy"] == 1
     assert output["missing_setup"] == {"workers-1": ["dedicated model identity"]}
+    assert output["phase"] == "unknown"
     assert calls == [(2, "2026-09-09T00:00:00+00:00", 80.0)]
 
 

@@ -126,6 +126,7 @@ class ScaleStatus:
     retained_resources: tuple[str, ...]
     pending_credential_revocations: tuple[str, ...]
     delayed_cost_notice: str
+    phase: str = "unknown"
 
 
 class ScaleOperation:
@@ -256,7 +257,7 @@ class ScaleOperation:
             operation["execution_context"] = self.execution_context
         deadline = dt.datetime.fromisoformat(operation["deadline"])
         if self.now() >= deadline or operation.get("phase") in {"cleaning", "cleaned"}:
-            return self._cleanup(replace(pool, desired=0, enabled=True), operation)
+            return self._cleanup(replace(pool, desired=0, enabled=True), operation, safe=True)
         # Persist intent before any credential or infrastructure operation. The resolver
         # and provider both reconcile their own stable step identities on retry.
         operation["phase"] = "converging"
@@ -278,18 +279,32 @@ class ScaleOperation:
         return self.status(pool, hosts=hosts)
 
     def cleanup(self, pool: PoolDeclaration) -> ScaleStatus:
-        """Retire the capacity admitted by this operation without trusting new inputs."""
+        """Drain active work before retiring the capacity admitted by this operation."""
         with self._locked():
             operation = self._require(pool)
             admitted = self._admitted(operation)
-            return self._cleanup(replace(admitted, desired=0, enabled=True), operation)
+            return self._cleanup(replace(admitted, desired=0, enabled=True), operation, safe=True)
 
-    def _cleanup(self, pool: PoolDeclaration, operation: dict) -> ScaleStatus:
+    def emergency_stop(self, pool: PoolDeclaration) -> ScaleStatus:
+        """Immediately retire capacity, explicitly bypassing the normal work drain."""
+        with self._locked():
+            operation = self._require(pool)
+            admitted = self._admitted(operation)
+            return self._cleanup(replace(admitted, desired=0, enabled=True), operation, safe=False)
+
+    def _cleanup(self, pool: PoolDeclaration, operation: dict, *, safe: bool) -> ScaleStatus:
         enrolled_slots = self._admitted(operation).desired
         operation["phase"] = "cleaning"
         operation["desired"] = 0
         self._write(operation)
-        hosts = self.lifecycle.reconcile(pool)
+        if safe:
+            hosts = self.lifecycle.drain(
+                pool, deadline=str(operation["deadline"]), detail="operator-requested pool drain"
+            )
+        else:
+            hosts = self.lifecycle.force_retire(
+                pool, detail="operator-requested emergency pool stop"
+            )
         active_ids = {host.host_id for host in hosts if host.state != HostState.TERMINATED}
         pending = set()
         for slot in range(enrolled_slots):
@@ -302,6 +317,8 @@ class ScaleOperation:
         retained = sorted({
             resource for host in hosts for resource in host.retained_resources
         })
+        if not active_ids:
+            retained = sorted(set(retained) | set(self.lifecycle.orphaned_resources(pool)))
         operation["retained_resources"] = retained
         if not active_ids and not retained and not pending:
             operation["phase"] = "cleaned"
@@ -341,6 +358,7 @@ class ScaleOperation:
             tuple(operation.get("retained_resources", [])),
             tuple(operation.get("ephemeral_credentials_pending_revocation", [])),
             "provider billing can arrive after teardown; retained resources may continue to cost",
+            str(operation.get("phase") or "unknown"),
         )
 
     def _missing(self, pool: PoolDeclaration, *, ensure: bool = False) -> dict[str, tuple[str, ...]]:
