@@ -76,6 +76,26 @@ def _quarantine_materialization(repo: Path, root: Path, run: dict[str, Any],
     return destination if destination.exists() else None
 
 
+def _preserve_materialization_failure(repo: Path, root: Path, run: dict[str, Any],
+                                      heartbeat: _LeaseHeartbeat, *, stage: str,
+                                      error: BaseException) -> ClaimMaterializationError:
+    """Preserve failed source and retain the claim failure if quarantine also fails."""
+    try:
+        preserved = _quarantine_materialization(repo, root, run, heartbeat)
+    except OSError as preserve_error:
+        destination = root / "preserved-materializations" / str(run["task_id"]) / _claim_suffix(run)
+        try:
+            source_location = destination if destination.exists() else repo
+        except OSError:
+            source_location = repo
+        return ClaimMaterializationError(
+            stage,
+            f"{error}; preservation failed: {preserve_error}; source remains at {source_location}",
+            source_location,
+        )
+    return ClaimMaterializationError(stage, str(error), preserved)
+
+
 def doctor_worker(token: str, repo: str, harnesses: list[str],
                   config: dict[str, Any] | None = None, scratch_home: Path | None = None) -> list[str]:
     problems: list[str] = []
@@ -330,9 +350,11 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
                 check=True, pass_fds=(lock_fd,),
             ).stdout.strip()
             if dirty or unmerged:
-                preserved = _quarantine_materialization(repo, root, run, heartbeat)
                 condition = "unresolved index" if unmerged else "dirty worktree"
-                raise ClaimMaterializationError(stage, f"warm checkout has {condition}", preserved)
+                raise _preserve_materialization_failure(
+                    repo, root, run, heartbeat, stage=stage,
+                    error=RuntimeError(f"warm checkout has {condition}"),
+                )
         if not (repo / ".git").exists():
             repo.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "clone", str(run["repo"]), str(repo)], check=True,
@@ -385,8 +407,9 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
     except (ClaimMaterializationError, WorkerRequestError):
         raise
     except (OSError, subprocess.SubprocessError) as exc:
-        preserved = _quarantine_materialization(repo, root, run, heartbeat)
-        raise ClaimMaterializationError(stage, str(exc), preserved) from exc
+        raise _preserve_materialization_failure(
+            repo, root, run, heartbeat, stage=stage, error=exc,
+        ) from exc
 
 
 def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "") -> None:

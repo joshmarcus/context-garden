@@ -21,6 +21,7 @@ from garden import gitops, managed_worker
 from garden.harness import Harness
 from garden.remote_worker import (
     WorkerRequestError,
+    _claim_suffix,
     _host_check_data,
     _LeaseHeartbeat,
     _wait_for_process,
@@ -1443,6 +1444,61 @@ def test_repo_lock_materialization_failure_finishes_without_author(
     assert "checkout ownership" in finishes[0]["error"]
     assert "repository lock" in finishes[0]["error"]
     assert not (root / "preserved-materializations").exists()
+
+
+@pytest.mark.parametrize("failure", ["preservation-directory", "setup-marker-rename"])
+def test_quarantine_filesystem_failure_finishes_without_author(
+    tmp_path, monkeypatch, failure,
+):
+    """Partial or failed preservation remains a claim-scoped infrastructure outcome."""
+    root = tmp_path / "host"
+    repo = root / "repos" / "T-1"
+    repo.parent.mkdir(parents=True)
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    unpublished = repo / "unpublished.txt"
+    unpublished.write_text("keep exactly\n")
+    from garden.runner.base import setup_marker
+
+    marker = setup_marker(repo)
+    marker.write_text("keep setup state\n")
+    run = {"id": "run-1", "task_id": "T-1", "lease_token": "current",
+           "heartbeat_seconds": 3600}
+    destination = root / "preserved-materializations" / "T-1" / _claim_suffix(run)
+    original_mkdir = Path.mkdir
+    original_rename = Path.rename
+    if failure == "preservation-directory":
+        def fail_mkdir(path, *args, **kwargs):
+            if path == destination.parent:
+                raise OSError("preservation directory unavailable")
+            return original_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+    else:
+        def fail_rename(path, target):
+            if path == marker:
+                raise OSError("marker filesystem unavailable")
+            return original_rename(path, target)
+
+        monkeypatch.setattr(Path, "rename", fail_rename)
+    posts = []
+
+    class Client:
+        def post(self, path, body):
+            posts.append((path, body))
+            return 200, {}
+
+    monkeypatch.setattr(Harness, "command", lambda *args, **kwargs: pytest.fail("author launched"))
+    execute_claim(run, root, Client())
+
+    finishes = [body for path, body in posts if path.endswith("/finish")]
+    assert len(finishes) == 1
+    assert finishes[0]["env_kind"] == "materialization"
+    assert "checkout preflight" in finishes[0]["error"]
+    assert "warm checkout has dirty worktree" in finishes[0]["error"]
+    assert "preservation failed" in finishes[0]["error"]
+    source = destination if failure == "setup-marker-rename" else repo
+    assert (source / "unpublished.txt").read_bytes() == b"keep exactly\n"
+    assert marker.read_bytes() == b"keep setup state\n"
 
 
 def test_orphaned_author_keeps_checkout_lock_and_new_claim_refuses_mutation(tmp_path, monkeypatch):
