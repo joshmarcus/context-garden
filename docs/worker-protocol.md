@@ -86,6 +86,12 @@ with the bearer token named by `workers.hosts[].token_env`.
   usage, cost, and pushed commit. The scheduler verifies that staged head and promotes it to
   the task branch with a git lease, then uses its ordinary
   result, PR, review, check, and accounting paths.
+  Before posting, the worker durably saves the finish payload. After a process restart it
+  retries transient delivery for a finite configurable window with capped jittered backoff,
+  then continues serving while retaining the payload for a later attempt. Authentication,
+  validation, and replaced-generation responses move the payload to a local quarantine and
+  emit an operator-action event, so a supervisor cannot restart-loop on an undeliverable
+  result. An already accepted identical finish remains an idempotent success.
 
 Expired leases are claimable again and do not fail the task. Each reclaim gets a different
 staging ref, so an expired worker that finishes cloning, setup, checks, or execution late can
