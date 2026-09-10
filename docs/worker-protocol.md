@@ -143,6 +143,10 @@ the token, git access, and harness. `--once` claims at most one run for CI-style
 The standalone command uses the same durable worker identity, bounded event history, active
 supervisor recovery, and pending-result delivery as a managed worker before it requests new
 work, so restarting either daemon does not replay an accepted execution.
+Before either a harness or remote check starts, its detached supervisor waits on a parent-owned
+launch gate. The parent fsyncs the PID/birth-fenced active-claim handoff before releasing that
+gate. A crash before persistence therefore starts no workload; a crash after persistence leaves
+a handoff that the replacement daemon can collect, without issuing the workload again.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
 the whole result contract. For the local runner, publication of the task branch, pull request
