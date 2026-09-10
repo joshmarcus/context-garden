@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 import textwrap
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1156,17 +1157,101 @@ def test_later_tick_persona_and_reconcile_launches_run_outside_controller_lock(s
     entry["personas"] = ["designer"]
     entry["stage"] = "personas"
 
-    def reconcile(queued, run_id=""):
+    prepared_run = SimpleNamespace(run_id="")
+
+    def prepare_reconcile(queued, run_id=""):
         assert not held
         calls.append(("reconcile", run_id))
-        queued.update(stage="reconciling", recon_run_id=run_id,
+        prepared_run.run_id = run_id
+        return {"run": prepared_run}
+
+    def commit_reconcile(queued, prepared):
+        assert held
+        queued.update(stage="launching_reconcile", recon_run_id=prepared["run"].run_id,
                       recon_task="_retro-demo-p1")
 
-    monkeypatch.setattr(sched, "_dispatch_reconcile", reconcile)
+    def launch_reconcile(prepared):
+        assert not held
+
+    monkeypatch.setattr(sched, "_prepare_reconcile", prepare_reconcile)
+    monkeypatch.setattr(sched, "_commit_prepared_reconcile", commit_reconcile)
+    monkeypatch.setattr(sched, "_launch_prepared_reconcile", launch_reconcile)
     sched.state.save()
     sched.tick()
     assert calls[-1][0] == "reconcile"
     assert calls[-1][1].startswith("retro-reconcile-")
+
+
+def test_reconcile_preparation_requeues_when_accepted_identity_changes_at_barrier(sched, monkeypatch):
+    """A source/evidence update while the brief is built must fence the prepared launch."""
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "personas", "persona_runs": {},
+             "automatic": True, "request_id": "identity-barrier", "source": "a" * 40,
+             "evidence": "evidence-a"}
+    sched._retro_list().append(entry)
+    sched._claim_retro_preparation(entry, "reconcile")
+    sched.state.save()
+
+    identity = {"source": "a" * 40, "evidence": "evidence-a"}
+    barrier = threading.Barrier(2)
+    prepared_run = SimpleNamespace(run_id=entry["reconcile_launch_run_id"], status="preparing",
+                                   error="", finished_at="", preparer_pid=os.getpid(),
+                                   save=lambda: None)
+
+    def prepare(_entry, run_id=""):
+        assert run_id == prepared_run.run_id
+        barrier.wait()
+        barrier.wait()
+        return {"run": prepared_run}
+
+    def change_identity():
+        barrier.wait()
+        identity.update(source="b" * 40, evidence="evidence-b")
+        barrier.wait()
+
+    updater = threading.Thread(target=change_identity)
+    updater.start()
+    launched = []
+    monkeypatch.setattr(sched, "_prepare_reconcile", prepare)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: identity["source"])
+    monkeypatch.setattr(sched, "_closing_review_policy", lambda ph: {
+        "eligible": True, "evidence": identity["evidence"], "reason": "",
+    })
+    monkeypatch.setattr(sched, "_launch_prepared_reconcile", lambda prepared: launched.append(prepared))
+
+    sched.prepare_claimed_closing_reviews(TickReport())
+    updater.join()
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "queued"
+    assert current["source"] == ""
+    assert current["evidence"] == "evidence-b"
+    assert "changed during reconciliation preparation" in current["waiting_reason"]
+    assert prepared_run.status == "failed"
+    assert launched == []
+
+
+def test_restart_reprepares_a_committed_reconcile_that_never_launched(sched):
+    phase = sched.store.phase("demo", "p1")
+    run = sched.runs.new_run("_retro-demo-p1", "local", mode="retro",
+                             run_id="interrupted-reconcile")
+    run.preparer_pid = 99999999
+    run.save()
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": [], "next_phase": "p2", "self_product": "demo",
+             "stage": "launching_reconcile", "persona_runs": {},
+             "request_id": "restart-reconcile", "recon_run_id": run.run_id,
+             "recon_task": run.task_id, "reconcile_launch_run_id": run.run_id}
+    sched._retro_list().append(entry)
+
+    sched.reap_retro(TickReport())
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "preparing_reconcile"
+    assert current["reconcile_launch_run_id"] != run.run_id
+    assert sched.runs.latest(run.task_id).status == "failed"
 
 
 def test_restart_resumes_one_deferred_persona_job_with_its_reserved_identity(sched, monkeypatch):
