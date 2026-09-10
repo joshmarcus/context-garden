@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from garden.notification_adapters import (
     NotificationDelivery,
     NotificationEvent,
@@ -138,3 +140,22 @@ def test_argv_adapter_records_a_timeout_without_interpreting_event_text(tmp_path
     }}}
 
     assert delivery.deliver(cfg, NotificationEvent("CG-520", "failed", "$(not executed)")) == ["operator: failed"]
+
+
+def test_malformed_destination_policy_is_a_visible_nonfatal_ledger_outcome(tmp_path):
+    adapter = SyntheticAdapter()
+    delivery = NotificationDelivery(tmp_path / "notifications.json", {"synthetic": adapter})
+    event = NotificationEvent("CG-520", "failed", "transition must continue")
+
+    for policy in (
+        {"timeout_seconds": "not-a-number"},
+        {"max_attempts": "not-a-number"},
+        {"backoff_seconds": "not-a-number"},
+    ):
+        cfg = _cfg(**policy)
+        assert delivery.deliver(cfg, event) == ["operator: permanent failure"]
+        ledger = json.loads((tmp_path / "notifications.json").read_text())
+        assert next(iter(ledger.values()))["reason"] == "invalid destination policy"
+        (tmp_path / "notifications.json").unlink()
+
+    assert adapter.calls == []

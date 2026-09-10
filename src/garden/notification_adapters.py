@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import time
@@ -38,6 +39,15 @@ class NotificationEvent:
     pr_url: str = ""
     kind: str = "required_action"
     version: int = VERSION
+
+
+@dataclass(frozen=True)
+class DeliveryPolicy:
+    """Normalized, bounded values used for one destination delivery."""
+
+    timeout: float
+    max_attempts: int
+    backoff: float
 
 
 class DestinationAdapter(Protocol):
@@ -119,8 +129,23 @@ class NotificationDelivery:
                     or record.get("retryable") is False
                     or record.get("next_attempt", 0) > now):
                 continue
-            attempts = int(record.get("attempts", 0)) + 1
-            timeout = min(max(float(raw.get("timeout_seconds", 10)), 0.1), 60.0)
+            attempts = self._attempts(record) + 1
+            try:
+                policy = self._policy(raw)
+            except PermanentDeliveryError:
+                # Configuration belongs to the trusted operator, but a typo must be
+                # contained just like an adapter error: preserve a visible terminal
+                # ledger outcome and leave the task transition untouched.
+                records[key] = {
+                    "destination": name,
+                    "outcome": "permanent",
+                    "reason": "invalid destination policy",
+                    "attempts": attempts,
+                    "event": asdict(safe_event),
+                    "updated_at": now,
+                }
+                results.append(f"{name}: permanent failure")
+                continue
             try:
                 fields = self._fields(raw, safe_event)
                 if fields is None:
@@ -131,17 +156,15 @@ class NotificationDelivery:
                 adapter = self.adapters.get(str(raw.get("adapter") or ""))
                 if adapter is None or adapter.version != VERSION:
                     raise PermanentDeliveryError("unapproved adapter")
-                adapter.deliver(raw, fields, timeout)
+                adapter.deliver(raw, fields, policy.timeout)
             except PermanentDeliveryError:
                 records[key] = {"destination": name, "outcome": "permanent", "reason": "adapter rejected", "attempts": attempts,
                                 "event": asdict(safe_event), "updated_at": now}
                 results.append(f"{name}: permanent failure")
             except Exception:  # adapters must not corrupt a task transition
-                maximum = min(max(int(raw.get("max_attempts", 3)), 1), 10)
-                backoff = min(max(float(raw.get("backoff_seconds", 5)), 0), 3600.0)
                 records[key] = {"destination": name, "outcome": "failed", "reason": "delivery failed", "attempts": attempts,
-                                "next_attempt": now + (backoff * attempts if attempts < maximum else 0),
-                                "event": asdict(safe_event), "updated_at": now, "retryable": attempts < maximum}
+                                "next_attempt": now + (policy.backoff * attempts if attempts < policy.max_attempts else 0),
+                                "event": asdict(safe_event), "updated_at": now, "retryable": attempts < policy.max_attempts}
                 results.append(f"{name}: failed")
             else:
                 records[key] = {"destination": name, "outcome": "delivered", "attempts": attempts,
@@ -174,6 +197,40 @@ class NotificationDelivery:
             name: scrub_shared_text(value, cfg) if isinstance(value, str) else value
             for name, value in fields.items()
         })
+
+    @staticmethod
+    def _attempts(record: dict[str, Any]) -> int:
+        """Read a prior ledger count defensively so bad durable data stays nonfatal."""
+        try:
+            return max(int(record.get("attempts", 0)), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _policy(cls, destination: dict[str, Any]) -> DeliveryPolicy:
+        """Validate policy before delivery so malformed config cannot escape a tick."""
+        return DeliveryPolicy(
+            timeout=cls._bounded_number(destination.get("timeout_seconds", 10), "timeout_seconds", 0.1, 60.0),
+            max_attempts=cls._bounded_attempts(destination.get("max_attempts", 3)),
+            backoff=cls._bounded_number(destination.get("backoff_seconds", 5), "backoff_seconds", 0, 3600.0),
+        )
+
+    @staticmethod
+    def _bounded_number(value: Any, name: str, minimum: float, maximum: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise PermanentDeliveryError(f"invalid {name}") from exc
+        if not math.isfinite(number):
+            raise PermanentDeliveryError(f"invalid {name}")
+        return min(max(number, minimum), maximum)
+
+    @classmethod
+    def _bounded_attempts(cls, value: Any) -> int:
+        number = cls._bounded_number(value, "max_attempts", 1, 10)
+        if not number.is_integer():
+            raise PermanentDeliveryError("invalid max_attempts")
+        return int(number)
 
     @staticmethod
     def _fields(destination: dict[str, Any], event: NotificationEvent) -> dict[str, Any] | None:
