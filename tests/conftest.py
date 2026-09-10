@@ -7,6 +7,7 @@ import sys
 import tempfile
 import textwrap
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -465,7 +466,9 @@ class FakeGitHub:
     def list_open_prs(self, slug, project_users=None):
         authors = {self.me(), *(project_users or [])}
         return [
-            self.get_pr(slug, pr.number)
+            # Provider reads return fresh value objects. Keep repository observation
+            # refreshes from exposing the mutable object held by the fake's backend.
+            replace(self.get_pr(slug, pr.number))
             for pr in self.prs.values()
             if pr.state == "OPEN" and (pr.author or self.me()) in authors
         ]
