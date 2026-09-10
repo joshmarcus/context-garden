@@ -155,18 +155,18 @@
     }
   ],
   "artifacts": [
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-1280-dark.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-1280-light.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-390-dark.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-paused-390-light.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-1280-dark.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-1280-light.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-390-dark.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-populated-390-light.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-1280-dark.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-1280-light.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-390-dark.png",
-    "/var/lib/garden-worker/work/repos/CG-455/docs/design/captures/cg455/now-sparse-390-light.png"
+    "docs/design/captures/cg455/now-paused-1280-dark.png",
+    "docs/design/captures/cg455/now-paused-1280-light.png",
+    "docs/design/captures/cg455/now-paused-390-dark.png",
+    "docs/design/captures/cg455/now-paused-390-light.png",
+    "docs/design/captures/cg455/now-populated-1280-dark.png",
+    "docs/design/captures/cg455/now-populated-1280-light.png",
+    "docs/design/captures/cg455/now-populated-390-dark.png",
+    "docs/design/captures/cg455/now-populated-390-light.png",
+    "docs/design/captures/cg455/now-sparse-1280-dark.png",
+    "docs/design/captures/cg455/now-sparse-1280-light.png",
+    "docs/design/captures/cg455/now-sparse-390-dark.png",
+    "docs/design/captures/cg455/now-sparse-390-light.png"
   ],
   "unverified": []
 }
