@@ -97,6 +97,9 @@ class PersonaMixin:
             canonical = self.prepare_canonical_run(task, run, runner, branch, base)
         if canonical is not None:
             wt = canonical
+        elif run is not None:
+            self._recheck_local_materialization(run, "persona checkout materialization")
+            wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         else:
             with self._local_staging_admission("persona checkout materialization"):
                 wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
