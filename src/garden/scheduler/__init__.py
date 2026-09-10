@@ -18,21 +18,26 @@ import fcntl
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from .. import gitops
 from ..events import EventLog
-from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, repo_slug_from_remote
+from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, is_safe_pr_url
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, now_iso
 from ..notify import notify, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
 from ..runs import Run, RunStore
-from ..source_control import ConnectionPolicy, UnsupportedOperation
+from ..source_control import (
+    ConnectionPolicy,
+    RepositoryIdentity,
+    SourceControlFactory,
+    UnsupportedOperation,
+)
 from ..store import Store
 from ..trials import TrialLog
 from .aux import AuxMixin
@@ -118,6 +123,7 @@ class Scheduler(
         upgrader: Any | None = None,
         restarter: Callable[[], None] | None = None,
         read_only: bool = False,
+        source_control_factories: Mapping[str, SourceControlFactory] | None = None,
     ):
         self.store = store
         self.cfg = store.config
@@ -146,28 +152,40 @@ class Scheduler(
                 "trusted_bots": [str(b) for b in (self.cfg.get("github.trusted_bots") or [])],
             }
             default = GitHub(**common)
-            routes = {}
+            routes: dict[tuple[str, str] | str, Any] = {}
+            factories = dict(source_control_factories or {})
             for product in (self.cfg.data.get("products") or {}):
                 route = self.cfg.product_source_control(str(product))
-                if route and route["provider"] != "github":
-                    raise UnsupportedOperation(
-                        f"source-control provider {route['provider']!r} has no registered adapter"
-                    )
                 configured = self.cfg.product(str(product))
-                if route and (isinstance(configured.get("github"), dict)
-                              or isinstance(configured.get("source_control"), dict)):
+                explicit_source = isinstance(configured.get("source_control"), dict)
+                policy = None
+                if explicit_source:
+                    policy = ConnectionPolicy(
+                        web_url=route["web_url"], api_url=route["api_base"],
+                        credential_env=route.get("token_env", ""),
+                        ca_bundle=route.get("ca_bundle", ""), proxy=route.get("proxy", ""),
+                    )
+                if route and route["provider"] != "github":
+                    factory = factories.get(route["provider"])
+                    if factory is None:
+                        raise UnsupportedOperation(
+                            f"source-control provider {route['provider']!r} has no registered adapter"
+                        )
+                    routes[(route["provider"], route["repository"])] = factory(route)
+                elif route and (isinstance(configured.get("github"), dict) or explicit_source):
                     host = route.get("host") or route.get("web_url", "").removeprefix("https://")
                     api_base = route.get("api_base") or (
                         "https://api.github.com" if host == "github.com"
                         else f"https://{host}/api/v3"
                     )
-                    policy = ConnectionPolicy(
+                    policy = policy or ConnectionPolicy(
                         web_url=route.get("web_url") or f"https://{host}", api_url=api_base,
-                        credential_env=route.get("token_env", ""),
-                        ca_bundle=route.get("ca_bundle", ""), proxy=route.get("proxy", ""),
+                        credential_env=route.get("token_env", ""), ca_bundle=route.get("ca_bundle", ""),
+                        proxy=route.get("proxy", ""),
                     )
                     routes[(host, route["repository"])] = GitHub(
-                        **common, host=host, api_base=api_base,
+                        **{**common, "use_gh": False if explicit_source else common["use_gh"]},
+                        host=host, api_base=api_base,
                         token_env=route.get("token_env", ""),
                         connection_policy=policy,
                     )
@@ -380,16 +398,30 @@ class Scheduler(
         return self.cfg.product_base_branch(task.product)
 
     def slug_for(self, task: Task) -> str | None:
-        route = self.cfg.product_github(task.product)
-        if route:
-            configured = self.cfg.product(task.product).get("github")
+        source_route = self.cfg.product_source_control(task.product)
+        if source_route and source_route["provider"] != "github":
+            identity = RepositoryIdentity(source_route["repository"], source_route["provider"])
+            configured = self.cfg.product(task.product).get("source_control")
             if isinstance(configured, dict):
                 remote = gitops.remote_url(self.repo_for(task))
                 if remote and is_git_remote_url(remote):
-                    actual = repo_slug_from_remote(remote, route["host"])
+                    actual = self.github.repository_from_remote(identity, remote)
+                    if actual is None or actual.casefold() != str(identity).casefold():
+                        raise gitops.GitError(
+                            f"product {task.product} remote does not match configured source-control repository"
+                        )
+            return identity
+        route = self.cfg.product_github(task.product)
+        if route:
+            configured = self.cfg.product(task.product)
+            if isinstance(configured.get("github"), dict) or isinstance(configured.get("source_control"), dict):
+                remote = gitops.remote_url(self.repo_for(task))
+                if remote and is_git_remote_url(remote):
+                    identity = RepositorySlug(route["slug"], route["host"])
+                    actual = self.github.repository_from_remote(identity, remote)
                     if actual is None or actual.casefold() != route["slug"].casefold():
                         raise gitops.GitError(
-                            f"product {task.product} remote does not match configured GitHub host and repository"
+                            f"product {task.product} remote does not match configured source-control repository"
                         )
             return RepositorySlug(route["slug"], route["host"])
         return gitops.slug(self.repo_for(task))
@@ -519,14 +551,27 @@ class Scheduler(
         """Where an open PR sits: awaiting a human's triage while it is a draft, else in review."""
         return Status.AWAITING_TRIAGE if self.state.get(task.id).get("pr_draft") else Status.IN_REVIEW
 
+    def change_request_number(self, task: Task, url: str) -> int | None:
+        """Parse a provider link, retaining compatibility with injected legacy test clients."""
+        repository = self.slug_for(task)
+        parser = getattr(self.github, "change_request_number", None)
+        if repository and callable(parser):
+            return parser(repository, url)
+        match = re.search(r"/pull/(\d+)", url)
+        return int(match.group(1)) if match else None
+
+    def is_safe_change_request_url(self, task: Task, url: str) -> bool:
+        repository = self.slug_for(task)
+        checker = getattr(self.github, "is_safe_change_request_url", None)
+        return bool(repository and (checker(repository, url) if callable(checker) else is_safe_pr_url(url)))
+
     def _pr_number(self, task: Task) -> int | None:
         """The PR number to poll: the task's `pr` URL is the source of truth (a hand-attached
         PR replaces it directly), the cache is just there to avoid re-parsing every time. When
         the two disagree — e.g. `garden pr` attached a new URL but something left the old
         cached number in place — repair the cache instead of following the stale number."""
         st = self.state.get(task.id)
-        m = re.search(r"/pull/(\d+)", task.pr or "")
-        url_number = int(m.group(1)) if m else None
+        url_number = self.change_request_number(task, task.pr or "") if task.pr else None
         cached = int(st["pr_number"]) if st.get("pr_number") else None
         if url_number and cached != url_number:
             if cached:

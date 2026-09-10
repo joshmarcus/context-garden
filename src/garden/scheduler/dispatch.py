@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import time
 from pathlib import Path
@@ -13,7 +12,7 @@ from .. import gitops
 from ..brief import build_brief
 from ..canonical import configured_root
 from ..criteria import parse_criteria
-from ..github import GitHubError, is_safe_pr_url
+from ..github import GitHubError
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -548,7 +547,8 @@ class DispatchMixin:
         # callers may still use branch_override without changing the task identity.
         if completion_mode in ("external", "pushed"):
             if external_pr:
-                if not is_safe_pr_url(external_pr):
+                slug = self.slug_for(task)
+                if not self.is_safe_change_request_url(task, external_pr):
                     raise RuntimeError("external PR URL contains unsupported components")
                 if external_pr_number is not None and external_pr_number <= 0:
                     raise RuntimeError("external PR number must be positive")
@@ -557,10 +557,8 @@ class DispatchMixin:
                 # available, but do not require a browser-shaped URL to persist the
                 # provider identity.
                 if external_pr_number is None:
-                    match = re.search(r"/pull/(\d+)/?$", external_pr)
-                    external_pr_number = int(match.group(1)) if match else None
+                    external_pr_number = self.change_request_number(task, external_pr)
                 if completion_mode == "external":
-                    slug = self.slug_for(task)
                     if not slug or not self.github.available:
                         raise RuntimeError("external claim needs an accessible configured repository")
                     if external_pr_number is None:

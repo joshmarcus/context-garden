@@ -10,7 +10,6 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from ..github import pull_request_number
 from ..model import Status, now_iso
 from .common import (
     PANEL_BOARD,
@@ -394,9 +393,9 @@ def take(
         raise typer.Exit(1)
     if pr_url:
         slug = sched.slug_for(t)
-        pr_number = pull_request_number(pr_url, slug, getattr(slug, "host", "github.com")) if slug else None
+        pr_number = sched.change_request_number(t, pr_url) if slug else None
         if not pr_number or not sched.github.available:
-            err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
+            err.print("[red]--pr must be an accessible change-request URL for this repository[/red]")
             raise typer.Exit(1)
         try:
             info = sched.github.get_pr(slug, pr_number)

@@ -27,6 +27,7 @@ from .source_control import (
     ProviderUnavailable,
     ProxyFailure,
     SourceControlError,
+    UnsupportedOperation,
 )
 
 API = "https://api.github.com"
@@ -295,8 +296,9 @@ class GitHub:
         parsed_api = urlparse(self.api_base)
         if parsed_api.scheme != "https" or not parsed_api.netloc:
             raise ValueError("github api_base must be an HTTPS URL")
+        expected_api_hosts = {self.host, "api.github.com"} if self.host == "github.com" else {self.host}
         if api_base and (
-            parsed_api.hostname != self.host or parsed_api.username or parsed_api.password
+            parsed_api.hostname not in expected_api_hosts or parsed_api.username or parsed_api.password
             or parsed_api.query or parsed_api.fragment or parsed_api.port not in (None, 443)
         ):
             raise ValueError("github api_base must be an HTTPS URL for the configured GitHub host")
@@ -508,6 +510,15 @@ class GitHub:
         elif self.token:
             return True
         return False
+
+    def repository_from_remote(self, _repository: str, url: str) -> str | None:
+        return repo_slug_from_remote(url, self.host)
+
+    def change_request_number(self, repository: str, url: str) -> int | None:
+        return pull_request_number(url, repository, self.host)
+
+    def is_safe_change_request_url(self, _repository: str, url: str) -> bool:
+        return is_safe_pr_url(url)
 
     # ---- PRs ---------------------------------------------------------------
     def _repo(self, slug: str) -> str:
@@ -991,6 +1002,7 @@ class RepositorySlug(str):
     def __new__(cls, slug: str, host: str):
         value = super().__new__(cls, slug)
         value.host = host.lower().rstrip(".")
+        value.provider = "github"
         return value
 
     def __getnewargs__(self) -> tuple[str, str]:
@@ -1000,14 +1012,14 @@ class RepositorySlug(str):
 
 
 class GitHubRouter:
-    """Route repository operations to the GitHub client configured for that repository.
+    """Route repository operations to the configured source-control client.
 
     Every repository operation includes a slug as its first argument. Keeping the route
     here makes it difficult for a newly added scheduler operation to accidentally fall
     back to whichever host happens to be active in ``gh``.
     """
 
-    def __init__(self, default: GitHub, routes: dict[tuple[str, str] | str, GitHub]):
+    def __init__(self, default: GitHub, routes: dict[tuple[str, str] | str, Any]):
         self.default = default
         self.routes = {
             ((key[0] if isinstance(key, tuple) else client.host).lower().rstrip("."),
@@ -1037,28 +1049,36 @@ class GitHubRouter:
         return self.default.me()
 
     def is_authenticated(self) -> bool:
-        return self.default.is_authenticated()
+        return self.default.is_authenticated() or any(
+            client.is_authenticated() for client in self.routes.values()
+        )
 
     def __getattr__(self, name: str) -> Any:
-        """Forward slug-first GitHub operations to their configured client."""
-        default_method = getattr(self.default, name)
-        if not callable(default_method):
+        """Forward repository-first operations to their configured client."""
+        default_method = getattr(self.default, name, None)
+        if default_method is not None and not callable(default_method):
             return default_method
 
         def routed(slug: str, *args: Any, **kwargs: Any) -> Any:
             host = getattr(slug, "host", "")
+            provider = getattr(slug, "provider", "")
             key = slug.lower()
-            if host:
-                client = self.routes.get((host, key))
+            route_key = provider if provider and provider != "github" else host
+            if route_key:
+                client = self.routes.get((route_key, key))
                 if client is None and host == getattr(self.default, "host", "github.com"):
                     client = self.default
                 if client is None:
-                    raise GitHubError(f"no GitHub client configured for host {host!r} and repository {slug!r}")
+                    label = f"host {host!r}" if host else f"provider {provider!r}"
+                    raise ProviderUnavailable(f"no source-control adapter configured for {label}")
             else:
                 if key in self._routes_by_slug() and key not in self._legacy_routes:
                     raise GitHubError(f"ambiguous GitHub host for repository {slug!r}; supply its explicit host")
                 client = self._legacy_routes.get(key, self.default)
-            return getattr(client, name)(slug, *args, **kwargs)
+            operation = getattr(client, name, None)
+            if not callable(operation):
+                raise UnsupportedOperation(f"source-control provider does not support {name}")
+            return operation(str(slug), *args, **kwargs)
 
         return routed
 

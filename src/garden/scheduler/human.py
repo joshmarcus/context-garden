@@ -762,8 +762,7 @@ class HumanMixin:
         has (CG-174). Used by `garden pr` and its web equivalent, if one exists."""
         st = self.state.get(task.id)
         old_number = st.get("pr_number")
-        m = re.search(r"/pull/(\d+)", url)
-        new_number = int(m.group(1)) if m else None
+        new_number = self.change_request_number(task, url)
         task.pr = url
         for key in ("pr_number", "pr_state", "head_sha", "review_run"):
             st.pop(key, None)
@@ -1201,8 +1200,7 @@ class HumanMixin:
         from ..runner.manual import ManualRunner
 
         url = str(result.get("pr") or run.external_pr or task.pr or "")
-        match = re.search(r"/pull/(\d+)", url)
-        pr_number = int(match.group(1)) if match else None
+        pr_number = self.change_request_number(task, url)
 
         def record_refusal(reason: str) -> None:
             attempt = {"at": now_iso(), "status": "refused", "reason": reason,
@@ -1236,7 +1234,7 @@ class HumanMixin:
             return rep
 
         slug = self.slug_for(task)
-        if not match or not slug or not self.github.available:
+        if not pr_number or not slug or not self.github.available:
             refuse("external completion needs an accessible PR URL")
         try:
             pr = self.github.get_pr(slug, pr_number)
