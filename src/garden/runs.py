@@ -1411,8 +1411,15 @@ class RunStore:
                 target = Path(pending["target"])
             except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise HistoryUnavailable("archive pending record is unreadable") from exc
-            expected_source = self.dir / task_id / run_id
-            expected_target = self.archive_dir / task_id / run_id
+            operation = pending.get("operation", "archive")
+            if operation == "archive":
+                expected_source = self.dir / task_id / run_id
+                expected_target = self.archive_dir / task_id / run_id
+            elif operation == "restore":
+                expected_source = self.archive_dir / task_id / run_id
+                expected_target = self.dir / task_id / run_id
+            else:
+                raise HistoryUnavailable("archive pending record is invalid")
             if (pending.get("version") != self.ARCHIVE_VERSION
                     or source != expected_source or target != expected_target):
                 raise HistoryUnavailable("archive pending record is invalid")
@@ -1420,9 +1427,11 @@ class RunStore:
             target_exists = target.is_dir()
             if source_exists == target_exists:
                 raise HistoryUnavailable("archive pending paths are ambiguous")
-            if target_exists:
+            if target_exists and operation == "archive":
                 self._compact_archived_run(target)
                 self._verify_archived_run(target)
+                self._index.dirty_tasks.add(task_id)
+            elif target_exists:
                 self._index.dirty_tasks.add(task_id)
             self._write_archive_index()
             self._clear_archive_pending()
@@ -1618,7 +1627,7 @@ class RunStore:
             pass
 
     def restore_archived(self, task_id: str, run_id: str) -> bool:
-        """Restore one archived run atomically for recovery or inspection tooling."""
+        """Restore one archived run through a durable, resumable transaction."""
         with self._archive_mutation():
             source = self.archive_dir / task_id / run_id
             if not source.exists():
@@ -1642,9 +1651,16 @@ class RunStore:
                     mtime_ns = int(entry.get("mtime_ns", 0))
                     if mtime_ns:
                         os.utime(destination, ns=(mtime_ns, mtime_ns))
-            os.replace(source, target)
+            self._durable_replace(
+                self.archive_dir / "pending.json",
+                json.dumps({"version": self.ARCHIVE_VERSION, "operation": "restore",
+                            "task_id": task_id, "run_id": run_id,
+                            "source": str(source), "target": str(target)}).encode(),
+            )
+            self._durable_move(source, target)
             self._index.dirty_tasks.add(task_id)
             self._write_archive_index()
+            self._clear_archive_pending()
             return True
 
     def rebuild_archive_index(self) -> int:

@@ -305,6 +305,35 @@ def test_archive_round_trip_preserves_summary_and_artifacts(tmp_path: Path):
     assert rs.totals()["runs"] == 1
 
 
+def test_interrupted_restore_is_repaired_without_duplicate_cost(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "20260101T000000Z-work", 3.25)
+    (run.path / "final.md").write_text("review evidence")
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 1
+    original = rs._write_archive_index
+
+    def fail_index_publish():
+        raise OSError("simulated index publication failure")
+
+    monkeypatch.setattr(rs, "_write_archive_index", fail_index_publish)
+    with pytest.raises(OSError, match="index publication failure"):
+        rs.restore_archived(run.task_id, run.run_id)
+
+    interrupted = RunStore(tmp_path)
+    with pytest.raises(HistoryUnavailable, match="migration is incomplete"):
+        interrupted.all_runs()
+    monkeypatch.setattr(rs, "_write_archive_index", original)
+    assert interrupted.repair_pending_archive()
+
+    fresh = RunStore(tmp_path)
+    records = fresh.all_runs()
+    assert [(record.run_id, record.cost_usd) for record in records] == [(run.run_id, 3.25)]
+    assert records[0].path == fresh.dir / run.task_id / run.run_id
+    assert records[0].read_text("final.md") == "review evidence"
+    assert fresh.totals()["runs"] == 1
+    assert fresh.totals()["cost_usd"] == 3.25
+
+
 def test_archive_compresses_and_deduplicates_large_artifacts_byte_exactly(tmp_path: Path):
     rs = RunStore(tmp_path)
     payload = (b"historical fence state\n" * 1000) + bytes(range(256))
