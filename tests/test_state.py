@@ -171,6 +171,48 @@ def test_fence_recovery_refuses_to_replace_corrupt_state(tmp_path):
     assert path.read_bytes() == corrupt
 
 
+def test_completed_state_history_is_compressed_exact_and_restorable(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    feedback = [{"body": "same detailed finding " * 200, "round": n} for n in range(20)]
+    state.get("CG-001")["review_feedback_history"] = feedback
+    state.get("CG-001")["head_sha"] = "abc123"
+    state.save()
+    before = path.stat().st_size
+
+    report = state.archive_completed({"CG-001"}, limit=1)
+    compact = State(path)
+
+    assert report["tasks"] == 1
+    assert report["stored_bytes"] < report["logical_bytes"]
+    assert path.stat().st_size < before / 10
+    assert compact.get("CG-001")["head_sha"] == "abc123"
+    assert "review_feedback_history" not in compact.get("CG-001")
+    assert compact.historical("CG-001")["review_feedback_history"] == feedback
+    assert compact.restore_operational({"CG-001"}) == 1
+    compact.save()
+    assert State(path).get("CG-001")["review_feedback_history"] == feedback
+
+
+def test_state_history_crash_before_compact_state_commit_keeps_original(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    state = State(path)
+    payload = [{"body": "important failure"}]
+    state.get("CG-001")["review_feedback_history"] = payload
+    state.save()
+    original_save = state.save
+
+    def interrupted_save():
+        raise OSError("simulated state commit failure")
+
+    monkeypatch.setattr(state, "save", interrupted_save)
+    with pytest.raises(OSError, match="state commit failure"):
+        state.archive_completed({"CG-001"}, limit=1)
+    monkeypatch.setattr(state, "save", original_save)
+
+    assert State(path).get("CG-001")["review_feedback_history"] == payload
+
+
 # ── concurrent-write tests ─────────────────────────────────────────────────────
 
 def test_concurrent_writes_different_keys_same_task(tmp_path):
