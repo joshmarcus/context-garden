@@ -417,8 +417,10 @@ def _process_birth_identity(pid: int) -> str | None:
     """Return a process incarnation identity, or fail closed when unavailable.
 
     Linux start ticks are unique for a PID within one boot; including the boot id also
-    prevents a persisted handoff from matching after a host reboot.  ``ps`` provides the
-    portable fallback used by macOS.  Recovery never treats mere PID liveness as identity.
+    prevents a persisted handoff from matching after a host reboot. Other platforms do
+    not currently expose an equally strong identity through this portable worker, so
+    recovery quarantines their live handoffs without signalling the recorded PID. Mere
+    PID liveness and second-resolution ``ps`` start times are not process identities.
     """
     try:
         stat_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
@@ -427,16 +429,7 @@ def _process_birth_identity(pid: int) -> str | None:
         if boot_id and start_ticks:
             return f"linux:{boot_id}:{start_ticks}"
     except (OSError, IndexError):
-        pass
-    try:
-        observed = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
-            check=False, timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
         return None
-    started = observed.stdout.strip()
-    return f"ps:{started}" if observed.returncode == 0 and started else None
 
 
 def _supervisor_identity_matches(pid: int, expected_birth: object) -> bool:
