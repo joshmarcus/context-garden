@@ -276,7 +276,8 @@ Managed workers also keep a bounded, secret-free `worker-events.jsonl` in their 
 It survives daemon restarts and records UTC timestamps, a stable logical worker id, a new process
 generation and increasing restart count, request/claim correlation, operation and endpoint class,
 work state, HTTP status or exception class, retries/backoff, recovery outcome, and terminal reason.
-The controller records the corresponding accepted operations in `.garden/worker-events.jsonl` and
+The controller records request receipt and the corresponding accepted or rejected outcome in
+`.garden/worker-events.jsonl` and
 serves a bounded local-only view at `GET /api/worker-diagnostics`; inventory pages can consume that
 API without contacting hosts. Request bodies, authorization values, private transcripts, and
 physical provider identities are not recorded. A missing controller-side correlation means the

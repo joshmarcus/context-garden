@@ -52,3 +52,10 @@ The sample establishes the idle failure chain only. It does not prove every earl
 was idle, identify which upstream emitted the 502, or establish a host termination. Those claims
 require the correlated records above plus, when available, a capability-checked supervisor or
 provider event. The portable capture path is filesystem JSONL and uses no systemd dependency.
+
+## Validation environment
+
+The focused recovery and controller API tests ran under Linux in WSL with Python 3.14.4.
+The portable filesystem/API code and capability-gated Windows lock branch were inspected, but
+this incident task did not execute the journey on native macOS or Windows; no broader platform
+runtime claim is made.
