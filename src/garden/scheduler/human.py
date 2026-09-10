@@ -1412,6 +1412,8 @@ class HumanMixin:
                    "failed_checks": pr.failed_checks, "review_decision": pr.review_decision})
         ManualRunner.finish(run, {**result, "pr": pr.url})
         run.result = {**result, "pr": pr.url}
+        if pr.head_sha:
+            run.env_snapshot["review_source_head"] = pr.head_sha
         run.finished_at = now_iso()
         run.cost_usd = float(result["cost_usd"]) if isinstance(result.get("cost_usd"), (int, float)) else None
         run.status = "done"

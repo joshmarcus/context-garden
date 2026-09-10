@@ -43,7 +43,8 @@ def no_live_garden_root(base: Path) -> str:
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
-    "notify.command", "checks", "worker_env.pass", "worker_env.config_files", "runner_adapters",
+    "notify.command", "notify.recipient", "checks", "worker_env.pass",
+    "worker_env.config_files", "runner_adapters",
 )
 
 

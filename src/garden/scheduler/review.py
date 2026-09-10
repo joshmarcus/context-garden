@@ -52,6 +52,11 @@ class ReviewMixin:
         if not task.pr:
             return
         st = self.state.get(task.id)
+        source_head = (self._review_source_head(work_run) if work_run is not None else "")
+        source_head = source_head or str(st.get("head_sha") or "")
+        if source_head and work_run is not None:
+            work_run.env_snapshot["review_source_head"] = source_head
+            work_run.save()
         # A review that follows a conflict rebase (or a stale-base rebase, CG-131) re-reads
         # code the reviewer already approved: it runs, but must not count toward review.max_rounds.
         after_rebase = bool(st.pop("last_round_rebase", False))
@@ -481,9 +486,18 @@ class ReviewMixin:
                 continue
             review_runs = [run for run in self.runs.runs_for(task.id) if run.mode == "review"]
             applied_run = str(st.get("last_review_run") or "")
+            approved_head = self._effective_approved_head(task, st) if head else ""
             current_verdict = (bool(st.get("last_review")) and any(
                 run.run_id == applied_run
-                and str((run.env_snapshot or {}).get("review_head") or "") == head
+                and (
+                    str((run.env_snapshot or {}).get("review_head") or "") == head
+                    or (
+                        str((run.env_snapshot or {}).get("review_head") or "")
+                        == str(st.get("last_review_head") or "")
+                        and self._review_approval_is_proven(task, st)
+                        and approved_head == head
+                    )
+                )
                 for run in review_runs
             )) if head else bool(st.get("last_review"))
             product = self.cfg.product(task.product)
@@ -558,6 +572,38 @@ class ReviewMixin:
                          cost_usd=run.cost_usd, usage=run.usage)
         self.log(f"{task.id}: review run {run.run_id} superseded by a new review dispatch")
 
+    @staticmethod
+    def _review_source_head(run: Run) -> str:
+        """Return immutable output-head provenance recorded by an author run."""
+        snapshot = run.env_snapshot or {}
+        result = run.result or {}
+        interaction = result.get("interaction")
+        return str(
+            snapshot.get("review_source_head")
+            or run.pushed_head
+            or result.get("pushed_sha")
+            or result.get("head")
+            or (interaction.get("head") if isinstance(interaction, dict) else "")
+            or ""
+        )
+
+    def _review_source_for_head(self, task: Task, head: str,
+                                explicit: Run | None = None) -> Run | None:
+        """Find the completed author result that produced exactly the reviewed head."""
+        candidates = ([explicit] if explicit is not None else []) + list(
+            reversed(self.runs.runs_for(task.id))
+        )
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate is None or candidate.run_id in seen:
+                continue
+            seen.add(candidate.run_id)
+            if candidate.mode not in ("work", "revise", "resume") or candidate.status != "done":
+                continue
+            if self._review_source_head(candidate) == head:
+                return candidate
+        return None
+
     def dispatch_review(self, task: Task, work_run: Run | None = None, count_round: bool = True,
                         reask_missing_fixes: bool = False,
                         clarify_unverified: list[str] | None = None,
@@ -602,6 +648,9 @@ class ReviewMixin:
         review_base_head = gitops.rev_parse(wt, gitops.base_ref(wt, base))
         review_diff_hash = gitops.diff_hash(wt, base)
         changed = gitops.diff_names(wt, base)
+        work_run = self._review_source_for_head(task, review_head, work_run)
+        source_run = work_run.run_id if work_run is not None else ""
+        source_head = self._review_source_head(work_run) if work_run is not None else ""
         pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None
         author_interaction: dict[str, Any] | None = None
         if work_run is not None:
@@ -787,7 +836,8 @@ class ReviewMixin:
                                                   and not reusable_author_interaction else ""),
                             criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan,
                             author_interaction=author_interaction,
-                            clarify_unverified=clarify_unverified)
+                            clarify_unverified=clarify_unverified,
+                            author_source_run=source_run, author_source_head=source_head)
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
@@ -807,6 +857,7 @@ class ReviewMixin:
                             "interaction_replay_digest": replay_digest,
                             "affected_flow": affected_flow,
                             "author_interaction_reused": reusable_author_interaction,
+                            "author_source_run": source_run, "author_source_head": source_head,
                             "reask_missing_fixes": reask_missing_fixes,
                             "clarify_unverified": bool(clarify_unverified),
                             "criteria": criteria_snapshot, "validation_plan": plan})
