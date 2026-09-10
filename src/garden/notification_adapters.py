@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import subprocess
@@ -21,6 +22,7 @@ from typing import Any, Protocol
 from .host_identity import scrub_shared_text
 
 VERSION = 1
+LOGGER = logging.getLogger("garden.notify")
 
 
 class TransientDeliveryError(Exception):
@@ -116,7 +118,13 @@ class NotificationDelivery:
         destinations = notify.get("destinations") if isinstance(notify, dict) else {}
         if not isinstance(destinations, dict):
             return []
-        records, results, now = self.store.read(), [], self.clock()
+        try:
+            records = self.store.read()
+        except (OSError, UnicodeError):
+            LOGGER.warning("notification delivery ledger could not be read; delivery skipped")
+            return []
+        results: list[str] = []
+        now = self.clock()
         for name, raw in destinations.items():
             if not isinstance(name, str) or not isinstance(raw, dict):
                 continue
@@ -170,13 +178,21 @@ class NotificationDelivery:
                 records[key] = {"destination": name, "outcome": "delivered", "attempts": attempts,
                                 "event": asdict(safe_event), "updated_at": now}
                 results.append(f"{name}: delivered")
-        self.store.write(records)
+        try:
+            self.store.write(records)
+        except (OSError, UnicodeError):
+            LOGGER.warning("notification delivery ledger could not be written")
         return results
 
     def retry_pending(self, cfg: dict[str, Any]) -> list[str]:
         """Retry only durable, due failures after a scheduler restart or later tick."""
         results: list[str] = []
-        for record in self.store.read().values():
+        try:
+            records = self.store.read()
+        except OSError:
+            LOGGER.warning("notification delivery ledger could not be read; retries skipped")
+            return results
+        for record in records.values():
             if record.get("outcome") != "failed" or not record.get("retryable"):
                 continue
             raw_event = record.get("event")

@@ -159,3 +159,31 @@ def test_malformed_destination_policy_is_a_visible_nonfatal_ledger_outcome(tmp_p
         (tmp_path / "notifications.json").unlink()
 
     assert adapter.calls == []
+
+
+def test_unreadable_delivery_ledger_is_nonfatal(tmp_path, caplog):
+    ledger = tmp_path / "notifications.json"
+    ledger.mkdir()
+    adapter = SyntheticAdapter()
+    delivery = NotificationDelivery(ledger, {"synthetic": adapter})
+
+    assert delivery.deliver(_cfg(), NotificationEvent("CG-520", "failed", "continue")) == []
+    assert delivery.retry_pending(_cfg()) == []
+    assert adapter.calls == []
+    assert "ledger could not be read" in caplog.text
+
+
+def test_unwritable_delivery_ledger_is_nonfatal(tmp_path, monkeypatch, caplog):
+    adapter = SyntheticAdapter()
+    delivery = NotificationDelivery(tmp_path / "notifications.json", {"synthetic": adapter})
+
+    def fail_write(records):
+        raise OSError("private filesystem detail")
+
+    monkeypatch.setattr(delivery.store, "write", fail_write)
+
+    assert delivery.deliver(_cfg(), NotificationEvent("CG-520", "failed", "continue")) == [
+        "operator: delivered",
+    ]
+    assert "ledger could not be written" in caplog.text
+    assert "private filesystem detail" not in caplog.text
