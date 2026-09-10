@@ -31,12 +31,16 @@ def classify_branches(
     open_pr_heads: set[tuple[str, str]] | None = None,
     claimed_bases: set[tuple[str, str]] | None = None,
     protected_branches: set[tuple[str, str]] | None = None,
+    preserved_heads: set[tuple[str, str, str]] | None = None,
+    base_branches: dict[str, str] | None = None,
     state_text: str = "",
 ) -> list[BranchDisposition]:
     """Classify only branches whose Garden ownership is established by a managed run."""
     open_pr_heads = open_pr_heads or set()
     claimed_bases = claimed_bases or set()
     protected_branches = protected_branches or set()
+    preserved_heads = preserved_heads or set()
+    base_branches = base_branches or {}
     provenance: dict[tuple[str, str], set[str]] = {}
     task_product = {task.id: task.product for task in tasks.values()}
     for run in runs:
@@ -95,19 +99,22 @@ def classify_branches(
         if reason:
             result.append(BranchDisposition(product, branch, "needed", reason, local, remote_head, tuple(sorted(ids))))
             continue
-        if related and all(task.status == Status.DONE for task in related):
-            classification, reason = "removable", "all recorded tasks are complete"
+        base = base_branches.get(product, "main")
+        merged_record_heads = {
+            head for head in heads if (product, branch, head) in preserved_heads
+        }
+        try:
+            base_ref = gitops.base_ref(repo, base)
+            base_heads = {head for head in heads if gitops.is_ancestor(repo, head, base_ref)}
+        except gitops.GitError:
+            base_heads = set()
+        preserved = heads <= base_heads | merged_record_heads
+        if preserved:
+            reason = (f"branch head is preserved in {base}" if heads <= base_heads else
+                      "branch head is preserved by its exact merged PR record")
+            classification = "removable"
         else:
-            base = related[0].default_branch() if related else "main"
-            try:
-                base_ref = gitops.base_ref(repo, base)
-                preserved = all(gitops.is_ancestor(repo, head, base_ref) for head in heads)
-            except gitops.GitError:
-                preserved = False
-            if preserved:
-                classification, reason = "removable", f"branch head is preserved in {base}"
-            else:
-                classification, reason = "uncertain", "terminal work has commits not proven preserved or explicitly discarded"
+            classification, reason = "uncertain", "terminal work has commits not proven preserved or explicitly discarded"
         result.append(BranchDisposition(product, branch, classification, reason, local, remote_head, tuple(sorted(ids))))
     return result
 

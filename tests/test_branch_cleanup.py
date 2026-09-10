@@ -45,7 +45,7 @@ def test_inventory_classifies_complete_active_and_unique_cancelled_work(sched):
     _record_branch(sched, second.id, second.branch, active=True)
 
     rows = {row.branch: row for row in sched.branch_cleanup_inventory()}
-    assert rows[first.branch].classification == "removable"
+    assert rows[first.branch].classification == "removable", rows[first.branch]
     assert rows[second.branch].classification == "needed"
     assert "active or queued run" in rows[second.branch].reason
 
@@ -107,7 +107,7 @@ def test_inventory_preserves_external_and_recovery_owned_branches(sched):
     assert "recovery state" in rows["garden/recovery"].reason
 
 
-def test_superseded_attempt_branch_is_removable_after_task_completes(sched):
+def test_superseded_attempt_branch_is_removable_after_task_completes_when_preserved(sched):
     task = sched.store.tasks()["DM-001"]
     task.status = Status.DONE
     task.branch = "garden/current-attempt"
@@ -120,7 +120,49 @@ def test_superseded_attempt_branch_is_removable_after_task_completes(sched):
 
     row = next(row for row in sched.branch_cleanup_inventory()
                if row.branch == "garden/superseded-attempt")
-    assert row.classification == "removable"
+    assert row.classification == "removable", row
+
+
+def test_unique_superseded_attempt_is_uncertain_after_task_completes(sched):
+    task = sched.store.tasks()["DM-001"]
+    task.status = Status.DONE
+    task.branch = "garden/current-attempt"
+    sched.store.save(task)
+    repo = sched.repo_for(task)
+    _make_branch(repo, "garden/superseded-attempt", unique=True)
+    run = _record_branch(sched, task.id, "garden/superseded-attempt")
+    run.status = "superseded"
+    run.save()
+
+    row = next(row for row in sched.branch_cleanup_inventory()
+               if row.branch == "garden/superseded-attempt")
+
+    assert row.classification == "uncertain"
+    assert "not proven preserved" in row.reason
+
+
+def test_merged_pr_record_preserves_exact_current_branch_head(sched):
+    task = sched.store.tasks()["DM-001"]
+    task.status = Status.DONE
+    task.branch = "garden/squash-merged"
+    sched.store.save(task)
+    repo = sched.repo_for(task)
+    head = _make_branch(repo, task.branch, unique=True)
+    _record_branch(sched, task.id, task.branch)
+    sched.state.get(task.id).update({
+        "pr_state": "MERGED",
+        "head_sha": _git(repo, "rev-parse", "main"),
+    })
+
+    row = next(row for row in sched.branch_cleanup_inventory() if row.branch == task.branch)
+    assert row.classification == "uncertain"
+
+    sched.state.get(task.id)["head_sha"] = head
+
+    row = next(row for row in sched.branch_cleanup_inventory() if row.branch == task.branch)
+
+    assert row.classification == "removable", row
+    assert "merged PR record" in row.reason
 
 
 def test_guarded_delete_removes_remote_and_local_and_is_idempotent(sched):

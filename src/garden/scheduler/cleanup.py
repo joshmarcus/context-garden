@@ -47,10 +47,19 @@ class CleanupMixin:
             for task in tasks.values()
             for branch in {self.cfg.product_base_branch(task.product), *map(str, configured)}
         }
+        preserved_heads = {
+            (task.product, task.branch, str(self.state.get(task.id).get("head_sha") or ""))
+            for task in tasks.values()
+            if task.branch and self.state.get(task.id).get("pr_state") == "MERGED"
+            and self.state.get(task.id).get("head_sha")
+        }
         return classify_branches(tasks, self.runs.all_runs(), repos,
                                  remote=self._branch_cleanup_remote(),
                                  open_pr_heads=open_heads, claimed_bases=claimed_bases,
-                                 protected_branches=protected, state_text=state_text)
+                                 protected_branches=protected, preserved_heads=preserved_heads,
+                                 base_branches={product: self.cfg.product_base_branch(product)
+                                                for product in repos},
+                                 state_text=state_text)
 
     def _branch_delete_recheck(self, item: BranchDisposition) -> str:
         """Refresh task PRs and rerun all local/run/ref classification immediately."""
