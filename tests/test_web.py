@@ -2393,6 +2393,10 @@ def test_runs_show_recorded_execution_location_without_current_worker_configurat
     missing_local.status = "running"
     missing_local.save()
 
+    failed_before_launch = runs.new_run("DM-001", "local", "work")
+    failed_before_launch.status = "failed"
+    failed_before_launch.save()
+
     legacy = runs.new_run("DM-001", "retired-runner", "work")
     legacy.status = "done"
     legacy.save()
@@ -2402,7 +2406,7 @@ def test_runs_show_recorded_execution_location_without_current_worker_configurat
     assert "Remote · retired-worker-with-a-long-name" in page
     assert "Remote · awaiting worker claim" in page
     assert "Manual / external" in page
-    assert "Unknown · local launch not recorded" in page
+    assert page.count("Unknown · local launch not recorded") == 2
     assert "Unknown · legacy location not recorded" in page
 
     detail = client(garden).get(f"/runs/DM-001/{remote.run_id}").text

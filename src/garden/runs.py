@@ -182,7 +182,9 @@ class Run:
                 return "Remote · awaiting worker claim"
             return "Unknown · remote worker not recorded"
         if self.execution_remote is False or self.runner == "local":
-            if self.status in {"requested", "preparing", "running"} and self.pid is None:
+            # A local reservation can fail during setup before the wrapper records its PID.
+            # Its terminal status is not proof that a worker actually launched.
+            if self.pid is None:
                 return "Unknown · local launch not recorded"
             return "Local"
         return "Unknown · legacy location not recorded"
