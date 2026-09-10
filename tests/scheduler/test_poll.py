@@ -5,6 +5,7 @@ import json
 from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status
 from garden.scheduler.report import TickReport
+from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 from tests.scheduler.conftest import statuses
 
 
@@ -362,6 +363,68 @@ def test_no_external_ci_policy_does_not_treat_absent_rollup_as_missing(sched, fa
     sched.cfg.data["products"]["demo"]["validation"] = "none"
     sched.poll(task, TickReport())
     assert sched.state.get(task.id)["ci_missing"] is False
+
+
+def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched, fake_github):
+    sched.cfg.data["ci"] = {"status_provider": "worker_check", "required": True,
+                            "worker_check": {"command": "pytest -q"}}
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    rep = sched.tick()
+    assert "DM-001(review)" not in rep.dispatched
+    st = sched.state.get("DM-001")
+    assert st["ci_status"]["state"] == "missing"
+    assert st.get("pending_reviews")
+
+    work = next(run for run in sched.runs.runs_for("DM-001") if run.mode == "work")
+    receipt = work.path / "validations" / "123" / "result.json"
+    receipt.parent.mkdir(parents=True)
+    incomplete = {"source_sha": st["head_sha"], "command": "pytest -q",
+                  "exit_code": 0, "log_location": str(receipt.parent),
+                  "source_dirty": "", "source_changed": False,
+                  "policy": {"source_sha": POLICY_SOURCE_SHA}}
+    receipt.write_text(json.dumps(incomplete))
+    rep = sched.tick()
+    assert "DM-001(review)" not in rep.dispatched
+    assert sched.state.get("DM-001")["ci_status"]["state"] == "malformed"
+
+    requested = ["pytest", "-q"]
+    effective = [*requested, *POLICY_ADDOPTS]
+    receipt.write_text(json.dumps({
+        "version": 1, "source_sha": st["head_sha"], "command": "pytest -q",
+        "selection": effective, "exit_code": 0, "log_location": str(receipt.parent),
+        "source_dirty": "", "source_changed": False,
+        "policy": {"version": 1, "source_sha": POLICY_SOURCE_SHA, "kind": "pytest",
+                   "stress_opt_in": False, "excluded_nodes": list(STRESS_NODES),
+                   "requested_selection": requested, "effective_selection": effective},
+    }))
+    (receipt.parent / "execution.json").write_text(json.dumps({
+        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
+        "pid": 123, "owner_scoped": True, "owner": "run:test",
+        "execution_started_at": "2026-09-10T01:00:00+00:00",
+        "timeout_seconds": 900, "deadline_at": "2026-09-10T01:15:00+00:00",
+    }))
+    (receipt.parent / "exit_code").write_text("0")
+    (receipt.parent / "stderr.log").write_text("")
+    rep = sched.tick()
+    assert "DM-001(review)" in rep.dispatched
+    assert sched.state.get("DM-001")["ci_status"]["green"] is True
+
+
+def test_worker_check_old_green_does_not_clear_merge_gate(sched, fake_github):
+    sched.cfg.data["ci"] = {"status_provider": "worker_check", "required": True,
+                            "worker_check": {"command": "pytest -q"}}
+    sched.cfg.data["github"]["automerge"] = True
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.head_sha, pr.review_decision = "new-head", "APPROVED"
+    st = sched.state.get("DM-001")
+    st.update(last_review={"verdict": "approve"}, review_rounds=1)
+    status = sched._ci_status(sched.store.task("DM-001"), pr)
+    assert status.state in {"missing", "mismatched"}
+    ok, reason = sched._automerge_gate(sched.store.task("DM-001"), pr)
+    assert not ok and ("missing" in reason or "mismatched" in reason)
 
 
 def test_pr_closed_fails(sched, fake_github):

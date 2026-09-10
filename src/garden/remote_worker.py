@@ -7,6 +7,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -41,6 +42,60 @@ class ClaimMaterializationError(RuntimeError):
         super().__init__(detail)
         self.stage = stage
         self.preserved = preserved
+
+
+_RECEIPT_SOURCE_PATTERN = re.compile(r'"source_sha"\s*:\s*"([^"\\]*)"')
+_MAX_MALFORMED_RECEIPT_SOURCES = 8
+_SOURCE_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?")
+
+
+def _validation_receipts(execution_dir: Path) -> list[dict[str, Any]]:
+    """Collect ordered receipts without hiding a malformed newer attempt."""
+    receipts = []
+    receipt_paths = sorted(
+        execution_dir.glob("validations/*/result.json"),
+        key=lambda path: (path.stat().st_mtime_ns, str(path)),
+    )
+    for receipt_path in receipt_paths:
+        try:
+            raw = receipt_path.read_text()
+            receipt = json.loads(raw)
+        except OSError:
+            continue
+        except json.JSONDecodeError:
+            # Do not transport arbitrary receipt contents: source identities are the
+            # only data ingestion needs to distinguish an unrelated malformed attempt.
+            sources = list(dict.fromkeys(
+                source for source in _RECEIPT_SOURCE_PATTERN.findall(raw)
+                if _SOURCE_SHA_PATTERN.fullmatch(source)
+            ))
+            receipts.append({
+                "malformed_validation_receipt": True,
+                "recoverable_source_shas": sources[:_MAX_MALFORMED_RECEIPT_SOURCES],
+                "recoverable_source_shas_overflow": (
+                    len(sources) > _MAX_MALFORMED_RECEIPT_SOURCES
+                ),
+            })
+            continue
+        if not isinstance(receipt, dict):
+            receipts.append({
+                "malformed_validation_receipt": True,
+                "recoverable_source_shas": [],
+                "recoverable_source_shas_overflow": False,
+            })
+            continue
+        try:
+            receipt["durable_execution"] = json.loads(
+                (receipt_path.parent / "execution.json").read_text()
+            )
+            receipt["durable_exit_code"] = int(
+                (receipt_path.parent / "exit_code").read_text().strip()
+            )
+            receipt["durable_stderr"] = (receipt_path.parent / "stderr.log").read_text()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        receipts.append(receipt)
+    return receipts
 
 
 def _claim_suffix(run: dict[str, Any]) -> str:
@@ -270,6 +325,9 @@ def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str
         int(run.get("validation_timeout_seconds") or 900)
     )
     env.pop("CLAUDECODE", None)
+    from .validation import enforce_validation_policy_env
+
+    enforce_validation_policy_env(env)
     return env
 
 
@@ -401,6 +459,11 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         runtime_dir = root / "runtime"
         runtime_dir.mkdir(mode=0o700, exist_ok=True)
         env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+        execution_dir = repo.parent / f"{run['id']}-execution"
+        execution_dir.mkdir(parents=True, exist_ok=True)
+        env.update(GARDEN_EXECUTION_OWNER=f"remote:{run['id']}",
+                   GARDEN_EXECUTION_RUN_DIR=str(execution_dir),
+                   GARDEN_VALIDATION_RUNNER=sys.executable)
         setup = dict(run.get("setup") or {})
         if setup_command:
             stage = "setup"
@@ -555,10 +618,14 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         push_ref = str(run["push_ref"])
         subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+        # PID directory names do not describe completion order. Preserve the host's
+        # observed write order so the controller can make a later rerun authoritative.
+        receipts = _validation_receipts(execution_dir)
         heartbeat.ensure_current()
         heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
                           "final_text": final, "result": parsed, "usage": usage,
-                          "cost_usd": cost, "error": error, "pushed_head": head})
+                          "cost_usd": cost, "error": error, "pushed_head": head,
+                          "validation_receipts": receipts})
     finally:
         if repo_lock is not None:
             repo_lock.close()

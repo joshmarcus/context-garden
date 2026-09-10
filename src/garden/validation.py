@@ -6,6 +6,7 @@ import json
 import math
 import os
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -52,6 +53,122 @@ def validation_timeout_result(run_dir: Path, exit_code: int | None) -> dict[str,
     }
 
 
+POLICY_SOURCE_SHA = "887dbf76430e7ea8688a73eaa5392a210d4a36e6"
+STRESS_NODES = (
+    "tests/test_web.py::test_initial_pages_stay_bounded_with_large_run_history",
+    "tests/test_web.py::test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest",
+    "tests/test_web.py::test_served_incident_controls_retry_and_restart_during_overload",
+)
+POLICY_ADDOPTS = tuple(f"--deselect={node}" for node in STRESS_NODES)
+
+
+class ValidationPolicyError(RuntimeError):
+    """The current policy cannot safely govern the requested validation command."""
+
+
+def receipt_has_current_policy(receipt: object) -> bool:
+    """Whether a supervisor receipt proves the complete current pytest policy contract."""
+    if not isinstance(receipt, dict):
+        return False
+    try:
+        command = str(receipt["command"])
+        selection = receipt["selection"]
+        policy = receipt["policy"]
+        requested = policy["requested_selection"]
+        effective = policy["effective_selection"]
+        excluded = policy["excluded_nodes"]
+        stress_opt_in = policy["stress_opt_in"]
+    except (KeyError, TypeError):
+        return False
+    if not all(isinstance(value, list) and all(isinstance(item, str) for item in value)
+               for value in (selection, requested, effective, excluded)):
+        return False
+    if (receipt.get("version") != 1
+            or receipt.get("source_dirty") != ""
+            or receipt.get("source_changed") is not False
+            or policy.get("version") != 1
+            or policy.get("source_sha") != POLICY_SOURCE_SHA
+            or policy.get("kind") != "pytest"
+            or not isinstance(stress_opt_in, bool)
+            or not requested
+            or not _pytest_command(requested)
+            or command != shlex.join(requested)
+            or selection != effective):
+        return False
+    if stress_opt_in:
+        without_legacy_flag = [item for item in requested if item != "--run-stress"]
+        return (excluded == []
+                and "--run-stress" in requested
+                and effective in (requested, without_legacy_flag))
+    return ("--run-stress" not in requested
+            and excluded == list(STRESS_NODES)
+            and effective == [*requested, *POLICY_ADDOPTS])
+
+
+def enforce_validation_policy_env(env: dict[str, str]) -> None:
+    """Make even a branch-issued plain pytest command obey the current default policy."""
+    existing = shlex.split(env.get("PYTEST_ADDOPTS", ""))
+    env["PYTEST_ADDOPTS"] = shlex.join([*existing, *(opt for opt in POLICY_ADDOPTS if opt not in existing)])
+
+
+def _enable_stress_opt_in(env: dict[str, str]) -> None:
+    existing = shlex.split(env.get("PYTEST_ADDOPTS", ""))
+    env["PYTEST_ADDOPTS"] = shlex.join([opt for opt in existing if opt not in POLICY_ADDOPTS])
+
+
+def _pytest_command(argv: list[str]) -> bool:
+    executable = Path(argv[0]).name
+    if executable in {"pytest", "py.test"}:
+        return True
+    return executable.startswith("python") and len(argv) > 2 and argv[1:3] == ["-m", "pytest"]
+
+
+def resolve_validation(argv: list[str], cwd: Path) -> tuple[list[str], dict[str, object]]:
+    """Apply the approved current test policy without modifying the source checkout."""
+    requested = list(argv)
+    if not _pytest_command(argv):
+        launcher = Path(argv[0]).name
+        raise ValidationPolicyError(
+            f"validation command {launcher!r} cannot be proven non-pytest; "
+            "invoke pytest directly through garden.validation and run other tools directly"
+        )
+
+    opted_in = "--run-stress" in argv
+    policy_hook = cwd / "tests" / "conftest.py"
+    branch_supports_opt_in = policy_hook.is_file() and "--run-stress" in policy_hook.read_text(
+        errors="replace"
+    )
+    effective = list(argv)
+    if opted_in and not branch_supports_opt_in:
+        effective = [arg for arg in effective if arg != "--run-stress"]
+    excluded: list[str] = []
+    if not opted_in:
+        excluded = list(STRESS_NODES)
+        effective.extend(f"--deselect={node}" for node in excluded)
+    return effective, {
+        "version": 1,
+        "source_sha": POLICY_SOURCE_SHA,
+        "kind": "pytest",
+        "stress_opt_in": opted_in,
+        "excluded_nodes": excluded,
+        "requested_selection": requested,
+        "effective_selection": effective,
+    }
+
+
+def _source_state(cwd: Path) -> tuple[str, str]:
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=cwd, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=cwd, check=True, capture_output=True, text=True,
+        ).stdout
+        return sha, dirty
+    except (OSError, subprocess.CalledProcessError):
+        return "", ""
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if argv[:1] == ["--"]:
@@ -65,6 +182,36 @@ def main() -> int:
         return 2
     status_dir = Path(outer) / "validations" / str(os.getpid())
     status_dir.mkdir(parents=True, exist_ok=True)
+    # Keep the durable supervisor evidence shape stable even when the command writes
+    # no diagnostics. Error paths may replace or append to this file.
+    (status_dir / "stderr.log").touch()
+    cwd = Path.cwd()
+    source_sha, source_dirty = _source_state(cwd)
+    try:
+        effective_argv, policy = resolve_validation(argv, cwd)
+    except ValidationPolicyError as exc:
+        receipt = {
+            "version": 1,
+            "source_sha": source_sha,
+            "source_dirty": source_dirty,
+            "source_changed": False,
+            "command": shlex.join(argv),
+            "selection": [],
+            "policy": {
+                "version": 1,
+                "source_sha": POLICY_SOURCE_SHA,
+                "kind": "blocked",
+                "reason": str(exc),
+                "requested_selection": argv,
+            },
+            "exit_code": 2,
+            "log_location": str(status_dir),
+        }
+        (status_dir / "result.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
+        print(f"validation policy block: {exc}", file=sys.stderr)
+        return 2
+    if policy.get("stress_opt_in"):
+        _enable_stress_opt_in(os.environ)
     if inherits_validation_lease():
         # The enclosing validation supervisor already owns the host slot and this
         # run's owner lock.  Reacquiring either would wait on that ancestor until
@@ -77,13 +224,26 @@ def main() -> int:
         os.environ["GARDEN_HEAVY_EXECUTION"] = "1"
         os.environ["GARDEN_OWNER_SCOPED"] = "1"
     os.environ["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{bounded_validation_timeout_seconds():g}"
-    # Replace this process with the ordinary supervisor: nested validation therefore gets
-    # the same signal forwarding, subreaper ownership and adopted-descendant drain as an
-    # outer run.  A direct wrapper also takes the authoritative host slot and its
-    # owner's serialization lock; nested wrappers inherit those leases.
-    os.execv(sys.executable, [sys.executable, "-m", "garden.run_supervisor",
-                              str(status_dir), shlex.join(argv)])
-    return 2  # pragma: no cover - execv either replaces us or raises
+    command = shlex.join(argv)
+    effective_command = shlex.join(effective_argv)
+    completed = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(status_dir), effective_command],
+        check=False,
+    )
+    final_sha, final_dirty = _source_state(cwd)
+    receipt = {
+        "version": 1,
+        "source_sha": source_sha,
+        "source_dirty": source_dirty,
+        "source_changed": (source_sha, source_dirty) != (final_sha, final_dirty),
+        "command": command,
+        "selection": effective_argv,
+        "policy": policy,
+        "exit_code": completed.returncode,
+        "log_location": str(status_dir),
+    }
+    (status_dir / "result.json").write_text(json.dumps(receipt, sort_keys=True) + "\n")
+    return completed.returncode
 
 
 if __name__ == "__main__":

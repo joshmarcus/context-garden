@@ -18,12 +18,14 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops, managed_worker
+from garden.ci_status import worker_check_status
 from garden.harness import Harness
 from garden.remote_worker import (
     WorkerRequestError,
     _claim_suffix,
     _host_check_data,
     _LeaseHeartbeat,
+    _validation_receipts,
     _wait_for_process,
     doctor_worker,
     execute_claim,
@@ -32,6 +34,7 @@ from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
 from garden.store import Store
+from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 from garden.web.app import create_app
 from tests.conftest import git, write
 
@@ -624,14 +627,151 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert beat.status_code == 200
     done = client.post(f"/api/runs/{run.run_id}/finish", json={"lease_token": payload["lease_token"],
                        "exit_code": 0, "final_text": "done", "result": {"status": "done"},
-                       "usage": {"input_tokens": 2}, "cost_usd": 0.1, "pushed_head": "abc"}, headers=auth)
+                       "usage": {"input_tokens": 2}, "cost_usd": 0.1, "pushed_head": "abc",
+                       "validation_receipts": [{"source_sha": "abc", "command": "pytest -q",
+                                                "selection": ["pytest", "-q"], "exit_code": 0,
+                                                "log_location": "/remote/path",
+                                                "durable_execution": {
+                                                    "state": "finished", "slot": 0,
+                                                    "limit": 1, "requested_limit": 1,
+                                                    "pid": 123, "owner_scoped": True,
+                                                    "owner": "run:test",
+                                                    "execution_started_at":
+                                                        "2026-09-10T01:00:00+00:00",
+                                                    "timeout_seconds": 900,
+                                                    "deadline_at":
+                                                        "2026-09-10T01:15:00+00:00",
+                                                },
+                                                "durable_exit_code": 0,
+                                                "durable_stderr": ""}]}, headers=auth)
     assert done.status_code == 200
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.host == "build-1" and saved.pushed_head == "abc"
     assert saved.process_finished() and saved.stdout_text() == "hello\n"
+    receipt = json.loads((saved.path / "validations" / "remote-0" / "result.json").read_text())
+    assert receipt["source_sha"] == "abc" and receipt["exit_code"] == 0
+    assert receipt["log_location"].endswith("validations/remote-0")
+    assert json.loads(
+        (saved.path / "validations/remote-0/execution.json").read_text()
+    )["owner"] == "run:test"
+    assert (saved.path / "validations/remote-0/exit_code").read_text().strip() == "0"
+    assert (saved.path / "validations/remote-0/stderr.log").read_text() == ""
     saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
     saved.save()
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
+
+
+def write_remote_validation_receipt(path: Path, source_sha: str) -> None:
+    requested = ["pytest", "-q"]
+    effective = [*requested, *POLICY_ADDOPTS]
+    path.write_text(json.dumps({
+        "version": 1, "source_sha": source_sha, "command": "pytest -q",
+        "selection": effective, "exit_code": 0, "log_location": str(path.parent),
+        "policy": {"version": 1, "source_sha": POLICY_SOURCE_SHA,
+                   "kind": "pytest", "stress_opt_in": False,
+                   "excluded_nodes": list(STRESS_NODES),
+                   "requested_selection": requested, "effective_selection": effective},
+        "source_dirty": "", "source_changed": False,
+    }))
+    (path.parent / "execution.json").write_text(json.dumps({
+        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
+        "pid": 123, "owner_scoped": True, "owner": "run:test",
+        "execution_started_at": "2026-09-10T01:00:00+00:00", "timeout_seconds": 900,
+        "deadline_at": "2026-09-10T01:15:00+00:00",
+    }))
+    (path.parent / "exit_code").write_text("0")
+    (path.parent / "stderr.log").write_text("")
+
+
+@pytest.mark.parametrize(
+    ("truncated", "queried_sha", "expected_state"),
+    [
+        ('{"source_', "a" * 40, "malformed"),
+        ('{"source_sha": "' + "a" * 40 + '"', "a" * 40, "malformed"),
+        ('{"source_sha": "' + "b" * 40 + '"', "a" * 40, "success"),
+    ],
+)
+def test_remote_transport_keeps_newer_truncated_receipt_authoritative(
+    garden, monkeypatch, tmp_path, truncated, queried_sha, expected_state,
+):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post(
+        "/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth,
+    ).json()
+    execution_dir = tmp_path / "execution"
+    older = execution_dir / "validations/older/result.json"
+    newer = execution_dir / "validations/newer/result.json"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    write_remote_validation_receipt(older, queried_sha)
+    newer.write_text(truncated)
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    response = client.post(
+        f"/api/runs/{run.run_id}/finish",
+        json={"lease_token": claim["lease_token"], "exit_code": 0, "pushed_head": queried_sha,
+              "validation_receipts": _validation_receipts(execution_dir)},
+        headers=auth,
+    )
+
+    assert response.status_code == 200
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    status = worker_check_status(
+        store.config.garden_dir, "DM-001", queried_sha, {"command": "pytest -q"},
+    )
+    assert status.state == expected_state
+    transported = sorted(saved.path.glob("validations/remote-*/result.json"))
+    assert len(transported) == 2
+    sentinel = json.loads(transported[-1].read_text())
+    assert set(sentinel) == {
+        "log_location", "malformed_validation_receipt", "recoverable_source_shas",
+        "recoverable_source_shas_overflow",
+    }
+
+
+def test_remote_transport_fails_closed_beyond_malformed_receipt_identity_limit(
+    garden, monkeypatch, tmp_path,
+):
+    queried_sha = "9" * 40
+    identities = [str(index) * 40 for index in range(1, 9)] + [queried_sha]
+    truncated = "{" + ",".join(
+        f'\"source_sha\": \"{source_sha}\"' for source_sha in identities
+    )
+
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post(
+        "/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth,
+    ).json()
+    execution_dir = tmp_path / "execution"
+    older = execution_dir / "validations/older/result.json"
+    newer = execution_dir / "validations/newer/result.json"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    write_remote_validation_receipt(older, queried_sha)
+    newer.write_text(truncated)
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    receipts = _validation_receipts(execution_dir)
+    assert receipts[-1]["recoverable_source_shas"] == identities[:8]
+    assert receipts[-1]["recoverable_source_shas_overflow"] is True
+    response = client.post(
+        f"/api/runs/{run.run_id}/finish",
+        json={"lease_token": claim["lease_token"], "exit_code": 0,
+              "pushed_head": queried_sha, "validation_receipts": receipts},
+        headers=auth,
+    )
+
+    assert response.status_code == 200
+    status = worker_check_status(
+        store.config.garden_dir, "DM-001", queried_sha, {"command": "pytest -q"},
+    )
+    assert status.state == "malformed" and not status.green
 
 
 def test_six_idle_claim_polls_with_concurrent_ui_only_materialize_active_runs(
@@ -1746,7 +1886,7 @@ def test_stale_lease_cannot_quarantine_dirty_checkout(tmp_path):
 
 
 
-@pytest.mark.parametrize("validation_exit", [0, 7])
+@pytest.mark.parametrize("validation_exit", [0, 1])
 def test_remote_harness_receives_working_owned_validation(
     garden, monkeypatch, tmp_path, fake_github, validation_exit,
 ):
@@ -1758,6 +1898,11 @@ def test_remote_harness_receives_working_owned_validation(
     payload = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                           headers=auth).json()
     probe = tmp_path / "validation_harness.py"
+    target = tmp_path / "test_validation_target.py"
+    target.write_text(
+        "def test_validation_target():\n"
+        f"    assert {validation_exit} == 0\n"
+    )
     probe.write_text(
         "import json, os, subprocess, sys\n"
         "from pathlib import Path\n"
@@ -1768,7 +1913,7 @@ def test_remote_harness_receives_working_owned_validation(
         "assert os.environ['GARDEN_VALIDATION_TIMEOUT_SECONDS'] == '900'\n"
         "assert 'GARDEN_EXECUTION_TIMEOUT_SECONDS' not in os.environ\n"
         "command = [os.environ['GARDEN_VALIDATION_RUNNER'], '-m', 'garden.validation', '--', "
-        "sys.executable, '-c', 'import sys; sys.exit(" + str(validation_exit) + ")']\n"
+        f"sys.executable, '-m', 'pytest', {str(target)!r}, '-q']\n"
         "result = subprocess.run(command, capture_output=True, text=True, timeout=10)\n"
         "assert result.returncode == " + str(validation_exit) + ", result.stderr\n"
         "states = list((outer / 'validations').glob('*/execution.json'))\n"
@@ -1804,6 +1949,22 @@ def test_remote_harness_receives_working_owned_validation(
     assert str(host_root / "runs") in evidence["outer"]
     assert evidence["owner"] != "wrong-owner"
     assert not (tmp_path / "wrong-run").exists()
+    transported = next(saved.path.glob("validations/remote-*/result.json"))
+    execution = json.loads((transported.parent / "execution.json").read_text())
+    assert execution["state"] == "finished"
+    assert execution["owner"] and execution["owner_scoped"] is True
+    assert dt.datetime.fromisoformat(execution["deadline_at"]) == (
+        dt.datetime.fromisoformat(execution["execution_started_at"])
+        + dt.timedelta(seconds=execution["timeout_seconds"])
+    )
+    assert int((transported.parent / "exit_code").read_text()) == validation_exit
+    assert (transported.parent / "stderr.log").exists()
+    transported_receipt = json.loads(transported.read_text())
+    status = worker_check_status(
+        store.config.garden_dir, "DM-001", transported_receipt["source_sha"],
+        {"command": transported_receipt["command"]},
+    )
+    assert status.state == ("success" if validation_exit == 0 else "failure")
 
 def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, tmp_path, fake_github):
     isolated_execution_runtime(tmp_path, monkeypatch)

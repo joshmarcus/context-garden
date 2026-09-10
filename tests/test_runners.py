@@ -753,7 +753,16 @@ def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path
         " active, peak = map(int, state.read_text().split())\n"
         " state.write_text(f'{active - 1} {peak}')\n"
     )
-    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {counter} heavy 0.25'
+    target = tmp_path / "test_heavy.py"
+    target.write_text(
+        "import subprocess, sys\n\n"
+        "def test_heavy():\n"
+        f" subprocess.run([sys.executable, {str(counter)!r}, 'heavy', '0.25'], check=True)\n"
+    )
+    validation = (
+        '"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- '
+        f"{shlex.quote(sys.executable)} -m pytest {shlex.quote(str(target))} -q"
+    )
     command = ["sh", "-c", f"{shlex.quote(sys.executable)} {counter} model 0.15 & {validation}; wait"]
     runner = LocalRunner({"timeout_minutes": 1}, Harness("agent", {"command": command}))
     runs = []
@@ -1034,19 +1043,19 @@ def test_validation_wrapper_applies_configured_execution_timeout(tmp_path, monke
     monkeypatch.delenv("GARDEN_HEAVY_EXECUTION", raising=False)
     monkeypatch.delenv("GARDEN_OWNER_SCOPED", raising=False)
     monkeypatch.delenv("GARDEN_VALIDATION_INHERITS_LEASE", raising=False)
-    monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "true"])
+    monkeypatch.setattr(sys, "argv", ["garden.validation", "--", "pytest", "-q"])
+    monkeypatch.setattr(validation, "_source_state", lambda _cwd: ("head", ""))
     captured = {}
 
-    def execv(executable, argv):
-        captured.update(executable=executable, argv=argv, env=dict(os.environ))
-        raise RuntimeError("exec captured")
+    def run(argv, **kwargs):
+        captured.update(argv=argv, env=dict(os.environ), kwargs=kwargs)
+        return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(os, "execv", execv)
-    with pytest.raises(RuntimeError, match="exec captured"):
-        validation.main()
+    monkeypatch.setattr(subprocess, "run", run)
+    assert validation.main() == 0
 
-    assert captured["executable"] == sys.executable
-    assert captured["argv"][-1] == "true"
+    assert captured["argv"][:3] == [sys.executable, "-m", "garden.run_supervisor"]
+    assert captured["argv"][-1].startswith("pytest -q --deselect=")
     assert captured["env"]["GARDEN_OWNER_SCOPED"] == "1"
     assert captured["env"]["GARDEN_EXECUTION_TIMEOUT_SECONDS"] == "731"
 
@@ -1059,19 +1068,28 @@ def test_nested_validation_inherits_an_enclosing_validation_lease(tmp_path):
     outer = tmp_path / "outer"
     outer.mkdir()
     inner_status = tmp_path / "inner-status.json"
-    child = (
-        "import json; from pathlib import Path; "
-        f"Path({str(inner_status)!r}).write_text(json.dumps({{'ok': True}}))"
+    inner_test = tmp_path / "test_inner.py"
+    inner_test.write_text(
+        "import json\n"
+        "from pathlib import Path\n\n"
+        "def test_inner():\n"
+        f"    Path({str(inner_status)!r}).write_text(json.dumps({{'ok': True}}))\n"
     )
-    nested = (
-        f"{shlex.quote(sys.executable)} -m garden.validation -- "
-        f"{shlex.quote(sys.executable)} -c "
-        f"{shlex.quote(child)}"
+    outer_test = tmp_path / "test_outer.py"
+    outer_test.write_text(
+        "import subprocess, sys\n\n"
+        "def test_outer():\n"
+        "    subprocess.run([sys.executable, '-m', 'garden.validation', '--', "
+        f"sys.executable, '-m', 'pytest', {str(inner_test)!r}, '-q'], check=True)\n"
     )
     env = _supervisor_test_env(tmp_path)
     env.pop("GARDEN_HEAVY_EXECUTION")
     result = subprocess.run(
-        _supervisor_command(outer, [sys.executable, "-m", "garden.validation", "--", "sh", "-c", nested]),
+        _supervisor_command(
+            outer,
+            [sys.executable, "-m", "garden.validation", "--",
+             sys.executable, "-m", "pytest", str(outer_test), "-q"],
+        ),
         env=env, capture_output=True, text=True, timeout=5,
     )
 
@@ -1247,7 +1265,16 @@ def test_two_validations_from_one_worker_are_serialized(tmp_path):
         " active, peak = map(int, state.read_text().split())\n"
         " state.write_text(f'{active - 1} {peak}')\n"
     )
-    validation = f'"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- {shlex.quote(sys.executable)} {workload}'
+    target = tmp_path / "test_workload.py"
+    target.write_text(
+        "import subprocess, sys\n\n"
+        "def test_workload():\n"
+        f" subprocess.run([sys.executable, {str(workload)!r}], check=True)\n"
+    )
+    validation = (
+        '"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- '
+        f"{shlex.quote(sys.executable)} -m pytest {shlex.quote(str(target))} -q"
+    )
     harness = Harness("nested", {"command": ["sh", "-c", f"{validation} & {validation} & wait"]})
     runner = LocalRunner({"timeout_minutes": 1}, harness)
     run_dir = tmp_path / "outer"

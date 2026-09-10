@@ -18,6 +18,9 @@ from typing import Any
 
 from .model import now_iso
 from .outcomes import base_acceptance
+
+# Keep the established table API for existing callers. The Now page's acceptance cohorts
+# have different attribution, units and cell shapes, so expose them separately.
 from .outcomes import difficulty_by_model as windowed_difficulty_by_model
 
 # Context growth needs enough observations on both sides of the comparison before it
@@ -465,12 +468,18 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
         "mean_s": round(sum(tick_durations) / len(tick_durations), 3) if tick_durations else None,
         "max_s": round(max(tick_durations), 3) if tick_durations else None,
     }
+    ci_events = [ev for ev in events if ev.get("kind") == "ci_status" and ev.get("task") in tasks]
+    ci_status = {state: sum(1 for ev in ci_events if ev.get("state") == state)
+                 for state in sorted({str(ev.get("state") or "unknown") for ev in ci_events})}
+    ci_status["stale"] = sum(1 for ev in ci_events if ev.get("stale"))
+    ci_status["absent"] = sum(1 for ev in ci_events if not ev.get("exists_for_sha"))
     return {"tasks": per_task, "by_difficulty": by_diff, "by_model": outcomes["model"],
             "by_harness": outcomes["harness"], "by_pool_member": outcomes["pool_member"], "rebase": rebase,
             "merges": merges, "queue_merges": len(merged_tasks & queued_history),
             "hand_merges": hand_merges, "tick_duration": tick_duration,
             "operator": {"spend": round(operator_spend, 4),
                           "share": round(operator_spend / total_spend, 4) if total_spend else None},
+            "ci_status": ci_status,
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
 

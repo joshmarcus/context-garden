@@ -627,6 +627,24 @@ def register(app: FastAPI, site: Site) -> None:
             run.final_received_at = dt.datetime.now(dt.UTC).isoformat()
             (run.path / "final.md").write_text(final)
             (run.path / "remote_result.json").write_text(json.dumps(posted))
+            for index, receipt in enumerate(body.get("validation_receipts") or []):
+                if not isinstance(receipt, dict):
+                    continue
+                target = run.path / "validations" / f"remote-{index}" / "result.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                durable = {key: value for key, value in receipt.items()
+                           if key not in {"durable_execution", "durable_exit_code", "durable_stderr"}}
+                durable["log_location"] = str(target.parent)
+                target.write_text(json.dumps(durable, sort_keys=True) + "\n")
+                execution = receipt.get("durable_execution")
+                durable_exit_code = receipt.get("durable_exit_code")
+                stderr = receipt.get("durable_stderr")
+                if isinstance(execution, dict):
+                    (target.parent / "execution.json").write_text(json.dumps(execution) + "\n")
+                if isinstance(durable_exit_code, int):
+                    (target.parent / "exit_code").write_text(f"{durable_exit_code}\n")
+                if isinstance(stderr, str):
+                    (target.parent / "stderr.log").write_text(stderr)
             if run.mode == "check":
                 if posted["env_error"] and posted["env_kind"] == "materialization":
                     checks = [{"name": "checks", "status": "error",
