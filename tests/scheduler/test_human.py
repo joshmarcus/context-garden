@@ -14,6 +14,7 @@ from garden.runner.manual import ManualRunner
 from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
 from tests.scheduler.conftest import statuses
+from tests.reference_context import agent_context
 
 
 def test_manual_reservation_is_retry_safe_and_suppresses_dispatch(sched):
@@ -883,16 +884,18 @@ def test_corrective_worker_refreshes_origin_pr_feedback_at_dispatch(sched, monke
 
     def start(worker_run, cwd, prompt):
         captured["prompt"] = prompt
+        captured["run"] = worker_run
         worker_run.status = "running"
         worker_run.save()
 
     monkeypatch.setattr(runner, "start", start)
     sched.dispatch(corrective, mode="work", runner=runner)
 
-    assert "stale parser" in captured["prompt"]
-    assert "new feedback before corrective dispatch" in captured["prompt"]
-    assert "feedback at investigation time" not in captured["prompt"]
-    assert "unresolved, outdated" in captured["prompt"]
+    context = agent_context(captured["run"], captured["prompt"])
+    assert "stale parser" in context
+    assert "new feedback before corrective dispatch" in context
+    assert "feedback at investigation time" not in context
+    assert "unresolved, outdated" in context
     assert not sched.state.get(corrective.id).get("investigation_handoff")
 
 

@@ -17,6 +17,7 @@ Standalone on purpose: nothing here imports `garden`, so the harness command is 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -56,6 +57,11 @@ def commit(message: str) -> None:
 
 def main() -> None:
     brief = sys.stdin.read()
+    context_root = Path(os.environ.get("GARDEN_CONTEXT_DIR", ""))
+    if context_root.is_dir():
+        brief += "\n" + "\n".join(
+            path.read_text() for path in sorted(context_root.rglob("*")) if path.is_file()
+        )
     args = sys.argv[1:]
     resumed = "--resume" in args
     if "# Planning request" in brief:

@@ -7,6 +7,7 @@ from garden.model import Status
 from garden.scheduler import Scheduler
 from garden.scheduler.report import TickReport
 from garden.store import Store
+from tests.reference_context import agent_context
 
 
 def _open_task(sched, fake_github):
@@ -107,7 +108,7 @@ def test_review_then_ci_delivers_the_complete_feedback_in_the_dispatched_brief(s
     _finish_ci(sched, task, _ci_run(sched, task, pr.head_sha), pr.head_sha)
     sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
 
-    brief = (sched.runs.latest(task.id).path / "brief.md").read_text()
+    brief = agent_context(sched.runs.latest(task.id))
     assert "Environment errors retry forever" in brief
     assert "Route started environment errors through the bounded recovery counter" in brief
     assert "Bound every started-review recovery" in brief
@@ -132,7 +133,7 @@ def test_ci_then_review_waits_for_the_review_run_and_dispatches_one_combined_rev
     queued = [(candidate.id, mode) for candidate, mode, _ in sched.dispatch_queue()]
     assert (task.id, "revise") in queued
     sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
-    brief = (sched.runs.latest(task.id).path / "brief.md").read_text()
+    brief = agent_context(sched.runs.latest(task.id))
     assert "Environment errors retry forever" in brief
     assert "six focused tests failed" in brief
     assert sched.state.get(task.id)["revisions"] == 1
@@ -345,7 +346,7 @@ def test_controller_owned_ci_diagnostic_is_head_bound_and_redacted_for_revision(
     assert "test_example" in sched.state.get(task.id)["pending_feedback"]
     revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
 
-    brief = (revise.path / "brief.md").read_text()
+    brief = agent_context(revise)
     assert pr.head_sha in brief
     assert "test_example" in brief
     assert "controller-secret" not in brief and "token=<redacted>" in brief
@@ -369,7 +370,7 @@ def test_controller_ci_handoff_redacts_complete_authorization_headers(sched, fak
     }], {"head": pr.head_sha, "ci_note": "CI failed"}, TickReport())
     revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
 
-    brief = (revise.path / "brief.md").read_text()
+    brief = agent_context(revise)
     assert "Authorization: <redacted>" in brief
     assert "authorization=<redacted>; request rejected" in brief
     assert "failed test_authorization" in brief

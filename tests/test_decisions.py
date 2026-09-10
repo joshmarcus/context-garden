@@ -12,6 +12,7 @@ from garden.model import Status
 from garden.scheduler.report import TickReport
 from garden.scheduler.state import State
 from tests.conftest import FakeGitHub
+from tests.reference_context import agent_context
 
 
 def statuses(sched):
@@ -71,7 +72,7 @@ def test_wont_do_reject_carries_the_note_into_a_revise(sched, fake_github, monke
     assert "The person disagrees" in fb and "still needed" in fb
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(revise)"]
-    brief = (sched.runs.latest("DM-001").path / "brief.md").read_text()
+    brief = agent_context(sched.runs.latest("DM-001"))
     assert "The person disagrees" in brief and "still needed" in brief
     # the revise round finishes normally -> a PR
     sched.tick()

@@ -14,6 +14,7 @@ from garden.review import (
 )
 from garden.scheduler import TickReport
 from garden.store import Store
+from tests.reference_context import agent_context
 
 
 def test_paths_keywords_and_legacy_metadata_do_not_prescribe_evidence():
@@ -252,4 +253,4 @@ def test_summary_only_request_changes_routes_actionable_feedback(sched, monkeypa
     report = sched.tick()
     assert "DM-001 -> changes_requested (review)" in report.transitions
     assert "DM-001(revise)" in report.dispatched
-    assert "parser still drops empty records" in (sched.runs.latest("DM-001").path / "brief.md").read_text().lower()
+    assert "parser still drops empty records" in agent_context(sched.runs.latest("DM-001")).lower()

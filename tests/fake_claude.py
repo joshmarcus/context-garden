@@ -77,7 +77,22 @@ class Call:
 
     @property
     def revise(self) -> bool:
-        return "Revision round" in self.brief
+        return "Revision round" in self.context
+
+    @property
+    def context(self) -> str:
+        """Text the fake agent can discover by opening its run-scoped references."""
+        root = self.env.get("GARDEN_CONTEXT_DIR", "")
+        if not root:
+            return self.brief
+        reference_root = Path(root)
+        try:
+            referenced = "\n".join(
+                path.read_text() for path in sorted(reference_root.rglob("*")) if path.is_file()
+            )
+        except OSError:
+            referenced = ""
+        return self.brief + "\n" + referenced
 
 
 def result_json(final: str, usage: dict, cost: float, **extra) -> str:
@@ -315,7 +330,7 @@ def brief_criteria(brief: str) -> list[str]:
 def verified_for(call: Call, skip: bool = False) -> list[dict]:
     """One `verified` entry per acceptance criterion, each with evidence. With `skip`, the
     first criterion is left out of the list entirely (a silently skipped criterion)."""
-    crits = brief_criteria(call.brief)
+    crits = brief_criteria(call.context)
     out = []
     for i, c in enumerate(crits):
         if skip and i == 0:
