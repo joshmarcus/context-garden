@@ -308,18 +308,22 @@ class PollMixin:
         # shape keeps repeated observations idempotent across ticks and controller restarts;
         # analyser run IDs separately deduplicate the bounded retry attempts they initiate.
         ci_identity = self._ci_failure_identity(pr)
+        failure_key = self._exact_ci_failure_identity(ci_status)
+        observed_failure_identity = (
+            failure_key if ci_status.provider != "github" and ci_status.state == "failure"
+            else ci_identity
+        )
         # Reaping a flaky analyser and polling happen in the same tick. Give the requested
         # external rerun that one observation boundary to replace the old failed rollup;
         # otherwise this poll immediately analyses the same attempt again and spends the
         # bounded retry before the provider can publish its result. A changed failure shape
         # is a new failure and remains immediately actionable.
         waiting_identity = st.get("ci_rerun_waiting_for")
-        waiting_for_rerun = waiting_identity == ci_identity
+        waiting_for_rerun = waiting_identity == observed_failure_identity
         if waiting_identity:
             st.pop("ci_rerun_waiting_for", None)
         if waiting_for_rerun:
             st.pop("ci_failed_at", None)
-        failure_key = self._exact_ci_failure_identity(ci_status)
         github_ci_failure = (provider in ("actions", "status", "legacy")
                              and pr.checks == "FAILURE"
                              and not waiting_for_rerun
@@ -479,7 +483,9 @@ class PollMixin:
             # requested rerun. Suppress the poll later in this tick, then let a subsequent
             # observation through the analyser once more. The ci_reruns limit prevents
             # another flaky rerun, while the head checks reject obsolete commits.
-            st["ci_rerun_waiting_for"] = self._ci_failure_identity(pr)
+            st["ci_rerun_waiting_for"] = (
+                str(cont.get("ci_failure_identity") or "") or self._ci_failure_identity(pr)
+            )
         elif ci_note and not self._check_did_not_run(run, results):
             identity = str(cont.get("ci_failure_identity") or "")
             # Legacy continuations predate authoritative provider identities. Only infer
