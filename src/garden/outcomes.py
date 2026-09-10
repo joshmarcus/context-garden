@@ -20,6 +20,26 @@ METRICS = {
 IMPLEMENTATION = {"work", "revise", "resume"}
 
 
+def canonical_phase_key(product: str, phase: str) -> str:
+    """Canonicalize an attributed phase without guessing its product.
+
+    Operator ledgers support both ``phase-05`` and ``context-garden/phase-05``. A
+    short name is meaningful only with its product, keeping same-named phases in
+    different products distinct.
+    """
+    product, phase = str(product or ""), str(phase or "")
+    if not phase or "/" in phase:
+        return phase
+    return f"{product}/{phase}" if product else phase
+
+
+def attributed_phase_key(event: dict[str, Any], task: Any | None = None) -> str:
+    """Return the canonical phase key for a task run or attributed taskless event."""
+    if task is not None:
+        return str(getattr(task, "key", ""))
+    return canonical_phase_key(str(event.get("product") or ""), str(event.get("phase") or ""))
+
+
 def acceptance_cohort(
     events: list[dict[str, Any]], tasks: dict[str, Any], *, since: str = "", until: str = "",
     product: str = "", phase: str = "", difficulty: str = "", model: str = "", harness: str = "",
@@ -51,7 +71,7 @@ def acceptance_cohort(
         task = tasks[tid]
         if product and getattr(task, "product", "") != product:
             continue
-        if phase and getattr(task, "key", "") != phase:
+        if phase and getattr(task, "key", "") != canonical_phase_key(product, phase):
             continue
         if difficulty and getattr(task, "difficulty", "") != difficulty:
             continue

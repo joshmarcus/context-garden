@@ -28,7 +28,7 @@ from .criteria import criteria_counts
 from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metrics
 from .inbox import automated_review_is_queued, merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
-from .outcomes import acceptance_cohort, base_acceptance
+from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance
 from .plants import plant_info
 from .runs import Run, RunStore
 from .store import Store
@@ -538,7 +538,6 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     task_ids = set(tasks)
     selected_products = {str(task.product) for task in tasks.values()}
     selected_phases = {str(task.key) for task in tasks.values()}
-    selected_phase_names = {key.rsplit("/", 1)[-1] for key in selected_phases}
 
     def selected_event(event: dict[str, Any]) -> bool:
         tid = str(event.get("task") or "")
@@ -546,8 +545,7 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
 
     def selected_operator(event: dict[str, Any]) -> bool:
         product = str(event.get("product") or "")
-        phase = str(event.get("phase") or "")
-        return product in selected_products and phase in selected_phases | selected_phase_names
+        return product in selected_products and attributed_phase_key(event) in selected_phases
 
     window = [e for e in events if str(e.get("at") or "") >= since and selected_event(e)]
     done_at: dict[str, str] = {}

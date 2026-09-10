@@ -15,6 +15,7 @@ from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal
 from ..operator_spend import attributed_totals as operator_attributed_totals
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
+from ..outcomes import attributed_phase_key
 from ..personas import (
     SEVERITY_PRIORITY,
     finding_body,
@@ -551,7 +552,7 @@ class RetroMixin:
         operator_cost, operator_turns = operator_attributed_totals(
             operator_records, since=summary["first_dispatch"],
             include=lambda record: record.get("product") == phase.product
-            and record.get("phase") in (phase.name, phase.key))
+            and attributed_phase_key(record) == phase.key)
         unattributed_cost, unattributed_turns = operator_attributed_totals(
             operator_records, since=summary["first_dispatch"],
             include=lambda record: not record.get("product") and not record.get("phase"))

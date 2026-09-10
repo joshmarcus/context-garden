@@ -6,10 +6,13 @@ import json
 
 import pytest
 
+from garden import now1
+from garden import operator_spend as ops
 from garden.charts import cost_stack_svg
 from garden.costs import cost_series
 from garden.events import metrics
 from garden.model import Status, Task
+from garden.outcomes import attributed_phase_key
 
 
 def _tasks() -> dict[str, Task]:
@@ -205,6 +208,11 @@ def test_accepted_cohort_uses_completion_window_and_full_history_with_missing_pr
     assert accepted["priced_tasks"] == 0 and accepted["unpriced_tasks"] == 1
     assert accepted["known_cost_usd"] == 2.0
     assert accepted["cost_per_accepted_task"] is None
+    short_phase = cost_series(events, _tasks(), since="2026-09-03T00:00:00+00:00",
+                              product="demo", phase="p1")["accepted"]
+    canonical_phase = cost_series(events, _tasks(), since="2026-09-03T00:00:00+00:00",
+                                  phase="demo/p1")["accepted"]
+    assert short_phase == canonical_phase == accepted
 
 
 def test_phase_filter_excludes_other_spend_and_separates_unattributed_operator_cost():
@@ -217,6 +225,48 @@ def test_phase_filter_excludes_other_spend_and_separates_unattributed_operator_c
     series = cost_series(events, _tasks(), phase="demo/p1")
     assert series["grand_total"]["cost_usd"] == 1.6
     assert series["unattributed_operator"] == {"runs": 1, "cost_usd": 11.0}
+
+
+def test_operator_phase_attribution_agrees_across_costs_metrics_now_and_retro():
+    """Short and canonical names select one product's phase on every reporting surface."""
+    selected = {
+        "CG-001": Task(path=None, id="CG-001", title="A", status=Status.DONE,
+                       product="context-garden", phase="phase-05", difficulty="easy"),
+    }
+    all_tasks = {
+        **selected,
+        "OT-001": Task(path=None, id="OT-001", title="B", status=Status.DONE,
+                       product="other", phase="phase-05", difficulty="easy"),
+    }
+    operator_records = [
+        {"list_price_usd": 1.0, "turns": 1, "session": "short",
+         "product": "context-garden", "phase": "phase-05", "at": "2026-09-06T01:00:00+00:00"},
+        {"list_price_usd": 2.0, "turns": 2, "session": "canonical",
+         "product": "context-garden", "phase": "context-garden/phase-05",
+         "at": "2026-09-06T01:01:00+00:00"},
+        {"list_price_usd": 40.0, "turns": 3, "session": "other",
+         "product": "other", "phase": "phase-05", "at": "2026-09-06T01:02:00+00:00"},
+        {"list_price_usd": 8.0, "turns": 4, "session": "unknown",
+         "product": "", "phase": "", "at": "2026-09-06T01:03:00+00:00"},
+    ]
+    operator_events = ops.to_cost_events(operator_records)
+
+    costs = cost_series(operator_events, all_tasks, product="context-garden", phase="phase-05")
+    cli_metrics = metrics(operator_events, selected)
+    now = now1.period([], operator_events, selected, "2026-09-06T00:00:00+00:00", "hour")
+    retro_cost, retro_turns = ops.attributed_totals(
+        operator_records,
+        include=lambda record: record["product"] == "context-garden"
+        and attributed_phase_key(record) == "context-garden/phase-05",
+    )
+
+    assert costs["grand_total"]["cost_usd"] == 3.0
+    assert costs["unattributed_operator"] == {"runs": 1, "cost_usd": 8.0}
+    assert cli_metrics["operator"] == {"spend": 3.0, "share": 1.0, "unattributed_spend": 8.0}
+    assert now["cost"] == 3.0
+    assert now["operator"] == {"spend": 3.0, "share": 1.0, "sessions": 2}
+    assert now["unattributed_operator"] == {"spend": 8.0, "share": None, "sessions": 1}
+    assert (retro_cost, retro_turns) == (3.0, 3)
 
 
 def test_outcomes_count_only_base_branch_merges_as_accepted():

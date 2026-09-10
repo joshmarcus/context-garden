@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import now_iso
-from .outcomes import acceptance_cohort, base_acceptance
+from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance
 
 # Keep the established table API for existing callers. The Now page's acceptance cohorts
 # have different attribution, units and cell shapes, so expose them separately.
@@ -303,7 +303,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                     unattributed_operator_spend += amount
                     continue
                 if ((ev.get("product") and str(ev.get("product")) not in selected_products)
-                        or (ev.get("phase") and str(ev.get("phase")) not in selected_phases)):
+                        or (ev.get("phase") and attributed_phase_key(ev) not in selected_phases)):
                     continue
                 operator_spend += amount
             elif ev.get("task") not in task_ids:

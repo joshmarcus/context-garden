@@ -708,7 +708,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
     events = EventLog(store.config.garden_dir / "events.jsonl").read()
     run_records = RunStore(store.config.garden_dir).all_runs()
     events = with_run_records(events, run_records)
-    events += ops.to_cost_events(ops.read_records(ops.default_path(store.root)))
+    events += ops.to_cost_events(ops.read_records(ops.default_path(store.root, store.config)))
     m = _metrics(events, tasks, parse_since(since) if since else "", until)
     timing = m["tick_duration"]
     console.print(f"Merged PRs: {m['merges']} (queue: {m['queue_merges']}, hand: {m['hand_merges']})")

@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from .model import Task
-from .outcomes import acceptance_cohort
+from .outcomes import acceptance_cohort, attributed_phase_key, canonical_phase_key
 
 # The fixed activity vocabulary the costs chart names in order (CG-214): every other mode
 # a run can carry (trial, compare, edit, and any future one) folds into "other"
@@ -50,7 +50,7 @@ def _group_key(ev: dict[str, Any], task: Task | None, group_by: str) -> str:
     if group_by == "difficulty":
         return str(task.difficulty) if task else "unknown"
     if group_by == "phase":
-        return task.key if task else str(ev.get("phase") or "unknown")
+        return attributed_phase_key(ev, task) or "unknown"
     if group_by == "task":
         return str(ev.get("task") or "unknown")
     if group_by == "session":
@@ -155,7 +155,8 @@ def cost_series(
             continue
         if harness and str(ev.get("harness") or "") != harness:
             continue
-        if phase and ((t.key if t else str(ev.get("phase") or "")) != phase):
+        selected_phase = canonical_phase_key(product, phase)
+        if phase and attributed_phase_key(ev, t) != selected_phase:
             continue
         if product and ((t.product if t else str(ev.get("product") or "")) != product):
             continue
