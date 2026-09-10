@@ -44,9 +44,12 @@ def _native_volumes(paths: tuple[Path, ...]) -> list[StorageVolume]:
             stat = os.stat(probe)
             usage = shutil.disk_usage(probe)
             volumes.setdefault(stat.st_dev, StorageVolume(f"device:{stat.st_dev}", "local filesystem", usage.free))
-        except OSError as exc:
+        except OSError:
             key = f"path:{len(volumes)}"
-            volumes[key] = StorageVolume(key, "local filesystem", None, f"measurement unavailable: {exc}")
+            volumes[key] = StorageVolume(
+                key, "local filesystem", None,
+                "measurement unavailable: filesystem path could not be inspected",
+            )
     return list(volumes.values())
 
 
@@ -75,12 +78,25 @@ def _windows_backing_free(path: str) -> StorageVolume:
         proc = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", script],
                               capture_output=True, text=True, timeout=10, check=False)
         if proc.returncode:
-            raise OSError((proc.stderr or proc.stdout or "PowerShell probe failed").strip())
+            return StorageVolume(
+                "windows-backing", "Windows backing volume", None,
+                "measurement unavailable: Windows backing-volume probe failed; check the configured path and WSL interop",
+            )
         free = int(json.loads(proc.stdout)["free"])
         return StorageVolume("windows-backing", "Windows backing volume", free)
-    except (OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired:
         return StorageVolume("windows-backing", "Windows backing volume", None,
-                             f"measurement unavailable: {exc}")
+                             "measurement unavailable: Windows backing-volume probe timed out")
+    except OSError:
+        return StorageVolume(
+            "windows-backing", "Windows backing volume", None,
+            "measurement unavailable: Windows backing-volume probe could not start; check WSL interop",
+        )
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return StorageVolume(
+            "windows-backing", "Windows backing volume", None,
+            "measurement unavailable: Windows backing-volume probe returned an invalid response",
+        )
 
 
 def measure_storage(paths: tuple[Path, ...], *, windows_backing_path: str = "") -> tuple[StorageVolume, ...]:

@@ -643,11 +643,11 @@ class ReapMixin:
             run.status = "done"
             run.save()
             try:
-                if wt.exists():
-                    gitops.git("fetch", "origin", cwd=wt)
-                    gitops.git("reset", "-q", "--hard", f"origin/{branch}", cwd=wt)
-                else:
-                    with self._local_staging_admission("remote result checkout materialization"):
+                with self._local_staging_admission("remote result checkout materialization"):
+                    if wt.exists():
+                        gitops.git("fetch", "origin", cwd=wt)
+                        gitops.git("reset", "-q", "--hard", f"origin/{branch}", cwd=wt)
+                    else:
                         gitops.prepare_worktree(repo, wt, branch, base)
             except ResourcePressureError as e:
                 # The result and promoted branch are already durable.  Leave the task and

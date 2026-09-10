@@ -671,6 +671,11 @@ class DispatchMixin:
         prepared_root = self.prepare_canonical_run(task, run, runner, branch, base)
         if prepared_root is not None:
             canonical_root = prepared_root
+        # Recheck before the first possible write to a reused checkout. Stashing and branch
+        # synchronization can create Git objects before prepare_worktree's own fresh check,
+        # so low space must stop the sequence before either operation is called.
+        if worktree and not runner.remote and canonical_root is None and run_id:
+            self._recheck_local_materialization(run, f"{mode} checkout synchronization")
         # A killed worker's leftover uncommitted edits are stashed (not swept into the sync
         # below as a commit) before anything else touches the worktree, so they are recovered
         # by `git stash apply`, not buried in a backup branch's synthetic commit.
