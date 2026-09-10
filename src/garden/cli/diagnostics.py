@@ -248,7 +248,8 @@ def doctor():
             fail("github")
     harness_names = {str(store.config.get("harness") or "claude")} | {
         str(p.get("harness")) for p in store.config.data.get("products", {}).values() if p and p.get("harness")}
-    harness_names |= {str(name) for name in (store.config.data.get("harnesses") or {})}
+    if "openrouter" in (store.config.data.get("harnesses") or {}):
+        harness_names.add("openrouter")
     runner_names = {str(store.config.get("runner") or "local")} | {
         str(p.get("runner")) for p in store.config.data.get("products", {}).values() if p and p.get("runner")}
     for hn in sorted(harness_names):
