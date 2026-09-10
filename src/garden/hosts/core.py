@@ -512,6 +512,29 @@ class HostLifecycle:
         self._record(pool, result, events, self.plan(pool))
         return result
 
+    def force_retire(self, pool: PoolDeclaration, *, detail: str) -> list[HostFacts]:
+        """Immediately retire every non-terminated host without waiting for work drains."""
+        self.validate(pool)
+        provider = self._provider(pool)
+        hosts = sorted(provider.discover(pool.owner, pool.name), key=lambda host: host.host_id)
+        events: list[HostEvent] = []
+        result: list[HostFacts] = []
+        for host in hosts:
+            if host.state == HostState.TERMINATED:
+                result.append(host)
+                continue
+            self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
+            retired = provider.destroy(
+                host.provider_id, delete_storage=not pool.profile.persistent_workspace
+            )
+            result.append(retired)
+            events.append(HostEvent("force_retired", retired.host_id, retired.state, detail))
+            clearer = getattr(self.interruption_drain, "clear", None)
+            if clearer is not None:
+                clearer(host.operation_id)
+        self._record(pool, result, events, self.plan(pool))
+        return result
+
     def orphaned_resources(self, pool: PoolDeclaration) -> tuple[str, ...]:
         """Inventory billable resources left after owned hosts have terminated.
 

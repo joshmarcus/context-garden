@@ -106,6 +106,36 @@ def test_cleanup_drains_before_retiring_and_emergency_stop_is_explicit(tmp_path)
     assert drain.cleared
 
 
+def test_emergency_stop_retires_interrupted_host_when_drain_is_pending(tmp_path):
+    class Drain:
+        cleared = []
+
+        def __call__(self, _host, _deadline, _detail):
+            return False
+
+        def clear(self, operation_id):
+            self.cleared.append(operation_id)
+
+    provider = FakeProvider()
+    drain = Drain()
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "life.json"),
+                              interruption_drain=drain)
+    op = ScaleOperation(lifecycle, tmp_path / "scale.json",
+                        CleanEnrollments({"workers-0": ready_enrollment()}),
+                        now=lambda: dt.datetime(2026, 9, 10, tzinfo=dt.UTC))
+    spec = requested()
+    op.request(spec, deadline=op.now() + dt.timedelta(hours=1))
+    active = op.continue_(spec).hosts[0]
+    provider.hosts[active.provider_id] = replace(active, state=HostState.INTERRUPTED)
+
+    stopped = op.emergency_stop(spec)
+
+    assert stopped.phase == "cleaned"
+    assert stopped.hosts[0].state == HostState.TERMINATED
+    assert provider.destroy_calls == [(active.provider_id, True)]
+    assert drain.cleared == [active.operation_id]
+
+
 def test_cleanup_inventories_orphaned_resources_and_keeps_cost_notice(tmp_path):
     class Provider(FakeProvider):
         def orphaned_resources(self, _owner, _pool):

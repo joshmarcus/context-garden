@@ -302,12 +302,9 @@ class ScaleOperation:
                 pool, deadline=str(operation["deadline"]), detail="operator-requested pool drain"
             )
         else:
-            hosts = self.lifecycle.reconcile(pool)
-            clearer = getattr(self.lifecycle.interruption_drain, "clear", None)
-            if clearer is not None:
-                for host in hosts:
-                    if host.state == HostState.TERMINATED:
-                        clearer(host.operation_id)
+            hosts = self.lifecycle.force_retire(
+                pool, detail="operator-requested emergency pool stop"
+            )
         active_ids = {host.host_id for host in hosts if host.state != HostState.TERMINATED}
         pending = set()
         for slot in range(enrolled_slots):
