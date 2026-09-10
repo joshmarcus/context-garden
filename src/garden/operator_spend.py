@@ -255,9 +255,10 @@ def delta_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         previous_turns = 0
         for row in rows:
             reported_cost = row.get("list_price_usd")
+            priced = isinstance(reported_cost, (int, float)) and not isinstance(reported_cost, bool)
             cost = (round(max(float(reported_cost) - previous_cost, 0.0), 4)
-                    if isinstance(reported_cost, (int, float)) else None)
-            if isinstance(reported_cost, (int, float)):
+                    if priced else None)
+            if priced:
                 previous_cost = float(reported_cost)
             turns = int(row.get("turns") or 0)
             out.append({**row, "session": sid, "cost_usd": cost,
@@ -274,13 +275,26 @@ def to_cost_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     carry no cost and are never turned into a cost event; see `compaction_marks`."""
     out: list[dict[str, Any]] = []
     for row in delta_records(records):
-        if row["cost_usd"] is None:
-            continue
         out.append({"kind": "run_finished", "at": str(row.get("at") or ""), "mode": "operator",
                     "session": row["session"], "task": "", "model": "", "harness": "",
                     "cost_usd": row["cost_usd"], "usage": {},
                     "product": str(row.get("product") or ""), "phase": str(row.get("phase") or "")})
     return out
+
+
+def attributed_summary(records: list[dict[str, Any]], *, since: str = "",
+                       include: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+    """Known spend, completeness and turns for selected operator heartbeat deltas."""
+    selected = [row for row in delta_records(records)
+                if (not since or str(row.get("at") or "") >= since) and include(row)]
+    priced = [row for row in selected if row["cost_usd"] is not None]
+    return {
+        "known_cost_usd": round(sum(float(row["cost_usd"]) for row in priced), 4),
+        "turns": sum(int(row["turns"]) for row in selected),
+        "priced_records": len(priced),
+        "unpriced_records": len(selected) - len(priced),
+        "cost_complete": len(priced) == len(selected),
+    }
 
 
 def total_cost(records: list[dict[str, Any]], since: str = "") -> float:
@@ -298,10 +312,8 @@ def total_turns(records: list[dict[str, Any]], since: str = "") -> int:
 def attributed_totals(records: list[dict[str, Any]], *, since: str = "",
                       include: Callable[[dict[str, Any]], bool]) -> tuple[float, int]:
     """Cost and turns for selected delta rows, converted from full session history first."""
-    selected = [row for row in delta_records(records)
-                if (not since or str(row.get("at") or "") >= since) and include(row)]
-    cost = sum(float(row["cost_usd"]) for row in selected if row["cost_usd"] is not None)
-    return round(cost, 4), sum(int(row["turns"]) for row in selected)
+    summary = attributed_summary(records, since=since, include=include)
+    return summary["known_cost_usd"], summary["turns"]
 
 
 def compaction_marks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -103,7 +103,8 @@ def _finish_row(row: dict[str, Any], grand_cost: float | None = None) -> None:
     row["taskless_cost_usd"] = round(row["taskless_cost_usd"], 4)
     row["cost_complete"] = row["unpriced_runs"] == 0
     row["tasked_cost_complete"] = row["tasked_unpriced_runs"] == 0
-    row["mean_cost_usd"] = round(row["cost_usd"] / row["runs"], 4) if row["runs"] else None
+    row["mean_cost_usd"] = (round(row["cost_usd"] / row["runs"], 4)
+                            if row["runs"] and row["cost_complete"] else None)
     # Taskless activity remains in the total, but cannot belong in a per-task numerator.
     # Only an unpriced tasked run makes a tasked average incomplete.
     row["cost_per_task_usd"] = (
@@ -189,6 +190,16 @@ def cost_series(
         "bucket": bucket,
         "accepted": acceptance_cohort(events, tasks, since=since, until=until, product=product,
                                       phase=phase, difficulty=difficulty, model=model, harness=harness),
-        "unattributed_operator": {"runs": len(unattributed_operator), "cost_usd": round(sum(
-            float(ev.get("cost_usd") or 0.0) for ev in unattributed_operator), 4)},
+        "unattributed_operator": {
+            "runs": len(unattributed_operator),
+            "priced_runs": sum(isinstance(ev.get("cost_usd"), (int, float))
+                               and not isinstance(ev.get("cost_usd"), bool)
+                               for ev in unattributed_operator),
+            "unpriced_runs": sum(not isinstance(ev.get("cost_usd"), (int, float))
+                                 or isinstance(ev.get("cost_usd"), bool)
+                                 for ev in unattributed_operator),
+            "cost_usd": round(sum(float(ev["cost_usd"]) for ev in unattributed_operator
+                                  if isinstance(ev.get("cost_usd"), (int, float))
+                                  and not isinstance(ev.get("cost_usd"), bool)), 4),
+        },
     }

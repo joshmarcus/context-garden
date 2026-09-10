@@ -12,6 +12,7 @@ from ... import operator_spend as ops
 from ...charts import cost_per_task_svg, cost_stack_svg
 from ...costs import GROUP_BY_CHOICES, cost_series
 from ...events import EventLog, metrics, parse_since
+from ...outcomes import canonical_phase_key
 from ..common import Site
 
 
@@ -46,8 +47,10 @@ def register(app: FastAPI, site: Site) -> None:
         series = cost_series(events, tasks, since=window_since, bucket=bucket, group_by=by,
                              difficulty=difficulty, model=model, harness=harness, phase=phase, product=product, task=task,
                              session=session)
+        selected_phase = canonical_phase_key(product, phase)
         selected_tasks = {tid: t for tid, t in tasks.items()
-                          if (not product or t.product == product) and (not phase or t.key == phase)}
+                          if (not product or t.product == product)
+                          and (not selected_phase or t.key == selected_phase)}
         outcomes = metrics(events, selected_tasks, since=window_since)
         runs = [e for e in events if e.get("kind") == "run_finished"]
         models = sorted({str(e["model"]) for e in runs if e.get("model")})

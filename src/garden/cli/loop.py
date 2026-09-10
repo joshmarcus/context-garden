@@ -715,10 +715,22 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
     console.print("Tick duration: " + (f"mean {timing['mean_s']:.2f}s, max {timing['max_s']:.2f}s ({timing['count']} ticks)"
                                        if timing["count"] else "no tick records"))
     operator = m["operator"]
-    console.print("Operator spend: " + (f"${operator['spend']:.2f} ({operator['share']:.0%} of recorded spend)"
-                                         if operator["share"] is not None else "no ledger entries"))
-    if operator.get("unattributed_spend"):
-        console.print(f"Unattributed operator spend (excluded): ${operator['unattributed_spend']:.2f}")
+    operator_records = operator["priced_records"] + operator["unpriced_records"]
+    if operator_records:
+        partial = "partial known spend " if not operator["cost_complete"] else ""
+        share = f" ({operator['share']:.0%} of recorded spend)" if operator["share"] is not None else ""
+        console.print(f"Operator spend: {partial}${operator['spend']:.2f}{share} "
+                      f"({operator['priced_records']} priced, {operator['unpriced_records']} unpriced records)")
+    else:
+        console.print("Operator spend: no ledger entries")
+    unattributed_records = (operator["unattributed_priced_records"]
+                            + operator["unattributed_unpriced_records"])
+    if unattributed_records:
+        partial = "partial known spend " if not operator["unattributed_cost_complete"] else ""
+        console.print(f"Unattributed operator spend (excluded): {partial}"
+                      f"${operator['unattributed_spend']:.2f} "
+                      f"({operator['unattributed_priced_records']} priced, "
+                      f"{operator['unattributed_unpriced_records']} unpriced records)")
     rb = m["rebase"]
     console.print(f"Rebases per merge: {rb['mechanical'] / rb['merges']:.2f} mechanical, "
                   f"{rb['agent'] / rb['merges']:.2f} agent" if rb["merges"] else "Rebases per merge: no merges")

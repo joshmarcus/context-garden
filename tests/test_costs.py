@@ -13,6 +13,7 @@ from garden.costs import cost_series
 from garden.events import metrics
 from garden.model import Status, Task
 from garden.outcomes import attributed_phase_key
+from garden.store import Store
 
 
 def _tasks() -> dict[str, Task]:
@@ -224,7 +225,8 @@ def test_phase_filter_excludes_other_spend_and_separates_unattributed_operator_c
     ]
     series = cost_series(events, _tasks(), phase="demo/p1")
     assert series["grand_total"]["cost_usd"] == 1.6
-    assert series["unattributed_operator"] == {"runs": 1, "cost_usd": 11.0}
+    assert series["unattributed_operator"] == {
+        "runs": 1, "priced_runs": 1, "unpriced_runs": 0, "cost_usd": 11.0}
 
 
 def test_operator_phase_attribution_agrees_across_costs_metrics_now_and_retro():
@@ -261,11 +263,19 @@ def test_operator_phase_attribution_agrees_across_costs_metrics_now_and_retro():
     )
 
     assert costs["grand_total"]["cost_usd"] == 3.0
-    assert costs["unattributed_operator"] == {"runs": 1, "cost_usd": 8.0}
-    assert cli_metrics["operator"] == {"spend": 3.0, "share": 1.0, "unattributed_spend": 8.0}
+    assert costs["unattributed_operator"] == {
+        "runs": 1, "priced_runs": 1, "unpriced_runs": 0, "cost_usd": 8.0}
+    assert cli_metrics["operator"] == {
+        "spend": 3.0, "share": 1.0, "priced_records": 2, "unpriced_records": 0,
+        "cost_complete": True, "unattributed_spend": 8.0,
+        "unattributed_priced_records": 1, "unattributed_unpriced_records": 0,
+        "unattributed_cost_complete": True}
     assert now["cost"] == 3.0
-    assert now["operator"] == {"spend": 3.0, "share": 1.0, "sessions": 2}
-    assert now["unattributed_operator"] == {"spend": 8.0, "share": None, "sessions": 1}
+    assert now["operator"] == {"spend": 3.0, "share": 1.0, "sessions": 2,
+                               "priced_records": 2, "unpriced_records": 0, "cost_complete": True}
+    assert now["unattributed_operator"] == {"spend": 8.0, "share": None, "sessions": 1,
+                                            "priced_records": 1, "unpriced_records": 0,
+                                            "cost_complete": True}
     assert (retro_cost, retro_turns) == (3.0, 3)
 
 
@@ -492,6 +502,67 @@ def test_operator_activity_is_sliceable_by_session(garden):
     r = run(garden, "costs", "--session", "sess-b", "--json")
     only_b = json.loads(r.output)
     assert only_b["grand_total"]["cost_usd"] == 4.0
+
+
+def test_operator_price_completeness_and_short_phase_cohort_match_cli_web_now_and_retro(garden):
+    """A measured zero remains priced while an unknown operator price stays visible and
+    makes totals partial on every surface; a short phase selector uses the same task cohort."""
+    from garden.retro import numbers_section
+    from tests.test_cli import run
+    from tests.test_web import client
+
+    at = "2026-09-05T09:00:00+00:00"
+    _write_events(garden, [
+        {"at": at, "kind": "dispatch", "task": "DM-001", "mode": "work",
+         "model": "sonnet", "harness": "claude"},
+        {"at": "2026-09-05T09:01:00+00:00", "kind": "run_finished", "task": "DM-001",
+         "mode": "work", "model": "sonnet", "harness": "claude", "cost_usd": 2.0},
+        {"at": "2026-09-05T09:02:00+00:00", "kind": "review", "task": "DM-001",
+         "verdict": "approve"},
+        {"at": "2026-09-05T09:03:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+    ])
+    records = [
+        {"at": "2026-09-05T09:04:00+00:00", "session": "zero", "turns": 1,
+         "list_price_usd": 0.0, "product": "demo", "phase": "p1"},
+        {"at": "2026-09-05T09:05:00+00:00", "session": "unknown", "turns": 2,
+         "list_price_usd": None, "product": "demo", "phase": "demo/p1"},
+        {"at": "2026-09-05T09:06:00+00:00", "session": "other", "turns": 3,
+         "list_price_usd": 40.0, "product": "other", "phase": "p1"},
+        {"at": "2026-09-05T09:07:00+00:00", "session": "unattributed", "turns": 4,
+         "list_price_usd": None, "product": "", "phase": ""},
+    ]
+    _write_operator_records(garden, records)
+
+    cli = json.loads(run(garden, "costs", "--product", "demo", "--phase", "p1", "--json").output)
+    assert cli["grand_total"]["cost_usd"] == 2.0
+    assert cli["grand_total"]["priced_runs"] == 2 and cli["grand_total"]["unpriced_runs"] == 1
+    assert cli["grand_total"]["cost_complete"] is False
+    assert cli["unattributed_operator"] == {
+        "runs": 1, "priced_runs": 0, "unpriced_runs": 1, "cost_usd": 0.0}
+
+    events = [json.loads(line) for line in (garden / ".garden/events.jsonl").read_text().splitlines()]
+    operator_events = ops.to_cost_events(records)
+    selected = {"DM-001": Store(garden).tasks()["DM-001"]}
+    now = now1.period(events, operator_events, selected, at, "hour")
+    assert now["cost"] == 2.0 and now["cost_complete"] is False
+    assert now["operator"]["spend"] == 0.0
+    assert now["operator"]["priced_records"] == 1 and now["operator"]["unpriced_records"] == 1
+    assert now["operator"]["share"] is None
+
+    operator = ops.attributed_summary(
+        records, include=lambda row: row.get("product") == "demo"
+        and attributed_phase_key(row) == "demo/p1")
+    retro = numbers_section(2.0, operator["known_cost_usd"], operator_priced_records=1,
+                            operator_unpriced_records=1, operator_turns=operator["turns"])
+    assert "operator: partial known spend $0.00" in retro
+    assert "1 priced, 1 unpriced records" in retro
+    assert "total: $2.00 partial known spend" in retro
+
+    page = client(garden).get("/costs?product=demo&phase=p1").text
+    assert "partial $2.00 over 3 runs" in page
+    assert "1</b> accepted task" in page and "sonnet" in page
+    assert "partial known spend $0.00 over 1 record (0 priced, 1 unpriced)" in page
 
 
 def test_costs_page_draws_a_compaction_annotation(garden):

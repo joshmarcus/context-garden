@@ -548,7 +548,8 @@ def test_last_period_reads_the_windows_events(garden):
     page = c.get("/now?window=hour").text
     assert 'href="/now?window=hour#period" class="on"' in page
     assert "merged · DM-001, DM-002" in page and "50 %<small>1 of 2</small>" in page
-    assert "$4.00<small>2 runs" in page and "$2.00</div><div class=\"l\">per accepted task" in page
+    assert "$4.00<small>2 priced · 0 unpriced" in page
+    assert "$2.00</div><div class=\"l\">per accepted task" in page
     assert '<span class="vendor">claude:</span>opus' in page and '<span class="vendor">claude:</span>sonnet' in page
     assert "<b>1</b><small>answer 1</small>" in page
     assert "profile changed: (none) → steady" in page and 'class="annotation"' in page
@@ -602,15 +603,18 @@ def test_last_period_counts_hand_merges_rebase_rounds_and_the_operators_share(ga
     p = now1.period(log.read(), ops.to_cost_events(ops.read_records(ledger)), store.tasks(), at[:19], "hour")
     assert p["merged"] == 2 and p["hand_merges"] == 1 and p["hand_merged_ids"] == ["DM-002"]
     assert p["rebase"] == {"mechanical": 2, "agent": 1, "merges": 2, "cost": 1.0, "mechanical_per_merge": 1.0, "agent_per_merge": 0.5}
-    assert p["cost"] == 6.0 and p["operator"] == {"spend": 1.0, "share": round(1 / 6, 4), "sessions": 1}
+    assert p["cost"] == 6.0
+    assert p["operator"] == {"spend": 1.0, "share": round(1 / 6, 4), "sessions": 1,
+                             "priced_records": 1, "unpriced_records": 0, "cost_complete": True}
     assert now1.hand_lines(p) == ["hand merges 1 of 2 (DM-002)", "hand steps 0",
                                   "rebase rounds per merge 1.00 mechanical · 0.50 agent (2 + 1 over 2 merges)",
-                                  "operator $1.00 · 17 % of the window's spend"]
+                                  "operator $1.00 · 17 % of the window's spend (1 priced, 0 unpriced records)"]
     # the same on the page, one figure per line under By hand
     page = _client(garden).get("/now?window=hour").text
     assert "<dt>hand merges</dt><dd><b>1 of 2</b><small>DM-002</small></dd>" in page
     assert '<b>1.00 <span class="unit">mechanical</span> · 0.50 <span class="unit">agent</span></b><small>per merge: 2 + 1 over 2 merges · $1.00</small>' in page
-    assert '<b>$1.00 <span class="unit">· 17 % of the window\'s spend</span></b><small>1 session in the ledger' in page
+    assert ('<b>$1.00 <span class="unit">· 17 % of the window\'s spend</span></b>'
+            '<small>1 priced · 0 unpriced records across 1 session</small>') in page
     # and in the text view
     text = now1.render_text(now1.snapshot(store, Scheduler(store, github=FakeGitHub(), log=lambda m: None)))
     assert "  hand merges 1 of 2 (DM-002)\n  hand steps 0\n  rebase rounds per merge 1.00 mechanical" in text
@@ -647,10 +651,14 @@ def test_last_period_excludes_other_phase_and_separates_unattributed_operator_sp
     assert result["merged"] == 1
     assert result["first_pass"] == {"approved": 1, "reviewed": 1}
     assert result["cost"] == 3.0
-    assert result["operator"] == {"spend": 1.0, "share": round(1 / 3, 4), "sessions": 1}
-    assert result["unattributed_operator"] == {"spend": 3.0, "share": None, "sessions": 1}
+    assert result["operator"] == {"spend": 1.0, "share": round(1 / 3, 4), "sessions": 1,
+                                  "priced_records": 1, "unpriced_records": 0, "cost_complete": True}
+    assert result["unattributed_operator"] == {"spend": 3.0, "share": None, "sessions": 1,
+                                               "priced_records": 1, "unpriced_records": 0,
+                                               "cost_complete": True}
     assert result["series"]["grand_total"]["cost_usd"] == 3.0
-    assert now1.hand_lines(result)[-1] == "unattributed operator $3.00 · excluded from this phase"
+    assert now1.hand_lines(result)[-1] == ("unattributed operator $3.00 (1 priced, 0 unpriced records) "
+                                           "· excluded from this phase")
 
 
 def test_last_period_says_when_no_hand_merge_and_no_ledger_entry(garden):
@@ -674,9 +682,12 @@ def test_last_period_is_quiet_only_when_nothing_at_all_was_recorded(garden):
     only_operator = now1.period([], [{"kind": "cost", "at": at, "cost_usd": 2.5, "session": "sess-a", "activity": "operator"}],
                                 store.tasks(), since, "hour")
     assert only_operator["quiet"] is False and only_operator["runs"] == 0 and only_operator["cost"] == 0.0
-    assert only_operator["operator"] == {"spend": 0, "share": None, "sessions": 0}
-    assert only_operator["unattributed_operator"] == {"spend": 2.5, "share": None, "sessions": 1}
-    assert now1.hand_lines(only_operator)[-1] == "unattributed operator $2.50 · excluded from this phase"
+    assert only_operator["operator"]["sessions"] == 0
+    assert only_operator["unattributed_operator"] == {
+        "spend": 2.5, "share": None, "sessions": 1,
+        "priced_records": 1, "unpriced_records": 0, "cost_complete": True}
+    assert now1.hand_lines(only_operator)[-1] == (
+        "unattributed operator $2.50 (1 priced, 0 unpriced records) · excluded from this phase")
     only_change = now1.period([{"kind": "profile_changed", "at": at, "from": "steady", "to": "fast"}], [], store.tasks(), since, "hour")
     assert only_change["quiet"] is False and only_change["annotations"][0]["to"] == "fast"
     only_hand = now1.period([{"kind": "answer", "task": "DM-001", "at": at}], [], store.tasks(), since, "hour")
@@ -692,12 +703,14 @@ def test_last_period_is_quiet_only_when_nothing_at_all_was_recorded(garden):
     ledger.write_text(json.dumps({"at": now, "session": "sess-a", "list_price_usd": 2.5, "turns": 3, "avg_context": 100}) + "\n")
     page = _client(garden).get("/now?window=hour").text
     assert now1.QUIET_PERIOD not in page
-    assert '<div class="v">$0.00<small>no run finished</small></div><div class="l">cost</div>' in page
-    assert '<dt>unattributed</dt><dd><b>$2.50</b><small>operator spend excluded from this phase</small></dd>' in page
+    assert '<div class="v">$0.00<small>0 priced · 0 unpriced</small></div><div class="l">cost</div>' in page
+    assert ('<dt>unattributed</dt><dd><b>$2.50</b>'
+            '<small>1 priced · 0 unpriced records; excluded from this phase</small></dd>') in page
     assert "No model did work in this window." in page
     text = now1.render_text(now1.snapshot(store, Scheduler(store, github=FakeGitHub(), log=lambda m: None)))
-    assert "  merged 0\n  first-pass approval — · cost $0.00 with no run finished · per accepted task —\n" in text
-    assert "  unattributed operator $2.50 · excluded from this phase\n" in text
+    assert ("  merged 0\n  first-pass approval — · cost $0.00 with no run finished "
+            "(0 priced, 0 unpriced) · per accepted task —\n") in text
+    assert "  unattributed operator $2.50 (1 priced, 0 unpriced records) · excluded from this phase\n" in text
     assert "profile changed: steady → fast" in text
 
 

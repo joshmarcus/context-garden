@@ -82,7 +82,9 @@ def test_record_from_codex_transcript_uses_latest_cumulative_usage_without_doubl
     assert rec["list_price_usd"] is None
     assert rec["price_status"] == "unavailable"
     assert rec["usage_status"] == "available"
-    assert ops.to_cost_events([rec]) == []
+    event = ops.to_cost_events([rec])[0]
+    assert event["cost_usd"] is None
+    assert event["mode"] == "operator" and event["session"] == "codex-operator"
 
 
 def test_record_from_codex_transcript_without_usage_marks_usage_unavailable(tmp_path):
@@ -183,6 +185,17 @@ def test_attributed_totals_preserve_baseline_across_phase_and_window_changes():
     assert ops.attributed_totals(records, since=since, include=selected) == (2.0, 2)
     assert ops.attributed_totals(records, since=since, include=unattributed) == (3.0, 3)
 
+
+def test_attributed_summary_distinguishes_zero_priced_and_unpriced_deltas():
+    records = [
+        {"at": "2026-09-05T10:00:00+00:00", "session": "priced", "turns": 1,
+         "list_price_usd": 0.0, "product": "demo", "phase": "p1"},
+        {"at": "2026-09-05T10:01:00+00:00", "session": "unknown", "turns": 2,
+         "list_price_usd": None, "product": "demo", "phase": "p1"},
+    ]
+    summary = ops.attributed_summary(records, include=lambda row: row.get("product") == "demo")
+    assert summary == {"known_cost_usd": 0.0, "turns": 3, "priced_records": 1,
+                       "unpriced_records": 1, "cost_complete": False}
 
 def test_to_cost_events_never_produces_a_negative_delta_if_a_heartbeat_regresses():
     records = [

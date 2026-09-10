@@ -290,6 +290,9 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
     operator_spend = 0.0
     unattributed_operator_spend = 0.0
     total_spend = 0.0
+    operator_priced = operator_unpriced = 0
+    unattributed_operator_priced = unattributed_operator_unpriced = 0
+    total_priced = total_unpriced = 0
     selected_products = {str(getattr(task, "product", "")) for task in tasks.values()}
     selected_phases = {str(getattr(task, "key", "")) for task in tasks.values()}
     for ev in events:
@@ -297,18 +300,26 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
         if (since and at < since) or (until and at >= until):
             continue
         if ev.get("kind") == "run_finished":
-            amount = float(ev.get("cost_usd") or 0.0)
+            price = ev.get("cost_usd")
+            priced = isinstance(price, (int, float)) and not isinstance(price, bool)
+            amount = float(price) if priced else 0.0
             if ev.get("mode") == "operator" or ev.get("activity") == "operator":
                 if not ev.get("product") and not ev.get("phase"):
                     unattributed_operator_spend += amount
+                    unattributed_operator_priced += int(priced)
+                    unattributed_operator_unpriced += int(not priced)
                     continue
                 if ((ev.get("product") and str(ev.get("product")) not in selected_products)
                         or (ev.get("phase") and attributed_phase_key(ev) not in selected_phases)):
                     continue
                 operator_spend += amount
+                operator_priced += int(priced)
+                operator_unpriced += int(not priced)
             elif ev.get("task") not in task_ids:
                 continue
             total_spend += amount
+            total_priced += int(priced)
+            total_unpriced += int(not priced)
 
     for ev in events:
         at = str(ev.get("at") or "")
@@ -533,8 +544,14 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
             "merges": merges, "queue_merges": len(merged_tasks & queued_history),
             "hand_merges": hand_merges, "tick_duration": tick_duration,
             "operator": {"spend": round(operator_spend, 4),
-                          "share": round(operator_spend / total_spend, 4) if total_spend else None,
-                          "unattributed_spend": round(unattributed_operator_spend, 4)},
+                          "share": (round(operator_spend / total_spend, 4)
+                                    if total_spend and not total_unpriced else None),
+                          "priced_records": operator_priced, "unpriced_records": operator_unpriced,
+                          "cost_complete": operator_unpriced == 0,
+                          "unattributed_spend": round(unattributed_operator_spend, 4),
+                          "unattributed_priced_records": unattributed_operator_priced,
+                          "unattributed_unpriced_records": unattributed_operator_unpriced,
+                          "unattributed_cost_complete": unattributed_operator_unpriced == 0},
             "ci_status": ci_status,
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}

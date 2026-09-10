@@ -516,12 +516,18 @@ def rebase_rounds(window: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
             "agent_per_merge": round(rb["agent"] / merges, 2) if merges else None}
 
 
-def operator_share(op_window: list[dict[str, Any]], total: float) -> dict[str, Any]:
+def operator_share(op_window: list[dict[str, Any]], total: float, *, total_complete: bool = True) -> dict[str, Any]:
     """The operator's spend in the window from the ledger's cost events and its share of the
     window's whole spend (runs plus operator), None when nothing was spent at all."""
-    spend = sum(float(e.get("cost_usd") or 0.0) for e in op_window)
-    return {"spend": round(spend, 2), "share": round(spend / total, 4) if total else None,
-            "sessions": len({str(e.get("session") or "") for e in op_window})}
+    priced = [e for e in op_window if isinstance(e.get("cost_usd"), (int, float))
+              and not isinstance(e.get("cost_usd"), bool)]
+    spend = sum(float(e["cost_usd"]) for e in priced)
+    complete = len(priced) == len(op_window)
+    return {"spend": round(spend, 2),
+            "share": round(spend / total, 4) if total and complete and total_complete else None,
+            "sessions": len({str(e.get("session") or "") for e in op_window}),
+            "priced_records": len(priced), "unpriced_records": len(op_window) - len(priced),
+            "cost_complete": complete}
 
 
 def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks: dict[str, Any],
@@ -567,7 +573,11 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     op_window = [e for e in op_events if str(e.get("at") or "") >= since and selected_operator(e)]
     unattributed_op_window = [e for e in op_events if str(e.get("at") or "") >= since
                               and not e.get("product") and not e.get("phase")]
-    cost = sum(float(e.get("cost_usd") or 0.0) for e in finished + op_window)
+    cost_events = finished + op_window
+    priced_cost_events = [e for e in cost_events if isinstance(e.get("cost_usd"), (int, float))
+                          and not isinstance(e.get("cost_usd"), bool)]
+    cost = sum(float(e["cost_usd"]) for e in priced_cost_events)
+    cost_complete = len(priced_cost_events) == len(cost_events)
     cohort = acceptance_cohort(events, tasks, since=since)
     scoped_events = [e for e in events if str(e.get("task") or "") in task_ids]
     series = cost_series(scoped_events + op_window, tasks, since=since, bucket=bucket, group_by="activity")
@@ -582,12 +592,16 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     return {
         "since": since, "bucket": bucket, "quiet": quiet, "merged": len(done_at), "merged_ids": sorted(done_at),
         "first_pass": {"approved": approved, "reviewed": len(reviewed)},
-        "cost": round(cost, 2), "per_accepted": cohort["cost_per_accepted_task"],
+        "cost": round(cost, 2), "cost_complete": cost_complete,
+        "priced_cost_records": len(priced_cost_events),
+        "unpriced_cost_records": len(cost_events) - len(priced_cost_events),
+        "per_accepted": cohort["cost_per_accepted_task"],
         "priced_accepted": cohort["priced_tasks"], "unpriced_accepted": cohort["unpriced_tasks"],
         "runs": len(finished), "hand_steps": len(hand_steps),
         "hand_kinds": dict(Counter(e["kind"] for e in hand_steps)),
         "hand_merges": len(hand_merged), "hand_merged_ids": hand_merged,
-        "rebase": rebase_rounds(window, tasks), "operator": operator_share(op_window, cost),
+        "rebase": rebase_rounds(window, tasks),
+        "operator": operator_share(op_window, cost, total_complete=cost_complete),
         "unattributed_operator": operator_share(unattributed_op_window, 0.0),
         "by_model": runs_by_model(finished),
         "tiers": difficulty_by_model(events, tasks, since),
@@ -688,15 +702,20 @@ def hand_lines(w: dict[str, Any]) -> list[str]:
         steps += " (" + ", ".join(f"{k.replace('_', ' ')} {n}" for k, n in w["hand_kinds"].items()) + ")"
     rebases = (f"rebase rounds per merge {per_merge(rb['mechanical_per_merge'])} mechanical · {per_merge(rb['agent_per_merge'])} agent"
                f" ({rb['mechanical']} + {rb['agent']} over {rb['merges']} merge{'s' if rb['merges'] != 1 else ''})")
-    if op["spend"]:
+    if op["sessions"]:
         share = f" · {round(100 * op['share'])} % of the window's spend" if op["share"] is not None else ""
-        operator = f"operator {money(op['spend'])}{share}"
+        partial = "partial known spend " if not op["cost_complete"] else ""
+        operator = (f"operator {partial}{money(op['spend'])}{share} "
+                    f"({op['priced_records']} priced, {op['unpriced_records']} unpriced records)")
     else:
         operator = "operator: no ledger entry in this window"
     lines = [merges, steps, rebases, operator]
     unattributed = w.get("unattributed_operator") or {}
-    if unattributed.get("spend"):
-        lines.append(f"unattributed operator {money(unattributed['spend'])} · excluded from this phase")
+    if unattributed.get("sessions"):
+        partial = "partial known spend " if not unattributed["cost_complete"] else ""
+        lines.append(f"unattributed operator {partial}{money(unattributed['spend'])} "
+                     f"({unattributed['priced_records']} priced, {unattributed['unpriced_records']} unpriced records) "
+                     "· excluded from this phase")
     return lines
 
 
@@ -784,7 +803,10 @@ def render_text(snap: dict[str, Any]) -> str:
     first = f"{round(100 * fp['approved'] / fp['reviewed'])} % ({fp['approved']} of {fp['reviewed']})" if fp["reviewed"] else "—"
     out.append(f"  merged {w['merged']}" + (f" ({', '.join(w['merged_ids'][:4])}{' and more' if len(w['merged_ids']) > 4 else ''})" if w["merged_ids"] else ""))
     over = f"over {w['runs']} runs" if w["runs"] else "with no run finished"
-    out.append(f"  first-pass approval {first} · cost {money(w['cost'])} {over} · per accepted task {money(w['per_accepted'])}")
+    cost = ("partial known spend " if not w["cost_complete"] else "") + money(w["cost"])
+    out.append(f"  first-pass approval {first} · cost {cost} {over} "
+               f"({w['priced_cost_records']} priced, {w['unpriced_cost_records']} unpriced) "
+               f"· per accepted task {money(w['per_accepted'])}")
     out += [f"  {line}" for line in hand_lines(w)]
     if w["throughput"]:
         out.append(f"  runs finished per {w['bucket']}: " + " ".join(str(n) for n in w["throughput"]))
