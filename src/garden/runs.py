@@ -391,7 +391,7 @@ class Run:
             return None
         payload: dict[str, Any] = {}
         try:
-            stored = json.loads((self.path / "checks_input.json").read_text())
+            stored = json.loads(self.read_text("checks_input.json"))
             if isinstance(stored, dict):
                 payload = stored
         except (OSError, ValueError):

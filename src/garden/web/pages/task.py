@@ -330,12 +330,15 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(404)
         run = next((item for item in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
                     if item.run_id == run_id and item.mode == "investigation"), None)
-        path = run.path / name if run else None
-        if path is None or not path.is_file():
+        if run is None:
             raise HTTPException(404)
+        try:
+            data = run.read_bytes(name)
+        except FileNotFoundError:
+            raise HTTPException(404) from None
         media = "text/html" if name.endswith(".html") else "text/markdown"
         headers = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"} if media == "text/html" else {}
-        return Response(path.read_bytes(), media_type=media, headers=headers)
+        return Response(data, media_type=media, headers=headers)
 
 
 def _edit_diff(runs: list[Any]) -> str:
@@ -345,14 +348,16 @@ def _edit_diff(runs: list[Any]) -> str:
     for run in reversed(runs):
         if run.mode != "edit":
             continue
-        old_p, new_p = run.path / "old_body.md", run.path / "new_body.md"
-        if old_p.exists() and new_p.exists():
-            old, new = old_p.read_text(), new_p.read_text()
-            if old == new:
-                return ""
-            return "".join(difflib.unified_diff(
-                old.splitlines(keepends=True), new.splitlines(keepends=True),
-                fromfile="before", tofile="after"))
+        try:
+            old = run.read_bytes("old_body.md").decode()
+            new = run.read_bytes("new_body.md").decode()
+        except FileNotFoundError:
+            continue
+        if old == new:
+            return ""
+        return "".join(difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            fromfile="before", tofile="after"))
     return ""
 def _acceptance_text(body: str) -> str:
     """The editable contents of the acceptance-criteria section, without its heading."""
