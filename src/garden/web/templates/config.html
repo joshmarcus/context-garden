@@ -10,7 +10,6 @@
   <h3>Installed package</h3>
   <p class="muted" style="margin:0">Version <strong>{{ tool_build.get('installed_version', 'unknown') }}</strong> · installed source <span class="mono">{{ tool_build.get('active', '')[:12] or 'unknown' }}</span>. {% if tool_build.get('sha') %}Available source update: <span class="mono">{{ tool_build.sha[:12] }}</span> (not installed; not a published release).{% else %}No newer source update has been recorded by this scheduler.{% endif %}</p>
   <div class="eyebrow" style="margin-top:18px">Saved configuration</div>
-  <div class="eyebrow">Saved configuration</div>
   <h2 style="margin-bottom:6px">Settings</h2>
   <p class="muted" style="margin:0 0 12px">Each save is validated and replaces <span class="mono">garden.yaml</span> atomically. Open forms carry a revision token, so a stale tab cannot overwrite a newer edit. Add, edit, or remove collection rows below; mapping values accept YAML scalars or nested values.</p>
   {% if saved_pending %}<p class="warn" role="status"><strong>Saved changes are waiting to be adopted.</strong> The values below are on disk; “effective now” still reflects the scheduler’s accepted configuration. Restart-only fields need a process restart, and a safety-sensitive reload may be held while a run is active.</p>{% endif %}
@@ -30,10 +29,11 @@
         <span class="pill">{{ row.field.apply.value|replace('_', ' ') }}</span>
       </div>
       <p class="metadata">
-        Saved: <strong class="mono">{{ row.display }}</strong> · source: <strong>{{ row.source }}</strong>
+        Editable value: <strong class="mono">{{ row.display }}</strong> · source: <strong>{{ row.source }}</strong>
         · effective now: <strong class="mono">{{ row.effective }}</strong> from <strong>{{ row.effective_source }}</strong>
         {% if row.field.units %} · units: {{ row.field.units }}{% endif %}
       </p>
+      {% if row.masked %}<p class="warn" role="note">Saving this field changes <code>garden.yaml</code>, but <strong>{{ row.effective_source }}</strong> currently masks that value.</p>{% endif %}
       {% if row.locked %}
       <p class="warn" role="note"><strong>Locked by project policy.</strong> {{ row.reason }}{% if row.policy_source %} · {{ row.policy_source }}{% endif %}</p>
       {% elif selected_product and not row.editable %}
