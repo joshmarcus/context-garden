@@ -661,6 +661,28 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
 
 
+def write_remote_validation_receipt(path: Path, source_sha: str) -> None:
+    requested = ["pytest", "-q"]
+    effective = [*requested, *POLICY_ADDOPTS]
+    path.write_text(json.dumps({
+        "version": 1, "source_sha": source_sha, "command": "pytest -q",
+        "selection": effective, "exit_code": 0, "log_location": str(path.parent),
+        "policy": {"version": 1, "source_sha": POLICY_SOURCE_SHA,
+                   "kind": "pytest", "stress_opt_in": False,
+                   "excluded_nodes": list(STRESS_NODES),
+                   "requested_selection": requested, "effective_selection": effective},
+        "source_dirty": "", "source_changed": False,
+    }))
+    (path.parent / "execution.json").write_text(json.dumps({
+        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
+        "pid": 123, "owner_scoped": True, "owner": "run:test",
+        "execution_started_at": "2026-09-10T01:00:00+00:00", "timeout_seconds": 900,
+        "deadline_at": "2026-09-10T01:15:00+00:00",
+    }))
+    (path.parent / "exit_code").write_text("0")
+    (path.parent / "stderr.log").write_text("")
+
+
 @pytest.mark.parametrize(
     ("truncated", "queried_sha", "expected_state"),
     [
@@ -683,26 +705,7 @@ def test_remote_transport_keeps_newer_truncated_receipt_authoritative(
     newer = execution_dir / "validations/newer/result.json"
     older.parent.mkdir(parents=True)
     newer.parent.mkdir(parents=True)
-    valid = {
-        "version": 1, "source_sha": queried_sha, "command": "pytest -q",
-        "selection": ["pytest", "-q", *POLICY_ADDOPTS],
-        "exit_code": 0, "log_location": str(older.parent),
-        "policy": {"version": 1, "source_sha": POLICY_SOURCE_SHA,
-                   "kind": "pytest", "stress_opt_in": False,
-                   "excluded_nodes": list(STRESS_NODES),
-                   "requested_selection": ["pytest", "-q"],
-                   "effective_selection": ["pytest", "-q", *POLICY_ADDOPTS]},
-        "source_dirty": "", "source_changed": False,
-    }
-    older.write_text(json.dumps(valid))
-    (older.parent / "execution.json").write_text(json.dumps({
-        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
-        "pid": 123, "owner_scoped": True, "owner": "run:test",
-        "execution_started_at": "2026-09-10T01:00:00+00:00", "timeout_seconds": 900,
-        "deadline_at": "2026-09-10T01:15:00+00:00",
-    }))
-    (older.parent / "exit_code").write_text("0")
-    (older.parent / "stderr.log").write_text("")
+    write_remote_validation_receipt(older, queried_sha)
     newer.write_text(truncated)
     os.utime(older, ns=(1, 1))
     os.utime(newer, ns=(2, 2))
@@ -725,7 +728,50 @@ def test_remote_transport_keeps_newer_truncated_receipt_authoritative(
     sentinel = json.loads(transported[-1].read_text())
     assert set(sentinel) == {
         "log_location", "malformed_validation_receipt", "recoverable_source_shas",
+        "recoverable_source_shas_overflow",
     }
+
+
+def test_remote_transport_fails_closed_beyond_malformed_receipt_identity_limit(
+    garden, monkeypatch, tmp_path,
+):
+    queried_sha = "9" * 40
+    identities = [str(index) * 40 for index in range(1, 9)] + [queried_sha]
+    truncated = "{" + ",".join(
+        f'\"source_sha\": \"{source_sha}\"' for source_sha in identities
+    )
+
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post(
+        "/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]}, headers=auth,
+    ).json()
+    execution_dir = tmp_path / "execution"
+    older = execution_dir / "validations/older/result.json"
+    newer = execution_dir / "validations/newer/result.json"
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    write_remote_validation_receipt(older, queried_sha)
+    newer.write_text(truncated)
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    receipts = _validation_receipts(execution_dir)
+    assert receipts[-1]["recoverable_source_shas"] == identities[:8]
+    assert receipts[-1]["recoverable_source_shas_overflow"] is True
+    response = client.post(
+        f"/api/runs/{run.run_id}/finish",
+        json={"lease_token": claim["lease_token"], "exit_code": 0,
+              "pushed_head": queried_sha, "validation_receipts": receipts},
+        headers=auth,
+    )
+
+    assert response.status_code == 200
+    status = worker_check_status(
+        store.config.garden_dir, "DM-001", queried_sha, {"command": "pytest -q"},
+    )
+    assert status.state == "malformed" and not status.green
 
 
 def test_six_idle_claim_polls_with_concurrent_ui_only_materialize_active_runs(
