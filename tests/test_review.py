@@ -1545,6 +1545,18 @@ def test_worker_brief_carries_the_frozen_validation_plan(sched, monkeypatch):
     assert "## Validation plan" in (run.path / "brief.md").read_text()
 
 
+def test_worker_brief_describes_validation_scope_as_dispatch_time(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    monkeypatch.setattr("garden.scheduler.dispatch.gitops.diff_names", lambda *_: [])
+    monkeypatch.setattr("garden.scheduler.dispatch.gitops.head_sha", lambda *_: "start-head")
+
+    run = sched.dispatch(task)
+
+    brief = (run.path / "brief.md").read_text()
+    assert "dispatch-time scope for the checkout you start from" in brief
+    assert "refreshes it from the resulting checkout before pre-check and review" in brief
+
+
 def interaction_events() -> list[dict[str, object]]:
     return [
         {"kind": "http_request", "state": state, "outcome": outcome, "method": "POST",
