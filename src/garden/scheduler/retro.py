@@ -506,7 +506,14 @@ class RetroMixin:
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
         self.require_maintenance_running()
-        self_prod = self._self_product()
+        # A queued automatic request already contains the configuration identity needed to
+        # finish it.  Load that durable identity before consulting current configuration:
+        # the self product may have been removed after queueing, and manual invocation is
+        # also the supported retry/convergence path for that existing request.
+        with self._controller_lock():
+            self.state = type(self.state)(self.state.path)
+            existing = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+        self_prod = str(existing.get("self_product") or "") if existing else self._self_product()
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
                                "open the retro PR; see docs/architecture.md")
