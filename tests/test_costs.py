@@ -360,6 +360,19 @@ def test_cli_and_web_costs_agree_on_a_fixture_log(garden):
     assert '<option value="model" selected>' in page
 
 
+def test_costs_page_shares_now_comparisons_and_last_week_label(garden):
+    from tests.test_web import client
+
+    _write_events(garden, _events())
+
+    page = client(garden).get("/costs").text
+
+    assert '<option value="7d">Last week</option>' in page
+    assert "Cost comparisons for this cohort" in page
+    assert "Runs by harness and model" in page
+    assert "By difficulty and model" in page
+
+
 def test_costs_page_switches_to_average_per_task_and_preserves_total_context(garden):
     from tests.test_web import client
 
