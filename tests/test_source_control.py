@@ -249,7 +249,7 @@ def test_source_control_route_cannot_fall_back_to_ambient_gh(garden, monkeypatch
 
     store = Store(garden)
     store.config.data["products"]["demo"]["source_control"] = {
-        "provider": "github", "repository": "team/repo", "host": "github.com",
+        "provider": "github", "repository": "team/repo",
         "web_url": "https://github.com", "api_url": "https://api.github.com",
         "credential_env": "SCOPED_GITHUB_TOKEN",
     }
