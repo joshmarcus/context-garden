@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .remote_worker import WorkerClient, WorkerRequestError, execute_claim
+from .system_resources import memory_bytes
 
 
 def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep) -> tuple[int, dict]:
@@ -37,12 +38,11 @@ def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep) -
 
 
 def resources(root: Path) -> dict:
-    memory = {}
-    for line in Path("/proc/meminfo").read_text().splitlines():
-        key, value = line.split(":", 1)
-        memory[key] = int(value.split()[0]) * 1024
-    return {"memory_available_bytes": memory["MemAvailable"],
-            "memory_total_bytes": memory["MemTotal"],
+    available, total = memory_bytes()
+    if available is None or total is None:
+        raise RuntimeError("host memory statistics are unavailable")
+    return {"memory_available_bytes": available,
+            "memory_total_bytes": total,
             "disk_free_bytes": shutil.disk_usage(root).free,
             "cpu_count": os.cpu_count(), "observed_at": time.time()}
 

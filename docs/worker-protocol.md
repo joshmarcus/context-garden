@@ -283,20 +283,31 @@ worker PID.
 
 The local runner writes the brief to `brief.md` in the run directory and starts a small
 supervisor, detached in its own session (`start_new_session=True`, stdin closed), so it
-survives the scheduler exiting. On Linux the supervisor is a child subreaper: even a test
-process that creates another session remains owned by the run. It writes `exit_code` only
-after the harness and all adopted descendants exit, and forwards a stop to the entire tree.
+survives the scheduler exiting. The workload gets a second, separate process group. That
+lets the supervisor wait for and signal the group after its shell leader exits on Linux and
+macOS, without signalling itself. At stop or timeout it snapshots session-escaping descendants
+before signalling their parents, so Darwin cannot reparent them before they are found. On Linux
+the supervisor additionally becomes a child subreaper and adopts a deliberately daemonized
+process after its parent exits. Darwin has no equivalent kernel facility: a command must not
+double-fork or call `setsid()` and then let its parent exit. Garden disables Git's filesystem
+monitor in worker checkouts because that optional daemon violates this contract and provides no
+benefit to short-lived worker Git commands.
+
+The supervisor owns the monotonic worker deadline itself; local execution does not depend on
+the optional GNU `timeout` command. It writes `exit_code` only after the harness and every
+process it still owns exit, and forwards a stop to the entire tree.
 The supervised command is equivalent to:
 
 ```sh
-cd /garden/.garden/worktrees/WID-003 && timeout 5400 \
+GARDEN_EXECUTION_TIMEOUT_SECONDS=5400 GARDEN_EXECUTION_TIMEOUT_KIND=worker \
+python -m garden.run_supervisor /garden/.garden/runs/WID-003/20260904T120000Z-work \
+  "cd /garden/.garden/worktrees/WID-003 && \
   claude -p --output-format json --model sonnet \
     --permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,MultiEdit \
     'Carry out the brief that follows. It is the complete specification of your job.' \
   < /garden/.garden/runs/WID-003/20260904T120000Z-work/brief.md \
   > /garden/.garden/runs/WID-003/20260904T120000Z-work/stdout.json \
-  2> /garden/.garden/runs/WID-003/20260904T120000Z-work/stderr.log; \
-echo $? > /garden/.garden/runs/WID-003/20260904T120000Z-work/exit_code
+  2> /garden/.garden/runs/WID-003/20260904T120000Z-work/stderr.log"
 ```
 
 The exact command is saved as `command.txt` next to the brief. The environment is
@@ -413,12 +424,13 @@ exits, `garden serve` may be restarted, the laptop may sleep. The run's existenc
 `run.json` with `status: running`, and its liveness is checked on demand:
 
 - `exit_code` exists: the process finished.
-- otherwise the pid is probed (`kill -0`, with a zombie check on Linux); a pid that is
+- otherwise the pid and process group are probed (`kill -0`, with procfs on Linux and BSD
+  `ps` elsewhere to exclude zombies); a pid that is
   gone means the process died without the wrapper writing the file (a hard kill, a
   reboot), which the scheduler treats as a failed run.
 - a run older than `timeout_minutes` + 5 is killed by process group and marked
-  `timeout`; the `timeout` in the command line is the first line of defence at exactly
-  `timeout_minutes`.
+  `timeout`; the local supervisor's monotonic deadline is the first line of defence at
+  exactly `timeout_minutes`.
 - a run that has produced no output and touched no file in its worktree for
   `idle_minutes` is shown as "idle N min" on the running card; past `idle_kill_minutes`
   it is killed by process group and marked `timeout`, so a worker gone silent is stopped
@@ -761,8 +773,9 @@ continue to pass their execution identity to supported validation wrappers: the 
 is only for disposable test-created supervisors.
 
 Detached check claims use the same supervisor and capped post-admission clock around their
-whole check batch. The private execution-timeout input is removed from ordinary work, review,
-and persona environments, so this validation budget never shortens a model session.
+whole check batch. The validation deadline is replaced by the separately configured worker
+deadline for ordinary local work, review, and persona runs, so the check budget never shortens
+a model session.
 
 This requires a versioned worker runtime update. Updating only the controller's briefs or
 exporting the interpreter variable on its own does not repair an already running worker.

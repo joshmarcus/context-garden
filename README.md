@@ -106,7 +106,7 @@ Edit and version the context in your usual editor. Use garden commands or the UI
 
 ## Install
 
-You need **Python 3.11+**, **git**, a logged-in **Claude Code or Codex CLI**, and GitHub access through authenticated `gh` or `GITHUB_TOKEN`. Use a POSIX environment; **on Windows, run garden inside WSL**. Your product repository needs a committed base branch, a GitHub remote you can push to, and a configured git author identity.
+You need **Python 3.11+**, **git**, a logged-in **Claude Code or Codex CLI**, and GitHub access through authenticated `gh` or `GITHUB_TOKEN`. Linux and macOS are supported; **on Windows, run garden inside WSL**. Your product repository needs a committed base branch, a GitHub remote you can push to, and a configured git author identity.
 
 ```bash
 git clone https://github.com/joshmarcus/context-garden

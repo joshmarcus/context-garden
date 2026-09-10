@@ -121,6 +121,7 @@ of the loop touch different files.
 | `runner/remote.py` | the pull-based remote worker runner backend |
 | `remote_worker.py` | the independent-host worker agent |
 | `managed_worker.py` | measured single-host admission and remote resource/version attribution |
+| `proctree.py`, `system_resources.py` | procfs/BSD process observation and Linux/macOS host-memory telemetry used by local lifecycle and admission code |
 | `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py` | scheduler-independent declarative host lifecycle, strict configuration and versioned provider/profile contracts |
 | `hosts/ec2.py`, `hosts/command.py`, `hosts/fake.py` | the first infrastructure adapter, the vendor-neutral controller command adapter, and the local extension/contract fixture |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `retro.py`, `friction.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks and the detached job that runs them (`checkrun.py`, shared by the check run and the synchronous helper); the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; task suggestions |
@@ -389,8 +390,9 @@ Supported local setup, checks, probes and worker-issued validations additionally
 `resources.heavy_test_parallel` kernel leases across every garden owned by the same OS user
 (one by default). The first limit stored in a user-owned private `0700` runtime child is
 authoritative; conflicting garden limits are recorded and use that capacity rather than minting
-more slots. Lock and metadata files reject symlinks, foreign owners and non-regular files, so a
-predictable `/tmp` path is never followed.
+more slots. Lock and metadata files reject symlinks, foreign owners and non-regular files. The
+fallback accepts Linux's root-owned sticky `/tmp` directory and Darwin's root-owned system link
+to `/private/tmp`, then keeps every predictable name inside a user-owned private child.
 Model/reviewer sessions and remote-CI waits remain concurrent under the separate local-run and
 cgroup limits. Heavy work waits explicitly at the boundary; exit, cancellation and crashes
 release its `flock`, so reservations cannot become stale. A supported worker-issued validation
@@ -398,10 +400,12 @@ uses `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <command>` and takes b
 lease and a separate owner-scoped lease. The parent model session holds neither lease, so two
 validations in one run serialize without a nested-lock deadlock.
 Raw child commands are still contained by the aggregate cgroup but cannot be recognized as
-heavy and are not serialized. With `resources.execution_cgroup`, the
+heavy and are not serialized. On Linux, with `resources.execution_cgroup`, the
 supervisor moves into a preconfigured delegated cgroup before spawning, verifies finite CPU
 and memory controls and its resulting membership, so all descendants
-share its aggregate CPU/memory budget even after `setsid`. The web rail and operator feed expose
+share its aggregate CPU/memory budget even after `setsid`. macOS has no cgroup equivalent;
+process-tree cleanup and monotonic deadlines still apply, but CPU/memory containment does not.
+The web rail and operator feed expose
 waiting counts and whether cgroup isolation is enforced. Arbitrary commands launched outside
 the local runner and remote hosts are outside this boundary and must be bounded separately.
 

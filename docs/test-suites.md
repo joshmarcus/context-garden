@@ -78,11 +78,14 @@ commit and run the final gate below rather than treating a narrow pass as full c
 python3 scripts/check_ci.py
 ```
 
-## Serial timing comparison
+## Full-suite timing
 
 ## Ordinary-suite runtime diagnostics
 
-The ordinary suite is serial.  Its runtime target applies to pytest after dependencies and
+The ordinary suite is serial on Linux/WSL. On macOS, the default full-suite invocation
+balances test files across three subprocesses; focused selections remain serial. This avoids
+turning the platform's higher process and filesystem startup cost into weaker coverage or a
+larger timeout. Its runtime target applies to pytest after dependencies and
 the Chromium browser are prepared: installation, validation admission wait, and an
 unfinished descendant are recorded separately and never counted as a passing test run.
 Run the command below from the exact commit being measured, with no other validation using

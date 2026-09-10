@@ -234,6 +234,9 @@ def test_scrubbed_env_keeps_the_allowlist_and_drops_the_rest(monkeypatch):
         assert name not in env, name
     assert env["ANTHROPIC_API_KEY"] == "sk-ant" and env["CLAUDE_CODE_USE_BEDROCK"] == "1"
     assert env["LC_ALL"] == "C.UTF-8" and env["PATH"] == os.environ["PATH"]
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
+    assert env["GIT_CONFIG_KEY_1"] == "maintenance.auto"
     # HOME is not the operator's: it is an isolated scratch home beside the worktree, so the
     # worker cannot read ~/.config/gh, ~/.git-credentials or ~/.ssh.
     assert env["HOME"] != os.environ["HOME"]

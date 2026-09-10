@@ -6,12 +6,14 @@ import hashlib
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
 from ..harness import Harness
+from ..proctree import descendants
 from ..runs import Run
 
 
@@ -47,6 +49,26 @@ PASS_ENV: tuple[str, ...] = (
     "GARDEN_EXECUTION_OWNER",
     "GARDEN_EXECUTION_RUN_DIR",
 )
+
+
+def _no_fsmonitor_env() -> dict[str, str]:
+    """Disable persistent Git background helpers for a worker or check.
+
+    A machine-wide `core.fsmonitor` makes git start `git fsmonitor--daemon` the first time it
+    reads the index in a worktree. That daemon detaches from its caller but keeps the run's
+    process group, and it does not exit when the run does — so `runs.Run.process_finished`,
+    which waits for the whole owned group, could never see the run end, and the tick that
+    would reap it never came. A worker's git operations are short-lived and gain nothing from
+    the monitor. Stating it in the environment (highest-priority config, above the clone's own
+    `.git/config`) also keeps a planted `core.fsmonitor` command from running as the worker,
+    which is the same reason `gitops._git_env` forces it off scheduler-side. The isolated HOME
+    means an operator's own `core.fsmonitor false` is not inherited, so it is set here rather
+    than assumed."""
+    return {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "maintenance.auto", "GIT_CONFIG_VALUE_1": "0",
+    }
 
 
 def pass_env_patterns(config: dict[str, Any] | None) -> list[str]:
@@ -251,6 +273,7 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     scratch_home = worker_home(worktree)
     env.update(private_config_dir_env(config, scratch_home))
     install_config_files(config, scratch_home)
+    env.update(_no_fsmonitor_env())
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
     return env
@@ -282,7 +305,7 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
         env.setdefault(str(k), str(v))
-    timeout = int((setup or {}).get("timeout_seconds") or 600)
+    timeout = float((setup or {}).get("timeout_seconds") or 600)
     lock_path = marker.with_suffix(marker.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a") as setup_lock:
@@ -296,13 +319,27 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         temp_marker = marker.with_suffix(marker.suffix + ".tmp")
         wrapped = (f"({command}) && printf %s {shlex.quote(stamp)} > {shlex.quote(str(temp_marker))} "
                    f"&& mv {shlex.quote(str(temp_marker))} {shlex.quote(str(marker))}")
+        proc = subprocess.Popen(
+            wrapped, shell=True, cwd=str(worktree), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            pass_fds=(setup_lock.fileno(),), start_new_session=True,
+        )
         try:
-            proc = subprocess.run(wrapped, shell=True, cwd=str(worktree), env=env,
-                                  capture_output=True, text=True, timeout=timeout, check=False,
-                                  pass_fds=(setup_lock.fileno(),))
-        except subprocess.TimeoutExpired as e:
-            raise RunnerError(f"setup command timed out after {timeout}s: {command}") from e
-    out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            owned_pids = _signal_process_tree(proc.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                _signal_process_tree(proc.pid, signal.SIGKILL, owned_pids=owned_pids)
+                stdout, stderr = proc.communicate()
+            else:
+                # The leader can exit and close its pipes while a descendant in another
+                # session ignores SIGTERM. Its original parentage is gone at that point,
+                # so reuse the pre-termination ownership snapshot for the hard stop.
+                _signal_process_tree(proc.pid, signal.SIGKILL, owned_pids=owned_pids)
+            raise RunnerError(f"setup command timed out after {timeout:g}s: {command}") from exc
+    out = ((stdout or "") + "\n" + (stderr or "")).strip()
     if log_path is not None:
         try:
             log_path.write_text(out)
@@ -314,6 +351,23 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
             f"setup command failed (exit {proc.returncode}): {command}\n{tail}",
             returncode=proc.returncode,
         )
+
+
+def _signal_process_tree(
+    leader_pgid: int, sig: int, *, owned_pids: list[int] | None = None,
+) -> list[int]:
+    """Signal session-escaping descendants before their parent group and return the snapshot."""
+    owned_pids = descendants(leader_pgid) if owned_pids is None else owned_pids
+    for pid in reversed(owned_pids):
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        os.killpg(leader_pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return owned_pids
 
 
 class Runner(ABC):

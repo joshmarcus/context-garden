@@ -20,7 +20,7 @@ import yaml
 from garden.config import Config
 from garden.scheduler import Scheduler
 from garden.store import Store
-from garden.upgrade import git_ref, installed_commit
+from garden.upgrade import git_install_spec, git_ref, installed_commit
 from tests.conftest import git, write
 
 
@@ -106,6 +106,7 @@ def test_git_ref_forms(tmp_path):
     assert git_ref("https://github.com/o/r") == "git+https://github.com/o/r"
     assert git_ref("git+https://x/y") == "git+https://x/y"
     assert git_ref(str(tmp_path)).startswith("git+file://")
+    assert git_install_spec(str(tmp_path), "abc", "sample").endswith("@abc#egg=sample")
 
 
 def test_installed_commit_none_for_editable_install():
@@ -505,7 +506,7 @@ def test_real_serve_auto_upgrade_reexecs_and_serves_new_build(garden, tmp_path):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     (Path(nested_site) / "test-dependencies.pth").write_text(dependency_path + "\n")
-    spec_a = f"context-garden @ {git_ref(str(source))}@{commit_a}"
+    spec_a = git_install_spec(str(source), commit_a)
     subprocess.run(
         [str(python), "-m", "pip", "install", "-q", "--no-deps", spec_a], check=True, timeout=120
     )

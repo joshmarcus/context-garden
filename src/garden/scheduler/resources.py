@@ -24,6 +24,7 @@ from typing import Any
 
 from ..model import now_iso
 from ..run_supervisor import _authoritative_limit, _finite_cgroup_limits
+from ..system_resources import memory_bytes
 
 _ADMISSION_LOCKS: dict[str, threading.Lock] = {}
 _ADMISSION_LOCKS_GUARD = threading.Lock()
@@ -81,13 +82,8 @@ class ResourcePressureError(RuntimeError):
 
 
 def _memory_available_mb(path: Path = Path("/proc/meminfo")) -> int | None:
-    try:
-        for line in path.read_text().splitlines():
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1]) // 1024
-    except (OSError, ValueError, IndexError):
-        pass
-    return None
+    available, _total = memory_bytes(path)
+    return available // (1024 * 1024) if available is not None else None
 
 
 def _free_mb(path: Path) -> int | None:

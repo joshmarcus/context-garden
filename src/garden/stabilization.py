@@ -16,6 +16,7 @@ from typing import Any
 
 from .events import EventLog
 from .model import Phase, now_iso
+from .system_resources import memory_bytes, swap_used_bytes
 from .upgrade import installed_commit
 
 OUTCOMES = (
@@ -284,14 +285,8 @@ def _action_from_event(event: dict[str, Any]) -> dict[str, str | bool] | None:
 
 
 def _memory() -> tuple[int, int]:
-    values: dict[str, int] = {}
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            key, value = line.split(":", 1)
-            values[key] = int(value.strip().split()[0]) * 1024
-    except (OSError, ValueError):
-        pass
-    return values.get("MemAvailable", 0), values.get("SwapTotal", 0) - values.get("SwapFree", 0)
+    available, _total = memory_bytes()
+    return available or 0, swap_used_bytes() or 0
 
 
 def _save(phase: Phase, data: dict[str, Any]) -> None:

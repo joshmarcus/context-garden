@@ -66,7 +66,9 @@ def default_path(root: Path, config: Any | None = None,
 def project_dir_for(root: Path) -> Path:
     """The Claude Code transcript directory for a working directory: `~/.claude/projects/`
     plus the absolute path with every `/` turned into `-`, Claude Code's own naming."""
-    encoded = str(root.resolve()).replace("/", "-")
+    # Claude encodes the lexical working directory. Resolving first is observably wrong on
+    # systems where a conventional path is a system link (for example macOS's /home).
+    encoded = str(root.absolute()).replace("/", "-")
     return Path.home() / ".claude" / "projects" / encoded
 
 
