@@ -241,3 +241,30 @@ def test_review_pool_keeps_an_empty_member_model(sched):
     run = sched.dispatch_review(task)
 
     assert (run.harness, run.model, run.pool_member) == ("codex", "", "codex:")
+
+
+def test_project_enforced_review_difficulty_routes_review_and_persona(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.branch = task.default_branch()
+    sched.cfg.data["review"]["difficulty"] = "easy"
+    sched.cfg.data["products"]["demo"]["configuration"] = {
+        "locks": {"review.difficulty": {"value": "hard", "reason": "Use strongest review"}},
+    }
+
+    selected_tiers = []
+    select_pool_member = sched.select_pool_member
+
+    def record_tier(task, tier, review=False, *, advance=True):
+        selected_tiers.append((tier, review))
+        return select_pool_member(task, tier, review, advance=advance)
+
+    monkeypatch.setattr(sched, "select_pool_member", record_tier)
+    report = TickReport()
+    sched._dispatch_or_defer_reviews(task, [{"kind": "review"}], report)
+    review = next(run for run in sched.runs.runs_for(task.id) if run.mode == "review")
+    persona = sched.dispatch_persona_pr(task, "security")
+
+    assert (review.difficulty, review.model) == ("hard", "opus")
+    assert persona.difficulty == "hard"
+    assert selected_tiers and all(tier == "hard" and is_review
+                                  for tier, is_review in selected_tiers)

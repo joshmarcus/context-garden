@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
+import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +12,17 @@ from typing import Any
 
 import yaml
 
+from .configuration import (
+    CONFIG_FIELDS,
+    ApplyMode,
+    ConfigProvenance,
+    apply_changes,
+    assert_inherited_locks_unchanged,
+    assert_mutation_allowed,
+    resolve_value,
+    revision,
+    validate_configuration,
+)
 from .github import is_git_remote_url
 
 CONFIG_NAME = "garden.yaml"
@@ -18,11 +32,7 @@ CONFIG_NAME = "garden.yaml"
 # garden.yaml reload (see Store.reload_config_if_changed). Changing one needs a restart;
 # everything else takes effect on the next tick. The Configuration page names both sets.
 RESTART_KEYS: list[str] = [
-    "work_dir",        # fixes the .garden state/run/worktree/repo paths at construction
-    "tick_interval",   # garden watch / serve reads it once when the loop starts
-    "github.use_gh", "github.bot_logins", "github.bot_notice_patterns",
-    "github.trusted_authors", "github.trusted_bots", "github.reviewers",  # baked into the GitHub client at construction
-    "upgrade.package", "upgrade.pip",  # baked into the pinned-tool installer at construction
+    field.key for field in CONFIG_FIELDS.values() if field.apply == ApplyMode.RESTART
 ]
 
 NO_LIVE_GARDEN = "no-live-garden"  # subdirectory name used to build a GARDEN_ROOT that can't resolve
@@ -332,6 +342,7 @@ class Config:
                 data = _merge(data, raw)
                 sources.append(name)
         _validate_product_policies(data)
+        validate_configuration(data)
         return cls(root=root, data=data, sources=sources, env=env)
 
     def source_names(self) -> list[str]:
@@ -391,6 +402,71 @@ class Config:
 
     def product(self, name: str) -> dict[str, Any]:
         return dict(self.data.get("products", {}).get(name, {}) or {})
+
+    def setting(self, key: str, product: str | None = None) -> ConfigProvenance:
+        """A configuration value with its global/project/policy provenance."""
+        return resolve_value(self.data, key, product)
+
+    def save_changes(self, changes: dict[str, Any], *, product: str | None = None,
+                     expected_revision: str | None = None, reset: bool = False) -> Config:
+        """Atomically update known settings in ``garden.yaml`` and return the reloaded config.
+
+        The optimistic token describes the fully layered document the caller read. Only the
+        base file is changed; environment and local overlays retain their existing precedence.
+        Validation is performed against the resulting layered document before replacement.
+        """
+        lock_path = self.root / ".garden" / "config-edit.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            current = type(self).load(self.root, self.env)
+            return current._save_changes_locked(
+                changes, product=product, expected_revision=expected_revision, reset=reset,
+            )
+
+    def _save_changes_locked(self, changes: dict[str, Any], *, product: str | None,
+                             expected_revision: str | None, reset: bool) -> Config:
+        if expected_revision is not None and expected_revision != revision(self.data):
+            raise RuntimeError("configuration changed since it was read; reload and try again")
+        path = self.root / CONFIG_NAME
+        raw = yaml.safe_load(path.read_text()) if path.exists() else {}
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"{CONFIG_NAME}: top level must be a mapping")
+        for key in changes:
+            assert_mutation_allowed(self.data, key, product=product)
+        if product is not None and product in (self.data.get("products") or {}):
+            raw.setdefault("products", {}).setdefault(product, {})
+        changed = apply_changes(raw, changes, product=product, reset=reset, validate=False)
+
+        layered = _merge(dict(DEFAULTS), changed)
+        for name in _source_names(self.env)[1:]:
+            overlay_path = self.root / name
+            if overlay_path.exists():
+                overlay = yaml.safe_load(overlay_path.read_text()) or {}
+                if not isinstance(overlay, dict):
+                    raise ValueError(f"{name}: top level must be a mapping")
+                layered = _merge(layered, overlay)
+        _validate_product_policies(layered)
+        validate_configuration(layered)
+        assert_inherited_locks_unchanged(self.data, layered)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{CONFIG_NAME}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                yaml.safe_dump(changed, stream, sort_keys=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+        return type(self).load(self.root, self.env)
 
     def product_github(self, name: str) -> dict[str, str]:
         """Return the product's explicitly scoped GitHub route.

@@ -347,7 +347,7 @@ class TrialsMixin:
             try:
                 pr = self.github.create_pr(slug, c["branch"], self.base_for(task), f"[trial {c['label']}] {c['pr_title']}",
                                            c["pr_body"] + f"\n\n---\nTrial contender `{c['label']}` for task `{task.id}`.",
-                                           draft=bool(self.cfg.get("github.draft_pr", False)))
+                                           draft=bool(self.effective("github.draft_pr", False, task.product)))
                 c["pr"], c["pr_number"] = pr.url, pr.number
             except GitHubError as e:
                 c["note"] = f"PR failed: {e}"[:200]
@@ -428,7 +428,7 @@ class TrialsMixin:
         st["review_rounds"] = 0
         self.events.emit("trial_done", task.id, winner=trial["winner"], inconclusive=inconclusive,
                          scores={c["label"]: c.get("score") for c in trial["contenders"]})
-        st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True)) and bool(winner.get("pr"))
+        st["pr_draft"] = bool(self.effective("github.draft_pr", True, task.product)) and bool(winner.get("pr"))
         if inconclusive:
             msg = f"trial inconclusive ({trial['rationale']}); kept {winner['label']}'s PR: {task.pr or 'no PR'}"
         else:

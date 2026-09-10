@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from collections.abc import Callable
 
 from .model import Status, Task, dispatch_sort_key
 
@@ -238,7 +239,8 @@ def layers(tasks: dict[str, Task], visible: set[str] | None = None) -> dict[str,
     return out
 
 
-def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = False, hide_done: bool = False) -> str:
+def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = False, hide_done: bool = False,
+        stack_for: Callable[[Task], bool] | None = None) -> str:
     """The trellis: a lattice with the work climbing it. Layered left to right; each task is a
     growth-stage glyph (symbols from plants.DEFS, which the page must inline) at a lattice
     crossing, dependencies as vine, discovered work as a dashed tendril. With `hide_done`, done
@@ -297,7 +299,7 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = Fals
     parts.append("<g class=\"vine\">" + "".join(vine) + "</g>")
     for tid, (x, y) in pos.items():
         t = tasks[tid]
-        st = effective_status(t, tasks, stack)
+        st = effective_status(t, tasks, stack_for(t) if stack_for else stack)
         title = _esc(t.title)
         short = title if len(title) <= 26 else title[:24] + "…"
         hidden_deps = [d for d in t.depends_on if d in tasks and d not in vis]

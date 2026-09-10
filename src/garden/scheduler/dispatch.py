@@ -79,7 +79,7 @@ class DispatchMixin:
         policy = self.cfg.revision_policy()
         max_rev = 10**9 if policy["enabled"] else int(self.cfg.get("max_revisions", 3))
         candidates = [(task, mode) for task, mode in worker_candidates(
-            tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
+            tasks, self.state, max_rev, True, self._edit_pending)
             if (mode != "work" or not self.state.get(task.id).get("needs_human"))
             # A persisted hold may briefly precede its task-file routing after an I/O error.
             # It remains an operational stop for revise rounds as well as new work.
@@ -122,6 +122,8 @@ class DispatchMixin:
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
             if self.budget_exceeded(task):
                 continue
+            if not bool(self.effective("auto_dispatch", True, task.product)):
+                continue
             # Admission may defer this task for several reasons below. Peek at its route so
             # those deferrals do not consume a pool slot; commit the rotation only once the
             # worker has actually started.
@@ -131,6 +133,10 @@ class DispatchMixin:
                 continue  # manual tasks are taken by a human, not auto-dispatched
             if self.slots_free() <= 0:
                 break
+            if self.slots_free_for(task) <= 0:
+                continue
+            if not runner.remote and self.local_slots_free() <= 0:
+                continue  # remote candidates may still run while the operator host drains
             if runner.name == "local":
                 resource = self.resource_status()
                 weight = self.resource_weight(task.id)
@@ -432,7 +438,7 @@ class DispatchMixin:
             st.pop("stack_parent", None)
             st["pr_base"] = self.final_base_for(task)
             return None
-        if not self.stack_enabled or blockers(task, self.store.tasks(), stack=False) == []:
+        if not self.stack_enabled_for(task) or blockers(task, self.store.tasks(), stack=False) == []:
             return None
         parents = stack_parents(task, self.store.tasks())
         if len(parents) != 1:

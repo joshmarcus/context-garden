@@ -222,7 +222,7 @@ class HumanMixin:
             raise RuntimeError(f"{task.id} is already claimed; its manual session is active")
         if task.status not in (Status.READY, Status.CHANGES_REQUESTED):
             raise RuntimeError(f"{task.id} is {task.status.value}, not ready to take")
-        if task.status == Status.READY and blockers(task, self.store.tasks(), stack=self.stack_enabled):
+        if task.status == Status.READY and blockers(task, self.store.tasks(), stack=self.stack_enabled_for(task)):
             raise RuntimeError(f"{task.id} is waiting for dependencies and cannot be taken yet")
         refusal = phase_refusal(self.store.phase(task.product, task.phase), task)
         if refusal:

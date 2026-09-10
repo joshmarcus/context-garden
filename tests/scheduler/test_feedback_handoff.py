@@ -344,6 +344,67 @@ def test_manual_revision_handoff_keeps_review_and_ci_without_dispatch(sched, fak
     assert not any(candidate.id == task.id for candidate, _, _ in sched.dispatch_queue())
 
 
+def test_project_manual_revision_handoff_keeps_review_feedback_without_dispatch(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    sched.cfg.data["products"][task.product]["configuration"] = {
+        "overrides": {"auto_revise": False},
+    }
+    review = _review()
+
+    sched._apply_review(
+        task, _review_run(sched, task, pr.head_sha, review), review, TickReport(), emitted=False,
+    )
+
+    st = sched.state.get(task.id)
+    assert task.status == Status.CHANGES_REQUESTED and st.get("needs_human")
+    assert "Environment errors retry forever" in st["pending_feedback"]
+    assert not any(candidate.id == task.id for candidate, _, _ in sched.dispatch_queue())
+
+
+def test_project_auto_revision_avoids_global_manual_handoff(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    sched.cfg.data["auto_revise"] = False
+    sched.cfg.data["products"][task.product]["configuration"] = {
+        "overrides": {"auto_revise": True},
+    }
+
+    sched._apply_feedback(
+        task,
+        pr,
+        Feedback(items=[{"kind": "comment", "id": 42, "body": "Fix this"}]),
+        "",
+        TickReport(),
+    )
+
+    st = sched.state.get(task.id)
+    assert task.status == Status.CHANGES_REQUESTED
+    assert not st.get("needs_human")
+
+
+def test_project_manual_handoff_keeps_description_only_feedback(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    sched.cfg.data["products"][task.product]["configuration"] = {
+        "overrides": {"auto_revise": False},
+    }
+    review = {
+        "verdict": "request_changes",
+        "summary": "The description needs context.",
+        "description_ok": False,
+        "description_feedback": "Explain the user-visible outcome.",
+        "criteria": [],
+        "findings": [],
+    }
+
+    sched._apply_review(
+        task, _review_run(sched, task, pr.head_sha, review), review, TickReport(), emitted=False,
+    )
+
+    st = sched.state.get(task.id)
+    assert task.status == Status.CHANGES_REQUESTED and st.get("needs_human")
+    assert "Explain the user-visible outcome" in st["pending_feedback"]
+    assert not any(candidate.id == task.id for candidate, _, _ in sched.dispatch_queue())
+
+
 def test_restart_after_ci_feedback_save_does_not_recharge_a_rerun(sched, fake_github, monkeypatch):
     task, pr = _open_task(sched, fake_github)
     check = _ci_run(sched, task, pr.head_sha)

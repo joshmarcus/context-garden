@@ -5,20 +5,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..configuration import (
+    CONFIG_FIELDS,
+    ApplyMode,
+    assert_mutation_allowed,
+    audit_value,
+    product_configuration,
+    resolve_saved_effective_value,
+)
 from ..model import Task, now_iso
 from ..notify import notify
+from ..profiles import PROFILE_KEYS
 from ..profiles import stops as profile_stops
-
-# effective() key -> the field of the active operating profile that answers it, when no more
-# specific live override is set for that key (see effective and operating_profile below).
-_PROFILE_KEYS: dict[str, str] = {
-    "max_parallel": "workers",
-    "review_parallel": "reviews",
-    "models": "models",
-    "review.difficulty": "review_difficulty",
-    "retro.difficulty": "retro_difficulty",
-    "observe.profile": "observe",
-}
 
 
 class BudgetMixin:
@@ -178,35 +176,124 @@ class BudgetMixin:
         same key in garden.yaml until cleared with `clear_override`/`garden clear`."""
         return self.control().setdefault("overrides", {})
 
-    def set_override(self, key: str, value: Any, by: str = "cli") -> None:
+    def set_override(self, key: str, value: Any, by: str = "cli", product: str | None = None) -> None:
+        assert_mutation_allowed(self.cfg.data, key, product=product)
+        field = CONFIG_FIELDS[key]
+        if field.apply != ApplyMode.RUNTIME and key != "max_parallel":
+            raise ValueError(f"{key} does not support a runtime override")
+        field.validate(value)
+        if product is not None:
+            raise ValueError("project runtime overrides are not supported; save a project override instead")
+        self._assert_runtime_change_preserves_locks(key, value)
         self.overrides()[key] = value
         self.state.save()
-        self.events.emit("config_override", "", key=key, value=value, by=by)
-        self.log(f"{key} set to {value} by {by} (live override; takes effect next tick)")
+        safe = audit_value(key, value)
+        self.events.emit("config_override", "", key=key, value=safe, scope="global", provenance="runtime", by=by)
+        self.log(f"{key} set to {safe} by {by} (live override; takes effect next tick)")
 
-    def clear_override(self, key: str, by: str = "cli") -> None:
+    def clear_override(self, key: str, by: str = "cli", product: str | None = None) -> None:
+        assert_mutation_allowed(self.cfg.data, key, product=product)
+        if product is not None:
+            raise ValueError("project runtime overrides are not supported; reset the saved project override instead")
         ov = self.overrides()
         if key not in ov:
             return
+        self._assert_runtime_change_preserves_locks(key, None, clear=True)
         del ov[key]
         self.state.save()
-        self.events.emit("config_override_cleared", "", key=key, by=by)
+        self.events.emit("config_override_cleared", "", key=key, scope="global", provenance="yaml", by=by)
         self.log(f"{key} override cleared by {by} (back to the garden.yaml value)")
 
-    def effective(self, key: str, default: Any = None) -> Any:
+    def _assert_runtime_change_preserves_locks(self, key: str, value: Any,
+                                               *, clear: bool = False) -> None:
+        """Keep a global live override from moving a project's plain inherited lock."""
+        for product in (self.cfg.data.get("products") or {}):
+            _, locks = product_configuration(self.cfg.data, str(product))
+            raw = locks.get(key)
+            if raw is None:
+                continue
+            policy = {"reason": raw} if isinstance(raw, str) else dict(raw)
+            if "value" in policy or key in product_configuration(self.cfg.data, str(product))[0]:
+                continue
+            old = self.effective(key, product=str(product))
+            if clear:
+                profile_key = PROFILE_KEYS.get(key)
+                profile = self.operating_profile()
+                new = profile.get(profile_key, self.cfg.get(key)) if profile_key else self.cfg.get(key)
+            else:
+                new = value
+            if old != new:
+                reason = str(policy.get("reason") or "Locked by project policy")
+                raise PermissionError(f"{key} is locked for {product}: {reason}")
+
+    def _assert_reload_preserves_runtime_locks(self, new_cfg: Any) -> None:
+        """Reject reloads that move a plain lock through the active profile layer."""
+        for product in (self.cfg.data.get("products") or {}):
+            _, locks = product_configuration(self.cfg.data, str(product))
+            _, new_locks = product_configuration(new_cfg.data, str(product))
+            for key, raw in locks.items():
+                policy = {"reason": raw} if isinstance(raw, str) else dict(raw)
+                new_raw = new_locks.get(key)
+                new_policy = ({"reason": new_raw} if isinstance(new_raw, str)
+                              else dict(new_raw) if isinstance(new_raw, dict) else None)
+                if "value" in policy or new_policy is None or "value" in new_policy:
+                    continue
+                old = self._effective_with_config(key, self.cfg, str(product))
+                new = self._effective_with_config(key, new_cfg, str(product))
+                if old != new:
+                    reason = str(policy.get("reason") or "Locked by project policy")
+                    raise PermissionError(f"{key} is locked for {product}: {reason}")
+
+    def _effective_with_config(self, key: str, cfg: Any, product: str) -> Any:
+        """Resolve a scheduler-effective project value against a prospective config."""
+        overrides = self.overrides()
+        if key in overrides:
+            value = overrides[key]
+        else:
+            profile_name = str(overrides.get("operating_profile", cfg.get("operating_profile") or ""))
+            value = resolve_saved_effective_value(
+                cfg.data, key, product, active_profile=profile_name,
+            )
+        if key in overrides:
+            project_value = cfg.setting(key, product)
+            if project_value.source != "global":
+                return project_value.value
+        return value
+
+    def effective(self, key: str, default: Any = None, product: str | None = None) -> Any:
         """The live override for `key` if one is set, else the active operating profile's
         value for it (see operating_profile) if the profile sets that facet, else the
         garden.yaml value. A live override is always the most specific: it wins over the
         stop even while one is active."""
         ov = self.overrides()
         if key in ov:
-            return ov[key]
-        field = _PROFILE_KEYS.get(key)
-        if field:
-            profile = self.operating_profile()
-            if field in profile:
-                return profile[field]
-        return self.cfg.get(key, default)
+            value = ov[key]
+        else:
+            value = None
+            field = PROFILE_KEYS.get(key)
+            if field:
+                profile = self.operating_profile()
+                if field in profile:
+                    value = profile[field]
+            if value is None:
+                value = self.cfg.get(key, default)
+        if product is not None:
+            project = self.cfg.setting(key, product)
+            if project.source != "global":
+                return project.value
+        return value
+
+    def save_config_changes(self, changes: dict[str, Any], *, product: str | None = None,
+                            expected_revision: str | None = None, reset: bool = False,
+                            by: str = "cli") -> None:
+        """Persist an ordinary edit through the shared atomic policy boundary."""
+        self.cfg.save_changes(changes, product=product,
+                              expected_revision=expected_revision, reset=reset)
+        for key, value in changes.items():
+            self.events.emit("config_saved", "", key=key,
+                             value="<reset>" if reset else audit_value(key, value),
+                             scope=f"project:{product}" if product else "global",
+                             provenance="inherited" if reset else "saved", by=by)
 
     def effective_source(self, key: str) -> str:
         """Which layer answers `effective(key)` right now: "override" (a live override on
@@ -215,7 +302,7 @@ class BudgetMixin:
         comes from."""
         if key in self.overrides():
             return "override"
-        field = _PROFILE_KEYS.get(key)
+        field = PROFILE_KEYS.get(key)
         if field and field in self.operating_profile():
             return "profile"
         return "yaml"
@@ -248,14 +335,21 @@ class BudgetMixin:
         """Switch the active stop live: an empty name clears it, back to plain garden.yaml
         values. Emits `profile_changed` (from/to) so the change is visible on the costs chart
         once it reads the event log, besides the generic `config_override` trail."""
+        assert_mutation_allowed(self.cfg.data, "operating_profile")
         name = (name or "").strip()
         if name and name not in self.operating_profile_stops():
             raise ValueError(f"unknown operating profile {name!r}")
         old = self.operating_profile_name()
+        prospective = dict(self.operating_profile_stops().get(name) or {})
+        for key, profile_key in PROFILE_KEYS.items():
+            if key in self.overrides():
+                continue
+            new = prospective.get(profile_key, self.cfg.get(key))
+            self._assert_runtime_change_preserves_locks(key, new)
         if name:
             self.overrides()["operating_profile"] = name
         else:
             self.overrides().pop("operating_profile", None)
         self.state.save()
-        self.events.emit("profile_changed", "", **{"from": old, "to": name})
+        self.events.emit("profile_changed", "", **{"from": old, "to": name}, scope="global", by=by)
         self.log(f"operating profile: {old or '(none)'} -> {name or '(none)'} by {by}")

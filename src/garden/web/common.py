@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from .. import operator_spend as ops
 from ..events import EventLog, metrics, parse_since
 from ..github import PRInfo, RepositorySlug, is_safe_pr_url, pull_request_number
-from ..graph import blockers, effective_status, validate
+from ..graph import validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
 from ..model import Status, dispatch_sort_key, now_iso
 from ..profiles import describe as describe_stop
@@ -119,10 +119,11 @@ class Hub:
             store.invalidate_tasks()
         return Scheduler(store, github=self.github, log=self._log)
 
-    def reader(self) -> Scheduler:
+    def reader(self, store: Store | None = None) -> Scheduler:
         """A scheduler-shaped read facade for pages; it never runs startup migrations."""
-        store = self._request_store.get() or self.store
-        return Scheduler(store, github=self.github, log=lambda m: None, read_only=True)
+        store = store or self._request_store.get() or self.fresh()
+        return Scheduler(store,
+                         github=self.github, log=lambda m: None, read_only=True)
 
     def begin_request(self) -> Token[Store | None]:
         """Install a fresh, request-local Store and return its context token.
@@ -426,7 +427,7 @@ class Site:
     def board_data(self, product: str | None, phase: str | None, include_closed: bool = False) -> dict[str, Any]:
         s = self.hub.fresh()
         tasks = s.tasks()
-        stack = bool(s.config.get("stack", True))
+        sched = self.hub.reader(s)
         state = State(s.config.garden_dir / "state.json")
         closed_keys = closed_phase_keys(s)
         cols: dict[str, list] = {c: [] for c in COLUMNS}
@@ -438,7 +439,7 @@ class Site:
             # closed phases stay off the board unless asked for (or picked explicitly)
             if t.key in closed_keys and not include_closed and (t.product, t.phase) != (product, phase):
                 continue
-            eff = effective_status(t, tasks, stack)
+            eff = sched.task_effective_status(t, tasks)
             if eff == "cancelled":
                 continue
             st = state.get(t.id)
@@ -455,7 +456,7 @@ class Site:
                 col = "in_review"
                 info = st.get("merged_into_parent") or {}
                 merged_parent = str(info.get("parent") or st.get("stack_parent") or info.get("branch") or "")
-            cols[col].append({"task": t, "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
+            cols[col].append({"task": t, "blockers": sched.task_blockers(t, tasks) if eff == "blocked" else [],
                               "stack": "" if merged_parent else st.get("stack_parent", ""),
                               "merged_parent": merged_parent,
                               "needs_human": "" if t.status.terminal else (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
@@ -474,7 +475,7 @@ class Site:
         the Herbarium unless `include_closed`."""
         s = self.hub.fresh()
         tasks = s.tasks()
-        stack = bool(s.config.get("stack", True))
+        sched = self.hub.reader(s)
         state = State(s.config.garden_dir / "state.json")
         runs = RunStore(s.config.garden_dir)
         active = {r.task_id: r for r in runs.active()}
@@ -491,14 +492,14 @@ class Site:
                     continue
                 rows = []
                 for t in sorted(ph.tasks, key=dispatch_sort_key):
-                    eff = effective_status(t, tasks, stack)
+                    eff = sched.task_effective_status(t, tasks)
                     if eff in ("done", "cancelled", "wont_do"):
                         continue
                     st = state.get(t.id)
                     # A running or in-review task can be reordered but not moved to another phase.
                     movable = not (t.status == Status.RUNNING or t.status.pr_open or t.id in active)
                     rows.append({"task": t, "eff": eff,
-                                 "blockers": blockers(t, tasks, stack) if eff == "blocked" else [],
+                                 "blockers": sched.task_blockers(t, tasks) if eff == "blocked" else [],
                                  "needs_human": (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
                                  "movable": movable,
                                  "move_reason": "" if movable else f"{eff.replace('_', ' ')}: reorder it here, but finish or cancel the run before moving it"})

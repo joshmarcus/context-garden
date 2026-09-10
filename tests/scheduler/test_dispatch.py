@@ -366,6 +366,17 @@ def test_max_parallel_override_and_clear(sched):
     assert "max_parallel" not in on_disk.get("overrides", {})
 
 
+def test_plain_inherited_lock_rejects_runtime_and_profile_changes(sched):
+    sched.cfg.data["products"]["demo"]["configuration"] = {
+        "locks": {"max_parallel": {"reason": "fixed capacity"}},
+    }
+    with pytest.raises(PermissionError, match="fixed capacity"):
+        sched.set_override("max_parallel", 7)
+    with pytest.raises(PermissionError, match="fixed capacity"):
+        sched.set_operating_profile("fast")
+    assert sched.effective_max_parallel() == 2
+
+
 def test_tick_uses_max_parallel_override(sched, garden):
     """The override takes effect on the very next tick, no restart, and running workers
     are never stopped by lowering it (dispatch just skips them until the count drops)."""
@@ -541,6 +552,24 @@ def test_pause_overrides_auto_dispatch_true(sched, fake_github):
     sched.pause(by="web")
     rep = sched.tick()
     assert rep.dispatched == []
+
+
+def test_enforced_project_auto_dispatch_policy_changes_scheduler_decision(sched):
+    sched.cfg.data["auto_dispatch"] = True
+    sched.cfg.data["products"]["demo"]["configuration"] = {
+        "overrides": {},
+        "locks": {"auto_dispatch": {"reason": "release hold", "value": False}},
+    }
+
+    rep = sched.tick()
+
+    assert rep.dispatched == []
+    assert sched.store.task("DM-001").status == Status.READY
+
+    sched.cfg.data["auto_dispatch"] = False
+    sched.cfg.data["products"]["demo"]["configuration"]["locks"]["auto_dispatch"]["value"] = True
+    rep = sched.tick()
+    assert "DM-001(work)" in rep.dispatched
 
 
 def test_audit_flags_stuck_changes_requested(sched, fake_github):

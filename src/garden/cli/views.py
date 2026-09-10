@@ -19,7 +19,6 @@ def status(
     all_: bool = typer.Option(False, "--all", help="One row per closed phase too, instead of a summary line"),
 ):
     """Overview per phase, plus cost totals."""
-    from ..graph import effective_status
     from ..inbox import build_inbox, needs_you
     from ..runs import RunStore
     from ..scheduler import State
@@ -42,7 +41,6 @@ def status(
     table.add_column("spent", justify="right")
     sched = _scheduler(store)
     inbox_items = build_inbox(store, sched)
-    stack = bool(store.config.get("stack", True))
     closed_phases = []
     retro_waiting = []
     kickoff_missing = []
@@ -56,7 +54,7 @@ def status(
             counts = {s: 0 for s in STATUS_ORDER + ["blocked"]}
             attn = sum(1 for item in inbox_items if item.get("phase") == ph.key and needs_you(item))
             for t in ph.tasks:
-                counts[effective_status(t, tasks, stack)] += 1
+                counts[sched.task_effective_status(t, tasks)] += 1
             budget = sched.budget_for(ph.key)
             spent = sched.spent_for(ph.key)
             money = f"${spent:.2f}" + (f" / ${budget:.2f}" if budget else "")
@@ -144,11 +142,11 @@ def ls(
     json_out: bool = typer.Option(False, "--json"),
 ):
     """List tasks."""
-    from ..graph import blockers, effective_status
+    from ..graph import blockers
 
     store = _store()
     tasks = store.tasks()
-    stack = bool(store.config.get("stack", True))
+    sched = _scheduler(store)
     rows = []
     for t in sorted(tasks.values(), key=lambda t: (t.product, t.phase, t.id)):
         if product and t.product != product:
@@ -161,7 +159,7 @@ def ls(
         task_owner, owner_source = effective_owner(t, ph)
         if owner is not None and task_owner != ("" if owner == "-" else owner):
             continue
-        eff = effective_status(t, tasks, stack)
+        eff = sched.task_effective_status(t, tasks)
         if status_ and eff != status_:
             continue
         rows.append((t, eff, task_owner, owner_source))
@@ -176,8 +174,8 @@ def ls(
     for t, eff, task_owner, _ in rows:
         deps = ",".join(t.depends_on)
         if eff == "blocked":
-            deps = "[yellow]" + ",".join(blockers(t, tasks, stack)) + "[/yellow]"
-        elif stack and t.status.value in ("ready", "draft") and blockers(t, tasks, stack=False):
+            deps = "[yellow]" + ",".join(sched.task_blockers(t, tasks)) + "[/yellow]"
+        elif sched.stack_enabled_for(t) and t.status.value in ("ready", "draft") and blockers(t, tasks, stack=False):
             deps = "[cyan]stack:" + ",".join(blockers(t, tasks, stack=False)) + "[/cyan]"
         title = t.title + (" [dim](discovered)[/dim]" if t.discovered_from else "")
         table.add_row(t.id, _style(eff), task_owner or "-", priority_label(t.priority), t.difficulty, title, t.key, deps, t.pr or "")
@@ -189,7 +187,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
     """Show a task, its blockers and its runs."""
     from rich.markdown import Markdown
 
-    from ..graph import blockers, dependency_after, dependents
+    from ..graph import dependency_after, dependents
     from ..runs import RunStore
 
     store = _store()
@@ -198,12 +196,13 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
         print(t.render())
         return
     tasks = store.tasks()
+    sched = _scheduler(store)
     owner, source = effective_owner(t, store.phase(t.product, t.phase))
     console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={priority_label(t.priority)}  difficulty={t.difficulty}  {t.key}  owner={owner or '-'} ({source})")
     console.print(f"file: {store.rel(t.path)}")
     if t.depends_on:
         rules = ", ".join(f"{d} (after {dependency_after(t, d, tasks)})" for d in t.depends_on)
-        console.print(f"depends_on: {rules}  blockers: {', '.join(blockers(t, tasks)) or '-'}")
+        console.print(f"depends_on: {rules}  blockers: {', '.join(sched.task_blockers(t, tasks)) or '-'}")
     deps = dependents(t.id, tasks)
     if deps:
         console.print(f"unblocks: {', '.join(deps)}")
@@ -269,10 +268,8 @@ def now(window: str = typer.Option("hour", help="hour, today, 24h or phase")) ->
 @app.command(rich_help_panel=PANEL_BOARD)
 def ready():
     """Tasks that could be dispatched right now."""
-    from ..graph import ready as _ready
-
     store = _store()
-    for t in _ready(store.tasks()):
+    for t in _scheduler(store).ready_tasks(store.tasks()):
         console.print(f"{t.id}  pri={priority_label(t.priority)}  {t.title}")
 
 
@@ -285,18 +282,18 @@ def trellis(
     open_only: bool = typer.Option(False, "--open", help="hide done and cancelled tasks"),
 ):
     """The trellis: the dependency and stacking structure the work grows along (text, mermaid, or json)."""
-    from ..graph import critical_path, effective_status, mermaid, topological_order, visible_ids
+    from ..graph import critical_path, mermaid, topological_order, visible_ids
 
     store = _store()
     tasks = {k: v for k, v in store.tasks().items()
              if (not product or v.product == product) and (not phase or v.phase == phase)}
-    stack = bool(store.config.get("stack", True))
-    vis = visible_ids(tasks, stack, open_only)
+    sched = _scheduler(store)
+    vis = visible_ids(tasks, hide_done=open_only)
     if fmt == "mermaid":
         print(mermaid(tasks, visible=vis))
         return
     if fmt == "json":
-        print(json.dumps({"nodes": [{"id": t.id, "title": t.title, "status": effective_status(t, tasks)} for t in tasks.values() if t.id in vis],
+        print(json.dumps({"nodes": [{"id": t.id, "title": t.title, "status": sched.task_effective_status(t, tasks)} for t in tasks.values() if t.id in vis],
                           "edges": [{"from": d, "to": t.id} for t in tasks.values() if t.id in vis for d in t.depends_on if d in vis]}, indent=2))
         return
     for tid in topological_order(tasks):
@@ -306,7 +303,7 @@ def trellis(
         arrows = f"  <- {', '.join(t.depends_on)}" if t.depends_on else ""
         if t.discovered_from:
             arrows += f"  (discovered by {t.discovered_from})"
-        console.print(f"{tid:<10} {_style(effective_status(t, tasks, stack)):<22} {t.title}{arrows}")
+        console.print(f"{tid:<10} {_style(sched.task_effective_status(t, tasks)):<22} {t.title}{arrows}")
     cp = critical_path(tasks)
     if cp:
         console.print(f"\ncritical path: {' -> '.join(cp)}")

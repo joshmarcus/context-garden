@@ -1034,7 +1034,7 @@ class ReapMixin:
                     except GitHubError as e:
                         self.log(f"{task.id}: could not update PR: {e}")
                 nxt = self._pr_status(task)
-                defer_triage = nxt == Status.AWAITING_TRIAGE and self._review_round_pending(st)
+                defer_triage = nxt == Status.AWAITING_TRIAGE and self._review_round_pending(st, task.product)
                 if defer_triage:
                     st["pending_triage_notify"] = True
                 self._transition(task, nxt, f"pushed revision to {existing.url}: {summary}{cost}", notify_now=not defer_triage)
@@ -1051,7 +1051,7 @@ class ReapMixin:
                     footer += " Discovered work: " + ", ".join(f"`{i}`" for i in st["discovered_ids"]) + "."
                 pr = self.github.create_pr(
                     slug, branch, base, title, body + footer,
-                    draft=bool(self.cfg.get("github.draft_pr", False)),
+                    draft=bool(self.effective("github.draft_pr", False, task.product)),
                     reviewers=list(self.cfg.get("github.reviewers", []) or []),
                 )
                 task.pr = pr.url
@@ -1061,11 +1061,11 @@ class ReapMixin:
                 st.pop("review_loop_friction", None)
                 st.pop("review_heads", None)
                 st.pop("review_feedback_history", None)
-                st["pr_draft"] = bool(self.cfg.get("github.draft_pr", True))
+                st["pr_draft"] = bool(self.effective("github.draft_pr", True, task.product))
                 self.events.emit("pr_opened", task.id, pr=pr.url, base=base, stacked_on=st.get("stack_parent", ""),
                                  draft=st["pr_draft"], pool_member=run.pool_member)
                 nxt = self._pr_status(task)
-                defer_triage = nxt == Status.AWAITING_TRIAGE and self._review_round_pending(st)
+                defer_triage = nxt == Status.AWAITING_TRIAGE and self._review_round_pending(st, task.product)
                 if defer_triage:
                     st["pending_triage_notify"] = True
                 self._transition(task, nxt, f"opened {'draft ' if st['pr_draft'] else ''}{pr.url} (base {base}): {summary}{cost}",

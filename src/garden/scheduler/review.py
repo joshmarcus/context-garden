@@ -37,15 +37,15 @@ from .resources import ResourcePressureError
 
 class ReviewMixin:
     # ---- automated review --------------------------------------------------
-    def _review_round_pending(self, st: dict[str, Any]) -> bool:
+    def _review_round_pending(self, st: dict[str, Any], product: str | None = None) -> bool:
         """True when `_maybe_review` will still dispatch (or queue) an automated review round
         for this push. A fresh draft PR's triage ping waits for that verdict instead of firing
         on PR-open, per the phase-02 retro (triage pings fired before the review verdict was
         known); when review is off or its rounds are already spent, there is no verdict coming
         and the ping fires right away."""
-        if not bool(self.cfg.get("review.enabled", True)):
+        if not bool(self.effective("review.enabled", True, product)):
             return False
-        max_rounds = self.cfg.review_max_rounds()
+        max_rounds = self.effective("review.max_rounds", 2, product)
         return max_rounds is None or int(st.get("review_rounds", 0)) < max_rounds
 
     def _maybe_review(self, task: Task, work_run: Run, rep: TickReport) -> None:
@@ -65,8 +65,8 @@ class ReviewMixin:
         for item in requirements:
             evidence.setdefault(f"{item['kind']}:{item['name']}", "queued")
         wanted: list[dict[str, Any]] = []
-        if bool(self.cfg.get("review.enabled", True)):
-            max_rounds = self.cfg.review_max_rounds()
+        if bool(self.effective("review.enabled", True, task.product)):
+            max_rounds = self.effective("review.max_rounds", 2, task.product)
             rounds = int(st.get("review_rounds", 0))
             self_product_default = (self.cfg.product_self(task.product)
                                     and "automerge_min_review_rounds" not in self.cfg.product(task.product))
@@ -189,14 +189,15 @@ class ReviewMixin:
             if item["kind"] == "review" and any(evidence.get(f"persona:{name}") != "posted" for name in required_personas):
                 deferred.append(item)
                 continue
-            if self.review_slots_free() <= 0:
+            if self.review_slots_free_for(task) <= 0:
                 deferred.append(item)
                 continue
             runner_name, harness_name = self._review_item_route(task, item, work_run)
             if runner_name == "local" and self.local_slots_free() <= 0:
                 deferred.append(item)
                 continue
-            tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+            tier = str(self.effective("review.difficulty", None, task.product)
+                       or task.difficulty or "medium")
             member = self.select_pool_member(task, tier, review=True)
             review_harness = (member or {}).get("harness") or harness_name
             if self.pool_members(tier, review=True) and member is None:
@@ -458,10 +459,10 @@ class ReviewMixin:
 
     def _audit_review_continuations(self, tasks: dict[str, Task], rep: TickReport) -> None:
         """Restore a reviewable current head that has neither a verdict nor a continuation."""
-        if not bool(self.cfg.get("review.enabled", True)):
-            return
         for task in tasks.values():
             if task.status not in (Status.AWAITING_TRIAGE, Status.IN_REVIEW):
+                continue
+            if not bool(self.effective("review.enabled", True, task.product)):
                 continue
             st = self.state.get(task.id)
             head = str(st.get("head_sha") or "")
@@ -525,7 +526,7 @@ class ReviewMixin:
                     count_round=bool((lost.env_snapshot or {}).get("count_round", True)),
                 )
                 continue
-            if not self._review_round_pending(st):
+            if not self._review_round_pending(st, task.product):
                 continue
             self._queue_pending_reviews(st, [{"kind": "review", "count_round": True}])
             st["review_recovery"] = {"head": head, "attempts": 0,
@@ -617,7 +618,8 @@ class ReviewMixin:
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         self._refuse_if_closed_or_frozen(task)
         harness_name, ladder_model, writer = self._review_route(task, work_run)
-        review_tier = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        review_tier = str(self.effective("review.difficulty", None, task.product)
+                          or task.difficulty or "medium")
         member = member if member is not None else self.select_pool_member(task, review_tier, review=True)
         if self.pool_members(review_tier, review=True) and member is None:
             raise RuntimeError("every review pool member is paused")
@@ -865,7 +867,7 @@ class ReviewMixin:
         run.env_snapshot.update({"product": task.product,
                                  "execution_timeout_minutes": self.cfg.product_timeout_minutes(task.product),
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
-        review_difficulty = str(self.effective("review.difficulty") or task.difficulty or "medium")
+        review_difficulty = str(self.effective("review.difficulty", None, task.product) or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"
         run.difficulty = review_difficulty
@@ -1365,7 +1367,7 @@ class ReviewMixin:
                     if repeated and bool(self.cfg.get("stall.enabled", True)):
                         self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
                         return True
-                    manual_handoff = not bool(self.cfg.get("auto_revise", True))
+                    manual_handoff = not bool(self.effective("auto_revise", True, task.product))
                     if manual_handoff and not st.get("needs_human"):
                         self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
                     if already_queued and (not manual_handoff or st.get("needs_human")):
@@ -1390,7 +1392,7 @@ class ReviewMixin:
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = not already_queued
                     st.pop("pending_feedback_rebase", None)
-                    manual_handoff = not bool(self.cfg.get("auto_revise", True))
+                    manual_handoff = not bool(self.effective("auto_revise", True, task.product))
                     if manual_handoff and not st.get("needs_human"):
                         self._set_needs_human(task, "manual_revision", "automatic revisions are disabled; full feedback is ready for manual handoff")
                     if already_queued and (not manual_handoff or st.get("needs_human")):
