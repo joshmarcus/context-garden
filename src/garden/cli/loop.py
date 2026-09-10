@@ -12,6 +12,7 @@ import yaml
 from rich.table import Table
 
 from ..configuration import CONFIG_FIELDS, revision
+from ..github import pull_request_number
 from ..model import Status, now_iso
 from ..scheduler_health import WatchHeartbeat
 from .common import (
@@ -448,7 +449,11 @@ def take(
         raise typer.Exit(1)
     if pr_url:
         slug = sched.slug_for(t)
-        pr_number = sched.change_request_number(t, pr_url) if slug else None
+        pr_number = (
+            pull_request_number(pr_url, slug, getattr(slug, "host", "github.com"))
+            if slug and getattr(slug, "provider", "github") == "github"
+            else sched.change_request_number(t, pr_url) if slug else None
+        )
         if not pr_number or not sched.github.available:
             err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
             raise typer.Exit(1)

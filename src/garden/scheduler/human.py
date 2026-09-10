@@ -10,7 +10,7 @@ from typing import Any
 
 from .. import gitops
 from ..brief import brief_gaps, resume_prompt
-from ..github import GitHubError, PRInfo, mark_garden_comment
+from ..github import GitHubError, PRInfo, mark_garden_comment, pull_request_number
 from ..graph import blockers
 from ..model import (
     Phase,
@@ -893,6 +893,10 @@ class HumanMixin:
         slug = self.slug_for(task)
         if not self.is_safe_change_request_url(task, url):
             raise RuntimeError("PR attachment URL has unsupported components")
+        if url.lower().startswith("https://github.com/") and pull_request_number(
+            url, slug, getattr(slug, "host", "github.com")
+        ) is None:
+            raise RuntimeError("PR URL does not name the configured repository")
         number = self.change_request_number(task, url)
         if not slug or not number:
             raise RuntimeError("PR attachment needs an accessible PR URL for the configured repository")
