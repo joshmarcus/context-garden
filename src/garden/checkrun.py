@@ -44,7 +44,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
             setup_env = scrubbed_env(config, setup, worktree=cwd)
             setup_env.update(temp_env)
             run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log",
-                      env=setup_env, cache_key=str(payload.get("setup_cache_key") or ""))
+                      env=setup_env, cache_key=str(payload.get("setup_cache_key") or ""), config=config)
         except RunnerError as e:
             result: dict[str, Any] = {
                 "name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e),

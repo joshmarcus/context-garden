@@ -61,6 +61,20 @@ flowchart LR
   commits and pushes its remote worktree so the scheduler can fetch it. The same transport
   carries reviewers, persona reviewers and trial comparisons; they are workers with a
  different brief.
+- **Execution sandboxes** are an optional fail-closed capability contract under `sandbox:`.
+  With `required: true`, planner and kickoff calls and local work/review runs must use the
+  selected harness's native filesystem sandbox; bypass permission modes and custom harnesses
+  are refused before launch. `network_destinations` is an explicit hostname/optional-port
+  allowlist. Claude receives it in native sandbox settings; Codex is supported only with an
+  empty list (network denied), because its native sandbox cannot express destination names.
+  Setup and command checks additionally require `sandbox.command`, an argv for an installed
+  OS sandbox wrapper. Garden appends `-- sh -c <command>` and expands `{writable_root}` and
+  `{network_destinations}` in wrapper arguments. This makes the wrapper responsible for
+  filesystem, symlink, child-process and network enforcement rather than trusting branch
+  code. SSH is rejected while isolation is required because that runner cannot attest to a
+  remote mechanism; Windows users receive the supported WSL diagnostic. Every protected
+  local model run records a host-detail-free `sandbox.json`, and children inherit
+  `GARDEN_SANDBOX_ENFORCED=1` plus the mechanism name.
 - The **remote runner** queues instead of launching. A bearer-authenticated `garden worker`
   claims a leased run over HTTPS, clones the product with host-owned git credentials, renews
   its lease from before clone through setup, execution and staging push, pushes work to a

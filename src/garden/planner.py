@@ -317,16 +317,21 @@ def run_planner(store: Store, prompt: str, harness_name: str = "", difficulty: s
 
     from .config import no_live_garden_root
     from .runner.base import scrubbed_env
+    from .sandbox import SandboxPolicy
 
     harness = store.config.harness(harness_name or str(store.config.get("harness") or "claude"))
+    policy = SandboxPolicy.from_config(store.config.data)
     model = harness.model_for(difficulty)
     with tempfile.TemporaryDirectory(prefix="garden-plan-") as scratch:
         scratch_dir = Path(scratch)
-        cmd = harness.command(model, None, difficulty, deny_paths=[str(store.root)], worktree=scratch_dir)
+        cmd = harness.command(model, None, difficulty, deny_paths=[str(store.root)], worktree=scratch_dir,
+                              sandbox_policy=policy)
         resolved = shutil.which(harness.bin) or harness.bin
         if cmd and cmd[0] == harness.bin and resolved != harness.bin:
             cmd = [resolved] + cmd[1:]
         env = scrubbed_env(store.config.data, worktree=scratch_dir)
+        mechanism = policy.native_harness(harness.name, str(harness.cfg.get("permission_mode") or ""))
+        env.update(policy.report_env(mechanism))
         env["GARDEN_ROOT"] = no_live_garden_root(scratch_dir)
         proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=str(scratch_dir), check=False)
     parsed = harness.parse(proc.stdout, proc.stderr, None)
