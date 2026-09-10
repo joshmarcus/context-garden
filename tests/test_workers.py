@@ -141,6 +141,31 @@ def test_mixed_local_remote_jobs_and_explicit_worker_states(garden):
     assert fleet["totals"]["jobs"] == 2
 
 
+def test_busy_worker_explains_why_spare_capacity_cannot_take_queued_work(garden):
+    store = configure(garden, ssh=False)
+    contacts = WorkerContactStore(store.config.garden_dir)
+    contacts.record("pull-a", capacity=2, harnesses=["claude"], tiers=[], facts={})
+    runs = RunStore(store.config.garden_dir)
+    active = runs.new_run("DM-001", "remote")
+    active.host = "pull-a"
+    active.env_snapshot = {"resource_weight": 1}
+    active.save()
+    queued = runs.new_run("DM-002", "remote")
+    queued.harness = "claude"
+    queued.env_snapshot = {"resource_weight": 2}
+    queued.save()
+
+    client = TestClient(create_app(store, watch=False, host="testserver"))
+    worker = client.get("/api/workers").json()["workers"][0]
+
+    assert worker["status"] == "executing"
+    assert worker["available_capacity"] == 1
+    assert worker["unavailable_reason"] == (
+        "queued work requires more capacity than this worker has available"
+    )
+    assert worker["unavailable_reason"] in client.get("/now/workers").text
+
+
 def test_busy_worker_freshness_uses_heartbeat_cadence_and_stale_contact_blocks_capacity(garden):
     store = configure(garden, ssh=False)
     now = dt.datetime(2026, 9, 10, 3, tzinfo=dt.UTC)

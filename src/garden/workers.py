@@ -154,17 +154,18 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
         reason = ""
         if status == "available":
             reason = "polling for work" if placement == "remote" else "no current job"
-            if placement == "remote" and queued_remote:
-                offered = set((contact or {}).get("harnesses") or [])
-                tiers = set((contact or {}).get("tiers") or [])
-                compatible = [run for run in queued_remote
-                              if (run.mode == "check" or run.harness in offered)
-                              and (not tiers or not run.difficulty or run.difficulty in tiers)]
-                if not compatible:
-                    reason = "queued work requires a harness or tier this worker did not offer"
-                elif all(int((run.env_snapshot or {}).get("resource_weight") or 1) > capacity
-                         for run in compatible):
-                    reason = "queued work requires more capacity than this worker offers"
+        if placement == "remote" and status in {"available", "executing"} \
+                and available > 0 and queued_remote:
+            offered = set((contact or {}).get("harnesses") or [])
+            tiers = set((contact or {}).get("tiers") or [])
+            compatible = [run for run in queued_remote
+                          if (run.mode == "check" or run.harness in offered)
+                          and (not tiers or not run.difficulty or run.difficulty in tiers)]
+            if not compatible:
+                reason = "queued work requires a harness or tier this worker did not offer"
+            elif all(int((run.env_snapshot or {}).get("resource_weight") or 1) > available
+                     for run in compatible):
+                reason = "queued work requires more capacity than this worker has available"
         elif status in {"unknown", "unreachable"}:
             reason = "no recent worker-agent contact"
         elif status in TERMINAL_HOST_STATES | {"draining", "restarting", "reconnecting"}:
