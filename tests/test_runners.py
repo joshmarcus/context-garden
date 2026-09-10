@@ -852,6 +852,33 @@ def test_local_worker_env_carries_execution_budget(tmp_path):
     assert "GARDEN_EXECUTION_TIMEOUT_SECONDS" not in env
 
 
+def test_openrouter_key_is_added_only_to_harness_environment(tmp_path, monkeypatch):
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "provider-secret")
+    runner = LocalRunner({}, Harness("openrouter", {}))
+    run = Run(task_id="T-1", run_id="r1", dir=str(tmp_path / "run"), runner="local")
+    worker = runner.worker_env(run, {}, tmp_path)
+    assert "OPENROUTER_API_KEY" not in worker
+    assert runner.harness_environment(worker)["OPENROUTER_API_KEY"] == "provider-secret"
+
+
+def test_local_runner_selects_openrouter_turn_cap_from_run_difficulty(tmp_path):
+    from garden.harness import Harness
+    from garden.runs import Run
+
+    runner = LocalRunner({}, Harness("openrouter", {
+        "max_turns": {"easy": 2, "medium": 4, "hard": 6},
+    }))
+    run = Run(task_id="T-1", run_id="r1", dir=str(tmp_path / "run"), runner="local",
+              difficulty="hard", model="openrouter/openai/test")
+
+    argv = runner.harness_argv(run, tmp_path, tmp_path / "final.md")
+
+    assert argv[argv.index("--max-turns") + 1] == "6"
+
+
 def test_ordinary_pytest_deadlines_are_configured(request):
     assert float(request.config.getini("timeout")) == 120.0
     assert request.config.getini("timeout_method") == "signal"

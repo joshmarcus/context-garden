@@ -407,9 +407,14 @@ def _execution_timeout_seconds() -> float | None:
 
 
 def _preserved_child_fds() -> tuple[int, ...]:
-    """Return worker-owned lock descriptors that must follow the author process tree."""
+    """Return private descriptors that must reach their intended workload process."""
     descriptors = []
-    for raw in os.environ.get("GARDEN_PRESERVE_FDS", "").split(","):
+    configured = os.environ.get("GARDEN_PRESERVE_FDS", "").split(",")
+    # An OpenRouter credential is consumed and closed by its adapter.  Passing the
+    # descriptor through the supervisor avoids ever materialising the secret in an
+    # ancestor environment; the adapter closes it before starting Codex.
+    configured.append(os.environ.get("GARDEN_HARNESS_API_KEY_FD", ""))
+    for raw in configured:
         if not raw.strip():
             continue
         try:
@@ -560,6 +565,7 @@ def main() -> int:
     # that deliberately create another session; other POSIX kernels provide no equivalent.
     child = subprocess.Popen(
         ["sh", "-c", script],
+        env=dict(os.environ),
         pass_fds=_preserved_child_fds(),
         start_new_session=True,
     )

@@ -1,71 +1,41 @@
 #!/usr/bin/env python3
-"""Fake the Codex/OpenRouter adapter boundary used by the CG-302 smoke test.
-
-The selected adapter is still ``codex exec``; this executable stands in for Codex so the
-test spends no provider tokens.  Its request contract is:
-
-* argv starts with ``exec --json --skip-git-repo-check``;
-* Codex config selects ``model_provider=\"openrouter\"`` and defines that provider's
-  ``name``, ``base_url``, API-key environment variable, and ``wire_api=\"responses\"``;
-* ``-m`` carries an OpenRouter model id and stdin carries the garden brief.
-
-With those settings the real Codex CLI makes an OpenAI Responses-compatible request to
-``<base_url>/responses``.  OpenRouter returns the Responses event stream; Codex, rather
-than garden, drives tool calls and translates it into its documented ``--json`` JSONL.
-This fake emits that translated response payload: ``thread.started``, an
-``item.completed`` agent message containing the final ``GARDEN_RESULT``, and
-``turn.completed`` usage.  ``Harness.parse`` then extracts the last agent message and
-passes its marker to ``garden.brief.parse_result``.
-"""
-
+"""OpenAI Responses-compatible OpenRouter stub for offline adapter tests."""
 from __future__ import annotations
 
+import argparse
 import json
-import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-def _config(args: list[str]) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for index, arg in enumerate(args[:-1]):
-        if arg != "-c":
-            continue
-        key, separator, value = args[index + 1].partition("=")
-        if separator:
-            values[key] = value.strip('"')
-    return values
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path != "/api/v1/responses" or self.headers.get("Authorization") != "Bearer offline-test-key":
+            self.send_error(401)
+            return
+        request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        completed = {"type": "response.completed", "response": {
+            "id": "resp_fake", "object": "response", "status": "completed",
+            "model": request.get("model", "qwen/qwen3-coder"), "output": [],
+            "usage": {"input_tokens": 120, "output_tokens": 30,
+                      "input_tokens_details": {"cached_tokens": 20}, "cost": 0.0042}}}
+        response = f"data: {json.dumps(completed)}\n\ndata: [DONE]\n\n".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
 
+    def log_message(self, format: str, *args: object) -> None:
+        return
 
-def main() -> int:
-    args = sys.argv[1:]
-    config = _config(args)
-    required = {
-        "model_provider": "openrouter",
-        "model_providers.openrouter.name": "OpenRouter",
-        "model_providers.openrouter.wire_api": "responses",
-    }
-    if args[:3] != ["exec", "--json", "--skip-git-repo-check"]:
-        return 2
-    if any(config.get(key) != value for key, value in required.items()):
-        return 2
-    if not config.get("model_providers.openrouter.base_url"):
-        return 2
-    if config.get("model_providers.openrouter.env_key") != "OPENROUTER_API_KEY":
-        return 2
-    if "-m" not in args or not sys.stdin.read().strip():
-        return 2
-
-    final = 'GARDEN_RESULT: {"status":"done","summary":"OpenRouter adapter smoke passed"}'
-    events = [
-        {"type": "thread.started", "thread_id": "openrouter-smoke"},
-        {"type": "item.completed", "item": {"type": "agent_message", "text": final}},
-        {"type": "turn.completed", "usage": {
-            "input_tokens": 12, "cached_input_tokens": 2, "output_tokens": 5,
-        }},
-    ]
-    for event in events:
-        print(json.dumps(event))
-    return 0
-
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port-file", required=True)
+    args = parser.parse_args()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    with open(args.port_file, "w") as port_file:
+        port_file.write(str(server.server_port))
+    server.serve_forever()
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

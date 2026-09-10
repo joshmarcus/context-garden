@@ -32,7 +32,7 @@ from garden.runner.base import RunnerError
 from garden.runner.local import LocalRunner
 from garden.runs import Run
 
-from . import fake_claude, fake_codex
+from . import fake_claude, fake_codex, fake_openrouter_cli_impl
 
 Fake = Callable[[list[str], str, Path, Mapping[str, str]], tuple[str, str, int | None]]
 
@@ -40,6 +40,7 @@ Fake = Callable[[list[str], str, Path, Mapping[str, str]], tuple[str, str, int |
 FAKES: dict[str, Fake] = {
     "fake_claude.py": fake_claude.run,
     "fake_codex.py": fake_codex.run,
+    "fake_openrouter_cli.py": fake_openrouter_cli_impl.run,
 }
 
 
@@ -57,6 +58,8 @@ class InProcessRunner(LocalRunner):
         if setup_input.exists():
             run_setup(worktree, json.loads(setup_input.read_text()), log_path=d / "setup.log", env=env)
         argv = self.harness_argv(run, worktree, d / "final.md")
+        if argv[1:3] == ["-m", "garden.openrouter_adapter"]:
+            argv = argv[argv.index("--") + 1:]
         # What the shell wrapper records for a real run: the resolved command line.
         (d / "command.txt").write_text(" ".join(shlex.quote(c) for c in argv) + "\n")
         run.pid = os.getpid()
@@ -76,7 +79,9 @@ class InProcessRunner(LocalRunner):
                 raise RunnerError(f"in-process runner has no fake for harness binary {argv[0]!r}; "
                                   f"known: {', '.join(sorted(FAKES))}")
         else:
-            stdout, stderr, code = fake(argv[1:], brief_path.read_text(), worktree, env)
+            stdout, stderr, code = fake(
+                argv[1:], brief_path.read_text(), worktree, self.harness_environment(env)
+            )
         (d / "stdout.json").write_text(stdout)
         (d / "stderr.log").write_text(stderr)
         if code is not None:
@@ -108,7 +113,7 @@ class InProcessRunner(LocalRunner):
         if fake is None:
             raise RunnerError(f"in-process runner has no fake for harness binary {argv[0]!r}; "
                               f"known: {', '.join(sorted(FAKES))}")
-        stdout, stderr, _code = fake(argv[1:], stdin_text, cwd, env)
+        stdout, stderr, _code = fake(argv[1:], stdin_text, cwd, self.harness_environment(env))
         return stdout, stderr
 
     def wake(self, run: Run) -> None:

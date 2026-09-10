@@ -26,6 +26,7 @@ import posixpath
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from .base import (
 
 REMOTE_SCRIPT = r"""
 set -e
+garden_harness_key={api_key_value}
 REPO={repo}
 GARDEN_CHECKOUT_STRATEGY={checkout_strategy}
 if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then WT=$REPO; else WT=$REPO/.garden-worktrees/{task}; fi
@@ -189,7 +191,17 @@ if [ -n "$GARDEN_SETUP_CMD" ] && [ "$(cat "$GARDEN_SETUP_MARKER" 2>/dev/null)" !
   if ( garden_scrub; $GARDEN_SETUP_RUN "$GARDEN_SETUP_CMD" >&2 ); then printf '%s' "$GARDEN_SETUP_STAMP" > "$GARDEN_SETUP_MARKER"; else echo "garden setup command failed (or timed out after ${{GARDEN_SETUP_TIMEOUT}}s)" >&2; exit 3; fi
 fi
 set +e
-( garden_scrub; {harness} < "$GARDEN_RUN_DIR/brief.md" )
+if [ -n "{api_key_env}" ] && [ -n "$garden_harness_key" ]; then
+  exec 9<<GARDEN_HARNESS_KEY_EOF
+$garden_harness_key
+GARDEN_HARNESS_KEY_EOF
+  unset garden_harness_key
+  ( garden_scrub harness
+    export GARDEN_HARNESS_API_KEY_FD=9 GARDEN_HARNESS_API_KEY_NAME={api_key_env}
+    {harness} < "$GARDEN_RUN_DIR/brief.md" )
+else
+  ( garden_scrub harness; {harness} < "$GARDEN_RUN_DIR/brief.md" )
+fi
 RC=$?
 set -e
 rm -rf "$GARDEN_RUN_DIR"
@@ -265,6 +277,7 @@ class SSHRunner(Runner):
         if "GARDEN_BRIEF_EOF" in brief_text:
             raise RunnerError("brief contains the heredoc delimiter")
         harness_cmd = self.harness_shell(run, None)
+        api_key_env = self.harness.api_key_env
         setup = self._setup_for(host)
         checkout = dict(self.config.get("checkout") or {})
         setup_cmd = str(setup.get("command") or "").strip()
@@ -284,6 +297,7 @@ class SSHRunner(Runner):
         ])
         env_allow = shlex.quote(" ".join(pass_env_patterns(self.config)))
         script = REMOTE_SCRIPT.format(
+            api_key_value="__GARDEN_HARNESS_API_KEY_VALUE__",
             repo=shlex.quote(str(repo)), task=run.task_id, branch=shlex.quote(run.branch), base=shlex.quote(run.base),
             brief=brief_text, harness=harness_cmd, run_id=run.run_id, env_allow=env_allow,
             config_dirs=config_dirs, setup_env=setup_env, setup_cmd=shlex.quote(setup_cmd),
@@ -298,16 +312,27 @@ class SSHRunner(Runner):
             reconcile_timeout=shlex.quote(str(int(checkout.get("reconcile_timeout_seconds") or 600))),
             active_run_ids=shlex.quote(" ".join(str(item) for item in
                                                 run.env_snapshot.get("canonical_active_run_ids", []))),
+            api_key_env=api_key_env,
         )
         (d / "remote.sh").write_text(script)
         ssh_bin = str(self.config.get("ssh_bin") or "ssh")
         opts = [str(o) for o in (self.config.get("options") or ["-o", "BatchMode=yes"])]
-        ssh_cmd = " ".join(shlex.quote(c) for c in [ssh_bin, *opts, str(host["host"]), "sh", "-s"])
+        remote_command = ["env"]
+        if api_key_env:
+            remote_command += ["-u", api_key_env]
+        remote_command += ["sh", "-s"]
+        ssh_cmd = " ".join(
+            shlex.quote(c) for c in [ssh_bin, *opts, str(host["host"]), *remote_command]
+        )
         timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
         if timeout_min and shutil.which("timeout"):
             ssh_cmd = f"timeout {timeout_min * 60:g} {ssh_cmd}"
+        feeder = " ".join(shlex.quote(c) for c in [
+            sys.executable, "-m", "garden.credential_stream", str(d / "remote.sh"),
+            "__GARDEN_HARNESS_API_KEY_VALUE__", api_key_env,
+        ])
         wrapper = (
-            f"{ssh_cmd} < {shlex.quote(str(d / 'remote.sh'))} > {shlex.quote(str(d / 'stdout.json'))} "
+            f"{feeder} | {ssh_cmd} > {shlex.quote(str(d / 'stdout.json'))} "
             f"2> {shlex.quote(str(d / 'stderr.log'))}; echo $? > {shlex.quote(str(d / 'exit_code'))}"
         )
         env = dict(os.environ)

@@ -31,9 +31,15 @@ class LocalRunner(Runner):
         assert self.harness is not None
         deny = list(run.fence_paths or [])
         if run.mode == "resume" and run.session_id:
-            cmd = self.harness.resume_command(run.session_id, run.model, final_path, deny_paths=deny, worktree=worktree)
+            cmd = self.harness.resume_command(
+                run.session_id, run.model, final_path, run.difficulty,
+                deny_paths=deny, worktree=worktree,
+            )
         else:
-            cmd = self.harness.command(run.model, final_path, deny_paths=deny, worktree=worktree)
+            cmd = self.harness.command(
+                run.model, final_path, run.difficulty,
+                deny_paths=deny, worktree=worktree,
+            )
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
             cmd = [resolved] + cmd[1:]
@@ -80,6 +86,15 @@ class LocalRunner(Runner):
         )
         return env
 
+    def harness_environment(self, env: dict[str, str]) -> dict[str, str]:
+        """Test-runner compatibility environment for an in-process harness fake."""
+        result = dict(env)
+        assert self.harness is not None
+        key_name = self.harness.api_key_env
+        if key_name and key_name in os.environ:
+            result[key_name] = os.environ[key_name]
+        return result
+
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
         if self.harness is None:
             raise RunnerError("local runner needs a harness")
@@ -118,11 +133,28 @@ class LocalRunner(Runner):
             f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "
             f"2> {shlex.quote(str(d / 'stderr.log'))}"
         )
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(worktree), env=env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        credential_fds: tuple[int, ...] = ()
+        credential_read_fd = -1
+        key_name = self.harness.api_key_env
+        key_value = os.environ.get(key_name, "") if key_name else ""
+        if key_name and key_value:
+            # A pipe admits the provider key after setup has completed. It never enters
+            # setup's environment, the worktree, argv, command.txt, or the run record.
+            credential_read_fd, credential_write_fd = os.pipe()
+            os.write(credential_write_fd, key_value.encode())
+            os.close(credential_write_fd)
+            env["GARDEN_HARNESS_API_KEY_FD"] = str(credential_read_fd)
+            env["GARDEN_HARNESS_API_KEY_NAME"] = key_name
+            credential_fds = (credential_read_fd,)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(worktree), env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True, pass_fds=credential_fds,
+            )
+        finally:
+            if credential_read_fd >= 0:
+                os.close(credential_read_fd)
         run.pid = proc.pid
         run.status = "running"
         run.harness = self.harness.name

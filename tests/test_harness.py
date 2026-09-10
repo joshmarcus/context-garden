@@ -1,15 +1,22 @@
 import json
+import os
+import shlex
 import subprocess
+import sys
+import threading
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from garden.brief import parse_result
+from garden.credential_stream import main as stream_credential
 from garden.harness import Harness
 from garden.personas import parse_persona
 from garden.review import parse_review
 from garden.runs import Run
 from garden.suggestions import parse_edit
+from tests.fake_openrouter import Handler
 
 
 def test_claude_command_and_models():
@@ -35,25 +42,137 @@ def test_codex_command():
     assert Harness("codex", {"models": {}}).model_for("medium") == ""  # explicit CLI default
 
 
-def test_fake_openrouter_smoke():
-    fake = Path(__file__).with_name("fake_openrouter.py")
-    harness = Harness("codex", {"bin": str(fake), "base_url": "http://openrouter.test/api/v1"})
-    command = harness.command("openai/gpt-5.2-codex")
-
-    completed = subprocess.run(
-        command,
-        input="# Smoke brief\nReturn the required result marker.",
-        capture_output=True,
-        text=True,
-        check=False,
+def test_fake_openrouter_smoke(tmp_path):
+    fake_codex = Path(__file__).with_name("fake_openrouter_codex.py")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    harness = Harness("openrouter", {"bin": str(fake_codex),
+        "base_url": f"http://127.0.0.1:{server.server_port}/api/v1"})
+    credential_read, credential_write = os.pipe()
+    os.write(credential_write, b"offline-test-key")
+    os.close(credential_write)
+    env = {
+        **os.environ,
+        "GARDEN_HARNESS_API_KEY_FD": str(credential_read),
+        "GARDEN_HARNESS_API_KEY_NAME": "OPENROUTER_API_KEY",
+    }
+    env.pop("OPENROUTER_API_KEY", None)
+    for name in (
+        "GARDEN_HEAVY_EXECUTION", "GARDEN_EXECUTION_LEASED", "GARDEN_EXECUTION_OWNER",
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_OWNER_SCOPED",
+    ):
+        env.pop(name, None)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    stdout = run_dir / "stdout.json"
+    stderr = run_dir / "stderr.log"
+    brief.write_text("# Smoke brief\nReturn the required result marker.")
+    script = (
+        f"{shlex.join(harness.command('openai/gpt-5.2-codex'))} < {shlex.quote(str(brief))} "
+        f"> {shlex.quote(str(stdout))} 2> {shlex.quote(str(stderr))}"
     )
-    parsed = harness.parse(completed.stdout, completed.stderr)
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "garden.run_supervisor", str(run_dir), script],
+            capture_output=True, text=True, env=env, pass_fds=(credential_read,),
+            cwd=tmp_path, check=False,
+        )
+    finally:
+        os.close(credential_read)
+        server.shutdown()
+        server.server_close()
+        thread.join()
+    parsed = harness.parse(stdout.read_text(), stderr.read_text())
 
     assert completed.returncode == 0
-    assert parsed["session_id"] == "openrouter-smoke"
-    assert parsed["result"] == {
-        "status": "done", "summary": "OpenRouter adapter smoke passed",
+    assert parsed["session_id"] == "fake-codex"
+    assert parsed["usage"] == {
+        "input_tokens": 100, "output_tokens": 30,
+        "cache_read_input_tokens": 20, "cache_creation_input_tokens": 0,
     }
+    assert parsed["cost_usd"] == 0.0042
+    assert parsed["result"] == {
+        "status": "done", "summary": "adapter completed",
+    }
+
+
+def test_openrouter_adapter_stops_codex_when_turn_cap_is_exceeded(tmp_path):
+    fake_codex = Path(__file__).with_name("fake_openrouter_codex.py")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    harness = Harness("openrouter", {
+        "bin": str(fake_codex),
+        "base_url": f"http://127.0.0.1:{server.server_port}/api/v1",
+        "max_turns": {"easy": 1, "medium": 3},
+    })
+    argv = harness.command("openrouter/openai/test", difficulty="easy")
+    assert argv[argv.index("--max-turns") + 1] == "1"
+    resumed = harness.resume_command("thread-1", "openrouter/openai/test", difficulty="easy")
+    assert resumed[resumed.index("--max-turns") + 1] == "1"
+
+    credential_read, credential_write = os.pipe()
+    os.write(credential_write, b"offline-test-key")
+    os.close(credential_write)
+    env = {
+        **os.environ,
+        "GARDEN_HARNESS_API_KEY_FD": str(credential_read),
+        "GARDEN_HARNESS_API_KEY_NAME": "OPENROUTER_API_KEY",
+        "FAKE_OPENROUTER_REQUESTS": "2",
+    }
+    env.pop("OPENROUTER_API_KEY", None)
+    try:
+        completed = subprocess.run(
+            argv, input="brief", capture_output=True, text=True, env=env,
+            pass_fds=(credential_read,), cwd=tmp_path, check=False,
+        )
+    finally:
+        os.close(credential_read)
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    assert completed.returncode != 0
+    assert "garden_max_turns" in completed.stderr
+    assert json.loads(completed.stdout.splitlines()[-1]) == {
+        "type": "turn.completed",
+        "usage": {"input_tokens": 120, "output_tokens": 30,
+                  "cached_input_tokens": 20, "cost": 0.0042},
+    }
+
+
+def test_remote_credential_stream_does_not_write_key_to_script(tmp_path, monkeypatch, capsys):
+    script = tmp_path / "remote.sh"
+    marker = "__GARDEN_TEST_KEY__"
+    script.write_text(f"key={marker}\nbrief={marker}\n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "provider secret")
+    monkeypatch.setattr(
+        "sys.argv", ["garden.credential_stream", str(script), marker, "OPENROUTER_API_KEY"]
+    )
+
+    assert stream_credential() == 0
+    assert capsys.readouterr().out == f"key='provider secret'\nbrief={marker}\n"
+    assert script.read_text() == f"key={marker}\nbrief={marker}\n"
+
+
+def test_openrouter_defaults_and_probe_use_provider_configuration():
+    harness = Harness("openrouter", {"models": {
+        "easy": "openrouter/qwen/qwen3-coder", "medium": "openrouter/openai/gpt-5",
+    }})
+    assert harness.api_key_env == "OPENROUTER_API_KEY"
+    assert harness.max_turns_for("easy") == 0
+    argv, prompt = harness.login_probe()
+    assert prompt == "Reply with the single word: ready."
+    assert 'model_provider="openrouter"' in argv
+    assert 'sandbox_mode="read-only"' in argv
+    assert argv[argv.index("--") + 1:][argv[argv.index("--") + 1:].index("-m") + 1] == "qwen/qwen3-coder"
+
+
+def test_openrouter_rejects_unsafe_api_key_environment_name():
+    with pytest.raises(ValueError, match="environment variable name"):
+        _ = Harness("openrouter", {"api_key_env": "KEY=value"}).api_key_env
 
 
 def test_claude_spend_limit_is_a_quota_env_error():

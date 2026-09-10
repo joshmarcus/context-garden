@@ -114,7 +114,7 @@ of the loop touch different files.
 | `scheduler/quota.py` | harness-level pause: a quota/spend-limit `env_error` (Harness.parse) pauses dispatch for that one harness instead of failing the task; a cheap synchronous probe (`Runner.probe`) resumes it. Tier and review pools skip paused members. |
 | `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build; note a merge, upgrade, auto-upgrade on an idle tick |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
-| `harness.py` | harness definitions and output parsing |
+| `harness.py`, `openrouter_adapter.py`, `credential_stream.py` | harness definitions and output parsing; the OpenRouter Responses proxy that enforces per-run turn limits and captures provider usage/cost; one-shot credential transport for remote launches |
 | `resource_reclaim.py` | the bounded cgroup v2 cache-reclaim helper: verifies the opened cgroup identity, writes one timed `memory.reclaim` request, and publishes measured before/after headroom without granting admission itself |
 | `runner/base.py` | shared runner lifecycle helpers |
 | `runner/local.py` | the local worker runner backend |
@@ -192,6 +192,36 @@ worker environment, and is followed by a fresh clean-tree/branch readiness check
 default remains linked worktrees.
 Persona reviews of a phase are written into the garden itself, under
 `<phase>/docs/reviews/`, where the planner reads them next time.
+
+### OpenRouter harness
+
+`harnesses.openrouter` uses Codex as the maintained agent and tool loop and points its
+OpenAI-compatible Responses provider at OpenRouter. It is a named harness so work pools,
+review pools, personas, and retros can route to it independently. `api_key_env` defaults to
+`OPENROUTER_API_KEY`; the runner sends that one value to the adapter through a one-shot
+descriptor after setup, while the ordinary worker and ancestor process environments remain
+scrubbed. SSH launches first remove the key from the remote environment and substitute it
+only into the transient input stream, never the saved remote script. Codex JSONL remains the raw
+`stdout.json` transcript. A loopback proxy observes Responses usage, forwards the request
+with the provider key (Codex receives only a local placeholder), and appends the aggregate
+provider usage event. Its final message becomes `final.md`, and response usage plus the
+provider-reported `usage.cost` are persisted in `run.json`.
+The selected difficulty tier's `max_turns` bounds forwarded Responses calls for both new
+and resumed Codex runs; an attempted call beyond the cap stops the adapter with an error.
+The garden-facing `openrouter/vendor/model` identifier is passed to the provider as its
+native `vendor/model` name.
+
+```yaml
+harnesses:
+  openrouter:
+    api_key_env: OPENROUTER_API_KEY
+    base_url: https://openrouter.ai/api/v1
+    max_turns: 80
+    models:
+      easy: openrouter/qwen/qwen3-coder
+      medium: openrouter/anthropic/claude-sonnet-4
+      hard: openrouter/openai/gpt-5
+```
 
 Run metadata is indexed in process and shared by scheduler/read facades. A writer in the
 process invalidates its task bucket immediately and touches that bucket for other processes;
