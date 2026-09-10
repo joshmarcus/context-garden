@@ -123,6 +123,16 @@ def test_release_reservation_reclaims_the_batch(garden):
     assert store.reserved_ids() == {}
 
 
+def test_released_reservation_batch_can_be_reused_by_an_abandoned_rerun(garden):
+    store = Store(garden)
+    owner = "retro:demo/p1"
+    abandoned = store.reserve_ids("demo", 2, owner=owner)
+
+    assert store.release_reservation(owner) == abandoned
+    assert store.reserve_ids("demo", 2, owner=owner) == abandoned
+    assert set(store.reserved_ids()) == set(abandoned)
+
+
 def test_prune_reservations_drops_ids_that_became_task_files(garden):
     store = Store(garden)
     store.reserve_ids("demo", 2, owner="retro:demo/p1")  # DM-003, DM-004
