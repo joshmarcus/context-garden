@@ -20,10 +20,10 @@ from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
 from ...model import effective_owner
- from ...runs import Run
- from ...workers import WorkerContactStore
- from ...workers import snapshot as worker_snapshot
- from ...transcripts import DEFAULT_MAX_BYTES, TranscriptError, TranscriptStore
+from ...runs import Run
+from ...transcripts import DEFAULT_MAX_BYTES, TranscriptError, TranscriptStore
+from ...workers import WorkerContactStore
+from ...workers import snapshot as worker_snapshot
 from ..common import Site
 
 
