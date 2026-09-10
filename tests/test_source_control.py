@@ -16,6 +16,28 @@ from garden.source_control import (
     SourceControlProvider,
 )
 
+VALID_TEST_CA = """-----BEGIN CERTIFICATE-----
+MIIDNzCCAh+gAwIBAgIUUFVvHjdzAMiA3IINu9jhs7AUP6wwDQYJKoZIhvcNAQEL
+BQAwKzEpMCcGA1UEAwwgY29udGV4dC1nYXJkZW4gc3ludGhldGljIHRlc3QgQ0Ew
+HhcNMjYwOTEwMTMwMjAyWhcNMzYwOTA3MTMwMjAyWjArMSkwJwYDVQQDDCBjb250
+ZXh0LWdhcmRlbiBzeW50aGV0aWMgdGVzdCBDQTCCASIwDQYJKoZIhvcNAQEBBQAD
+ggEPADCCAQoCggEBAJck/ZuqSqG5Y5cBDdKbqwQdHQwXQ2nISDIhraFX43zCf56e
+k13DaC+FJuXnuzlhgGjOEeLU8rkdvKHkK9FHTXSHQMDTlHbx7Zz4wjuKm0iBwzMh
+b1KMzzvPcWb3pgVPWgXm29fHEJR493aA7DUWKegX7Lvzoy9wn/JRyepsaGj69M9r
+MOMo5ufKpk6mXtA/RdkgGpp7MzRogtPTuoabKe/CE+c8tI5GAmhmeVigvwBxBgqL
+HAz++3oeWRhOzDiT/Lb+br54N67fRth5OKGNyUS7TnruND2q6YgSN1+/dAo/EQVx
+Gj1cQA4wjudK5povqJ/aKcEyCEt1+QMVg5+ju9ECAwEAAaNTMFEwHQYDVR0OBBYE
+FKk28TDNCybaRE+V6TDEfLk4QzcyMB8GA1UdIwQYMBaAFKk28TDNCybaRE+V6TDE
+fLk4QzcyMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAAawlFSe
+Z3v3/Iw8zVeMC2srkGKlEe85SsW+ICWnCt+OkReXGv+/xUjypQiD/Ie9QKpZeTiw
+0BW2QTx3KdeP1fEvVpRUbLc9P9NoJiQoEv2A6P3wDWOSTutnE7hpnuDdKPesbc77
+hrRvqRlxOb2/UH7oear87M5vH6r7XM6DlKCTeduqczsq3duvy4MIdQQRN5R5RphP
+tnCNHrksLFdSfq4R/EuiD1e8rBhN5rcVvsConBs7S6zI/GTjX/n3ZxPdPTBxQg3K
+wLRGNszvaR1xuPn9b+0vIYHHTEmKQZlxCLV5Q1VU45Ace3141bX4QWI0L/LJashe
+qc+WexuUU9R9IbU=
+-----END CERTIFICATE-----
+"""
+
 
 def test_provider_contract_accepts_two_synthetic_providers():
     class SyntheticProvider:
@@ -58,7 +80,7 @@ def test_provider_contract_accepts_two_synthetic_providers():
 
 def test_connection_policy_scopes_custom_ca_and_proxy(tmp_path):
     bundle = tmp_path / "private-ca.pem"
-    bundle.write_text("-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n")
+    bundle.write_text(VALID_TEST_CA)
     policy = ConnectionPolicy(
         "https://forge.test", "https://forge.test/api", credential_env="FORGE_TOKEN",
         ca_bundle=str(bundle), proxy="https://proxy.test",
@@ -84,6 +106,31 @@ def test_connection_policy_rejects_invalid_ca(tmp_path):
     bundle = tmp_path / "not-a-ca.pem"
     bundle.write_text("verification=false")
     with pytest.raises(ValueError, match="PEM"):
+        ConnectionPolicy("https://forge.test", "https://forge.test/api", ca_bundle=str(bundle))
+
+
+@pytest.mark.parametrize("suffix", ["fixture", "-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----"])
+def test_connection_policy_rejects_non_certificate_bundle_content(tmp_path, suffix):
+    bundle = tmp_path / "mixed-ca.pem"
+    bundle.write_text(VALID_TEST_CA + suffix)
+    with pytest.raises(ValueError, match="PEM certificate bundle"):
+        ConnectionPolicy("https://forge.test", "https://forge.test/api", ca_bundle=str(bundle))
+
+
+def test_connection_policy_rejects_malformed_certificate_block(tmp_path):
+    bundle = tmp_path / "malformed-ca.pem"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n")
+    with pytest.raises(ValueError, match="invalid PEM certificate"):
+        ConnectionPolicy("https://forge.test", "https://forge.test/api", ca_bundle=str(bundle))
+
+
+def test_connection_policy_rejects_one_malformed_certificate_in_bundle(tmp_path):
+    bundle = tmp_path / "partly-malformed-ca.pem"
+    bundle.write_text(
+        VALID_TEST_CA
+        + "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n"
+    )
+    with pytest.raises(ValueError, match="invalid PEM certificate"):
         ConnectionPolicy("https://forge.test", "https://forge.test/api", ca_bundle=str(bundle))
 
 
@@ -131,7 +178,7 @@ def test_authentication_failure_does_not_echo_response_or_token(monkeypatch):
 
 def test_provider_neutral_product_config_preserves_non_default_base_and_trust(tmp_path):
     bundle = tmp_path / "ca.pem"
-    bundle.write_text("-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n")
+    bundle.write_text(VALID_TEST_CA)
     config = Config(tmp_path, {
         "products": {"demo": {
             "base_branch": "release/next",
