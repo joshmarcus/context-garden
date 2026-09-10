@@ -8,8 +8,8 @@ import fnmatch
 import hashlib
 import json
 import os
-import re
 import random
+import re
 import shlex
 import shutil
 import signal
@@ -481,6 +481,17 @@ def _recovered_heartbeat_cause(run: dict[str, Any], failure: BaseException) -> s
     return "controller_unavailable"
 
 
+def _execution_deadline_expired(run: dict[str, Any]) -> bool:
+    """Whether this claim's fixed execution authority has expired locally."""
+    try:
+        deadline = dt.datetime.fromisoformat(str(run.get("execution_deadline_at") or ""))
+    except (TypeError, ValueError):
+        return False
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=dt.UTC)
+    return deadline <= dt.datetime.now(dt.UTC)
+
+
 class _LeaseHeartbeat:
     """Renew a claim while any host-side stage is running."""
 
@@ -846,6 +857,25 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
                 continue
             while (not exit_path.exists()
                    and _supervisor_identity_matches(supervisor_pid, supervisor_birth)):
+                if _execution_deadline_expired(run):
+                    _stop_recovered_supervisor(
+                        supervisor_pid, supervisor_birth, sleep=sleep,
+                    )
+                    quarantine = path.parent / "quarantine"
+                    quarantine.mkdir(exist_ok=True)
+                    path.replace(quarantine / path.name)
+                    if client.events:
+                        client.events.emit(
+                            "execution_recovery_quarantined", run_id=str(run["id"]),
+                            work_state="recovering", cause="execution_deadline",
+                            exit_reason="execution_deadline_expired",
+                            recovery_outcome="supervisor_terminated_without_replay",
+                            operator_action=(
+                                "verify lease generation and execution deadline, then inspect "
+                                "the quarantined active claim"
+                            ),
+                        )
+                    break
                 try:
                     heartbeat.ensure_not_failed()
                 except BaseException as exc:
@@ -898,8 +928,7 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
                 try:
                     _publish_claim_result(
                         run, root, repo, heartbeat, final=final, parsed=parsed,
-                        usage=collected.get("usage") or {}, cost=collected.get("cost_usd"),
-                        error=str(collected.get("error") or ""), rc=rc,
+                        usage=usage, cost=cost, error=error, rc=rc,
                         execution_dir=execution_dir,
                     )
                 except Exception as exc:
