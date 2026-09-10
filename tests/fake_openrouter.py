@@ -1,71 +1,72 @@
 #!/usr/bin/env python3
-"""Fake the Codex/OpenRouter adapter boundary used by the CG-302 smoke test.
-
-The selected adapter is still ``codex exec``; this executable stands in for Codex so the
-test spends no provider tokens.  Its request contract is:
-
-* argv starts with ``exec --json --skip-git-repo-check``;
-* Codex config selects ``model_provider=\"openrouter\"`` and defines that provider's
-  ``name``, ``base_url``, API-key environment variable, and ``wire_api=\"responses\"``;
-* ``-m`` carries an OpenRouter model id and stdin carries the garden brief.
-
-With those settings the real Codex CLI makes an OpenAI Responses-compatible request to
-``<base_url>/responses``.  OpenRouter returns the Responses event stream; Codex, rather
-than garden, drives tool calls and translates it into its documented ``--json`` JSONL.
-This fake emits that translated response payload: ``thread.started``, an
-``item.completed`` agent message containing the final ``GARDEN_RESULT``, and
-``turn.completed`` usage.  ``Harness.parse`` then extracts the last agent message and
-passes its marker to ``garden.brief.parse_result``.
-"""
-
+"""Offline Codex/OpenRouter boundary used by harness and scheduler tests."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
+import subprocess
 import sys
+from collections.abc import Mapping
+from pathlib import Path
 
 
 def _config(args: list[str]) -> dict[str, str]:
     values: dict[str, str] = {}
     for index, arg in enumerate(args[:-1]):
-        if arg != "-c":
-            continue
-        key, separator, value = args[index + 1].partition("=")
-        if separator:
-            values[key] = value.strip('"')
+        if arg == "-c":
+            key, separator, value = args[index + 1].partition("=")
+            if separator:
+                values[key] = value.strip('"')
     return values
 
 
-def main() -> int:
-    args = sys.argv[1:]
+def handle(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> int:
     config = _config(args)
-    required = {
-        "model_provider": "openrouter",
-        "model_providers.openrouter.name": "OpenRouter",
-        "model_providers.openrouter.wire_api": "responses",
-    }
-    if args[:3] != ["exec", "--json", "--skip-git-repo-check"]:
+    key_name = config.get("model_providers.openrouter.env_key", "")
+    required = {"model_provider": "openrouter", "model_providers.openrouter.name": "OpenRouter",
+                "model_providers.openrouter.wire_api": "responses"}
+    if not args or args[0] != "exec" or any(config.get(k) != v for k, v in required.items()):
         return 2
-    if any(config.get(key) != value for key, value in required.items()):
+    if not config.get("model_providers.openrouter.base_url") or not key_name or not env.get(key_name):
         return 2
-    if not config.get("model_providers.openrouter.base_url"):
+    model = args[args.index("-m") + 1] if "-m" in args else ""
+    if not model or not brief.strip():
         return 2
-    if config.get("model_providers.openrouter.env_key") != "OPENROUTER_API_KEY":
-        return 2
-    if "-m" not in args or not sys.stdin.read().strip():
-        return 2
-
-    final = 'GARDEN_RESULT: {"status":"done","summary":"OpenRouter adapter smoke passed"}'
+    if "GARDEN_REVIEW:" in brief:
+        final = 'GARDEN_REVIEW: {"verdict":"approve","summary":"OpenRouter checked it","description_ok":true,"findings":[]}'
+    elif "GARDEN_PERSONA:" in brief:
+        final = 'GARDEN_PERSONA: {"persona":"operator","score":9,"overall":"OpenRouter persona complete","findings":[]}'
+    elif brief == "Reply with the single word: ready.":
+        final = "ready"
+    else:
+        (cwd / "openrouter-output.txt").write_text(f"model={model}\n")
+        if (cwd / ".git").exists():
+            subprocess.run(["git", "add", "-A"], cwd=cwd, env=dict(env), check=True)
+            subprocess.run(["git", "-c", "user.email=fake@example.com", "-c", "user.name=fake",
+                            "commit", "-q", "-m", "openrouter change"], cwd=cwd, env=dict(env), check=True)
+        final = 'GARDEN_RESULT: {"status":"done","summary":"OpenRouter completed the run","pr_title":"OpenRouter change","pr_body":"body"}'
+    final_path = Path(args[args.index("--output-last-message") + 1]) if "--output-last-message" in args else None
     events = [
-        {"type": "thread.started", "thread_id": "openrouter-smoke"},
+        {"type": "thread.started", "thread_id": "openrouter-fake"},
         {"type": "item.completed", "item": {"type": "agent_message", "text": final}},
-        {"type": "turn.completed", "usage": {
-            "input_tokens": 12, "cached_input_tokens": 2, "output_tokens": 5,
-        }},
+        {"type": "turn.completed", "model": model, "usage": {
+            "input_tokens": 120, "cached_input_tokens": 20, "output_tokens": 30, "cost": 0.0042}},
     ]
     for event in events:
         print(json.dumps(event))
+    if final_path:
+        final_path.write_text(final)
     return 0
 
 
+def run(args: list[str], brief: str, cwd: Path, env: Mapping[str, str]) -> tuple[str, str, int | None]:
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = handle(list(args), brief, Path(cwd), env)
+    return out.getvalue(), err.getvalue(), code
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(handle(sys.argv[1:], sys.stdin.read(), Path.cwd(), dict(os.environ)))
