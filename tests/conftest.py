@@ -346,6 +346,9 @@ def garden(tmp_path: Path, garden_template: tuple[Path, Path]) -> Path:
         "max_revisions": 2,
         "revision_policy": {"enabled": False, "every": 2, "decision_after": 6},
         "max_parallel": 2,
+        # Most tests are about other scheduler responsibilities. Storage-admission tests
+        # explicitly enable the production 20 GiB default with deterministic probes.
+        "resources": {"disk_reserve_bytes": 0},
         "timeout_minutes": 1,
         "review": {"enabled": False},
         "github": {"draft_pr": False},  # most tests exercise the non-draft flow; test_triage covers drafts
