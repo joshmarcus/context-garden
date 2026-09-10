@@ -16,6 +16,7 @@ from typing import Any
 from ..config import no_live_garden_root
 from ..runs import Run
 from ..validation import bounded_validation_timeout_seconds
+from ..workload_identity import WorkloadIdentityError, subprocess_authority
 from .base import Runner, RunnerError, run_temp_dir, scrubbed_env
 
 
@@ -110,7 +111,26 @@ class LocalRunner(Runner):
             (d / "setup_input.json").write_text(json.dumps(setup))
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
-        self.launch(run, worktree, brief_path, env)
+        try:
+            with subprocess_authority(
+                self.config, "worker", f"automation:{run.run_id}", env,
+            ) as (execution_env, metadata):
+                if metadata is not None:
+                    (d / "workload_identity.json").write_text(json.dumps(metadata.__dict__))
+                    boundary = self.config["workload_identity"]["references"][
+                        self.config["workload_identity"]["boundaries"]["worker"]["reference"]
+                    ]
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_BINDINGS"] = ",".join(
+                        str(name) for name in boundary["bindings"]
+                    )
+                self.launch(run, worktree, brief_path, execution_env)
+        except WorkloadIdentityError as exc:
+            # Complete through the ordinary reap path. It will restore the attempt/revision
+            # snapshot and classify this as host environment trouble, not author failure.
+            (d / "identity_error.json").write_text(json.dumps({"error": str(exc)}))
+            (d / "exit_code").write_text("1\n")
+            run.status = "running"
+            run.save()
 
     def launch(self, run: Run, worktree: Path, brief_path: Path, env: dict[str, str]) -> None:
         """Start the harness detached: a shell runs it in the worktree with the brief on
@@ -191,6 +211,12 @@ class LocalRunner(Runner):
 
     def collect(self, run: Run) -> dict[str, Any]:
         assert self.harness is not None
+        identity_error = run.path / "identity_error.json"
+        if identity_error.exists():
+            detail = json.loads(identity_error.read_text())
+            return {"final_text": "", "usage": {}, "cost_usd": None, "session_id": "",
+                    "result": {}, "error": detail["error"], "env_error": True,
+                    "env_kind": "workload_identity"}
         return self.harness.parse(run.stdout_text(), run.stderr_text(), run.path / "final.md", model=run.model)
 
     def probe(self, cwd: Path) -> dict[str, Any]:

@@ -27,6 +27,7 @@ import shlex
 import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from unittest.mock import patch
 
 from garden.runner.base import RunnerError
 from garden.runner.local import LocalRunner
@@ -50,13 +51,16 @@ class InProcessRunner(LocalRunner):
     name = "local"
 
     def launch(self, run: Run, worktree: Path, brief_path: Path, env: dict[str, str]) -> None:
+        from garden.run_supervisor import setup_environment
         from garden.runner.base import run_setup
 
         assert self.harness is not None
         d = run.path
         setup_input = d / "setup_input.json"
         if setup_input.exists():
-            run_setup(worktree, json.loads(setup_input.read_text()), log_path=d / "setup.log", env=env)
+            with patch.dict(os.environ, env, clear=True):
+                setup_env = setup_environment()
+            run_setup(worktree, json.loads(setup_input.read_text()), log_path=d / "setup.log", env=setup_env)
         argv = self.harness_argv(run, worktree, d / "final.md")
         if argv[1:3] == ["-m", "garden.openrouter_adapter"]:
             argv = argv[argv.index("--") + 1:]
