@@ -872,7 +872,14 @@ class CheckRunMixin:
             return
         self._dispatch_check_run(
             task, worktree=scratch, branch=branch, base=base, specs=specs, stage="scratch_merge", rep=rep,
-            cont={"scratch": str(scratch), "diff_h": diff_h})
+            cont={
+                "scratch": str(scratch),
+                "diff_h": diff_h,
+                # The sibling setup marker outlives this throwaway path. Bind it to this
+                # materialisation so a later scratch merge at the same path cannot reuse it.
+                # Check retries retain the continuation and safely reuse this generation.
+                "setup_cache_key": uuid.uuid4().hex,
+            })
 
     def _after_scratch_merge_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
         """Reap the hard-tier scratch-merge check. Green: record this revision as verified (keyed

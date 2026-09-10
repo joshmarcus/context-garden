@@ -63,12 +63,35 @@ def test_run_setup_reruns_when_worktree_is_recreated_at_same_path(tmp_path):
     tally = tmp_path / "count.txt"
     setup = {"command": f"echo x >> {tally}"}
     run_setup(wt, setup, cache_key="probe-generation-1")
+    run_setup(wt, setup, cache_key="probe-generation-1")
     wt.rmdir()
     wt.mkdir()
 
     run_setup(wt, setup, cache_key="probe-generation-2")
 
     assert tally.read_text() == "x\nx\n"
+
+
+def test_setup_cache_is_isolated_between_concurrent_task_names(tmp_path):
+    worktrees = [tmp_path / "worktrees" / name for name in ("TASK-1", "TASK-10")]
+    for worktree in worktrees:
+        worktree.mkdir(parents=True)
+    tallies = [tmp_path / f"{worktree.name}.txt" for worktree in worktrees]
+
+    threads = [
+        threading.Thread(
+            target=run_setup,
+            args=(worktree, {"command": f"echo {worktree.name} >> {tally}"}),
+        )
+        for worktree, tally in zip(worktrees, tallies, strict=True)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(2)
+
+    assert [tally.read_text() for tally in tallies] == ["TASK-1\n", "TASK-10\n"]
+    assert setup_marker(worktrees[0]) != setup_marker(worktrees[1])
 
 
 def test_setup_that_changes_worktree_directory_still_caches(tmp_path):

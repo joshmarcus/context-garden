@@ -6,6 +6,7 @@ from __future__ import annotations
 from garden import gitops
 from garden.events import EventLog
 from garden.model import Status, Task
+from garden.runner.base import run_setup, setup_marker
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -100,6 +101,54 @@ def test_hard_tier_scratch_check_runs_then_merges(sched, fake_github):
 
     evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["scratch_merge"])
     assert any(e.get("resolved") is True for e in evs)
+
+
+def test_recreated_scratch_checkout_reruns_setup_before_check(sched, fake_github, tmp_path):
+    """A stale sibling marker cannot skip setup in a new scratch materialisation.
+
+    The configured check requires the environment created by setup, so merging proves the stale
+    command stamp did not skip setup for the replacement checkout.
+    """
+    task = sched.store.task("DM-001")
+    scratch = sched.worktree_for(task).parent / f"{sched.worktree_for(task).name}.scratch-merge"
+    tally = tmp_path / "scratch-setup-count.txt"
+    setup = {
+        "command": (
+            "mkdir -p .venv/bin; printf '#!/bin/sh\\nexit 0\\n' > .venv/bin/tool; "
+            f"chmod +x .venv/bin/tool; basename \"$PWD\" >> {tally}"
+        )
+    }
+    task, _, pr = _hard_in_review(sched, fake_github, rounds=1)
+    sched.cfg.data["products"]["demo"]["setup"] = setup
+    sched.cfg.data["checks"] = {
+        "pre_pr": [{
+            "name": "unit",
+            "command": ".venv/bin/tool",
+        }],
+        "ci": [],
+    }
+
+    # Reproduce an older completed scratch at the same path: removing the checkout leaves its
+    # external command-stamp marker, but removes the environment the setup command created.
+    repo = sched.repo_for(task)
+    gitops.add_detached_worktree(repo, scratch, gitops.rev_parse(repo, "HEAD"))
+    run_setup(scratch, setup)
+    gitops.remove_worktree(repo, scratch)
+    assert setup_marker(scratch).exists()
+
+    for _ in range(10):
+        sched.tick()
+        if pr.state == "MERGED":
+            break
+
+    assert pr.state == "MERGED"
+    scratch_runs = [
+        run for run in sched.runs.runs_for(task.id)
+        if run.mode == "check"
+        and run.worktree == str(scratch)
+    ]
+    assert len(scratch_runs) == 1
+    assert tally.read_text().splitlines().count(scratch.name) == 2  # stale generation + new one
 
 
 def test_hard_tier_scratch_check_failure_holds_the_merge(sched, fake_github):
