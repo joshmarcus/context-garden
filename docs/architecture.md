@@ -141,7 +141,7 @@ of the loop touch different files.
 | `gitops.py`, `canonical.py`, `github.py` | git worktrees and pushes; fenced in-place checkout leases and reconciliation; pull requests through `gh` or the REST API |
 | `release.py`, `cli/release.py` | installed distribution/source identity and local release-candidate checks; the `garden release validate` command verifies the versioned annotated tag, exact commit, CI evidence, release notes, and artifact digests before a human publishes a draft or prerelease |
 | `kickoff.py` | the kickoff brief and verdict parsing |
-| `planner.py`, `plants.py`, `notify.py`, `host_identity.py`, `upgrade.py`, `config.py`, `configuration.py` | the planning prompt and import; the botanical drawings; `notify.command`; host-alias and shared-text redaction boundary; the pinned install; configuration layering and editable-setting policy metadata |
+| `planner.py`, `plants.py`, `notify.py`, `notification_adapters.py`, `host_identity.py`, `upgrade.py`, `config.py`, `configuration.py` | the planning prompt and import; the botanical drawings; legacy notification hooks and typed, durable notification delivery; host-alias and shared-text redaction boundary; the pinned install; configuration layering and editable-setting policy metadata |
 | `web/app.py`, `web/common.py`, `web/trust.py`, `web/artifacts.py` | `create_app` and the template environment; the `Hub` (its `lock` held only by `tick()`, a separate `action_lock` held only by an action so a button press never waits for a pass), the `Site` (base template context, board data) and shared helpers; the HTML sanitiser behind `render_md`, the origin check on POSTs, and the inert artifact boundary. Design files and run captures use a restrictive sandbox CSP and `nosniff`; only a small preview allowlist is shown inline, while unknown formats download without entering the operator origin. |
 | `web/pages/api.py` | JSON task, recent-event, and decision-notification endpoints under `/api/`, backed by the task store and event log |
 | `web/pages/` | one module per page family (`now1`, `inbox`, `board`, `task`, `runs`, `trellis`, `trials`, `events`, `phase`, `config`, `api`), each registering its GET routes; `now1` also serves the page's partials and its server-sent-events stream |
@@ -709,7 +709,8 @@ after replacement attempt reinstall the prior commit, while the already-running 
 continues serving until a verified replacement can exec. The web rail and `garden status`
 show the commit actually installed in the serving interpreter alongside the pending state.
 
-**Held reloads (CG-242).** A change to an *executable* field — `notify.command`, `checks`
+**Held reloads (CG-242).** A change to an *executable* field — `notify.command`,
+`notify.destinations`, `checks`
 (including any check's `retry_command`), a product's `setup.command`, a harness's `bin`/
 `command`, or `worker_env.pass` (`config.executable_signature`) — is compared against the
 config every fenced run currently in flight (work/revise/resume/rebase; see the fence above)
@@ -754,23 +755,16 @@ with the recovered state. Active workers remain detached while the controller re
 
 Hitting a cap flags the task for a human instead of retrying.
 
-**`notify.command`** (`src/garden/notify.py`) is a shell command the scheduler runs
-whenever a task needs a human: `awaiting_triage` (once a pending review's verdict is
-known — see "Draft first" above), `waiting_human`, `failed`, `changes_requested` past
-`max_revisions`, plus `stalled`, `needs_human` and `budget` events. It gets the task in
-environment variables — `GARDEN_TASK_ID`, `GARDEN_STATUS`, `GARDEN_MESSAGE`, `GARDEN_PR`
-and `GARDEN_NOTIFICATION_JSON`. The JSON payload is built before the static command runs;
-it contains the fixed `notify.recipient`, task details and scrubbed message, so delivery
-commands can forward it without interpreting worker text or choosing a recipient from it.
-Quote `$GARDEN_NOTIFICATION_JSON` unchanged in the command. `notify.timeout_seconds`
-(default 30) bounds how long it may run. It is empty by
-default (no notifications); see `notify:` in `examples/garden.work.yaml` for a working
-example to copy. `garden doctor` runs the configured command for real, with a synthetic
-`GARDEN_TASK_ID=DOCTOR-TEST` payload, and reports whether it exited zero — a broken
-command (typo, missing binary, unreachable webhook) is caught there rather than the first
-time a task actually needs a human. At runtime, a command that exits non-zero, times out
-or fails to start does not stop the scheduler, but is logged as a warning (logger
-`garden.notify`) instead of failing silently.
+**Notifications** (`src/garden/notification_adapters.py`) deliver those human-needed events
+through named logical destinations in trusted `notify.destinations` configuration. An adapter
+receives a versioned typed event and a destination policy; worker text never selects either.
+The built-in `argv` adapter takes a fixed argument list and receives the filtered JSON event
+on stdin, so it never interpolates worker-authored text into a command. Each destination may
+select fields, is redacted before delivery, and has bounded timeout, retry and backoff
+settings. `.garden/notifications.json` separately records delivery outcome and retry state,
+so a failed destination neither rolls back a task transition nor loses its retry record;
+identical events are coalesced across restarts. `notify.command` remains the legacy hook when
+no typed destination is configured.
 
 ## `garden observe`: the operator's feed
 
