@@ -1681,7 +1681,6 @@ class RunStore:
                 os.replace(bucket_tmp, bucket)
             stat = bucket.stat()
             task_fingerprints[task] = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-        tmp = self.archive_dir / "index.json.tmp"
         self._durable_replace(
             self.archive_dir / "index.json",
             json.dumps({"version": 2, "tasks": task_fingerprints}, indent=2).encode(),
