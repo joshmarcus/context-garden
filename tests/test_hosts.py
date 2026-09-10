@@ -340,6 +340,27 @@ def test_interrupted_spot_host_is_retired_and_replaced_once_across_reconciliatio
     assert [event["kind"] for event in saved["events"]].count("interruption") == 1
 
 
+def test_stale_host_return_does_not_displace_or_rotate_replacement(tmp_path):
+    provider = FakeProvider()
+    spec = replace(pool(enabled=True, desired=1), purchase_policy="on_demand")
+    state = JsonStateStore(tmp_path / "state.json")
+    lifecycle = HostLifecycle({"fake": provider}, state)
+    original = lifecycle.reconcile(spec)[0]
+
+    provider.hosts.clear()
+    replacement = lifecycle.reconcile(spec)[0]
+    assert replacement.operation_id != original.operation_id
+
+    provider.hosts[original.provider_id] = original
+    reconciled = lifecycle.reconcile(spec)
+
+    active = [host for host in reconciled if host.state != HostState.TERMINATED]
+    assert [host.operation_id for host in active] == [replacement.operation_id]
+    assert lifecycle._operation_id(spec, 0) == replacement.operation_id
+    saved = state.read()
+    assert [event["kind"] for event in saved["events"]].count("stale_host_retired") == 1
+
+
 def test_provider_and_profile_options_are_namespaced_and_validated(tmp_path):
     lifecycle = HostLifecycle({"fake": FakeProvider()}, JsonStateStore(tmp_path / "state.json"))
     bad = pool(provider_options={"aws_region": "not portable"})

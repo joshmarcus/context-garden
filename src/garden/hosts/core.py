@@ -161,10 +161,7 @@ class HostLifecycle:
         return host_operation_id(pool, slot, seed)
 
     def _advance_replacement(self, pool: PoolDeclaration, host: HostFacts) -> None:
-        prefix = f"{pool.name}-"
-        if not host.host_id.startswith(prefix) or not host.host_id.removeprefix(prefix).isdigit():
-            raise ProviderError(f"interrupted host has invalid stable id {host.host_id!r}")
-        slot = host.host_id.removeprefix(prefix)
+        slot = str(self._host_slot(pool, host))
         with self.state.locked():
             data = self.state.read()
             generations = data.setdefault("replacement_generations", {})
@@ -173,6 +170,17 @@ class HostLifecycle:
             assert isinstance(pool_generations, dict)
             pool_generations[slot] = int(pool_generations.get(slot, 0)) + 1
             self.state.write(data)
+
+    @staticmethod
+    def _host_slot(pool: PoolDeclaration, host: HostFacts) -> int:
+        prefix = f"{pool.name}-"
+        slot = host.host_id.removeprefix(prefix)
+        if not host.host_id.startswith(prefix) or not slot.isdigit():
+            raise ProviderError(f"provider returned invalid stable host id {host.host_id!r}")
+        return int(slot)
+
+    def _is_current_generation(self, pool: PoolDeclaration, host: HostFacts) -> bool:
+        return host.operation_id == self._operation_id(pool, self._host_slot(pool, host))
 
     def _advance_missing_replacements(
         self, pool: PoolDeclaration, discovered: list[HostFacts]
@@ -278,14 +286,32 @@ class HostLifecycle:
         provider = self._provider(pool)
         hosts = sorted(provider.discover(pool.owner, pool.name), key=lambda h: h.host_id)
         loss_events = self._advance_missing_replacements(pool, hosts)
-        interrupted = [h for h in hosts if h.state == HostState.INTERRUPTED]
-        active = [h for h in hosts if h.state not in {HostState.INTERRUPTED, HostState.TERMINATED}]
+        current = [h for h in hosts if self._is_current_generation(pool, h)]
+        stale = [h for h in hosts if h not in current and h.state != HostState.TERMINATED]
+        interrupted = [h for h in current if h.state == HostState.INTERRUPTED]
+        active = [
+            h for h in current if h.state not in {HostState.INTERRUPTED, HostState.TERMINATED}
+        ]
         events: list[HostEvent] = loss_events
         failures: list[HostFacts] = []
         retirements: list[HostFacts] = []
+        for host in stale:
+            self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
+            retired = provider.destroy(
+                host.provider_id, delete_storage=not pool.profile.persistent_workspace
+            )
+            retirements.append(retired)
+            events.append(
+                HostEvent(
+                    "stale_host_retired",
+                    host.host_id,
+                    retired.state,
+                    "host operation generation was superseded",
+                )
+            )
         for host in interrupted:
             events.append(HostEvent("interruption", host.host_id, host.state, host.detail))
-            self.policy.authorize("destroy", self._declaration(pool, 0))
+            self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
             retired = provider.destroy(
                 host.provider_id, delete_storage=not pool.profile.persistent_workspace
             )
