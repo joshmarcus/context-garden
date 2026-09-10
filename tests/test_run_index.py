@@ -304,6 +304,41 @@ def test_archive_round_trip_preserves_summary_and_artifacts(tmp_path: Path):
     assert rs.totals()["runs"] == 1
 
 
+def test_archive_compresses_and_deduplicates_large_artifacts_byte_exactly(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    payload = (b"historical fence state\n" * 1000) + bytes(range(256))
+    runs = [_finished(rs, "CG-001", f"run-{n}", 1.0) for n in range(2)]
+    for run in runs:
+        (run.path / "fence_guard").mkdir()
+        (run.path / "fence_guard" / ".garden__state.json").write_bytes(payload)
+
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 2
+    blobs = list((rs.archive_dir / "blobs").glob("*/*.gz"))
+    assert len(blobs) == 1
+    report = rs.archive_report()
+    assert report["logical_blob_bytes"] == len(payload) * 2
+    assert report["stored_blob_bytes"] == blobs[0].stat().st_size
+    assert report["actual_savings_bytes"] > 0
+    archived = rs.runs_for("CG-001")
+    for run in archived:
+        assert run.read_bytes("fence_guard/.garden__state.json") == payload
+        assert not (run.path / "fence_guard" / ".garden__state.json").exists()
+    assert rs.restore_archived("CG-001", "run-0")
+    assert (rs.dir / "CG-001" / "run-0" / "fence_guard" / ".garden__state.json").read_bytes() == payload
+
+
+def test_corrupt_archive_blob_fails_closed_without_hiding_accounting(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    (run.path / "stdout.json").write_bytes(b"x" * 5000)
+    rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC))
+    next((rs.archive_dir / "blobs").glob("*/*.gz")).write_bytes(b"corrupt")
+
+    assert RunStore(tmp_path).totals()["cost_usd"] == 7.0
+    with pytest.raises(HistoryUnavailable, match="unavailable"):
+        RunStore(tmp_path).all_runs()[0].stdout_text()
+
+
 def test_archive_retains_active_and_recovery_referenced_runs(tmp_path: Path):
     rs = RunStore(tmp_path)
     protected = _finished(rs, "CG-001", "20260101T000000Z-work")
