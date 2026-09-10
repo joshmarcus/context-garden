@@ -152,5 +152,7 @@ class AuxMixin:
             self.store.save(task)
             rep.transitions.append(f"{task.id} compare paused (env_error)")
             return
-        self.log(f"{entry.get('task')}: {note} (not requeued: no per-task queue for a phase-level review)")
-        rep.transitions.append(f"{entry.get('task')} {kind} paused (env_error, not retried)")
+        if kind == "persona" and entry.get("target") == "phase":
+            self._record_retro_persona_failure(run, str(entry.get("persona") or ""), note)
+        self.log(f"{entry.get('task')}: {note} (waiting for an explicit phase-review retry)")
+        rep.transitions.append(f"{entry.get('task')} {kind} paused (env_error, retry available)")
