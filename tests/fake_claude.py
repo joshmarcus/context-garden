@@ -662,6 +662,9 @@ def done_result(call: Call) -> dict:
 
 
 def run_worker(call: Call, worker: Worker) -> None:
+    context_dump = call.env.get("FAKE_CLAUDE_CONTEXT_DUMP", "")
+    if context_dump:
+        Path(context_dump).write_text(call.context)
     if call.resumed:
         (call.cwd / "resumed.txt").write_text(call.brief)  # the resume prompt (contains the answer)
     if worker.early and worker.early(call):

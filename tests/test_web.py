@@ -309,6 +309,9 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     assert run is not None and run.runner == "manual" and run.mode == "work"
     packet = c.get("/tasks/DM-001/packet")
     assert packet.status_code == 200 and "DM-001" in packet.text
+    context_line = next(line for line in packet.text.splitlines() if "export GARDEN_CONTEXT_DIR=" in line)
+    context_dir = Path(context_line.split("export GARDEN_CONTEXT_DIR=", 1)[1].split("`", 1)[0])
+    assert "Do the first thing" in (context_dir / "context/task.md").read_text()
     task_page = c.get("/tasks/DM-001").text
     assert "Manual session claimed" in task_page and "Finish manual session" in task_page
     assert "Mark done without merging" not in task_page
@@ -368,6 +371,28 @@ def test_inbox_claims_eligible_manual_work_once_and_keeps_waiting_work_safe(gard
     assert finished.status_code == 200 and "DM-001 manual session finished" in finished.text
     assert Store(garden).task("DM-001").status == Status.FAILED
     assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
+
+
+def test_manual_revision_packet_resolves_frozen_contract_and_findings(garden):
+    from garden.runner.manual import ManualRunner
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.body += "\n\n## Acceptance criteria\n\n- [ ] Keep the assigned contract.\n"
+    task.status = Status.CHANGES_REQUESTED
+    task.branch = task.default_branch()
+    store.save(task)
+    scheduler = Scheduler(store)
+    scheduler.state.get(task.id)["pending_feedback"] = "- preserve the exact reviewer finding"
+    scheduler.state.save()
+    scheduler.dispatch(task, mode="revise", runner=ManualRunner({}), worktree=False)
+
+    packet = client(garden).get("/tasks/DM-001/packet")
+    context_line = next(line for line in packet.text.splitlines() if "export GARDEN_CONTEXT_DIR=" in line)
+    context_dir = Path(context_line.split("export GARDEN_CONTEXT_DIR=", 1)[1].split("`", 1)[0])
+    assert "Keep the assigned contract" in (context_dir / "context/task.md").read_text()
+    assert "Keep the assigned contract" in (context_dir / "context/criteria.md").read_text()
+    assert "preserve the exact reviewer finding" in (context_dir / "context/review-findings.md").read_text()
 
 
 def test_shared_rail_keeps_the_active_build_out_of_the_inbox(garden, monkeypatch):
