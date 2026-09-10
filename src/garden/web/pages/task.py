@@ -78,7 +78,9 @@ def _design_files(task: Any, store: Any, state: dict[str, Any]) -> dict[str, lis
         except gitops.GitError:
             gitops.git("rev-parse", "--verify", task.branch, cwd=repo)
             head_ref = task.branch
-        names = gitops.git("diff", "--name-only", f"{base_ref}...{head_ref}", cwd=repo).splitlines()
+        names = gitops.git(
+            "diff", "--name-only", "--diff-filter=AM", f"{base_ref}...{head_ref}", cwd=repo,
+        ).splitlines()
     except Exception:  # noqa: BLE001
         return {"changed": [], "shared": []}
 
