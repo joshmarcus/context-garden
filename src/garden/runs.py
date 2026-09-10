@@ -334,38 +334,71 @@ class Run:
                 payload = stored
         except (OSError, ValueError):
             pass
-        specs = payload.get("specs") if isinstance(payload.get("specs"), list) else []
-        results = self.result.get("checks") if isinstance(self.result.get("checks"), list) else []
-        checks = []
-        for index, result in enumerate(results):
-            result = result if isinstance(result, dict) else {}
-            spec = specs[index] if index < len(specs) and isinstance(specs[index], dict) else {}
-            command = str(spec.get("command") or "")
-            if not command and spec.get("python"):
-                command = f"python check: {spec['python']}"
-            checks.append({
-                "name": str(result.get("name") or spec.get("name") or f"check {index + 1}"),
-                "command": command,
+        specs = [spec for spec in payload.get("specs", []) if isinstance(spec, dict)]
+        results = [result for result in self.result.get("checks", []) if isinstance(result, dict)]
+
+        def spec_name(spec: dict[str, Any]) -> str:
+            return str(spec.get("name") or spec.get("command") or spec.get("python") or "check")
+
+        def command(spec: dict[str, Any]) -> str:
+            if spec.get("command"):
+                return str(spec["command"])
+            if spec.get("python"):
+                return f"python check: {spec['python']}"
+            return ""
+
+        # Results normally preserve a spec's name, but setup and runner failures are emitted
+        # outside the spec list.  Positional pairing turns those failures into false claims
+        # about a configured command.  A name is sufficient only when it is unique on both
+        # sides; duplicate or unknown names remain visible as unassociated evidence.
+        spec_names = [spec_name(spec) for spec in specs]
+        result_names = [str(result.get("name") or "") for result in results]
+        associated: dict[int, dict[str, Any]] = {}
+        matched_results: set[int] = set()
+        for spec_index, name in enumerate(spec_names):
+            if spec_names.count(name) != 1 or result_names.count(name) != 1:
+                continue
+            result_index = result_names.index(name)
+            associated[spec_index] = results[result_index]
+            matched_results.add(result_index)
+
+        configured_checks = []
+        for index, spec in enumerate(specs):
+            result = associated.get(index)
+            configured_checks.append({
+                "name": spec_names[index],
+                "command": command(spec),
+                "status": str(result.get("status") or "incomplete") if result else "pending",
+                "summary": str(result.get("summary") or "") if result else "No result recorded.",
+                "details": str(result.get("details") or "") if result else "",
+            })
+        unmatched_results = [
+            {
+                "name": str(result.get("name") or f"result {index + 1}"),
                 "status": str(result.get("status") or "incomplete"),
                 "summary": str(result.get("summary") or ""),
                 "details": str(result.get("details") or ""),
-            })
+            }
+            for index, result in enumerate(results) if index not in matched_results
+        ]
         context = payload.get("ctx") if isinstance(payload.get("ctx"), dict) else {}
         source = str(self.source_head or context.get("head_sha") or self.start_head or "")
         active = self.status in {"requested", "preparing", "running"}
         completed = self.status == "done"
-        statuses = {check["status"] for check in checks}
+        statuses = {check["status"] for check in configured_checks + unmatched_results}
         passing = {"pass", "passed", "done", "ok"}
         if active:
             conclusion, next_action = "in progress", "Wait for the check runner to finish."
         elif not completed:
             conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
-        elif not checks:
+        elif statuses & {"fail", "failed", "error", "flaky"}:
+            conclusion, next_action = "needs attention", "Inspect the failing diagnostics, then fix or retry the check."
+        elif not configured_checks or unmatched_results or any(
+            check["status"] == "pending" for check in configured_checks
+        ):
             conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
         elif statuses <= passing:
             conclusion, next_action = "passed", "No action required."
-        elif statuses & {"fail", "failed", "error", "flaky"}:
-            conclusion, next_action = "needs attention", "Inspect the failing diagnostics, then fix or retry the check."
         else:
             conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
         exit_code = self.exit_code if self.exit_code is not None else self.read_exit_code()
@@ -375,7 +408,8 @@ class Run:
             "source": source,
             "branch": self.branch,
             "base": self.base,
-            "checks": checks,
+            "configured_checks": configured_checks,
+            "unmatched_results": unmatched_results,
             "conclusion": conclusion,
             "next_action": next_action,
         }

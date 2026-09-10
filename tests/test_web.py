@@ -2587,6 +2587,46 @@ def test_check_run_page_keeps_failure_and_missing_results_distinct(garden):
     assert "Inspect the run diagnostics and retry the check." in incomplete_body
 
 
+def test_check_run_page_keeps_pending_commands_and_setup_failure_unmatched(garden):
+    """Setup failures do not claim that a configured command ran."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status, run.exit_code = "done", 1
+    run.result = {"checks": [{
+        "name": "setup", "status": "fail", "summary": "setup command failed", "details": "missing compiler",
+    }]}
+    run.save()
+    (run.path / "checks_input.json").write_text(
+        '{"specs":[{"name":"unit","command":"pytest -q"},{"name":"lint","command":"ruff check src"}]}'
+    )
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "Configured checks" in body and "Unmatched outcomes" in body
+    assert "pytest -q" in body and "ruff check src" in body
+    assert body.count("No result recorded.") == 2
+    assert "setup command failed" in body and "missing compiler" in body
+    assert "These results are not associated with a configured command." in body
+
+
+def test_check_run_page_shows_configured_commands_while_running(garden):
+    """Configured commands remain visible before the runner reports any result."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status = "running"
+    run.save()
+    (run.path / "checks_input.json").write_text(
+        '{"specs":[{"name":"unit","command":"pytest -q"}]}'
+    )
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "in progress" in body and "Configured checks" in body
+    assert "pytest -q" in body and "pending" in body and "No result recorded." in body
+
+
 def test_inbox_shows_the_merge_queue(garden):
     from garden.events import EventLog
     from garden.scheduler import Scheduler

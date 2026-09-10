@@ -38,12 +38,20 @@
   <dl class="facts">
     <dt>source</dt><dd><span class="mono">{{ check_view.source or 'not recorded' }}</span>{% if check_view.branch %} · branch <span class="mono">{{ check_view.branch }}</span>{% endif %}{% if check_view.base %} → <span class="mono">{{ check_view.base }}</span>{% endif %}</dd>
   </dl>
-  {% if check_view.checks %}
-  <h3>Checks</h3>
-  <ul class="tl">{% for check in check_view.checks %}
-    <li><span class="k">{{ check.name }}</span><span><span class="pill s-{{ 'done' if check.status in ['pass', 'passed', 'done', 'ok'] else 'failed' }}">{{ check.status }}</span>{% if check.summary %} {{ check.summary }}{% endif %}{% if check.command %}<br><span class="mono">{{ check.command }}</span>{% else %}<br><span class="faint">command not recorded</span>{% endif %}{% if check.details %}<pre class="log">{{ check.details }}</pre>{% endif %}</span></li>
+  {% if check_view.configured_checks %}
+  <h3>Configured checks</h3>
+  <ul class="tl">{% for check in check_view.configured_checks %}
+    <li><span class="k">{{ check.name }}</span><span><span class="pill s-{{ 'done' if check.status in ['pass', 'passed', 'done', 'ok'] else ('running' if check.status in ['pending', 'incomplete'] else 'failed') }}">{{ check.status }}</span>{% if check.summary %} {{ check.summary }}{% endif %}{% if check.command %}<br><span class="mono">{{ check.command }}</span>{% else %}<br><span class="faint">command not recorded</span>{% endif %}{% if check.details %}<pre class="log">{{ check.details }}</pre>{% endif %}</span></li>
   {% endfor %}</ul>
-  {% else %}<p class="faint">No accepted check outcome has been recorded yet.</p>{% endif %}
+  {% endif %}
+  {% if check_view.unmatched_results %}
+  <h3>Unmatched outcomes</h3>
+  <p class="faint">These results are not associated with a configured command.</p>
+  <ul class="tl">{% for result in check_view.unmatched_results %}
+    <li><span class="k">{{ result.name }}</span><span><span class="pill s-{{ 'done' if result.status in ['pass', 'passed', 'done', 'ok'] else ('running' if result.status == 'incomplete' else 'failed') }}">{{ result.status }}</span>{% if result.summary %} {{ result.summary }}{% endif %}<br><span class="faint">command not recorded</span>{% if result.details %}<pre class="log">{{ result.details }}</pre>{% endif %}</span></li>
+  {% endfor %}</ul>
+  {% endif %}
+  {% if not check_view.configured_checks and not check_view.unmatched_results %}<p class="faint">No accepted check outcome has been recorded yet.</p>{% endif %}
   <p><strong>Next action:</strong> {{ check_view.next_action }}</p>
 </div>
 {% else %}
