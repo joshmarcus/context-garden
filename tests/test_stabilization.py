@@ -343,8 +343,8 @@ def test_sample_excludes_a_completed_merged_external_pr_from_unattended_work(sch
     start(phase, "build-a")
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.state, pr.head_sha, pr.merge_commit_sha = (
-        "MERGED", "verified-head", "verified-merge",
+    pr.state, pr.head_sha, pr.head_repo, pr.merge_commit_sha = (
+        "MERGED", "verified-head", "test/demo", "verified-merge",
     )
     monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)

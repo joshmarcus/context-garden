@@ -408,23 +408,19 @@ def take(
             err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
             raise typer.Exit(1)
         try:
-            info = sched.github.get_pr(slug, pr_number)
-        except Exception as e:  # GitHub clients expose provider-specific errors
-            err.print(f"[red]could not read PR: {e}[/red]")
+            sched._refuse_attachment_run_conflict(t)
+        except RuntimeError as e:
+            err.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
-        if branch and branch != info.head:
-            err.print(f"[red]--branch {branch} does not match PR head {info.head}[/red]")
-            raise typer.Exit(1)
-        branch = info.head
-    if external and not branch:
+    if external and not branch and not pr_url:
         err.print("[red]external work needs --branch or --pr[/red]")
         raise typer.Exit(1)
     try:
         run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree,
                              branch_override=branch, worktree_override=external_worktree,
                              completion_mode="pushed" if pushed_result else ("external" if external else "managed"),
-                             external_pr=info.url if pr_url else "",
-                             external_pr_number=info.number if pr_url else None)
+                             external_pr=pr_url,
+                             external_pr_number=pr_number if pr_url else None)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None

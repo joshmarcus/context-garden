@@ -316,42 +316,61 @@ def test_trellis_open_filter(garden):
     assert "DM_001" not in r.output and "DM_002" in r.output
 
 
-def test_pr_attach_resets_cached_pr_state(garden):
+def test_pr_attach_resets_cached_pr_state(garden, fake_github, monkeypatch):
     """CG-174: attaching a PR by hand resets every cached PR fact so the scheduler follows the
     newly attached PR from the next poll instead of stale state left over from an old one."""
+    import garden.cli.state as state_cli
     from garden.scheduler import Scheduler
     from garden.store import Store
 
-    assert run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/71").exit_code == 0
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(state_cli, "_scheduler", lambda _: sched)
+    first = fake_github.create_pr("test/demo", "operator/one", "main", "first", "")
+    first.url = "https://github.com/test/demo/pull/101"
+    first.head_sha, first.head_repo = "first-head", "test/demo"
+    second = fake_github.create_pr("test/demo", "operator/two", "main", "second", "")
+    second.url = "https://github.com/test/demo/pull/102"
+    second.head_sha, second.head_repo = "second-head", "test/demo"
+    assert run(garden, "pr", "DM-001", first.url).exit_code == 0
     store = Store(garden)
-    sched = Scheduler(store)
-    st = sched.state.get("DM-001")
-    st["pr_number"] = 71
+    state_sched = Scheduler(store)
+    st = state_sched.state.get("DM-001")
+    st["pr_number"] = first.number
     st["pr_state"] = "CLOSED"
     st["head_sha"] = "deadbeef"
     st["review_run"] = "some-run-id"
     st["automerge_blocked"] = "stale reason"
-    sched.state.save()
+    state_sched.state.save()
 
-    r = run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/99")
+    r = run(garden, "pr", "DM-001", second.url)
     assert r.exit_code == 0 and "status=in_review" in r.output
 
     store.invalidate()
     t = store.task("DM-001")
-    assert t.pr == "https://github.com/test/demo/pull/99"
+    assert t.pr == second.url
     assert t.status.value == "in_review"
-    assert "pr_number 71 -> 99" in t.body
+    assert f"pr_number {first.number} -> {second.number}" in t.body
 
     st2 = Scheduler(Store(garden)).state.get("DM-001")
-    assert st2["pr_number"] == 99
-    for key in ("pr_state", "head_sha", "review_run", "automerge_blocked"):
+    assert st2["pr_number"] == second.number
+    assert st2["pr_state"] == "OPEN" and st2["head_sha"] == second.head_sha
+    for key in ("review_run", "automerge_blocked"):
         assert key not in st2
 
 
-def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden):
+def test_terminal_task_actions_are_refused_and_set_status_needs_force(garden, fake_github, monkeypatch):
     """CG-142: done/cancelled are terminal on the CLI too. `garden set-status` is the only
     escape hatch, and it needs --force to move a task back out of one of them."""
-    assert run(garden, "pr", "DM-001", "https://github.com/test/demo/pull/71").exit_code == 0
+    import garden.cli.state as state_cli
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(state_cli, "_scheduler", lambda _: sched)
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "manual", "")
+    pr.url = "https://github.com/test/demo/pull/101"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
+    assert run(garden, "pr", "DM-001", pr.url).exit_code == 0
     assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
 
     for args in (("retry", "DM-001"), ("cancel", "DM-001"), ("review", "DM-001"), ("dispatch", "DM-001"),
@@ -1201,6 +1220,77 @@ def test_external_take_persists_pr_identity_and_can_finish_blocked(garden):
     assert RunStore(garden / ".garden").latest("DM-001").result["status"] == "blocked"
 
 
+def test_take_pr_refuses_identity_replacement_while_a_review_run_is_active(garden, fake_github, monkeypatch):
+    """`take --pr` must not replace an identity owned by an active non-worker run."""
+    import garden.cli.loop as loop
+    from garden.model import Status
+    from garden.runs import RunStore
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.branch = "operator/current"
+    task.pr = "https://github.com/test/demo/pull/11"
+    store.save(task)
+    sched = Scheduler(store, github=fake_github)
+    sched.state.get(task.id).update({"pr_number": 11, "head_sha": "current-head"})
+    sched.state.save()
+    review = RunStore(garden / ".garden").new_run(task.id, "local", mode="review")
+    review.status = "running"
+    review.save()
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    monkeypatch.setattr(fake_github, "get_pr", lambda *_: pytest.fail("conflicting attachment was looked up"))
+
+    result = run(garden, "take", task.id, "--pr", "https://github.com/test/demo/pull/12")
+
+    assert result.exit_code == 1
+    assert "active run" in result.output
+    reloaded = Store(garden).task(task.id)
+    assert reloaded.branch == "operator/current" and reloaded.pr.endswith("/11")
+    state = Scheduler(Store(garden)).state.get(task.id)
+    assert state["pr_number"] == 11 and state["head_sha"] == "current-head"
+
+
+def test_take_pr_uses_one_provider_snapshot_for_dispatch(garden, fake_github, monkeypatch):
+    """Movement after the attachment lookup cannot leave a rejected stale identity behind."""
+    import garden.cli.loop as loop
+    from garden.github import PRInfo
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    sched = Scheduler(Store(garden), github=fake_github)
+    monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
+    lookups = 0
+
+    def get_pr(_slug, number):
+        nonlocal lookups
+        lookups += 1
+        if lookups > 1:
+            raise AssertionError("PR attachment performed more than one provider lookup")
+        return PRInfo(
+            number=number,
+            url="https://github.com/test/demo/pull/12",
+            state="OPEN",
+            head="operator/verified",
+            head_sha="verified-head",
+            base="main",
+            head_repo="test/demo",
+        )
+
+    monkeypatch.setattr(fake_github, "get_pr", get_pr)
+
+    result = run(garden, "take", "DM-001", "--pr", "https://github.com/test/demo/pull/12", "-q")
+
+    assert result.exit_code == 0, result.output
+    assert lookups == 1
+    task = Store(garden).task("DM-001")
+    assert task.branch == "operator/verified" and task.pr.endswith("/12")
+    state = sched.state.get(task.id)
+    assert state["pr_number"] == 12 and state["head_sha"] == "verified-head"
+
+
 @pytest.mark.parametrize("url", [
     "https://gitlab.com/test/demo/pull/1",
     "https://github.com/other/demo/pull/1",
@@ -1270,7 +1360,7 @@ def test_take_accepts_an_enterprise_pr_on_the_configured_host(garden, fake_githu
     monkeypatch.setattr(loop, "_scheduler", lambda _: sched)
     monkeypatch.setattr(fake_github, "get_pr", lambda slug, number: PRInfo(
         number=number, url="https://forge-one.test/test/demo/pull/71", state="OPEN",
-        head="operator/work", base="main", head_sha="a" * 40,
+        head="operator/work", head_sha="verified-head", base="main", head_repo="test/demo",
     ))
 
     result = run(garden, "take", "DM-001", "--pr", "https://forge-one.test/test/demo/pull/71", "-q")

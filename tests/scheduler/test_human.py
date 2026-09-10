@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from garden import gitops
-from garden.github import GitHubError, PRInfo
+from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status, now_iso
 from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
@@ -1203,7 +1203,7 @@ def test_external_open_pr_uses_claimed_identity_and_review_without_managed_workt
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     coincidental_path = sched.worktree_for(task)
     coincidental_path.mkdir(parents=True)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -1216,6 +1216,7 @@ def test_external_open_pr_uses_claimed_identity_and_review_without_managed_workt
     task = sched.store.task("DM-001")
     assert task.status == Status.IN_REVIEW and task.branch == "operator/fix"
     assert sched.state.get(task.id)["pr_number"] == pr.number
+    assert sched.state.get(task.id)["head_sha"] == pr.head_sha
     assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
 
 
@@ -1225,7 +1226,7 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
 
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
 
@@ -1235,19 +1236,18 @@ def test_external_claim_persists_actual_identity_before_finish(sched, fake_githu
     assert sched.state.get(task.id)["pr_number"] == pr.number
 
 
-def test_external_claim_stores_a_safe_provider_identity_without_a_browser_url(sched, fake_github):
-    """Provider identities are accepted after the CLI has verified their PR number."""
+def test_external_claim_rejects_a_provider_identity_without_a_browser_url(sched):
+    """An opaque provider identity cannot substitute for an immutable PR lookup."""
     task = sched.store.task("DM-001")
     provider_url = "https://provider.test/api/pull-requests/opaque-identity"
-    pr = fake_github.create_pr("test/demo", "operator/actual", "main", "external", "")
-    pr.head_sha = "verified-head"
 
-    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
-                   branch_override="operator/actual", completion_mode="external",
-                   external_pr=provider_url, external_pr_number=pr.number)
+    with pytest.raises(RuntimeError, match="accessible PR URL"):
+        sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                       branch_override="operator/actual", completion_mode="external",
+                       external_pr=provider_url, external_pr_number=101)
 
-    assert sched.store.task(task.id).pr == provider_url
-    assert sched.state.get(task.id)["pr_number"] == pr.number
+    assert sched.store.task(task.id).pr == ""
+    assert not sched.runs.all_runs()
 
 
 @pytest.mark.parametrize("url", [
@@ -1266,6 +1266,66 @@ def test_external_claim_rejects_unsafe_provider_identity_before_persistence(sche
 
     assert sched.store.task(task.id).pr == ""
     assert not sched.runs.all_runs()
+
+
+def test_attach_pr_refuses_a_checkout_owned_by_an_active_run(sched, fake_github):
+    task = sched.store.task("DM-001")
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False, branch_override="operator/live",
+                   completion_mode="external")
+    pr = fake_github.create_pr("test/demo", "operator/replacement", "main", "external", "")
+
+    with pytest.raises(RuntimeError, match="active run"):
+        sched.attach_pr(task, pr.url)
+
+
+def test_attach_pr_recovers_a_stale_running_task_without_an_active_run(sched, fake_github):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    pr = fake_github.create_pr("test/demo", "operator/recovered", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
+
+    sched.attach_pr(task, pr.url)
+
+    recovered = sched.store.task(task.id)
+    assert recovered.status == Status.IN_REVIEW
+    assert recovered.pr == pr.url
+    assert recovered.branch == pr.head
+
+
+def test_attached_pr_revision_keeps_the_verified_non_default_pr(sched, fake_github):
+    """An adopted PR receives an ordinary feedback revision, never a replacement PR."""
+    task = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    second.status = Status.DRAFT
+    sched.store.save(second)
+    pr = fake_github.create_pr("test/demo", "operator/adopted", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
+    repo = sched.repo_for(task)
+    gitops.git("checkout", "-q", "-b", pr.head, cwd=repo)
+    gitops.git("push", "-q", "-u", "origin", pr.head, cwd=repo)
+    gitops.git("checkout", "-q", "main", cwd=repo)
+
+    sched.attach_pr(task, pr.url)
+    pr.head_sha = "moved-before-revision"
+    fake_github.feedback[pr.number] = Feedback(
+        items=[{"kind": "review", "state": "CHANGES_REQUESTED", "author": "reviewer",
+                "body": "Please revise this adopted branch.", "created": "2099-01-01T00:00:00Z"}]
+    )
+
+    rep = sched.tick()
+    assert rep.dispatched == ["DM-001(revise)"]
+    assert statuses(sched)[task.id] == Status.RUNNING.value
+    assert sched.runs.latest(task.id).branch == pr.head
+
+    sched.tick()
+
+    assert statuses(sched)[task.id] == Status.IN_REVIEW.value
+    assert sched.store.task(task.id).pr == pr.url
+    assert sched.store.task(task.id).branch == pr.head
+    assert sched.state.get(task.id)["head_sha"] == "moved-before-revision"
+    assert fake_github.updated[-1]["number"] == pr.number
+    assert len(fake_github.created) == 1  # the synthetic attached PR, not a replacement
 
 
 def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sched, fake_github, tmp_path):
@@ -1392,6 +1452,42 @@ def test_pushed_manual_submitted_result_resumes_finalization_after_restart(sched
 
     assert restarted.store.task(task.id).status == Status.IN_REVIEW
     assert gitops.git("rev-parse", "HEAD", cwd=restarted.worktree_for(task)).strip() == pushed_sha
+def test_attach_pr_adopts_verified_identity_and_keeps_feedback_history(sched, fake_github):
+    task = sched.store.task("DM-001")
+    old = fake_github.create_pr("test/demo", "operator/old", "main", "old", "")
+    new = fake_github.create_pr("test/demo", "operator/non-default", "main", "new", "")
+    old.head_sha, old.head_repo = "old-head", "test/demo"
+    new.head_sha, new.head_repo = "new-head", "test/demo"
+    st = sched.state.get(task.id)
+    st.update({"pr_number": old.number, "head_sha": "stale", "review_run": "stale-run",
+               "automerge_blocked": "stale queue", "pending_feedback": "- keep this request"})
+    sched.state.save()
+
+    sched.attach_pr(task, new.url)
+
+    reloaded = sched.store.task(task.id)
+    state = sched.state.get(task.id)
+    assert reloaded.branch == "operator/non-default" and reloaded.pr == new.url
+    assert state["head_sha"] == new.head_sha and state["pr_number"] == new.number
+    assert state["pending_feedback"] == "- keep this request"
+    assert "review_run" not in state and "automerge_blocked" not in state
+
+
+@pytest.mark.parametrize("attribute, value, message", [
+    ("head", "", "resolved head branch and SHA"),
+    ("head_sha", "", "resolved head branch and SHA"),
+    ("head_repo", "", "verified head repository"),
+    ("head_repo", "another/fork", "fork head"),
+])
+def test_attach_pr_refuses_unusable_head_identity(sched, fake_github, attribute, value, message):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
+    setattr(pr, attribute, value)
+
+    with pytest.raises(RuntimeError, match=message):
+        sched.attach_pr(task, pr.url)
+    assert task.branch == "" and task.pr == ""
 
 
 def test_external_claim_refuses_pr_with_a_different_actual_branch(sched, fake_github):
@@ -1454,11 +1550,23 @@ def test_external_claim_refuses_incomplete_pr_metadata_without_creating_run(
     assert not sched.runs.runs_for(task.id)
 
 
+def test_external_completion_records_a_moved_head_on_the_same_pr(sched, fake_github):
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=pr.head, completion_mode="external", external_pr=pr.url)
+    pr.head_sha = "head-moved-outside-garden"
+
+    sched.finish_manual(task, {"status": "done", "pr": pr.url})
+
+    assert sched.store.task(task.id).pr == pr.url
+    assert sched.state.get(task.id)["head_sha"] == "head-moved-outside-garden"
 @pytest.mark.parametrize("error_type", [GitHubError, KeyError])
 def test_external_completion_pr_lookup_failure_is_audited(sched, fake_github, monkeypatch, error_type):
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
     def unavailable(*_):
@@ -1494,6 +1602,7 @@ def test_external_merged_pr_completes_without_rechecks_after_final_base_verifica
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "verified-head", "verified-merge"
+    pr.head_repo = "test/demo"
     monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: True)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -1540,6 +1649,7 @@ def _merged_external_topology(sched, fake_github, method: str, *, mismatch: bool
     gitops.git("push", "-q", "origin", "main", cwd=repo)
     pr = fake_github.create_pr("test/demo", branch, "main", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", head, merge_commit
+    pr.head_repo = "test/demo"
     return pr, head, merge_commit
 
 
@@ -1638,6 +1748,7 @@ def test_external_merged_pr_restacks_its_child(sched, fake_github, monkeypatch):
     child = sched.store.task("DM-002")
     pr = fake_github.create_pr("test/demo", "operator/merged", "main", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "verified-head", "verified-merge"
+    pr.head_repo = "test/demo"
     sched.state.get(child.id)["stack_parent"] = parent.id
     restacked: list[str] = []
     monkeypatch.setattr(gitops, "fetch", lambda _: True)
@@ -1655,6 +1766,7 @@ def test_external_stacked_merged_pr_is_not_completed_until_it_reaches_final_base
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/stacked", "parent-branch", "external", "")
     pr.state, pr.head_sha, pr.merge_commit_sha = "MERGED", "stacked-head", "stacked-merge"
+    pr.head_repo = "test/demo"
     monkeypatch.setattr(gitops, "fetch", lambda _: True)
     monkeypatch.setattr(gitops, "is_ancestor", lambda *_: False)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -1676,7 +1788,7 @@ def test_external_completion_git_guard_violation_is_refused_and_failed(sched, fa
     """External completion must not skip the metadata guard captured at dispatch."""
     task = sched.store.task("DM-001")
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.head_sha = "verified-head"
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
     created_before = len(fake_github.created)
     sched.dispatch(task, runner=ManualRunner({}), worktree=False,
                    branch_override=pr.head, completion_mode="external", external_pr=pr.url)
