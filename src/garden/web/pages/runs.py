@@ -95,13 +95,11 @@ def register(app: FastAPI, site: Site) -> None:
                 pass
         is_stream = _is_streamed_transcript(events, output)
         events = _transcript_events(events)
-        final_path = run.path / "final.md"
-        final_text = final_path.read_text() if final_path.exists() else ""
+        final_text = run.read_text("final.md")
         if not final_text:
             res = next((e for e in reversed(events) if e.get("type") == "result"), None)
             final_text = str((res or {}).get("result") or "")
-        brief_path = run.path / "brief.md"
-        brief_text = brief_path.read_text() if brief_path.exists() else ""
+        brief_text = run.read_text("brief.md")
         captures = [{"name": p.relative_to(run.path).as_posix(),
                      "href": f"/runs/{task_id}/{run_id}/captures/{p.relative_to(run.path).as_posix()}"}
                     for p in recorded_captures(run)]

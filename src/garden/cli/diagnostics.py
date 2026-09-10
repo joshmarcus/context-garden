@@ -87,8 +87,10 @@ def set_validation_capacity(
 @app.command("archive-runs", rich_help_panel=PANEL_DIAG)
 def archive_runs(
     older_than_days: int = typer.Option(30, min=1, help="Archive terminal runs finished before this many days ago."),
+    apply: bool = typer.Option(False, "--apply", help="Apply the previewed archive migration."),
+    limit: int = typer.Option(100, min=1, help="Maximum runs to move or resume per invocation."),
 ):
-    """Move old terminal runs to .garden/run-archive and keep a compact history index.
+    """Preview or compact old terminal runs into the lossless history archive.
 
     Running, unreaped, and run ids still referenced by recovery state are always retained.
     The operation is atomic per run and safe to retry; its index is rebuilt and verified
@@ -104,10 +106,21 @@ def archive_runs(
         err.print("[red]state.json is unreadable; refusing to archive recovery evidence[/red]")
         raise typer.Exit(2) from None
     rs = RunStore(store.config.garden_dir)
+    scheduler = _scheduler(store)
     protected = {r.run_id for r in rs.all_runs() if r.run_id in state_text}
+    protected.update(scheduler.unreaped_run_ids())
     before = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
+    preview = rs.archive_preview(before, protected, limit=limit)
+    console.print(
+        f"eligible: {preview['eligible_runs']} run(s), {preview['eligible_bytes']} logical bytes; "
+        f"estimated stored bytes: {preview['estimated_stored_bytes']}; "
+        f"skipped: {preview['skipped']}"
+    )
+    if not apply:
+        console.print("preview only; pass --apply to archive and compact these runs")
+        return
     try:
-        moved = rs.archive_terminal(before, protected)
+        moved = rs.archive_terminal(before, protected, limit=limit)
     except ValueError as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from None
@@ -115,6 +128,7 @@ def archive_runs(
         f"archived {moved} terminal run(s) finished before {before.isoformat()} to "
         f"{rs.archive_dir}; retained {len(protected)} recovery-referenced run(s)"
     )
+    console.print(f"archive storage: {rs.archive_report()}")
 
 
 @app.command("cleanup-branches", rich_help_panel=PANEL_DIAG)
@@ -198,10 +212,10 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         err.print("no runs")
         raise typer.Exit(1) from None
     console.print(f"[bold]{r.run_id}[/bold] status={r.status} dir={r.dir}")
-    final = r.path / "final.md"
-    if final.exists():
+    final = r.read_text("final.md")
+    if final:
         console.print("[bold]final message:[/bold]")
-        print("\n".join(final.read_text().splitlines()[-lines:]))
+        print("\n".join(final.splitlines()[-lines:]))
     stderr = r.stderr_text()
     if stderr.strip():
         console.print("[bold]stderr:[/bold]")

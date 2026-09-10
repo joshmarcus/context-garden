@@ -316,9 +316,9 @@ def register(app: FastAPI, site: Site) -> None:
         parts = [f"run {run.run_id}  status={run.status}  runner={run.runner}  mode={run.mode}  dir={run.dir}"]
         if run.error:
             parts.append(f"error: {run.error}")
-        final = run.path / "final.md"
-        if final.exists():
-            parts.append("---- final message ----\n" + final.read_text())
+        final = run.read_text("final.md")
+        if final:
+            parts.append("---- final message ----\n" + final)
         stderr = run.stderr_text()
         if stderr.strip():
             parts.append("---- stderr ----\n" + stderr[-8000:])
