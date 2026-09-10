@@ -464,6 +464,56 @@ def remote_head(worktree: Path, branch: str) -> str:
         return ""
 
 
+def local_head(repo: Path, branch: str) -> str:
+    """Return a local branch's head, or ``""`` when it is absent."""
+    try:
+        return git("rev-parse", "--verify", f"refs/heads/{branch}", cwd=repo).strip()
+    except GitError:
+        return ""
+
+
+def worktree_branches(repo: Path) -> set[str]:
+    """Branches currently checked out by any linked or main worktree."""
+    out = git("worktree", "list", "--porcelain", cwd=repo)
+    prefix = "branch refs/heads/"
+    return {line[len(prefix):] for line in out.splitlines() if line.startswith(prefix)}
+
+
+def delete_local_branch(repo: Path, branch: str, expected_head: str) -> bool:
+    """Delete a branch only while it still names ``expected_head``.
+
+    Git has no compare-and-delete porcelain for local refs, so ``update-ref -d`` supplies
+    the old object id as its atomic precondition. Missing refs are an idempotent success.
+    """
+    actual = local_head(repo, branch)
+    if not actual:
+        return False
+    if not expected_head or actual != expected_head:
+        raise LeaseRejected(branch, expected_head, actual)
+    git("update-ref", "-d", f"refs/heads/{branch}", expected_head, cwd=repo)
+    return True
+
+
+def delete_remote_branch(repo: Path, remote: str, branch: str, expected_head: str) -> bool:
+    """Delete a remote branch with an expected-head lease.
+
+    This uses the configured Git remote directly, so it works for non-``origin`` remotes
+    and enterprise providers. A stale tracking ref is never authority: ``ls-remote`` is
+    read immediately before the guarded push.
+    """
+    if not remote_url(repo, remote):
+        raise GitError(f"remote {remote!r} is not configured")
+    ref = f"refs/heads/{branch}"
+    line = git("ls-remote", "--heads", remote, ref, cwd=repo).strip()
+    actual = line.split()[0] if line else ""
+    if not actual:
+        return False
+    if not expected_head or actual != expected_head:
+        raise LeaseRejected(branch, expected_head, actual)
+    git("push", f"--force-with-lease={ref}:{expected_head}", remote, f":{ref}", cwd=repo)
+    return True
+
+
 def sync_to_origin_head(worktree: Path, branch: str, backup_ref: str) -> list[str]:
     """Before a revise, rebase or resume run starts (CG-220), bring `worktree` to
     `origin/<branch>`'s head: fetch, then hard-reset onto it, so the run starts from the same

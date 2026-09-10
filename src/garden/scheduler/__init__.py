@@ -38,6 +38,7 @@ from .aux import AuxMixin
 from .browser import BrowserMixin
 from .budget import BudgetMixin
 from .checkruns import CheckRunMixin
+from .cleanup import CleanupMixin
 from .discovered import DiscoveredMixin
 from .dispatch import DispatchMixin
 from .edits import EditsMixin
@@ -85,6 +86,7 @@ class Scheduler(
     ResourceMixin,
     ReapMixin,
     CheckRunMixin,
+    CleanupMixin,
     QueueMixin,
     RebaseMixin,
     FenceMixin,
@@ -823,6 +825,7 @@ class Scheduler(
                 self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
             self._guard(rep, "worktree sweep", lambda: self._sweep_terminal_worktrees(rep))
+            self._guard(rep, "branch sweep", lambda: self.sweep_worker_branches(rep))
             self._guard(rep, "stuck audit", lambda: self._audit_stuck(rep))
             self._guard(rep, "terminal sweep", lambda: self._sweep_terminal_state(rep))
             self._guard(rep, "id audit", lambda: self._audit_ids(rep))

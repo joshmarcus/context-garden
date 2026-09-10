@@ -96,6 +96,7 @@ of the loop touch different files.
 | `scheduler/state.py`, `scheduler/report.py`, `scheduler_health.py` | `State` (the `state.json` side-store with dirty-key merging), `TickReport` (per-pass duration and slowest step), and bounded standalone-watch heartbeat/process health |
 | `scheduler/reap.py` | `reap`, `finalize`, `_after_push`, `_open_or_update_pr`, retry-or-fail, the stall, the dead-run sweep (`reap_dead_runs`); starts the pre-PR check as a detached check run rather than running the suite in-tick |
 | `scheduler/checkruns.py` | checks as run records (CG-182): dispatch a `check` run and route its results through the pre-PR → base-probe → rebase-re-check state machine, so the tick never runs a product's suite itself |
+| `branch_cleanup.py`, `scheduler/cleanup.py` | provenance-based worker-branch inventory and bounded, lease-guarded local/remote cleanup; uncertain or still-referenced work is retained with a reason |
 | `scheduler/fence.py` | the worktree fence: snapshot at dispatch, check and revert at reap; the live config-reload gate that holds an executable-field change against an in-flight run's fence manifest (CG-242) |
 | `scheduler/discovered.py` | discovered tasks (deduplicated against open tasks in the phase and the next one), duplicate/cancel decision cards, friction and notes a worker reports |
 | `scheduler/review.py` | the automated review round (dispatch, reap the verdict, route it), superseding a still-running review on a new dispatch, and the orphan sweep |

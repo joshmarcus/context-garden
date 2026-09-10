@@ -649,6 +649,19 @@ def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_product_policies(data: dict[str, Any]) -> None:
     """Reject ambiguous branch-ownership and protected-path configuration early."""
+    branches = data.get("branches") or {}
+    if not isinstance(branches, dict):
+        raise ValueError("branches must be a mapping")
+    remote = branches.get("remote", "origin")
+    if not isinstance(remote, str) or not remote.strip():
+        raise ValueError("branches.remote must be a non-empty remote name")
+    protected_branches = branches.get("protected", [])
+    if (not isinstance(protected_branches, list)
+            or any(not isinstance(branch, str) or not branch.strip() for branch in protected_branches)):
+        raise ValueError("branches.protected must be a list of non-empty branch names")
+    cleanup_limit = branches.get("cleanup_limit", 20)
+    if isinstance(cleanup_limit, bool) or not isinstance(cleanup_limit, int) or cleanup_limit < 0:
+        raise ValueError("branches.cleanup_limit must be a non-negative integer")
     review = data.get("review") or {}
     if not isinstance(review, dict):
         raise ValueError("review must be a mapping")

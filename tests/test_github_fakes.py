@@ -48,7 +48,10 @@ def test_open_find_get_comment_update(fake_cls):
     assert isinstance(pr, PRInfo) and pr.state == "OPEN" and pr.head == "garden/feature"
 
     assert gh.find_pr("o/r", "garden/feature").number == pr.number
+    assert gh.find_open_pr("o/r", "garden/feature").number == pr.number
     assert gh.find_pr("o/r", "does-not-exist") is None
+    assert gh.find_open_pr("o/r", "does-not-exist") is None
+    assert gh.find_open_pr_by_base("o/r", "main").number == pr.number
     assert gh.get_pr("o/r", pr.number).number == pr.number
 
     gh.comment("o/r", pr.number, "a note")
@@ -56,6 +59,10 @@ def test_open_find_get_comment_update(fake_cls):
 
     gh.update_pr("o/r", pr.number, title="Renamed")
     assert gh.get_pr("o/r", pr.number).title == "Renamed"
+
+    gh.close_pr("o/r", pr.number)
+    assert gh.find_open_pr("o/r", "garden/feature") is None
+    assert gh.find_open_pr_by_base("o/r", "main") is None
 
     assert gh.feedback_since("o/r", pr.number, "") is not None
 
