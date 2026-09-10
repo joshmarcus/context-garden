@@ -487,6 +487,9 @@ class ResourceMixin:
             status = self.resource_status(include_next_disk=False, fresh_storage=True)
             self._record_resource_status(status)
             if status.pressured:
+                pressure = self.control().setdefault("resource_pressure", {"at": now_iso()})
+                pressure["operation"] = operation
+                self.state.save()
                 raise ResourcePressureError(
                     f"{operation} deferred by resource pressure: {'; '.join(status.pressure_reasons)}"
                 )

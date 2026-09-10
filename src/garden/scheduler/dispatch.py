@@ -706,12 +706,8 @@ class DispatchMixin:
         generated_context: Path | None = None
         if worktree and not runner.remote:
             if canonical_root is None:
-                try:
-                    self._recheck_local_materialization(run, f"{mode} checkout materialization")
-                    wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
-                except ResourcePressureError as exc:
-                    self._close_dispatch_failure(task, run, exc)
-                    raise
+                self._recheck_local_materialization(run, f"{mode} checkout materialization")
+                wt = gitops.prepare_worktree(self.repo_for(task), wt_path, branch, base)
             else:
                 wt = canonical_root
             # Operational design context belongs to this run, outside the checkout.  A
