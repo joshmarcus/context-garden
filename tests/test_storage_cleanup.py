@@ -81,11 +81,49 @@ def test_deletion_failure_is_recorded_and_links_never_followed(tmp_path):
         remove_owned_tree(root, link)
     assert (outside / "keep").exists()
 
-    cache = root / ".garden-home-X" / ".cache" / "pip"
+    intermediate = root / ".garden-home-X" / ".cache"
+    intermediate.parent.mkdir()
+    (outside / "pip").mkdir()
+    intermediate.symlink_to(outside, target_is_directory=True)
+    results = cleanup_home_caches(intermediate.parent, root, limit=1)
+    assert results[0]["outcome"] == "failed"
+    assert (outside / "keep").exists()
+
+    intermediate.unlink()
+    cache = intermediate / "pip"
     cache.mkdir(parents=True)
     results = cleanup_home_caches(cache.parents[1], root, limit=1,
                                   remove=lambda _root, _path: (_ for _ in ()).throw(OSError("busy")))
     assert results[0]["outcome"] == "failed" and results[0]["bytes_reclaimed"] == 0
+
+
+def test_interrupted_sweep_receipt_is_durable_and_reconciled(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.DONE
+    sched.store.save(task)
+    home = sched.cfg.worktrees_dir / ".garden-home-DM-001"
+    cache = home / ".cache" / "pip"
+    cache.mkdir(parents=True)
+    (cache / "wheel").write_bytes(b"x" * 4096)
+    old = time.time() - 3 * 86400
+    os.utime(home, (old, old))
+
+    def interrupted_cleanup(_home, _root, *, limit, on_result):
+        cache.rename(cache.with_name("pip-removed"))
+        on_result({"path": str(cache), "outcome": "removed", "bytes_reclaimed": 4096})
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("garden.scheduler.cleanup.cleanup_home_caches", interrupted_cleanup)
+    with pytest.raises(KeyboardInterrupt):
+        sched.sweep_storage(type("Report", (), {"transitions": []})(), apply=True, limit=1)
+
+    receipt = next((sched.cfg.garden_dir / "storage-cleanup").glob("*.json"))
+    interrupted = json.loads(receipt.read_text())
+    assert interrupted["status"] == "in_progress"
+    assert interrupted["results"][0]["path"] == str(cache)
+    assert interrupted["bytes_reclaimed"] == 4096
+    sched.sweep_storage(type("Report", (), {"transitions": []})(), apply=False, limit=0)
+    assert json.loads(receipt.read_text())["status"] == "interrupted"
 
 
 def test_storage_measurement_uses_allocated_bytes_and_reports_capabilities(tmp_path):

@@ -17,6 +17,7 @@ from ..storage_cleanup import (
     StorageItem,
     cleanup_home_caches,
     owned_child,
+    owned_directory,
     remove_owned_tree,
     space_status,
     tree_bytes,
@@ -75,7 +76,7 @@ class CleanupMixin:
                     )
                     eligible = bool(terminal_owner and task_id not in active and not worktree.exists()
                                     and age >= home_keep_days)
-                    disposable = any((path / relative).is_dir() and not (path / relative).is_symlink()
+                    disposable = any(owned_directory(path.parent, path / relative)
                                      for relative in DISPOSABLE_HOME_PATHS)
                     eligible = eligible and disposable
                     reason = ("completed task has no remaining worktree; disposable caches eligible" if eligible
@@ -178,7 +179,23 @@ class CleanupMixin:
         """Preview or incrementally reclaim eligible storage, with immediate rechecks."""
         limit = int(self.cfg.get("storage_cleanup.limit", 20) or 0) if limit is None else max(0, limit)
         before = self.storage_inventory(measure=measure)
+        self._reconcile_storage_audits()
         results: list[dict[str, Any]] = []
+        report = {"at": now_iso(), "status": "in_progress" if apply else "complete",
+                  "preview": not apply, "limit": limit, "inventory": before,
+                  "results": results, "bytes_reclaimed": 0}
+        audit_keep = int(self.cfg.get("storage_cleanup.audit_keep", 20) or 1)
+        audit_path = write_audit(self.cfg.garden_dir, report, keep=audit_keep)
+        report["audit_path"] = str(audit_path)
+        write_audit(self.cfg.garden_dir, report, keep=audit_keep, destination=audit_path)
+
+        def record(result: dict[str, Any]) -> None:
+            results.append(result)
+            report["bytes_reclaimed"] = sum(
+                int(row.get("bytes_reclaimed", 0)) for row in results
+            )
+            write_audit(self.cfg.garden_dir, report, keep=audit_keep, destination=audit_path)
+
         if apply:
             for item in before["items"]:
                 if len(results) >= limit or not item["eligible"]:
@@ -187,29 +204,29 @@ class CleanupMixin:
                 current = next((row for row in self.storage_inventory(measure=False)["items"]
                                 if row["path"] == str(path)), None)
                 if not current or not current["eligible"]:
-                    results.append({"path": str(path), "outcome": "retained",
-                                    "reason": current["reason"] if current else "ownership changed"})
+                    record({"path": str(path), "outcome": "retained",
+                            "reason": current["reason"] if current else "ownership changed"})
                     continue
                 if item["category"] == "worktree":
                     task = self.store.task(str(item["owner"]))
                     size = tree_bytes(path)
                     gitops.remove_worktree(self.repo_for(task), path)
                     outcome = "removed" if not path.exists() else "failed"
-                    results.append({"path": str(path), "outcome": outcome,
-                                    "bytes_reclaimed": size if outcome == "removed" else 0,
-                                    **({"error": "worktree remained after Git removal"} if outcome == "failed" else {})})
+                    record({"path": str(path), "outcome": outcome,
+                            "bytes_reclaimed": size if outcome == "removed" else 0,
+                            **({"error": "worktree remained after Git removal"} if outcome == "failed" else {})})
                 elif item["category"] == "worker_home":
                     remaining = limit - len(results)
-                    results.extend(cleanup_home_caches(path, path.parent, limit=remaining))
+                    cleanup_home_caches(path, path.parent, limit=remaining, on_result=record)
                 elif item["category"] == "run_temp":
                     size = tree_bytes(path)
                     try:
                         reclaimed = remove_owned_tree(path.parent, path)
-                        results.append({"path": str(path), "outcome": "removed",
-                                        "bytes_reclaimed": reclaimed})
+                        record({"path": str(path), "outcome": "removed",
+                                "bytes_reclaimed": reclaimed})
                     except (OSError, ValueError) as exc:
-                        results.append({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
-                                        "bytes_before": size, "error": str(exc)})
+                        record({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
+                                "bytes_before": size, "error": str(exc)})
                 elif item["category"] == "worktree_cache":
                     size = tree_bytes(path)
                     try:
@@ -217,19 +234,36 @@ class CleanupMixin:
                                                      self.cfg.garden_dir / "worktrees")
                                     if owned_child(root, path))
                         reclaimed = remove_owned_tree(root, path)
-                        results.append({"path": str(path), "outcome": "removed",
-                                        "bytes_reclaimed": reclaimed})
+                        record({"path": str(path), "outcome": "removed",
+                                "bytes_reclaimed": reclaimed})
                     except (OSError, ValueError) as exc:
-                        results.append({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
-                                        "bytes_before": size, "error": str(exc)})
-        report = {"at": now_iso(), "preview": not apply, "limit": limit, "inventory": before,
-                  "results": results, "bytes_reclaimed": sum(int(row.get("bytes_reclaimed", 0)) for row in results)}
-        audit_keep = int(self.cfg.get("storage_cleanup.audit_keep", 20) or 1)
-        report["audit_path"] = str(write_audit(self.cfg.garden_dir, report, keep=audit_keep))
+                        record({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
+                                "bytes_before": size, "error": str(exc)})
+        report["status"] = "complete"
+        write_audit(self.cfg.garden_dir, report, keep=audit_keep, destination=audit_path)
         self.state.get("__storage_cleanup__")["last_sweep"] = report
         for row in results:
             rep.transitions.append(f"{row['path']}: storage cleanup {row['outcome']}")
         return report
+
+    def _reconcile_storage_audits(self) -> None:
+        """Make a prior interrupted sweep explicit before beginning another one."""
+        audit_dir = self.cfg.garden_dir / "storage-cleanup"
+        if not audit_dir.is_dir() or audit_dir.is_symlink():
+            return
+        for path in sorted(audit_dir.glob("*.json")):
+            try:
+                report = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if report.get("status") != "in_progress":
+                continue
+            report["status"] = "interrupted"
+            report["reconciled_at"] = now_iso()
+            report["interruption_reason"] = "sweep did not publish a completion update"
+            write_audit(self.cfg.garden_dir, report,
+                        keep=int(self.cfg.get("storage_cleanup.audit_keep", 20) or 1),
+                        destination=path)
 
     def _branch_cleanup_remote(self) -> str:
         return str(self.cfg.get("branches.remote", "origin") or "origin")

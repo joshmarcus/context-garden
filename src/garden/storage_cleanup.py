@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import shutil
+import stat
 import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -51,13 +52,39 @@ def tree_bytes(path: Path) -> int:
     return total
 
 
-def owned_child(root: Path, child: Path) -> bool:
-    """Lexically prove child is below root; resolving would follow attacker-made links."""
+def _is_link_or_reparse(path: Path) -> bool:
+    """Inspect one component without following it, including Windows junctions."""
     try:
-        child.absolute().relative_to(root.absolute())
+        metadata = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+
+
+def owned_child(root: Path, child: Path) -> bool:
+    """Prove child is below root with no symlink/reparse component in the path."""
+    root = root.absolute()
+    child = child.absolute()
+    try:
+        relative = child.relative_to(root)
     except ValueError:
         return False
-    return child != root and not child.is_symlink()
+    if child == root or _is_link_or_reparse(root):
+        return False
+    current = root
+    for part in relative.parts:
+        current /= part
+        if _is_link_or_reparse(current):
+            return False
+    return True
+
+
+def owned_directory(root: Path, child: Path) -> bool:
+    """Return whether an existing child is a real directory under an unlinkable path."""
+    return owned_child(root, child) and child.is_dir()
 
 
 def remove_owned_tree(root: Path, path: Path) -> int:
@@ -105,26 +132,44 @@ def space_status(path: Path, *, probe_host: bool = True) -> dict[str, object]:
     return result
 
 
-def write_audit(garden_dir: Path, report: dict[str, object], *, keep: int = 20) -> Path:
-    """Durably publish each sweep result without replacing the previous evidence first."""
+def write_audit(garden_dir: Path, report: dict[str, object], *, keep: int = 20,
+                destination: Path | None = None) -> Path:
+    """Atomically and durably publish or update a sweep receipt."""
     audit_dir = garden_dir / "storage-cleanup"
     audit_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    destination = audit_dir / f"{stamp}.json"
+    is_new = destination is None
+    destination = destination or audit_dir / f"{stamp}.json"
     temporary = audit_dir / f".{stamp}.{os.getpid()}.tmp"
-    temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    with temporary.open("w") as stream:
+        stream.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, destination)
-    records = sorted(audit_dir.glob("*.json"))
-    for obsolete in records[:-max(1, keep)]:
+    try:
+        directory_fd = os.open(audit_dir, os.O_RDONLY)
         try:
-            obsolete.unlink()
-        except OSError:
-            pass
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        # Directory fsync is unavailable on some supported filesystems/platforms. The
+        # atomically replaced, fsynced file remains the strongest portable guarantee.
+        pass
+    if is_new:
+        records = sorted(audit_dir.glob("*.json"))
+        for obsolete in records[:-max(1, keep)]:
+            try:
+                obsolete.unlink()
+            except OSError:
+                pass
     return destination
 
 
 def cleanup_home_caches(home: Path, root: Path, *, limit: int,
-                        remove: Callable[[Path, Path], int] = remove_owned_tree) -> list[dict[str, object]]:
+                        remove: Callable[[Path, Path], int] = remove_owned_tree,
+                        on_result: Callable[[dict[str, object]], None] | None = None,
+                        ) -> list[dict[str, object]]:
     """Remove an allowlist of disposable caches, preserving credentials and model sessions."""
     results: list[dict[str, object]] = []
     for relative in DISPOSABLE_HOME_PATHS:
@@ -133,11 +178,14 @@ def cleanup_home_caches(home: Path, root: Path, *, limit: int,
         candidate = home / relative
         if not candidate.exists() and not candidate.is_symlink():
             continue
-        before = tree_bytes(candidate) if candidate.is_dir() and not candidate.is_symlink() else 0
+        before = tree_bytes(candidate) if owned_directory(root, candidate) else 0
         try:
             reclaimed = remove(root, candidate)
-            results.append({"path": str(candidate), "outcome": "removed", "bytes_reclaimed": reclaimed})
+            result = {"path": str(candidate), "outcome": "removed", "bytes_reclaimed": reclaimed}
         except (OSError, ValueError) as exc:
-            results.append({"path": str(candidate), "outcome": "failed", "bytes_reclaimed": 0,
-                            "bytes_before": before, "error": str(exc)})
+            result = {"path": str(candidate), "outcome": "failed", "bytes_reclaimed": 0,
+                      "bytes_before": before, "error": str(exc)}
+        results.append(result)
+        if on_result is not None:
+            on_result(result)
     return results
