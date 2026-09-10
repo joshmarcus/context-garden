@@ -30,6 +30,25 @@ CI analysis records its target head before starting. Results for a moved head or
 are retained as run evidence but cannot queue feedback for the new revision. Replaying a
 collected CI result after a restart does not create another revision or duplicate comments.
 Original verdicts, finding identities and repeated-finding stops remain part of the record.
+## Workload identity at operation boundaries
+
+`workload_identity.providers` and `workload_identity.references` are trusted local
+configuration and part of the executable configuration fence. Provider adapters declare
+interface version 1 and an exact capability set. A reference fixes its provider, operation,
+audience, maximum scopes, maximum lifetime, and either environment or HTTP-header bindings.
+Runtime code calls `WorkloadIdentityResolver.resolve` with the logical reference, operation,
+audience, automation run identity, requested lifetime, and optional narrower scopes.
+
+The returned object's public metadata contains only issuer, expiry, audience, scopes,
+provider, and automation identity. Its secret values can be applied only through the
+configured delivery method to the named subprocess environment or protocol request headers;
+they are excluded from representations and cleared when the operation context closes.
+Resolution, membership, expiry, renewal, validation, revocation, provider availability, and
+policy mismatches raise `WorkloadIdentityError`. Callers classify that as an environment
+failure and must not retry as an author revision or fall back to ambient credentials. Remote
+hosts construct the same resolver from host-local trusted configuration; claims, briefs,
+transcripts, and finish payloads carry neither provider registration nor authority values.
+
 ## Independent hosts
 
 With `runner: remote`, dispatch queues a run without launching a process. An independent

@@ -80,7 +80,7 @@ def no_live_garden_root(base: Path) -> str:
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
     "notify.command", "notify.recipient", "checks", "worker_env.pass",
-    "worker_env.config_files", "runner_adapters",
+    "worker_env.config_files", "runner_adapters", "workload_identity",
 )
 
 
@@ -192,6 +192,9 @@ DEFAULTS: dict[str, Any] = {
     # deliberately not imported while config is being read; resolution happens at runner
     # construction, after normal scheduler admission and fencing have already applied.
     "runner_adapters": {},
+    # Host-trusted provider adapters and logical, least-privilege delivery policies.
+    # Authority values are resolved only by operation-boundary code and never enter Config.
+    "workload_identity": {"providers": {}, "references": {}},
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
