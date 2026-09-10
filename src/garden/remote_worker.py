@@ -24,6 +24,7 @@ from .brief import parse_result
 from .harness import Harness
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
+from .workload_identity import WorkloadIdentityError, subprocess_authority
 
 
 class WorkerRequestError(RuntimeError):
@@ -366,7 +367,9 @@ def _finish_materialization_failure(run: dict[str, Any], heartbeat: _LeaseHeartb
     heartbeat.finish({
         "lease_token": run["lease_token"], "exit_code": 1, "final_text": "", "result": {},
         "usage": {}, "cost_usd": 0.0, "error": error, "pushed_head": "",
-        "env_error": True, "env_kind": "materialization",
+        "env_error": True,
+        "env_kind": ("workload_identity" if failure.stage == "workload identity"
+                     else "materialization"),
     })
 
 
@@ -479,11 +482,13 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         ) from exc
 
 
-def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "") -> None:
+def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "",
+                  host_config: dict[str, Any] | None = None) -> None:
     """Materialise one claim, run it, push it, and post its auditable outcome."""
     heartbeat = _LeaseHeartbeat(run, client)
     heartbeat.start()
     repo_lock = None
+    identity_operation = None
     try:
         try:
             repo_lock = _acquire_repo_lock(run, root)
@@ -498,6 +503,18 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             _finish_materialization_failure(run, heartbeat, failure)
             return
         setup = dict(run.get("setup") or {})
+        try:
+            identity_target = "check" if run.get("mode") == "check" else "worker"
+            identity_operation = subprocess_authority(
+                host_config or {}, identity_target, f"automation:{run['id']}", env,
+            )
+            execution_env, _identity_metadata = identity_operation.__enter__()
+        except WorkloadIdentityError as exc:
+            _finish_materialization_failure(
+                run, heartbeat, ClaimMaterializationError("workload identity", str(exc))
+            )
+            return
+        env = execution_env
         if run.get("mode") == "check":
             check_data = _host_check_data(run, repo)
             # A managed consumer passes the product command above so admission covers it.
@@ -627,6 +644,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                           "cost_usd": cost, "error": error, "pushed_head": head,
                           "validation_receipts": receipts})
     finally:
+        if identity_operation is not None:
+            identity_operation.__exit__(None, None, None)
         if repo_lock is not None:
             repo_lock.close()
         heartbeat.stop()

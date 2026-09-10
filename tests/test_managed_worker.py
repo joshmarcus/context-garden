@@ -136,11 +136,11 @@ def test_setup_runs_inside_host_slot_before_managed_work(tmp_path, monkeypatch):
     })
     monkeypatch.setattr(worker.AttributedClient, "post", lambda *args: (200, claim))
 
-    def execute(payload, root, client, *, setup_command=""):
+    def execute(payload, root, client, *, setup_command="", host_config=None):
         with pytest.raises(BlockingIOError):
             with host_slot(root):
                 pass
-        events.append((payload, setup_command))
+        events.append((payload, setup_command, host_config))
 
     monkeypatch.setattr(worker, "execute_claim", execute)
     worker.run({"work_dir": str(tmp_path), "endpoint": "https://garden.example",
@@ -148,7 +148,9 @@ def test_setup_runs_inside_host_slot_before_managed_work(tmp_path, monkeypatch):
                 "memory_reserve_mib": 1, "env_pass": ["GIT_SSH_COMMAND"],
                 "disk_reserve_mib": 1}, once=True)
 
-    assert events == [(claim, "prepare product")]
+    assert len(events) == 1
+    assert events[0][:2] == (claim, "prepare product")
+    assert events[0][2]["work_dir"] == str(tmp_path)
     assert claim["setup"]["timeout_seconds"] == 37
     assert claim["env_allowlist"] == ["PATH", "GIT_SSH_COMMAND"]
 

@@ -226,7 +226,7 @@ DEFAULTS: dict[str, Any] = {
     "runner_adapters": {},
     # Host-trusted provider adapters and logical, least-privilege delivery policies.
     # Authority values are resolved only by operation-boundary code and never enter Config.
-    "workload_identity": {"providers": {}, "references": {}},
+    "workload_identity": {"providers": {}, "references": {}, "boundaries": {}},
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel

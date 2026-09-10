@@ -488,6 +488,16 @@ def _record_execution_timeout(
     _write_execution_state(run_dir, status)
 
 
+def setup_environment() -> dict[str, str]:
+    """Exclude worker-bound authority from the setup subprocess."""
+    env = dict(os.environ)
+    names = env.pop("GARDEN_WORKLOAD_IDENTITY_BINDINGS", "").split(",")
+    for name in names:
+        if name:
+            env.pop(name, None)
+    return env
+
+
 def _run_setup(run_dir: Path) -> bool:
     payload = run_dir / "setup_input.json"
     if not payload.exists():
@@ -500,7 +510,7 @@ def _run_setup(run_dir: Path) -> bool:
         setup = data.get("setup", data)
         config = data.get("config", {}) if "setup" in data else {}
         run_setup(Path.cwd(), setup, log_path=run_dir / "setup.log",
-                  env=dict(os.environ), config=config)
+                  env=setup_environment(), config=config)
     except (OSError, ValueError, RunnerError) as exc:
         (run_dir / "stderr.log").write_text(f"{exc}\n")
         (run_dir / "exit_code").write_text("1")
