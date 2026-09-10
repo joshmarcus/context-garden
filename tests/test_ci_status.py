@@ -14,6 +14,16 @@ from garden.github import PRInfo
 from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 
 
+def completed_execution():
+    return {
+        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
+        "pid": 123, "owner_scoped": True, "owner": "run:test",
+        "execution_started_at": "2026-09-10T01:00:00+00:00",
+        "timeout_seconds": 900,
+        "deadline_at": "2026-09-10T01:15:00+00:00",
+    }
+
+
 def receipt(source_sha="new", command="pytest -q", exit_code=0):
     requested = ["pytest", "-q"]
     effective = [*requested, *POLICY_ADDOPTS]
@@ -32,7 +42,7 @@ def write_receipt(path, row, execution=None):
     row = {**row, "log_location": str(path.parent)}
     path.write_text(json.dumps(row))
     (path.parent / "execution.json").write_text(json.dumps(
-        {"state": "finished"} if execution is None else execution
+        completed_execution() if execution is None else execution
     ))
     (path.parent / "exit_code").write_text(str(row["exit_code"]))
     (path.parent / "stderr.log").write_text("")
@@ -138,7 +148,11 @@ def test_worker_check_requires_consistent_finished_supervisor_execution(tmp_path
         {"state": "running"},
         {"state": "timeout", "exit_code": 124},
         {"state": "done"},
+        {"state": "finished"},
         {"state": "finished", "exit_code": 1},
+        {**completed_execution(), "owner": ""},
+        {**completed_execution(), "deadline_at": "2026-09-10T01:14:59+00:00"},
+        {**completed_execution(), "owner_scoped": False},
     ]
 
     for execution in invalid_executions:
@@ -147,6 +161,19 @@ def test_worker_check_requires_consistent_finished_supervisor_execution(tmp_path
         status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
 
         assert status.state == "malformed" and status.exists_for_sha and not status.green
+
+
+def test_worker_check_accepts_complete_inherited_supervisor_execution(tmp_path):
+    result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "remote-0" / "result.json"
+    execution = completed_execution()
+    for key in ("slot", "limit", "requested_limit", "owner_scoped"):
+        execution.pop(key)
+    execution["inherited_lease"] = True
+    write_receipt(result, receipt(), execution)
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.green
 
 
 def test_worker_check_accepts_old_branch_authorized_stress_opt_in_receipt(tmp_path):
