@@ -173,7 +173,15 @@ class PersonaMixin:
         if entry.get("target") == "phase":
             phase = self.store.phase(str(entry["product"]), str(entry["phase"]))
             path = report_path(phase, name)
-            path.write_text(report_markdown(rev, f"{name} review of {phase.key}", run.run_id))
+            report = report_markdown(rev, f"{name} review of {phase.key}", run.run_id)
+            try:
+                source = gitops.head_sha(Path(run.worktree))
+            except gitops.GitError:
+                source = ""
+            if source:
+                footer = f"_garden persona run {run.run_id}_"
+                report = report.replace(footer, f"_garden phase source {source}_\n\n{footer}")
+            path.write_text(report)
             self.log(f"persona {name}: report written to {self.store.rel(path)}")
             rep.transitions.append(f"persona {name} report -> {self.store.rel(path)}")
             if entry.get("file_tasks"):

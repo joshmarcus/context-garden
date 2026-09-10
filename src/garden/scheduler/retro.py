@@ -45,6 +45,7 @@ from ..runs import Run
 from .report import TickReport
 
 _RUN_FOOTER_RE = re.compile(r"_garden persona run (\S+)_\s*$")
+_SOURCE_FOOTER_RE = re.compile(r"(?m)^_garden phase source ([0-9a-f]{40})_$")
 _SAFE_RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
@@ -68,6 +69,112 @@ class RetroMixin:
 
     def _retro_remove(self, entry: dict[str, Any]) -> None:
         self.state.get("_retro")["runs"] = [e for e in self._retro_list() if e is not entry]
+
+    def closing_review_status(self, phase: Phase) -> dict[str, Any]:
+        """Return the durable/operator-facing automatic closing-review state and policy.
+
+        Phase frontmatter may override the global switch with ``auto_closing_review`` and
+        records an owner gate with ``closing_review_approved``. Stabilization remains the
+        existing authoritative evidence gate; live canaries are intentionally not added.
+        """
+        active = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+        enabled = bool(phase.meta.get("auto_closing_review", self.cfg.get("retro.auto_start", False)))
+        personas = phase.meta.get("closing_review_personas") or self.cfg.get("retro.personas") or self.retro_default_personas()
+        configured = self.cfg.get("retro.prerequisites") or {}
+        prerequisites = phase.meta.get("closing_review_prerequisites") or configured.get(phase.key, [])
+        reasons: list[str] = []
+        if not enabled:
+            reasons.append("automatic closing review is disabled")
+        if phase.closed:
+            reasons.append(f"phase closed {phase.closed}")
+        if not phase.tasks:
+            reasons.append("phase has no tasks")
+        nonterminal = [t.id for t in phase.tasks if not t.status.terminal]
+        if nonterminal:
+            reasons.append("non-terminal tasks: " + ", ".join(nonterminal))
+        if phase.frozen and not bool(self.cfg.get("retro.allow_frozen", False)):
+            reasons.append(f"phase frozen {phase.frozen}")
+        for key in prerequisites:
+            try:
+                product, name = str(key).split("/", 1)
+                prerequisite = self.store.phase(product, name)
+            except (KeyError, ValueError):
+                reasons.append(f"prerequisite {key} is missing")
+            else:
+                if not prerequisite.closed:
+                    reasons.append(f"prerequisite {key} is not closed")
+        if self.cfg.get("retro.require_owner_approval", False) and not phase.meta.get("closing_review_approved"):
+            reasons.append("owner approval is required (set closing_review_approved in phase frontmatter)")
+        evidence_identity = ""
+        try:
+            from ..stabilization import gate, load_evidence
+
+            evidence = load_evidence(phase)
+            evidence_identity = str(evidence.get("build_sha") or "")
+            accepted, missing = gate(phase)
+            if not accepted:
+                reasons.append("stabilization evidence is unaccepted: " + "; ".join(missing))
+        except (OSError, ValueError) as exc:
+            reasons.append(f"stabilization evidence could not be read: {exc}")
+        if active:
+            return {"eligible": False, "stage": str(active.get("stage") or "queued"),
+                    "queued": True, "personas": list(active.get("personas") or personas),
+                    "source": str(active.get("source") or ""),
+                    "evidence": str(active.get("evidence") or evidence_identity),
+                    "reason": str(active.get("waiting_reason") or "")}
+        return {"eligible": not reasons, "stage": "eligible" if not reasons else "waiting",
+                "queued": False, "personas": list(personas), "source": "", "evidence": evidence_identity,
+                "reason": "; ".join(reasons)}
+
+    def queue_eligible_closing_reviews(self, rep: TickReport) -> None:
+        """Persist one idempotent request per newly eligible phase; admission happens later."""
+        for product in self.store.products():
+            for phase in product.phases:
+                status = self.closing_review_status(phase)
+                if not status["eligible"]:
+                    continue
+                source = self._current_phase_source(phase)
+                entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+                         "personas": status["personas"], "skip_personas": False,
+                         "next_phase": next_phase_name(phase.name), "self_product": self._self_product() or "",
+                         "stage": "queued", "persona_runs": {}, "automatic": True,
+                         "requested_at": now_iso(), "source": source,
+                         "evidence": status["evidence"], "no_file": False}
+                self._retro_list().append(entry)
+                self.events.emit("retro_queued", "", phase=phase.key, source=entry["source"],
+                                 evidence=entry["evidence"])
+                rep.transitions.append(f"retro {phase.key} queued")
+                self.state.save()
+
+    def _current_phase_source(self, phase: Phase) -> str:
+        probe = Task(path=self.store.root, id=f"_{phase.product}-{phase.name}", title="",
+                     product=phase.product, phase=phase.name)
+        base = self.final_base_for(probe)
+        try:
+            repo = self.repo_for(probe)
+            return gitops.rev_parse(repo, gitops.base_ref(repo, base))
+        except gitops.GitError:
+            return ""
+
+    def dispatch_queued_closing_reviews(self, rep: TickReport) -> None:
+        """Admit queued requests without pausing ordinary dispatch when capacity is unavailable."""
+        for entry in self._retro_list():
+            if entry.get("stage") != "queued":
+                continue
+            try:
+                if len(self.review_runs_active()) >= self.review_parallel_limit():
+                    raise RuntimeError(
+                        f"waiting for review capacity ({len(self.review_runs_active())}/"
+                        f"{self.review_parallel_limit()} running)"
+                    )
+                phase = self.store.phase(entry["product"], entry["phase_name"])
+                self._start_retro_entry(phase, entry)
+                entry.pop("waiting_reason", None)
+                rep.transitions.append(f"retro {phase.key} started")
+            except RuntimeError as exc:
+                entry["waiting_reason"] = str(exc)
+            self.state.save()
+            break
 
     def _persona_revs(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """The parsed marker verdict behind each persona's on-disk report: the rendered markdown
@@ -99,6 +206,21 @@ class RetroMixin:
                 continue
             out[name] = parse_persona(final_path.read_text())
         return out
+
+    def _reports_for_entry(self, phase: Phase, entry: dict[str, Any]) -> dict[str, Path]:
+        reports = persona_reports(phase, entry["personas"])
+        source = str(entry.get("source") or "")
+        if not source or not entry.get("automatic"):
+            return reports
+        fresh: dict[str, Path] = {}
+        for name, path in reports.items():
+            try:
+                match = _SOURCE_FOOTER_RE.search(path.read_text())
+            except OSError:
+                continue
+            if match and match.group(1) == source:
+                fresh[name] = path
+        return fresh
 
     def _persona_findings(self, phase: Phase, reports: dict[str, Path]) -> dict[str, list[dict[str, Any]]]:
         """One draft task per finding needs severity/area/suggestion (CG-187); pull them from
@@ -173,6 +295,12 @@ class RetroMixin:
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
         self.require_maintenance_running()
+        existing = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+        if existing:
+            if existing.get("stage") == "queued":
+                self._start_retro_entry(phase, existing)
+                self.state.save()
+            return existing
         self_prod = self._self_product()
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
@@ -197,20 +325,38 @@ class RetroMixin:
                                "personas that already have a report under docs/reviews/")
         entry: dict[str, Any] = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
                                  "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
-                                 "self_product": self_prod, "stage": "personas", "persona_runs": {},
+                                 "self_product": self_prod, "stage": "queued", "persona_runs": {},
                                  "no_file": bool(no_file)}
-        missing = [] if skip_personas else [n for n in names if n not in have]
         self._retro_list().append(entry)
+        self.state.save()
+        self._start_retro_entry(phase, entry)
+        return entry
+
+    def _start_retro_entry(self, phase: Phase, entry: dict[str, Any]) -> None:
+        """Prepare and start one persisted manual or automatic retro request."""
+        self.require_maintenance_running()
+        if not entry.get("self_product"):
+            raise RuntimeError("garden retro needs a product with `self: true`")
+        names = list(entry["personas"])
+        if entry.get("automatic") and not entry.get("persona_runs"):
+            source = self._current_phase_source(phase)
+            if not source:
+                raise RuntimeError("waiting for the accepted phase source identity")
+            entry["source"] = source
+        have = self._reports_for_entry(phase, entry)
+        missing = [] if entry.get("skip_personas") else [n for n in names if n not in have]
         if not missing:
             self._dispatch_reconcile(entry)
         else:
             for n in missing:
+                if n in entry["persona_runs"]:
+                    continue
                 run = self.dispatch_persona_phase(phase, n)
                 entry["persona_runs"][n] = run.run_id
+            entry["stage"] = "personas"
             self.events.emit("retro_started", "", phase=phase.key, personas=",".join(names),
                              running=",".join(missing), reuse=",".join(n for n in names if n in have))
         self.state.save()
-        return entry
 
     def _dispatch_reconcile(self, entry: dict[str, Any]) -> None:
         self.require_maintenance_running()
@@ -257,7 +403,7 @@ class RetroMixin:
             if entry.get("phase") != phase_key or entry.get("stage") != "personas":
                 continue
             phase = self.store.phase(entry["product"], entry["phase_name"])
-            have = persona_reports(phase, entry["personas"])
+            have = self._reports_for_entry(phase, entry)
             return {"done": len(have), "total": len(entry["personas"])}
         return None
 
@@ -270,7 +416,7 @@ class RetroMixin:
                     # persona it kicks off) must not mistake "no run recorded yet" for "done"
                     # and reconcile before every persona has even started.
                     phase = self.store.phase(entry["product"], entry["phase_name"])
-                    have = persona_reports(phase, entry["personas"])
+                    have = self._reports_for_entry(phase, entry)
                     if len(have) < len(entry["personas"]):
                         continue
                     probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",

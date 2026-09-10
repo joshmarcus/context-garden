@@ -289,6 +289,11 @@ DEFAULTS: dict[str, Any] = {
         "recovery_backoff_seconds": 30,  # linear delay before each recovered review admission
     },
     "retro": {
+        "auto_start": False,     # queue a phase-closing review once its declared gates pass
+        "personas": [],          # empty = the configured/built-in phase personas
+        "prerequisites": {},     # phase key -> phase keys which must already be closed
+        "require_owner_approval": False,
+        "allow_frozen": False,   # freezes are holds unless closing review explicitly opts in
         "difficulty": "hard",     # tier for persona reviews (phase and PR), the retro reconciliation and
                                   # trial comparisons; separate from review.difficulty so nobody has to
                                   # edit config before a retro
