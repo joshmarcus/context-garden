@@ -93,6 +93,10 @@ class Run:
     lease_updated_at: str = ""  # latest claim/heartbeat accepted by the controller
     final_received_at: str = ""  # authenticated remote result receipt
     claim_history: list[dict[str, Any]] = field(default_factory=list)
+    # One idle-poll identity and its exact response. Retransmission is valid only while
+    # this claim generation remains recoverable; the web boundary enforces that fence.
+    claim_request_id: str = ""
+    claim_response: dict[str, Any] = field(default_factory=dict)
     lease_expires_at: str = ""
     recovery_expires_at: str = ""  # same generation may reconnect until this durable deadline
     lease_token: str = ""  # unique claim generation; fences a stale worker after reclaim

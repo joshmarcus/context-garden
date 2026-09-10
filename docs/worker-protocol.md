@@ -39,6 +39,14 @@ with the bearer token named by `workers.hosts[].token_env`.
 - `POST /api/runs/claim` leases one compatible work, review, persona, or check run and
   returns its brief, mode, branch/base, repository URL, setup timeout, turn cap, and
   environment-variable allowlist.
+  Managed workers give each idle poll a random `claim_request_id` and retain it across
+  transport and retryable HTTP failures. The controller durably stores that identity with
+  the exact allocated lease response. A replay by the same host returns that response only
+  while its lease generation is still current and within its recovery deadline; completion,
+  expiry, host mismatch, or generation replacement returns a conflict. Backoff is capped at
+  five seconds, while authentication, validation, and other permanent responses remain
+  visible failures. Older workers without an identity remain accepted but cannot replay an
+  ambiguously lost response.
 - `POST /api/runs/<id>/heartbeat` renews the lease and appends transcript chunks. Claim
   returns a unique `lease_token`; every heartbeat and finish must echo it, so a worker from
   an expired claim cannot affect a run after it has been reclaimed, even on the same host.

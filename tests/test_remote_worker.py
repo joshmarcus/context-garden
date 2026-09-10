@@ -8,13 +8,14 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 from pathlib import Path
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from garden import gitops
+from garden import gitops, managed_worker
 from garden.remote_worker import (
     WorkerRequestError,
     _host_check_data,
@@ -62,6 +63,86 @@ def queued_run(store, task_id="DM-001"):
     run.branch, run.base, run.harness, run.model, run.difficulty = "garden/dm-001", "main", "claude", "small", "easy"
     RemoteRunner({"worker_env": store.config.get("worker_env")}, store.config.harness("claude")).start(run, store.root, "safe brief")
     return run
+
+
+def test_lost_successful_claim_response_replays_one_generation(garden, monkeypatch):
+    """A committed claim whose response is lost is allocated and executed exactly once."""
+    http, store = remote_client(garden, monkeypatch)
+    queued = queued_run(store)
+    calls = 0
+
+    class LostResponseClient:
+        def post(self, path, payload):
+            nonlocal calls
+            response = http.post(path, json=payload,
+                                 headers={"Authorization": "Bearer secret-token"})
+            calls += 1
+            if calls == 1:
+                assert response.status_code == 200
+                raise urllib.error.URLError("response lost after controller commit")
+            if response.status_code >= 400:
+                raise WorkerRequestError(response.status_code, response.text)
+            return response.status_code, response.json() if response.content else {}
+
+    executed = []
+    monkeypatch.setattr(managed_worker, "AttributedClient",
+                        lambda _config, _root: LostResponseClient())
+    monkeypatch.setattr(managed_worker, "resources", lambda _root: {
+        "memory_available_bytes": 2 * 1024**3,
+        "disk_free_bytes": 2 * 1024**3,
+    })
+    monkeypatch.setattr(managed_worker, "execute_claim",
+                        lambda claim, *_args, **_kwargs: executed.append(claim))
+    managed_worker.run({
+        "work_dir": str(garden.parent / "managed-host"),
+        "endpoint": "https://garden.example",
+        "worker_token": "secret-token",
+        "host": "build-1",
+        "harnesses": ["claude"],
+        "memory_reserve_mib": 1,
+        "disk_reserve_mib": 1,
+    }, once=True)
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+
+    assert [claim["id"] for claim in executed] == [queued.run_id]
+    assert calls == 2
+    assert saved.lease_token == executed[0]["lease_token"]
+    assert len(saved.claim_history) == 1
+
+
+def test_claim_request_replay_fences_host_generation_and_expiry(garden, monkeypatch):
+    http, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+    payload = {"host": "build-1", "harnesses": ["claude"],
+               "claim_request_id": "stable-request-identity"}
+    first = http.post("/api/runs/claim", json=payload,
+                      headers={"Authorization": "Bearer secret-token"})
+    assert first.status_code == 200
+
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    saved.host = "build-2"
+    saved.save()
+    wrong_host = http.post("/api/runs/claim", json=payload,
+                           headers={"Authorization": "Bearer secret-token"})
+    assert wrong_host.status_code == 409
+
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    saved.host = "build-1"
+    saved.lease_token = "replacement-generation"
+    saved.save()
+    replaced = http.post("/api/runs/claim", json=payload,
+                         headers={"Authorization": "Bearer secret-token"})
+    assert replaced.status_code == 409
+
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    saved.lease_token = first.json()["lease_token"]
+    expired = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
+    saved.lease_expires_at = expired
+    saved.recovery_expires_at = expired
+    saved.save()
+    stale = http.post("/api/runs/claim", json=payload,
+                      headers={"Authorization": "Bearer secret-token"})
+    assert stale.status_code == 409
 
 
 @pytest.mark.parametrize("task_override,reference", [
