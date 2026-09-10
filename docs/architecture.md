@@ -64,12 +64,12 @@ flowchart LR
  different brief.
 - **Execution sandboxes** are an optional fail-closed capability contract under `sandbox:`.
   With `required: true`, planner and kickoff calls and local work/review runs must use the
-  selected harness's native filesystem sandbox; bypass permission modes and custom harnesses
-  are refused before launch. `network_destinations` is an explicit hostname/optional-port
-  allowlist. Claude receives it in native sandbox settings; Codex is supported only with an
-  empty list (network denied), because its native sandbox cannot express destination names.
-  Setup and command checks additionally require `sandbox.command`, an argv for an installed
-  OS sandbox wrapper. Garden appends `-- sh -c <command>` and expands `{writable_root}` and
+  selected harness's native filesystem sandbox inside the configured OS sandbox wrapper;
+  bypass permission modes and custom harnesses are refused before launch.
+  `network_destinations` is an explicit hostname/optional-port allowlist. Claude also receives
+  it in native sandbox settings. Planner, setup, model, and command-check execution all require
+  `sandbox.command`, an argv for an installed OS sandbox wrapper. Garden appends
+  `-- sh -c <command>` and expands `{writable_root}` and
   `{network_destinations}` in wrapper arguments. This makes the wrapper responsible for
   filesystem, symlink, child-process and network enforcement rather than trusting branch
   code. SSH is rejected while isolation is required because that runner cannot attest to a
