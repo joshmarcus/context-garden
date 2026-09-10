@@ -362,24 +362,6 @@ class RetroMixin:
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
         self.require_maintenance_running()
-        existing = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
-        if existing:
-            if existing.get("stage") in {"queued", "preparing", "dispatching"}:
-                owner_pid = int(existing.get("preparation_pid") or 0)
-                if existing.get("stage") != "queued" and owner_pid:
-                    try:
-                        os.kill(owner_pid, 0)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-                    else:
-                        return existing
-                request_id = str(existing.setdefault("request_id", uuid.uuid4().hex))
-                claim = uuid.uuid4().hex
-                existing.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
-                self.state.save()
-                self._closing_review_claims.append((request_id, claim))
-                self.prepare_claimed_closing_reviews(TickReport())
-            return next((item for item in self._retro_list() if item.get("phase") == phase.key), existing)
         self_prod = self._self_product()
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
@@ -406,17 +388,39 @@ class RetroMixin:
             raise RuntimeError("garden retro --skip-personas found no persona reports on disk for "
                                f"{', '.join(names)}; run without --skip-personas, or reuse only "
                                "personas that already have a report under docs/reviews/")
-        entry: dict[str, Any] = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
-                                 "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
-                                 "self_product": self_prod, "stage": "queued", "persona_runs": {},
-                                 "no_file": bool(no_file), "request_id": uuid.uuid4().hex}
-        self._retro_list().append(entry)
-        self.state.save()
-        claim = uuid.uuid4().hex
-        entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
-        self._closing_review_claims.append((entry["request_id"], claim))
+
+        # Reload and persist under the same lock used by ticks. A fresh Scheduler may otherwise
+        # hold a stale State snapshot while an automatic tick queues this phase during manual
+        # validation, producing two requests before either preparation notices the other.
+        with self._controller_lock():
+            self.state = type(self.state)(self.state.path)
+            entry = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+            if entry is None:
+                if not self_prod:
+                    raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
+                                       "open the retro PR; see docs/architecture.md")
+                entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+                         "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
+                         "self_product": self_prod, "stage": "queued", "persona_runs": {},
+                         "no_file": bool(no_file), "request_id": uuid.uuid4().hex}
+                self._retro_list().append(entry)
+            if entry.get("stage") not in {"queued", "preparing", "dispatching"}:
+                return entry
+            owner_pid = int(entry.get("preparation_pid") or 0)
+            if entry.get("stage") != "queued" and owner_pid:
+                try:
+                    os.kill(owner_pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                else:
+                    return entry
+            request_id = str(entry.setdefault("request_id", uuid.uuid4().hex))
+            claim = uuid.uuid4().hex
+            entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
+            self.state.save()
+        self._closing_review_claims.append((request_id, claim))
         self.prepare_claimed_closing_reviews(TickReport())
-        return next(item for item in self._retro_list() if item.get("request_id") == entry["request_id"])
+        return next(item for item in self._retro_list() if item.get("request_id") == request_id)
 
     def _start_retro_entry(self, phase: Phase, entry: dict[str, Any]) -> None:
         """Prepare and start one persisted manual or automatic retro request."""
@@ -426,6 +430,14 @@ class RetroMixin:
         names = list(entry["personas"])
         if entry.get("automatic") and not entry.get("source"):
             raise RuntimeError("waiting for the accepted phase source identity")
+        # Persona briefs inline the newest walkthrough. This is intentionally after the
+        # durable claim: capture can be expensive and must run outside the controller lock.
+        from datetime import date
+
+        from ..walkthrough import capture
+
+        walkthrough_dir = phase.path / "docs" / "walkthrough" / date.today().isoformat()
+        capture(self.store, phase, walkthrough_dir, screenshots=False, log=self.log)
         have = self._reports_for_entry(phase, entry)
         missing = [] if entry.get("skip_personas") else [n for n in names if n not in have]
         if not missing:

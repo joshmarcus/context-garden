@@ -22,7 +22,7 @@ from garden.retro import (
     render_retro_doc,
     resolve_features,
 )
-from garden.scheduler import Scheduler, TickReport
+from garden.scheduler import Scheduler, State, TickReport
 from garden.store import Store
 from tests.conftest import FAKE_CLAUDE
 
@@ -963,12 +963,39 @@ def test_manual_start_claims_an_automatically_queued_review(sched, monkeypatch):
              "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
              "self_product": "demo", "stage": "queued", "persona_runs": {}, "no_file": False}
     sched._retro_list().append(entry)
+    sched.state.save()
     started = []
     monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
     monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append((ph.key, queued)))
     returned = sched.start_retro(phase)
     assert returned["request_id"]
     assert started == [(phase.key, returned)]
+
+
+def test_fresh_manual_start_adopts_request_queued_during_validation(sched, monkeypatch):
+    """The manual command must reload under the tick lock before creating its request."""
+    phase = sched.store.phase("demo", "p1")
+    queued = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+              "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+              "self_product": "demo", "stage": "queued", "persona_runs": {},
+              "no_file": False, "automatic": True, "request_id": "automatic-request"}
+
+    def queue_while_manual_start_is_validating():
+        concurrent = State(sched.state.path)
+        concurrent.get("_retro").setdefault("runs", []).append(queued)
+        concurrent.save()
+        return "demo"
+
+    started = []
+    monkeypatch.setattr(sched, "_self_product", queue_while_manual_start_is_validating)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, entry: started.append(entry["request_id"]))
+
+    returned = sched.start_retro(phase, ["designer"])
+
+    assert returned["request_id"] == "automatic-request"
+    assert [entry["request_id"] for entry in sched._retro_list()] == ["automatic-request"]
+    assert started == ["automatic-request"]
 
 
 def test_closing_review_preparation_runs_after_tick_releases_controller_lock(sched, monkeypatch):
