@@ -207,7 +207,17 @@ def test_metrics_count_exact_head_ci_states_without_dropping_existing_totals():
 
     assert out["ci_status"] == {"mismatched": 1, "success": 1, "stale": 1, "absent": 1}
     assert out["merges"] == 0
-    assert out["operator"] == {"spend": 0, "share": None}
+    assert out["operator"] == {
+        "spend": 0,
+        "share": None,
+        "priced_records": 0,
+        "unpriced_records": 0,
+        "cost_complete": True,
+        "unattributed_spend": 0,
+        "unattributed_priced_records": 0,
+        "unattributed_unpriced_records": 0,
+        "unattributed_cost_complete": True,
+    }
 
 
 def _accepted(task, model, cost, at="2026-09-05T11:00:00+00:00"):

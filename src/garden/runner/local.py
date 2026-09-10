@@ -17,6 +17,7 @@ from ..config import no_live_garden_root
 from ..runs import Run
 from ..sandbox import SandboxPolicy
 from ..validation import bounded_validation_timeout_seconds
+from ..workload_identity import WorkloadIdentityError, subprocess_authority
 from .base import (
     Runner,
     RunnerError,
@@ -25,7 +26,6 @@ from .base import (
     worker_credentials_dir,
     worker_home,
 )
-from ..workload_identity import WorkloadIdentityError, subprocess_authority
 
 
 class LocalRunner(Runner):
