@@ -41,7 +41,7 @@ request for a host-owned target such as `worker`; repository or claim data canno
 Runtime code calls `WorkloadIdentityResolver.resolve` with the logical reference, operation,
 audience, automation run identity, requested lifetime, and optional narrower scopes.
 
-The local runner and managed remote consumer resolve the `worker` boundary immediately before
+The local supervisor and managed remote consumer resolve the `worker` boundary immediately before
 launching their supervised subprocess, using `automation:<run id>` as membership. The returned
 object's public metadata contains only issuer, expiry, audience, scopes,
 provider, and automation identity. Its secret values can be applied only through the
@@ -52,6 +52,14 @@ policy mismatches raise `WorkloadIdentityError`. Callers classify that as an env
 failure and must not retry as an author revision or fall back to ambient credentials. Remote
 hosts construct the same resolver from host-local trusted configuration; claims, briefs,
 transcripts, and finish payloads carry neither provider registration nor authority values.
+While the subprocess runs, its owner validates the authority and renews it when the provider
+allows. Because a process environment cannot be changed after launch, a renewal that rotates an
+environment-delivered value terminates the process and reports an actionable workload-identity
+environment failure; a stable renewal may continue. Revocation and failed renewal do the same.
+The local supervisor pipes stdout and stderr through a split-safe streaming redactor before
+writing live run files, and publishes a redacted final message only after the raw harness file
+has been removed. The remote consumer applies the same filter before heartbeat transcript and
+finish requests.
 
 ## Independent hosts
 
