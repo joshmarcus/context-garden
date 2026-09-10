@@ -314,6 +314,43 @@ def _persist_pending_result(root: Path, run_id: str, payload: dict[str, Any]) ->
     return path
 
 
+def _retire_recovered_publication(root: Path, active_path: Path, run_id: str,
+                                  client: WorkerClient, failure: Exception) -> bool:
+    """Retire completed execution once its result is durably pending.
+
+    Publication can fail only after the result has been written, or earlier while git or
+    lease checks are still running.  The latter must retain the active handoff.  Once the
+    pending record exists, however, replay belongs exclusively to the pending-result path;
+    retaining both records would publish the same execution on every daemon restart.
+    """
+    pending_path = root / "pending-results" / f"{run_id}.json"
+    if not pending_path.exists():
+        return False
+    if isinstance(failure, WorkerRequestError) and not failure.retryable:
+        cause = "authentication" if failure.status in {401, 403} else "stale_or_rejected_generation"
+        _quarantine_pending(pending_path, client, cause, f"http_{failure.status}", run_id)
+        quarantine = active_path.parent / "quarantine"
+        quarantine.mkdir(exist_ok=True)
+        active_path.replace(quarantine / active_path.name)
+        if client.events:
+            client.events.emit(
+                "execution_recovery_quarantined", run_id=run_id, cause=cause,
+                recovery_outcome="operator_action_required",
+                operator_action="verify enrollment or lease generation, then inspect quarantined execution",
+            )
+    else:
+        active_path.unlink(missing_ok=True)
+        if client.events:
+            client.events.emit(
+                "result_recovery_deferred", run_id=run_id,
+                cause=(f"http_{failure.status}" if isinstance(failure, WorkerRequestError)
+                       else type(failure).__name__),
+                recovery_outcome="retry_window_exhausted",
+                operator_action="check controller connectivity; delivery remains pending",
+            )
+    return True
+
+
 def _active_claim_path(root: Path, run_id: str) -> Path:
     return root / "active-claims" / f"{run_id}.json"
 
@@ -723,12 +760,17 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
             parsed = collected.get("result") or parse_result(final) or {}
             repo_lock = _acquire_repo_lock(run, root)
             try:
-                _publish_claim_result(
-                    run, root, repo, heartbeat, final=final, parsed=parsed,
-                    usage=collected.get("usage") or {}, cost=collected.get("cost_usd"),
-                    error=str(collected.get("error") or ""), rc=rc,
-                    execution_dir=execution_dir,
-                )
+                try:
+                    _publish_claim_result(
+                        run, root, repo, heartbeat, final=final, parsed=parsed,
+                        usage=collected.get("usage") or {}, cost=collected.get("cost_usd"),
+                        error=str(collected.get("error") or ""), rc=rc,
+                        execution_dir=execution_dir,
+                    )
+                except Exception as exc:
+                    if _retire_recovered_publication(root, path, str(run["id"]), client, exc):
+                        continue
+                    raise
             finally:
                 repo_lock.close()
             path.unlink(missing_ok=True)
