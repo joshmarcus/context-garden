@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import copy
+
 import httpx
 import pytest
 
+from garden.branch_cleanup import BranchDisposition
 from garden.config import Config
 from garden.github import Feedback, GitHub, GitHubError, PRInfo
 from garden.source_control import (
@@ -65,8 +68,10 @@ def test_provider_contract_accepts_two_synthetic_providers():
         def operation(self, *_args, **_kwargs):
             return None
 
-        find_pr = list_open_prs = get_pr = create_pr = operation
-        feedback_since = complete_feedback = update_pr = operation
+        find_pr = find_open_pr = find_open_pr_by_base = operation
+        list_open_prs = get_pr = create_pr = operation
+        feedback_since = incremental_feedback_since = complete_feedback = operation
+        update_pr = operation
         mark_ready = close_pr = reopen_pr = branch_exists = operation
         base_ref_deleted = merge_pr = delete_branch = operation
         issue_comments = comment = operation
@@ -234,6 +239,13 @@ class RoutedSyntheticProvider:
     def __init__(self, route):
         self.route = route
         self.calls = []
+        self.prs = [
+            PRInfo(
+                17, "https://example.invalid/change/17", "OPEN",
+                base="release/next", head="garden/feature", head_sha="stale-head",
+                mergeable="MERGEABLE", checks="SUCCESS",
+            )
+        ]
 
     def describe(self):
         return "synthetic provider"
@@ -267,10 +279,27 @@ class RoutedSyntheticProvider:
         self.calls.append(("comment", repository, number))
 
     def list_open_prs(self, _repository):
-        return []
+        self.calls.append(("list_open_prs", _repository))
+        return self.prs
 
     def feedback_since(self, _repository, _number, _since_iso, exclude_logins=None):
-        return Feedback()
+        self.calls.append(("feedback_since", _repository, _number, _since_iso))
+        return Feedback(high_water="2026-09-10T10:00:00Z")
+
+    def incremental_feedback_since(self, repository, number, since_iso, exclude_logins=None):
+        self.calls.append(("incremental_feedback_since", repository, number, since_iso))
+        return Feedback(
+            items=[{"id": "comment:2", "created": "2026-09-10T10:01:00Z"}],
+            high_water="2026-09-10T10:01:00Z",
+        )
+
+    def find_open_pr(self, repository, head_branch):
+        self.calls.append(("find_open_pr", repository, head_branch))
+        return next((pr for pr in self.prs if pr.head == head_branch), None)
+
+    def find_open_pr_by_base(self, repository, base_branch):
+        self.calls.append(("find_open_pr_by_base", repository, base_branch))
+        return next((pr for pr in self.prs if pr.base == base_branch), None)
 
     def branch_exists(self, _repository, _branch):
         return True
@@ -316,6 +345,66 @@ def test_scheduler_routes_two_registered_providers_and_keeps_exact_head_guard(ga
     assert ("merge_pr", "team/repo", 17, "reviewed-head") in providers["forge-a"].calls
     other = RepositoryIdentity("team/other", "forge-b")
     assert sched.github.get_pr(other, 4).base == "release/next"
+
+
+def test_two_synthetic_providers_support_repeated_polling_and_cleanup(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.scheduler.report import TickReport
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"]["source_control"] = {
+        "provider": "forge-a", "repository": "team/repo",
+        "web_url": "https://forge-a.test", "api_url": "https://forge-a.test/api",
+    }
+    store.config.data["products"]["other"] = {
+        "repo": ".", "base_branch": "release/next", "source_control": {
+            "provider": "forge-b", "repository": "team/other",
+            "web_url": "https://forge-b.test", "api_url": "https://forge-b.test/api",
+        },
+    }
+    providers = {}
+
+    def factory(route):
+        provider = RoutedSyntheticProvider(route)
+        providers[route["provider"]] = provider
+        return provider
+
+    sched = Scheduler(store, read_only=True, source_control_factories={
+        "forge-a": factory, "forge-b": factory,
+    })
+    tasks = store.tasks()
+
+    sched.refresh_open_prs(tasks, TickReport())
+    sched.refresh_open_prs(tasks, TickReport())
+
+    for name, repository in (("forge-a", "team/repo"), ("forge-b", "team/other")):
+        calls = providers[name].calls
+        assert ("feedback_since", repository, 17, "") in calls
+        assert (
+            "incremental_feedback_since", repository, 17, "2026-09-10T10:00:00Z"
+        ) in calls
+
+    demo = tasks["DM-001"]
+    other = copy.copy(demo)
+    other.id = "OTHER-001"
+    other.product = "other"
+    monkeypatch.setattr(store, "tasks", lambda: {demo.id: demo, other.id: other})
+    monkeypatch.setattr(
+        sched, "slug_for", lambda task: RepositoryIdentity(
+            "team/repo" if task.product == "demo" else "team/other",
+            "forge-a" if task.product == "demo" else "forge-b",
+        ),
+    )
+
+    claimed = BranchDisposition(
+        "demo", "garden/feature", "removable", "complete", "head", "head", (demo.id,),
+    )
+    dependent = BranchDisposition(
+        "other", "release/next", "removable", "complete", "head", "head", (other.id,),
+    )
+    assert sched._branch_delete_recheck(claimed) == "PR #17 is open"
+    assert sched._branch_delete_recheck(dependent) == "PR #17 depends on the branch"
 
 
 def test_source_control_route_cannot_fall_back_to_ambient_gh(garden, monkeypatch):
