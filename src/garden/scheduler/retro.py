@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -133,12 +135,11 @@ class RetroMixin:
                 status = self.closing_review_status(phase)
                 if not status["eligible"]:
                     continue
-                source = self._current_phase_source(phase)
                 entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
                          "personas": status["personas"], "skip_personas": False,
                          "next_phase": next_phase_name(phase.name), "self_product": self._self_product() or "",
                          "stage": "queued", "persona_runs": {}, "automatic": True,
-                         "requested_at": now_iso(), "source": source,
+                         "requested_at": now_iso(), "request_id": uuid.uuid4().hex, "source": "",
                          "evidence": status["evidence"], "no_file": False}
                 self._retro_list().append(entry)
                 self.events.emit("retro_queued", "", phase=phase.key, source=entry["source"],
@@ -157,24 +158,90 @@ class RetroMixin:
             return ""
 
     def dispatch_queued_closing_reviews(self, rep: TickReport) -> None:
-        """Admit queued requests without pausing ordinary dispatch when capacity is unavailable."""
+        """Claim one queued request; its potentially slow preparation runs after the tick lock."""
         for entry in self._retro_list():
-            if entry.get("stage") != "queued":
+            if entry.get("stage") not in {"queued", "preparing", "dispatching"}:
                 continue
+            owner_pid = int(entry.get("preparation_pid") or 0)
+            if entry.get("stage") != "queued" and owner_pid:
+                try:
+                    os.kill(owner_pid, 0)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    continue
+                else:
+                    continue
             try:
                 if len(self.review_runs_active()) >= self.review_parallel_limit():
                     raise RuntimeError(
                         f"waiting for review capacity ({len(self.review_runs_active())}/"
                         f"{self.review_parallel_limit()} running)"
                     )
-                phase = self.store.phase(entry["product"], entry["phase_name"])
-                self._start_retro_entry(phase, entry)
+                claim = uuid.uuid4().hex
+                entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
                 entry.pop("waiting_reason", None)
-                rep.transitions.append(f"retro {phase.key} started")
+                self._closing_review_claims.append((str(entry["request_id"]), claim))
             except RuntimeError as exc:
                 entry["waiting_reason"] = str(exc)
             self.state.save()
             break
+
+    def prepare_claimed_closing_reviews(self, rep: TickReport) -> None:
+        """Prepare requests claimed by this tick without holding the scheduler mutation lock.
+
+        The durable claim prevents another tick or a simultaneous manual start from launching
+        the same request.  Reconciliation under the lock checks both identities again before
+        the normal retro launcher is allowed to create model jobs.
+        """
+        for request_id, claim in self._closing_review_claims:
+            try:
+                with self._controller_lock():
+                    entry = next((item for item in self._retro_list()
+                                  if item.get("request_id") == request_id), None)
+                    if (entry is None or entry.get("stage") != "preparing"
+                            or entry.get("preparation_claim") != claim):
+                        continue
+                    phase = self.store.phase(entry["product"], entry["phase_name"])
+                source = self._current_phase_source(phase) if entry.get("automatic") else ""
+                if entry.get("automatic") and not source:
+                    raise RuntimeError("waiting for the accepted phase source identity")
+                with self._controller_lock():
+                    entry = next((item for item in self._retro_list()
+                                  if item.get("request_id") == request_id), None)
+                    if (entry is None or entry.get("stage") != "preparing"
+                            or entry.get("preparation_claim") != claim):
+                        continue
+                    phase = self.store.phase(entry["product"], entry["phase_name"])
+                    if entry.get("automatic") and self._current_phase_source(phase) != source:
+                        entry.update(stage="queued", waiting_reason="accepted phase source changed during preparation")
+                        entry.pop("preparation_claim", None)
+                        entry.pop("preparation_pid", None)
+                        self.state.save()
+                        continue
+                    entry["source"] = source
+                    entry["stage"] = "dispatching"
+                    self.state.save()
+                # Git/worktree setup, walkthroughs and remote PR metadata deliberately happen
+                # outside tick.lock.  Only the process holding the current persisted claim may
+                # launch; a later tick can replace an abandoned preparation claim after restart.
+                self._start_retro_entry(phase, entry)
+                entry.pop("preparation_claim", None)
+                entry.pop("preparation_pid", None)
+                entry.pop("waiting_reason", None)
+                self.state.save()
+                rep.transitions.append(f"retro {phase.key} started")
+            except RuntimeError as exc:
+                self.log(f"retro preparation {request_id} deferred: {exc}")
+                with self._controller_lock():
+                    entry = next((item for item in self._retro_list()
+                                  if item.get("request_id") == request_id), None)
+                    if entry and entry.get("preparation_claim") == claim:
+                        entry.update(stage="queued", waiting_reason=str(exc))
+                        entry.pop("preparation_claim", None)
+                        entry.pop("preparation_pid", None)
+                        self.state.save()
+        self._closing_review_claims.clear()
 
     def _persona_revs(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """The parsed marker verdict behind each persona's on-disk report: the rendered markdown
@@ -297,10 +364,22 @@ class RetroMixin:
         self.require_maintenance_running()
         existing = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
         if existing:
-            if existing.get("stage") == "queued":
-                self._start_retro_entry(phase, existing)
+            if existing.get("stage") in {"queued", "preparing", "dispatching"}:
+                owner_pid = int(existing.get("preparation_pid") or 0)
+                if existing.get("stage") != "queued" and owner_pid:
+                    try:
+                        os.kill(owner_pid, 0)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    else:
+                        return existing
+                request_id = str(existing.setdefault("request_id", uuid.uuid4().hex))
+                claim = uuid.uuid4().hex
+                existing.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
                 self.state.save()
-            return existing
+                self._closing_review_claims.append((request_id, claim))
+                self.prepare_claimed_closing_reviews(TickReport())
+            return next((item for item in self._retro_list() if item.get("phase") == phase.key), existing)
         self_prod = self._self_product()
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
@@ -330,11 +409,14 @@ class RetroMixin:
         entry: dict[str, Any] = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
                                  "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
                                  "self_product": self_prod, "stage": "queued", "persona_runs": {},
-                                 "no_file": bool(no_file)}
+                                 "no_file": bool(no_file), "request_id": uuid.uuid4().hex}
         self._retro_list().append(entry)
         self.state.save()
-        self._start_retro_entry(phase, entry)
-        return entry
+        claim = uuid.uuid4().hex
+        entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
+        self._closing_review_claims.append((entry["request_id"], claim))
+        self.prepare_claimed_closing_reviews(TickReport())
+        return next(item for item in self._retro_list() if item.get("request_id") == entry["request_id"])
 
     def _start_retro_entry(self, phase: Phase, entry: dict[str, Any]) -> None:
         """Prepare and start one persisted manual or automatic retro request."""
@@ -342,11 +424,8 @@ class RetroMixin:
         if not entry.get("self_product"):
             raise RuntimeError("garden retro needs a product with `self: true`")
         names = list(entry["personas"])
-        if entry.get("automatic") and not entry.get("persona_runs"):
-            source = self._current_phase_source(phase)
-            if not source:
-                raise RuntimeError("waiting for the accepted phase source identity")
-            entry["source"] = source
+        if entry.get("automatic") and not entry.get("source"):
+            raise RuntimeError("waiting for the accepted phase source identity")
         have = self._reports_for_entry(phase, entry)
         missing = [] if entry.get("skip_personas") else [n for n in names if n not in have]
         if not missing:
