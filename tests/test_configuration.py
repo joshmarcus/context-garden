@@ -92,6 +92,23 @@ def test_plain_project_lock_keeps_inherited_value_source_separate(tmp_path):
     assert config.setting_source("max_parallel", "demo") == "garden.work.yaml"
 
 
+def test_enforced_project_value_reports_its_policy_layer(tmp_path):
+    (tmp_path / "garden.yaml").write_text(
+        "max_parallel: 3\nproducts:\n  demo:\n    configuration:\n"
+        "      locks:\n        max_parallel:\n          reason: capacity policy\n"
+        "          value: 2\n"
+    )
+    (tmp_path / "garden.local.yaml").write_text(
+        "products:\n  demo:\n    configuration:\n      locks:\n"
+        "        max_parallel:\n          value: 1\n"
+    )
+
+    config = Config.load(tmp_path)
+
+    assert config.setting("max_parallel", "demo").value == 1
+    assert config.setting_source("max_parallel", "demo") == "garden.local.yaml"
+
+
 def test_metadata_inventory_describes_every_value_on_configuration_page():
     displayed = {
         "max_parallel", "review_parallel", "auto_dispatch", "auto_revise", "stack",

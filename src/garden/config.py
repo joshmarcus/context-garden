@@ -395,10 +395,21 @@ class Config:
         project_has_override = product is not None and key in product_configuration(
             self.data, product
         )[0]
+        resolved_lock = (
+            product_configuration(self.data, product)[1].get(key)
+            if product is not None
+            else None
+        )
+        policy_supplies_value = isinstance(resolved_lock, dict) and "value" in resolved_lock
         owners: Any = None
         last_present_source = "default"
         for name, document in self.source_documents:
-            if project_has_override:
+            if policy_supplies_value:
+                _, locks = product_configuration(document, product or "")
+                policy = locks.get(key)
+                present = isinstance(policy, dict) and "value" in policy
+                value = policy.get("value") if present else None
+            elif project_has_override:
                 overrides, _ = product_configuration(document, product or "")
                 present = key in overrides
                 value = overrides.get(key)
