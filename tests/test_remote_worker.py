@@ -36,6 +36,7 @@ from garden.remote_worker import (
     doctor_worker,
     execute_claim,
     recover_active_claims,
+    run_worker,
 )
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
@@ -255,6 +256,83 @@ def test_replacement_daemon_collects_surviving_supervisor_once(tmp_path, monkeyp
     assert published[0]["final"] == "survived"
     assert published[0]["rc"] == 0
     assert recover_active_claims(root, ReplacementClient()) == 0
+
+
+def test_standalone_worker_recovers_execution_and_pending_result_before_claim(
+    tmp_path, monkeypatch,
+):
+    """A restarted CLI drains both durable handoffs without launching duplicate work."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "standalone-host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-live"
+    execution_dir.mkdir(parents=True)
+    stdout_path = execution_dir / "stdout.log"
+    stderr_path = execution_dir / "stderr.log"
+    with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+        supervisor = subprocess.Popen(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+             f"sleep 0.2; printf survived > {stdout_path}"],
+            stdout=stdout, stderr=stderr, start_new_session=True,
+        )
+    active_run = {
+        "id": "active-run", "task_id": "DM-001", "lease_token": "active-lease",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 5, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/active",
+    }
+    _persist_active_claim(
+        root, active_run, execution_dir, repo, repo.parent / "active-final.md", supervisor.pid,
+    )
+    _persist_pending_result(root, "pending-run", {
+        "lease_token": "pending-lease", "exit_code": 0,
+        "error": "Bearer must-not-appear-in-diagnostics",
+    })
+    order = []
+
+    class Client:
+        def __init__(self, _url, _token):
+            self.events = None
+            self.worker_id = ""
+            self.process_generation = ""
+
+        def post(self, path, _payload):
+            if path == "/api/runs/active-run/heartbeat":
+                return 200, {}
+            if path == "/api/runs/pending-run/finish":
+                order.append("pending-result")
+                return 200, {"already_finished": True}
+            if path == "/api/runs/claim":
+                order.append("claim")
+                return 204, {}
+            raise AssertionError(path)
+
+    monkeypatch.setattr("garden.remote_worker.WorkerClient", Client)
+    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
+        "final_text": "survived", "result": {"status": "done"}, "usage": {},
+        "cost_usd": 0.0, "error": "",
+    })
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *_args, **_kwargs: order.append("active-result"),
+    )
+    monkeypatch.setattr(
+        "garden.remote_worker.execute_claim",
+        lambda *_args, **_kwargs: pytest.fail("a new execution was started"),
+    )
+
+    run_worker(
+        "https://garden.example", "build-1", "secret-token", root,
+        ["claude"], [], once=True,
+    )
+    supervisor.wait(timeout=5)
+
+    assert order == ["active-result", "pending-result", "claim"]
+    assert not (root / "active-claims" / "active-run.json").exists()
+    assert not (root / "pending-results" / "pending-run.json").exists()
+    events = (root / "worker-events.jsonl").read_text()
+    assert "build-1" in events and "process_generation" in events
+    assert "secret-token" not in events and "must-not-appear" not in events
 
 
 def test_replacement_daemon_collects_surviving_check_once(tmp_path, monkeypatch):
