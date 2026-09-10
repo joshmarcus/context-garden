@@ -165,6 +165,24 @@ def test_incremental_feedback_failure_keeps_the_persisted_cursor(sched, fake_git
     assert any("open PR refresh failed" in error for error in rep.errors)
 
 
+def test_incremental_feedback_does_not_regress_the_persisted_cursor(sched, fake_github):
+    """An older review alone must not widen the next incremental poll."""
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    row = next(row for row in sched.state.get("__open_prs__")["demo"]["prs"] if row["number"] == pr.number)
+    row["feedback_since"] = "2026-09-04T10:00:00Z"
+    sched.state.save()
+
+    fake_github.incremental_feedback_since = lambda *args, **kwargs: Feedback(
+        high_water="2026-09-04T09:00:00Z"
+    )
+    sched.tick()
+
+    row = next(row for row in sched.state.get("__open_prs__")["demo"]["prs"] if row["number"] == pr.number)
+    assert row["feedback_since"] == "2026-09-04T10:00:00Z"
+
+
 def test_first_observation_seeds_linked_pr_feedback_before_existing_cursor(sched, fake_github):
     sched.tick()
     sched.tick()
