@@ -17,11 +17,84 @@ from fastapi.testclient import TestClient
 from garden.observe import resolve, status_line
 from garden.scheduler import State
 from garden.scheduler.resources import ResourcePressureError
+from garden.storage import StorageVolume
 from garden.web.app import create_app
 
 
 def _set_resource_limit(sched, key: str, value: int) -> None:
     sched.set_override(f"resources.{key}", value, by="test")
+
+
+def _storage(monkeypatch, free: int | None, *, label: str = "Windows backing volume") -> None:
+    import garden.scheduler.resources as resources
+
+    error = "measurement unavailable" if free is None else ""
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("test-volume", label, free, error),
+    ))
+
+
+@pytest.mark.parametrize("free,admitted", [((20 << 30) - 1, False), (20 << 30, True), ((20 << 30) + 1, True)])
+def test_physical_disk_reserve_boundary(sched, monkeypatch, free, admitted):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    _storage(monkeypatch, free)
+    if admitted:
+        assert sched._new_local_run("DM-001", "work", "work")
+    else:
+        with pytest.raises(ResourcePressureError, match=r"Windows backing volume has .*free bytes; reserve"):
+            sched._new_local_run("DM-001", "work", "work")
+        assert not sched.runs.runs_for("DM-001")
+
+
+def test_unknown_required_volume_blocks_and_recovery_does_not_clear_other_hold(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    sched.control()["dispatch"] = "paused"
+    sched.control()["by"] = "operator"
+    sched.state.save()
+    _storage(monkeypatch, None)
+    with pytest.raises(ResourcePressureError, match="measurement unavailable"):
+        sched._new_local_run("DM-001", "work", "work")
+    _storage(monkeypatch, 40 << 30)
+    sched.refresh_resource_pressure()
+    assert "resource_pressure" not in sched.control()
+    assert sched.control()["dispatch"] == "paused" and sched.control()["by"] == "operator"
+
+
+def test_low_disk_dispatch_stays_queued_without_consuming_attempt(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    _storage(monkeypatch, 19 << 30, label="local filesystem")
+    task = sched.store.task("DM-001")
+    report = type("Report", (), {"dispatched": [], "errors": [], "transitions": []})()
+
+    sched.dispatch_ready(report)
+
+    assert task.status.value == "ready" and task.attempts == 0
+    assert not sched.runs.runs_for(task.id)
+    assert "local filesystem has" in sched.control()["resource_pressure"]["reason"]
+
+
+def test_disk_reservations_are_atomic_and_released_on_completion(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    _set_resource_limit(sched, "operation_required_bytes", 6 << 30)
+    _storage(monkeypatch, 30 << 30)
+    first = sched._new_local_run("DM-001", "work", "work")
+    with pytest.raises(ResourcePressureError, match=r"plus 12884901888 reserved bytes"):
+        sched._new_local_run("DM-002", "work", "work")
+    first.status = "done"
+    first.save()
+    assert sched._new_local_run("DM-002", "work", "work")
+
+
+def test_fresh_materialization_recheck_detects_growing_usage(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    readings = iter((30 << 30, 19 << 30))
+    import garden.scheduler.resources as resources
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", next(readings)),
+    ))
+    run = sched._new_local_run("DM-001", "work", "work")
+    with pytest.raises(ResourcePressureError, match="checkout materialization"):
+        sched._recheck_local_materialization(run, "checkout materialization")
 
 
 def _claim_slot(root: str, start, outcomes) -> None:

@@ -241,6 +241,9 @@ DEFAULTS: dict[str, Any] = {
         "admission_wait_minutes": 30,
         "min_memory_available_mb": 0,
         "min_temp_free_mb": 0,
+        "disk_reserve_bytes": 20 * 1024**3,
+        "operation_required_bytes": 0,
+        "windows_backing_path": "",
         "execution_cgroup": "",   # delegated cgroup directory for local run descendants
         "reclaim_max_mb": 512,     # bounded best-effort file-cache reclaim; 0 disables it
         "reclaim_timeout_seconds": 5,
