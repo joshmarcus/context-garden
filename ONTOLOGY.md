@@ -170,7 +170,7 @@ only append evidence or refresh control state and are omitted as non-transitions
 | `failed` | `ready` | Human retry resets attempts when there is no open-PR revision context. |
 | `failed` | `changes_requested` | Human retry retains or reconstructs feedback for an open PR. |
 | `draft`, `ready`, `running`, `awaiting_triage`, `in_review`, `changes_requested`, `waiting_human`, `merged_into_parent`, `failed`, `wont_do` | `cancelled` | Explicit human cancellation; an active run is cancelled first. |
-| Any open status | `done` | Explicit human completion after ancestry verification; `--force` is required to bypass that verification. |
+| Any open status | `done` | Explicit human completion. When a PR is recorded, its commits must be verified on the final base; `--force` bypasses that verification. Without a recorded PR, no ancestry check applies. |
 | Any open status | `wont_do` | Explicit human status decision; an open PR is closed when possible. |
 
 The `set-status` command is a provenance-recorded escape hatch, not part of the ordinary
