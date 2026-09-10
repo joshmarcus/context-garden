@@ -32,12 +32,15 @@ def register(app: FastAPI, site: Site) -> None:
     def record_worker_event(event: str, body: dict[str, Any], operation: str,
                             status: int, run: Any | None = None, outcome: str = "success") -> None:
         """Persist protocol metadata only; bodies, tokens, and physical host ids are excluded."""
+        generation = str(body.get("process_generation") or "")
+        if not re.fullmatch(r"[a-f0-9]{32}", generation):
+            generation = ""
         WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl").emit(
             event, request_id=str(body.get("request_id") or body.get("claim_request_id") or ""),
             claim_request_id=str(body.get("claim_request_id") or ""), operation=operation,
             endpoint_class=operation, http_status=status, outcome=outcome,
-            worker_id=str(body.get("worker_id") or body.get("host") or getattr(run, "host", "")),
-            process_generation=str(body.get("process_generation") or ""),
+            worker_id=str(getattr(run, "host", "") or body.get("host") or "")[:128],
+            process_generation=generation,
             run_id=str(getattr(run, "run_id", "")), task_id=str(getattr(run, "task_id", "")),
             work_state={"claim": "queued_or_idle", "heartbeat": "executing",
                         "result": "returning_result"}.get(operation, "unknown"),
