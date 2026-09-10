@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
@@ -62,8 +62,18 @@ def _design_files(task: Any, store: Any) -> list[dict[str, str]]:
         names = gitops.git("diff", "--name-only", f"{base}...{task.branch}", cwd=repo, check=False).splitlines()
     except Exception:  # noqa: BLE001
         return []
-    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?ref={task.branch}&product={task.product}"}
-            for name in names if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
+    worktree = store.config.worktree_path(task.id)
+    ref = task.branch
+    if worktree.is_dir():
+        try:
+            names.extend(gitops.git("diff", "--name-only", base, cwd=worktree, check=False).splitlines())
+            names.extend(gitops.git("ls-files", "--others", "--exclude-standard", "docs/design", cwd=worktree,
+                                    check=False).splitlines())
+            ref = f"worktree:{task.id}"
+        except Exception:  # noqa: BLE001
+            pass
+    return [{"name": name, "href": f"/design/{name.removeprefix('docs/design/')}?{urlencode({'ref': ref, 'product': task.product})}"}
+            for name in sorted(set(names)) if name.startswith("docs/design/") and name != "docs/design/" and ".." not in name]
 
 
 def register(app: FastAPI, site: Site) -> None:

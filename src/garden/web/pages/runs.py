@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 
 from ...runs import RunStore
+from ..artifacts import artifact_response
 from ..common import Site
 from .design import recorded_captures
 
@@ -127,9 +128,7 @@ def register(app: FastAPI, site: Site) -> None:
         path = run.path / "ui" / Path(name).name if run else None
         if path is None or path.resolve() not in (recorded_captures(run) if run else []):
             raise HTTPException(404)
-        media = "text/html" if path.suffix.lower() in {".html", ".htm"} else None
-        headers = {"Content-Security-Policy": "sandbox"} if media else {}
-        return Response(path.read_bytes(), media_type=media, headers=headers)
+        return artifact_response(path.read_bytes(), path.name)
 
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):
