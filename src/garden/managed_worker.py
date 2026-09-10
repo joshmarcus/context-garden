@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import shutil
 import time
 import urllib.error
@@ -61,10 +62,11 @@ def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep,
                                    recovery_outcome="retry_window_exhausted",
                                    operator_action="check controller and proxy health, then restart the worker")
             raise RuntimeError(f"claim recovery window exhausted after {attempts} attempts")
+        jittered = delay * random.uniform(0.8, 1.2)
         if getattr(client, "events", None):
             client.events.emit("transport_retry", request_id=request["claim_request_id"], operation="claim",
-                               reconnect_attempt=attempts, backoff_seconds=delay, cause=cause)
-        sleep(min(delay, max_elapsed_seconds - elapsed))
+                               reconnect_attempt=attempts, backoff_seconds=round(jittered, 3), cause=cause)
+        sleep(min(jittered, max_elapsed_seconds - elapsed))
         delay = min(delay * 2, 5.0)
 
 
@@ -162,8 +164,12 @@ def run(config: dict, *, once: bool = False):
     client.worker_id = worker_id
     client.process_generation = generation
     with host_slot(root):
-        deliver_pending_results(root, client)
         while True:
+            deliver_pending_results(
+                root, client,
+                max_attempts=int(config.get("result_recovery_attempts", 5)),
+                max_elapsed_seconds=float(config.get("result_recovery_seconds", 30)),
+            )
             facts = resources(root)
             if (facts["memory_available_bytes"] < config.get("memory_reserve_mib", 512) * 1024**2
                     or facts["disk_free_bytes"] < config.get("disk_reserve_mib", 1024) * 1024**2):

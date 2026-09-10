@@ -139,6 +139,25 @@ def test_worker_diagnostic_export_correlates_claim_without_request_body(garden, 
     assert "secret-token" not in serialized and "safe brief" not in serialized
 
 
+def test_controller_diagnostics_capture_and_deduplicate_failed_requests(garden, monkeypatch):
+    http, _store = remote_client(garden, monkeypatch)
+    payload = {"host": "build-1", "harnesses": ["claude"],
+               "claim_request_id": "failed-request-identity"}
+
+    assert http.post("/api/runs/claim", json=payload,
+                     headers={"Authorization": "Bearer wrong"}).status_code == 403
+    assert http.post("/api/runs/claim", json=payload,
+                     headers={"Authorization": "Bearer wrong"}).status_code == 403
+    assert http.post("/api/runs/claim", json={**payload, "claim_request_id": "recovered-request-id"},
+                     headers={"Authorization": "Bearer secret-token"}).status_code == 204
+
+    diagnostics = http.get("/api/worker-diagnostics?limit=20").json()
+    outcomes = [event for event in diagnostics if event["event"] == "controller_outcome"]
+    assert [event["http_status"] for event in outcomes[-3:]] == [403, 403, 204]
+    notices = http.get("/api/events").json()
+    assert [item["kind"] for item in notices] == ["worker_failure", "worker_recovery"]
+
+
 def test_pending_finish_is_delivered_after_worker_restart(tmp_path):
     pending = tmp_path / "pending-results"
     pending.mkdir()
@@ -157,6 +176,54 @@ def test_pending_finish_is_delivered_after_worker_restart(tmp_path):
     assert deliver_pending_results(tmp_path, Client()) == 1
     assert calls == [("/api/runs/run-1/finish", {"lease_token": "opaque", "exit_code": 0})]
     assert not list(pending.iterdir())
+
+
+def test_pending_finish_retries_transient_failure_without_blocking_startup(tmp_path):
+    pending = tmp_path / "pending-results"
+    pending.mkdir()
+    result = pending / "run-1.json"
+    result.write_text(json.dumps({"run_id": "run-1", "payload": {"lease_token": "opaque"}}))
+
+    class Client:
+        events = None
+
+        def post(self, _path, _payload):
+            raise WorkerRequestError(503, "controller unavailable")
+
+    assert deliver_pending_results(tmp_path, Client(), sleep=lambda _delay: None,
+                                   max_attempts=2) == 0
+    assert result.exists()
+
+
+def test_pending_finish_quarantines_terminal_failure(tmp_path):
+    pending = tmp_path / "pending-results"
+    pending.mkdir()
+    result = pending / "run-1.json"
+    result.write_text(json.dumps({"run_id": "run-1", "payload": {"lease_token": "stale"}}))
+
+    class Client:
+        events = None
+
+        def post(self, _path, _payload):
+            raise WorkerRequestError(409, "lease replaced")
+
+    assert deliver_pending_results(tmp_path, Client(), sleep=lambda _delay: None) == 0
+    assert not result.exists()
+    assert (pending / "quarantine" / "run-1.json").exists()
+
+
+def test_worker_diagnostics_bound_bytes_and_external_fields(tmp_path):
+    from garden.worker_diagnostics import MAX_BYTES, WorkerEventLog
+
+    log = WorkerEventLog(tmp_path / "events.jsonl")
+    for index in range(700):
+        log.emit("transport_attempt", request_id=(str(index) + "x" * 1000),
+                 **{f"external_{field}": "y" * 1000 for field in range(20)})
+
+    assert log.path.stat().st_size <= MAX_BYTES
+    assert all(len(event.get("request_id", "")) <= 256 for event in log.read(limit=1000))
+    event = log.emit("transport_attempt", request_id="Bearer secret-shaped-value")
+    assert event["request_id"] == ""
 
 
 def test_claim_request_replay_fences_host_generation_and_expiry(garden, monkeypatch):
