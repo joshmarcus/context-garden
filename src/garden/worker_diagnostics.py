@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import threading
 import uuid
 from pathlib import Path
@@ -80,11 +81,15 @@ def durable_worker_identity(root: Path, configured: str = "") -> str:
     """Return an operator-safe stable identity without exposing a physical host id."""
     path = root / "worker-id"
     if configured:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", configured):
+            raise ValueError("worker_id must be 1-128 safe identifier characters")
         identity = configured
     elif path.exists():
         identity = path.read_text().strip()
     else:
         identity = "worker-" + uuid.uuid4().hex
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", identity):
+        raise ValueError("saved worker identity is invalid")
     if not path.exists():
         path.write_text(identity + "\n")
         try:
