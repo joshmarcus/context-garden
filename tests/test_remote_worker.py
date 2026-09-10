@@ -18,7 +18,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from garden import gitops, managed_worker
+from garden import gitops, managed_worker, remote_worker
 from garden.ci_status import worker_check_status
 from garden.harness import Harness
 from garden.remote_worker import (
@@ -1448,6 +1448,32 @@ def test_transcript_spool_resumes_from_durable_acknowledged_offset(tmp_path):
     events = [json.loads(line) for line in bytes(upload.content).decode().splitlines()]
     assert [event["sequence"] for event in events] == [0, 1]
     assert [event["data"] for event in events] == ["before restart", "after restart"]
+
+
+def test_worker_restart_replays_persisted_claim_request_identity(tmp_path, monkeypatch):
+    requests = []
+
+    class Client:
+        def __init__(self, url, token):
+            pass
+
+        def post(self, path, payload):
+            requests.append(payload)
+            return 200, {"id": "run-1", "lease_token": "same-generation"}
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("worker process interrupted")
+
+    monkeypatch.setattr(remote_worker, "WorkerClient", Client)
+    monkeypatch.setattr(remote_worker, "execute_claim", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        remote_worker.run_worker("https://garden", "worker-1", "token", tmp_path, [], [], once=True)
+
+    monkeypatch.setattr(remote_worker, "execute_claim", lambda *args, **kwargs: None)
+    remote_worker.run_worker("https://garden", "worker-1", "token", tmp_path, [], [], once=True)
+
+    assert requests[0]["claim_request_id"] == requests[1]["claim_request_id"]
+    assert not list((tmp_path / "claim-requests").glob("*.json"))
 
 
 def test_finish_acknowledgement_replay_collects_one_result(garden, monkeypatch):
