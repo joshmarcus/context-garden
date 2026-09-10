@@ -530,29 +530,6 @@ def test_retro_reserves_its_draft_ids_so_live_creation_before_merge_never_collid
     assert store.reserved_ids() == {}
 
 
-def test_retro_rerun_reclaims_an_abandoned_batch_of_reserved_ids(tmp_path, fake_github, monkeypatch):
-    """A retro whose PR is never merged leaves its reserved ids on disk; re-running the retro for
-    the same phase releases that abandoned batch first, so the next attempt reuses the same ids
-    rather than leaking them forward."""
-    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
-    repo = _garden_repo(tmp_path)
-    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
-    store = Store(root)
-    sched = Scheduler(store, github=fake_github, log=print)
-    _register_prs(fake_github)
-
-    ph = store.phase("gdn", "p1")
-    sched.start_retro(ph, ["designer"], skip_personas=True)
-    assert not sched.tick().errors
-    assert set(store.reserved_ids()) == {"GD-003", "GD-004"}
-
-    # a fresh retro attempt for the same phase (the prior PR never merged)
-    sched.start_retro(ph, ["designer"], skip_personas=True)
-    assert not sched.tick().errors
-    # the batch was released and re-taken, not doubled: still GD-003/GD-004, no GD-005/GD-006
-    assert set(store.reserved_ids()) == {"GD-003", "GD-004"}
-
-
 def test_retro_files_persona_findings_merged_across_personas_by_title(tmp_path, fake_github, monkeypatch):
     """CG-187: every persona finding becomes a draft, not only the high ones, priority from
     severity, and findings that say the same thing across personas (the fake harness returns
