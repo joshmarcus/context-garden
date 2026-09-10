@@ -17,7 +17,8 @@ class AuxMixin:
 
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
                      harness_name: str = "", difficulty: str = "", prepared_run: Run | None = None,
-                     model_override: str | None = None, pool_member: str = "") -> Run:
+                     model_override: str | None = None, pool_member: str = "",
+                     reference_files: dict[str, str] | None = None) -> Run:
         self.require_maintenance_running()
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
@@ -51,6 +52,10 @@ class AuxMixin:
         run.harness = runner.harness.name if runner.harness else ""
         run.pool_member = pool_member
         run.brief_tokens = max(1, len(brief_text) // 4)
+        if reference_files:
+            from ..reference_snapshot import write_reference_files
+
+            write_reference_files(run.path, reference_files)
         canonical = self.prepare_canonical_run(probe, run, runner, run.branch, run.base)
         if canonical is not None:
             worktree = canonical

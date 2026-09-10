@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import no_live_garden_root
+from ..reference_snapshot import REFERENCE_DIR
 from ..runs import Run
 from ..sandbox import SandboxPolicy
 from ..validation import bounded_validation_timeout_seconds
@@ -95,7 +96,8 @@ class LocalRunner(Runner):
             cmd, _ = policy.command_argv(
                 shlex.join(cmd), worktree,
                 additional_writable_roots=[Path(worker_home(worktree)), *output_roots],
-                readable_roots=[worktree, Path(worker_home(worktree)), Path(worker_credentials_dir(worktree))],
+                readable_roots=[worktree, Path(worker_home(worktree)), Path(worker_credentials_dir(worktree)),
+                                *(([run.path / REFERENCE_DIR]) if (run.path / REFERENCE_DIR).is_dir() else [])],
                 protected_roots=[Path(path) for path in run.fence_paths or []],
             )
         return cmd
@@ -119,6 +121,9 @@ class LocalRunner(Runner):
         env.pop("GARDEN_EXECUTION_TIMEOUT_SECONDS", None)
         env["GARDEN_TASK_ID"] = run.task_id
         env["GARDEN_RUN_ID"] = run.run_id
+        references = run.path / REFERENCE_DIR
+        if references.is_dir():
+            env["GARDEN_CONTEXT_DIR"] = str(references)
         # Deep dives are controller diagnostics, not implementation workers. They are the
         # one run type intentionally given the real workspace root for read access; the
         # ordinary worktree fence still prevents writes there.

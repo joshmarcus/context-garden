@@ -869,6 +869,7 @@ class ReviewMixin:
         if run is None:
             run = (self.runs.new_run(task.id, "remote", mode="review")
                    if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
+        reference_files: dict[str, str] = {}
         text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
@@ -881,7 +882,11 @@ class ReviewMixin:
                             criteria_snapshot=criteria_snapshot, pre_flight=pre_flight, plan=plan,
                             author_interaction=author_interaction,
                             clarify_unverified=clarify_unverified,
-                            author_source_run=source_run, author_source_head=source_head)
+                            author_source_run=source_run, author_source_head=source_head,
+                            reference_files=reference_files)
+        from ..reference_snapshot import write_reference_files
+
+        write_reference_files(run.path, reference_files)
         ci_status = self.state.get(task.id).get("ci_status") or {}
         if ci_status:
             text += ("\n\n## Exact-head CI evidence\n\nThe controller admitted this review with "

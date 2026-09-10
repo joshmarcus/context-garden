@@ -61,11 +61,13 @@ class PersonaMixin:
         else:
             wt.parent.mkdir(parents=True, exist_ok=True)
             gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
-        text = phase_brief(self.store, phase, name, base, self.phase_prs(phase))
+        references: dict[str, str] = {}
+        text = phase_brief(self.store, phase, name, base, self.phase_prs(phase), references)
         return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
                                                              "persona": name, "target": "phase", "file_tasks": file_tasks,
                                                              "min_severity": min_severity},
-                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
+                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"),
+                                 reference_files=references)
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
                             required_evidence: bool = False,
@@ -106,8 +108,10 @@ class PersonaMixin:
                         if str(path).endswith(".png")]
             if captures:
                 break
+        references = {}
         text = pr_brief(self.store, task, name, branch, base, pr_title, pr_body, diff,
-                        int(self.cfg.get("review.max_diff_chars", 60000)), captures=captures)
+                        int(self.cfg.get("review.max_diff_chars", 60000)), captures=captures,
+                        reference_files=references)
         review_tier = str(self.effective("review.difficulty", None, task.product)
                           or task.difficulty or "medium")
         member = member if member is not None else self.select_pool_member(task, review_tier, review=True)
@@ -118,7 +122,8 @@ class PersonaMixin:
                                                          "required_evidence": required_evidence},
                                  harness_name=harness_name, difficulty=str(self.effective("retro.difficulty") or "hard"),
                                  model_override=(member["model"] if member is not None and "model" in member else None),
-                                 pool_member=str((member or {}).get("label") or ""), prepared_run=run)
+                                 pool_member=str((member or {}).get("label") or ""), prepared_run=run,
+                                 reference_files=references)
 
     def _finding_target_phase(self, phase: Phase) -> Phase:
         """Where a persona finding is filed: the reviewed phase, unless it is frozen or closed

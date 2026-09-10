@@ -1,10 +1,4 @@
-"""Build the worker briefing for a task.
-
-The brief is the *only* context a worker gets by default. It is deliberately small:
-principles digest + product overview + phase goals + task + inlined reading list.
-Workers are told not to go exploring the garden; if something is missing, the task
-(or the reading list) is what should be fixed.
-"""
+"""Build a small launch note and an immutable reference snapshot for a task."""
 
 from __future__ import annotations
 
@@ -58,8 +52,8 @@ OPERATING_RULES = """\
 {turn_cap_rule}- Do NOT edit files under `**/tasks/` in the context garden; task state is managed by the scheduler.
 - Work only in the directory you were started in: it is your checkout on your branch. Do not change into any other checkout of this repository.
 - Do NOT run `garden` commands: `GARDEN_ROOT` is set to a non-existent path so any `garden` invocation will refuse with a clear error.
-{env_rule}- Everything you need should be in this brief. Read the *additional files* listed under "Reading list (read these)" before you start. Beyond that, explore only the code you need to change. Do not read the whole context garden.
-- Follow the principles digest. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
+{env_rule}- This is a launch note, not the full context. Start with the authoritative task under `$GARDEN_CONTEXT_DIR`, then choose the referenced and checkout material relevant to the work. Do not inspect unrelated controller or product data.
+- Follow the referenced principles. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
 - During iteration run focused tests only. Before finishing, run the project's checks sequentially
   (tests, lint, typecheck); full CI remains the merge gate. Fix what you broke.
 - In a supervised local run, launch each potentially heavy pytest validation as
@@ -162,6 +156,7 @@ class Brief:
     referenced: list[str] = field(default_factory=list)  # too big to inline; worker can read from checkout
     controller_owned: list[str] = field(default_factory=list)  # controller context, unavailable in checkout
     missing: list[str] = field(default_factory=list)
+    files: dict[str, str] = field(default_factory=dict)
 
     @property
     def chars(self) -> int:
@@ -402,7 +397,6 @@ def build_brief(
     generated_context: Path | None = None,
 ) -> Brief:
     cfg = store.config
-    inline_max = int(cfg.get("brief.inline_max_chars", 24000))
     total_max = int(cfg.get("brief.total_max_chars", 120000))
     root = store.root
     product = store.product(task.product)
@@ -413,6 +407,13 @@ def build_brief(
     referenced: list[str] = []
     controller_owned: list[str] = []
     missing: list[str] = []
+    snapshot_files: dict[str, str] = {}
+
+    def snapshot(name: str, content: str) -> str:
+        """Add sanitized controller material to the run-scoped reference bundle."""
+        rel = f"context/{name}"
+        snapshot_files[rel] = scrub_shared_text(content.rstrip() + "\n", cfg.data)
+        return f"$GARDEN_CONTEXT_DIR/{rel}"
 
     head = f"# Task {task.id}: {task.title}\n\nProduct: **{task.product}** · Phase: **{task.phase}**\n"
     sections.append(("head", head))
@@ -447,34 +448,37 @@ def build_brief(
         if stack:
             sections.append(("stack", STACK_NOTE.format(**stack)))
 
+    refs: list[str] = []
     digest = root / str(cfg.get("principles_digest"))
     if digest.exists():
-        sections.append(("principles", "## Principles (digest)\n\n" + _read(digest).strip() + "\n"))
+        refs.append(f"- Principles and safety constraints: `{snapshot('principles.md', _read(digest))}`")
         inlined.append(store.rel(digest))
 
     if product.overview_path:
-        sections.append(("product", f"## Product: {product.name}\n\n" + _read(product.overview_path).strip() + "\n"))
+        refs.append(f"- Product overview: `{snapshot('product.md', _read(product.overview_path))}`")
         inlined.append(store.rel(product.overview_path))
 
     if phase.goals_path:
-        sections.append(("goals", f"## Phase goals: {phase.name}\n\n" + goals_text(phase.goals_path) + "\n"))
+        refs.append(f"- Phase goals and owner decisions: `{snapshot('phase-goals.md', goals_text(phase.goals_path))}`")
         inlined.append(store.rel(phase.goals_path))
 
-    sections.append(("task", "## Task\n\n" + task.body.strip() + "\n"))
+    task_text = f"# {task.id}: {task.title}\n\n{task.body.strip()}\n"
+    refs.append(f"- Authoritative task and full acceptance criteria: `{snapshot('task.md', task_text)}`")
+    sections.append(("launch", "## Launch note\n\nOpen the authoritative task first, then inspect the referenced context and any additional source, history, or evidence that is relevant within the assigned scope. Preserve unresolved findings and owner decisions you discover; references are inputs, not a universal checklist.\n\n## Reference index\n\n" + "\n".join(refs) + "\n"))
     if generated_context is not None:
+        generated_ref = snapshot("evidence/design-context.json", _read(generated_context))
         sections.append((
             "generated_context",
             "## Generated design context\n\n"
             "The scheduler recorded sanitized, read-only operational context for this run at "
-            f"`{generated_context}`. This controller-owned file is not in your checkout; do not "
-            "try to read or commit it. If its contents are necessary, report that need.\n",
+            f"`{generated_ref}`. Inspect it when relevant; do not copy it into the checkout.\n",
         ))
     if not parse_criteria(task.body):
         sections.append(("criteria_contract", "## Criteria contract\n\nThis task has no acceptance-criteria checklist. Its Goal is the contract; state what you verified and how in `verified`.\n"))
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     if frozen:
-        sections.append(("criteria", "## Criteria frozen for this dispatch\n\n" +
-                         "\n".join(f"- {item}" for item in frozen) + "\n"))
+        criteria_text = "# Criteria frozen for this dispatch\n\n" + "\n".join(f"- {item}" for item in frozen) + "\n"
+        sections.append(("criteria_ref", f"## Frozen contract\n\nUse `{snapshot('criteria.md', criteria_text)}`; it remains the contract if the live task later changes.\n"))
     if include_rules:
         sections.append(("pre_flight", preflight_section(cfg.capture_infrastructure_policy())))
 
@@ -505,52 +509,39 @@ def build_brief(
                 missing.append(frel)
                 continue
             checkout_readable = source_root.resolve() != root.resolve()
-            if not content or len(content) > inline_max:
-                if checkout_readable:
-                    referenced.append(frel)
-                    checkout_refs.append(frel)
-                else:
-                    controller_owned.append(frel)
+            if not checkout_readable:
+                controller_owned.append(frel)
+                reference = snapshot("reading/" + frel, content)
+                checkout_refs.append(reference)
                 continue
-            fence = "````" if "```" in content else "```"
-            lang = f.suffix.lstrip(".") or "text"
-            reading_parts.append(f"### {frel}\n\n{fence}{lang}\n{content.rstrip()}\n{fence}\n")
-            inlined.append(frel)
-            (inlined_checkout if checkout_readable else inlined_controller).append(frel)
+            referenced.append(frel)
+            checkout_refs.append(frel)
     if reading_parts:
         sections.append(("reading", "## Reading list (inlined)\n\n" + "\n".join(reading_parts)))
     if checkout_refs:
         sections.append(
             (
                 "reading_refs",
-                "## Reading list (read from the checkout)\n\nThese files are relevant but too large to inline. "
-                "Read them (paths relative to your current directory) before starting:\n\n"
+                "## Relevant files\n\nThese paths are available at the recorded source. Read the ones relevant to your work; "
+                "checkout paths are relative to the current directory and snapshot paths use `$GARDEN_CONTEXT_DIR`:\n\n"
                 + "\n".join(f"- `{r}`" for r in checkout_refs)
                 + "\n",
             )
         )
-    if controller_owned:
-        sections.append((
-            "controller_refs",
-            "## Controller-owned references\n\n"
-            "These sources exist in the garden's controller context, not in your checkout. "
-            "Their contents were not inlined, so do not try to read these paths from the checkout. "
-            "If one is necessary to complete the task, report that need.\n\n"
-            + "\n".join(f"- `{r}`" for r in controller_owned)
-            + "\n",
-        ))
     if missing:
         sections.append(("gaps", "## Brief gaps\n\nThe following reading-list entries were dropped because they did not resolve:\n\n"
                          + "\n".join(f"- `{path}`" for path in missing) + "\n"))
     if review_feedback:
-        sections.append(("feedback", "## Review feedback to address\n\n" + review_feedback.strip() + "\n"))
+        sections.append(("feedback", "## Review findings\n\nAddress the complete, immutable findings at "
+                         f"`{snapshot('review-findings.md', review_feedback)}`.\n"))
     if validation_plan is not None:
         sections.append(("validation_plan", "## Validation plan\n\nThis is the dispatch-time scope for the checkout you start from. The scheduler refreshes it from the resulting checkout before pre-check and review, so changed behavior is assessed against that later head. Keep its explicit configured checks and report any newly discovered demand as a justified scope expansion.\n\n```json\n" + json.dumps(validation_plan, indent=2, sort_keys=True) + "\n```\n"))
     if qa:
         lines = ["## Answers from the human\n", "Earlier runs of this task asked questions; the answers are binding.\n"]
         for i, item in enumerate(qa, 1):
             lines.append(f"{i}. **Q:** {str(item.get('q', '')).strip()}\n   **A:** {str(item.get('a', '')).strip()}\n")
-        sections.append(("qa", "\n".join(lines)))
+        sections.append(("qa", "## Binding owner answers\n\nRead `" +
+                         snapshot("owner-answers.md", "\n".join(lines)) + "`.\n"))
 
     # Enforce the total budget by trimming the largest inlined reading entries first.
     text = "\n".join(s for _, s in sections)
@@ -584,6 +575,7 @@ def build_brief(
         referenced=referenced,
         controller_owned=controller_owned,
         missing=missing,
+        files=snapshot_files,
     )
 
 

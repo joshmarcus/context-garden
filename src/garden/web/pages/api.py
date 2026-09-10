@@ -520,6 +520,9 @@ def register(app: FastAPI, site: Site) -> None:
                     "execution_timeout_minutes": execution_timeout_minutes(run),
                     "resource_weight": weight,
                 }
+                from ...reference_snapshot import read_reference_files
+
+                payload["references"] = read_reference_files(run.path)
                 checks = run.path / "checks_input.json"
                 if checks.exists():
                     check_payload = json.loads(checks.read_text())

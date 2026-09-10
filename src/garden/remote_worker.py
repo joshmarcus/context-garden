@@ -576,6 +576,11 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             runs_dir.mkdir(parents=True, exist_ok=True)
             execution_dir = Path(tempfile.mkdtemp(prefix="claim-", dir=runs_dir))
             execution_env = dict(env)
+            from .reference_snapshot import materialize_remote_references
+
+            reference_dir = materialize_remote_references(execution_dir, run.get("references"))
+            if reference_dir is not None:
+                execution_env["GARDEN_CONTEXT_DIR"] = str(reference_dir)
             for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
                         "GARDEN_VALIDATION_RUNNER", "GARDEN_HEAVY_EXECUTION", "GARDEN_OWNER_SCOPED",
                         "GARDEN_PRESERVE_FDS"):
