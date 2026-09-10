@@ -81,39 +81,56 @@ def archive_runs(
     The operation is atomic per run and safe to retry; its index is rebuilt and verified
     on every invocation.
     """
-    from ..runs import RunStore
+    from ..runs import HistoryUnavailable, RunStore
+    from ..scheduler import StateCorruptionError
 
     store = _store()
-    state_path = store.config.garden_dir / "state.json"
-    try:
-        state_text = json.dumps(json.loads(state_path.read_text())) if state_path.exists() else ""
-    except (OSError, json.JSONDecodeError):
-        err.print("[red]state.json is unreadable; refusing to archive recovery evidence[/red]")
-        raise typer.Exit(2) from None
     rs = RunStore(store.config.garden_dir)
     scheduler = _scheduler(store)
-    protected = {r.run_id for r in rs.all_runs() if r.run_id in state_text}
-    protected.update(scheduler.unreaped_run_ids())
     before = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
-    preview = rs.archive_preview(before, protected, limit=limit)
-    console.print(
-        f"eligible: {preview['eligible_runs']} run(s), {preview['eligible_bytes']} logical bytes; "
-        f"estimated stored bytes: {preview['estimated_stored_bytes']}; "
-        f"skipped: {preview['skipped']}"
-    )
-    if not apply:
-        console.print("preview only; pass --apply to archive and compact these runs")
-        return
-    try:
-        moved = rs.archive_terminal(before, protected, limit=limit)
-    except ValueError as exc:
-        err.print(f"[red]{exc}[/red]")
-        raise typer.Exit(2) from None
+    with scheduler.tick_lock():
+        # The controller lock freezes task finalization while eligibility and every
+        # destructive commit are rechecked. Worker record updates remain visible here.
+        store.invalidate_tasks()
+        tasks = store.tasks()
+        try:
+            scheduler.state = type(scheduler.state)(scheduler.state.path)
+            state_text = json.dumps(scheduler.state.data)
+            records = rs.all_runs()
+            protected = {run.run_id for run in records if run.run_id in state_text}
+            protected.update(scheduler.unreaped_run_ids())
+            protected.update(run.run_id for run in records
+                             if run.task_id in tasks and not tasks[run.task_id].status.terminal)
+            preview = rs.archive_preview(before, protected, limit=limit)
+            fence_report = scheduler.fence_history_report(apply=False, limit=limit)
+        except (OSError, ValueError, json.JSONDecodeError, HistoryUnavailable,
+                StateCorruptionError) as exc:
+            err.print(f"[red]archive reference analysis failed; nothing deleted: {exc}[/red]")
+            raise typer.Exit(2) from None
+        console.print(
+            f"eligible: {preview['eligible_runs']} run(s), {preview['eligible_bytes']} logical bytes; "
+            f"estimated stored bytes: {preview['estimated_stored_bytes']}; "
+            f"skipped: {preview['skipped']}"
+        )
+        console.print(f"fence history: {fence_report}")
+        if not apply:
+            console.print("preview only; pass --apply to archive and compact these runs")
+            return
+        try:
+            moved = rs.archive_terminal(before, protected, limit=limit)
+            state_report = scheduler.state.archive_completed(
+                {task.id for task in tasks.values() if task.status.terminal}, limit=limit
+            )
+            fence_report = scheduler.fence_history_report(apply=True, limit=limit)
+        except (OSError, ValueError, HistoryUnavailable, StateCorruptionError) as exc:
+            err.print(f"[red]archive maintenance stopped safely: {exc}[/red]")
+            raise typer.Exit(2) from None
     console.print(
         f"archived {moved} terminal run(s) finished before {before.isoformat()} to "
         f"{rs.archive_dir}; retained {len(protected)} recovery-referenced run(s)"
     )
     console.print(f"archive storage: {rs.archive_report()}")
+    console.print(f"scheduler state history: {state_report}; fence history: {fence_report}")
 
 
 @app.command("cleanup-branches", rich_help_panel=PANEL_DIAG)
