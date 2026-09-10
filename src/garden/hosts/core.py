@@ -445,10 +445,11 @@ class HostLifecycle:
         """Use the provider notice time when present, with a conservative two-minute bound."""
         try:
             event = json.loads(host.detail).get("provider_event", {})
-            value = event.get("time")
-            noticed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-            if noticed.tzinfo is not None:
-                return (noticed + dt.timedelta(seconds=110)).isoformat()
+            if event.get("detail-type") == "EC2 Spot Instance Interruption Warning":
+                value = event.get("time")
+                noticed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if noticed.tzinfo is not None:
+                    return (noticed + dt.timedelta(seconds=110)).isoformat()
         except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
             pass
         return (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=110)).isoformat()
