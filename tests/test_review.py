@@ -463,7 +463,7 @@ def test_served_tick_recovers_an_unstarted_review_with_original_round_intent(sch
     assert recovered["review_recovery"]["last_run"] == lost.run_id
 
 
-def test_review_audit_restores_a_lost_additional_round_once(sched):
+def test_review_audit_does_not_restore_a_configured_additional_round(sched):
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW
     task.pr = "https://example.com/pull/101"
@@ -486,8 +486,96 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
     sched._audit_review_continuations(sched.store.tasks(), rep)
     sched._audit_review_continuations(sched.store.tasks(), rep)
 
-    assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
-    assert rep.transitions == ["DM-001 missing review continuation restored"]
+    assert not st.get("pending_reviews")
+    assert rep.transitions == []
+
+
+def test_review_audit_removes_a_stale_need_two_reason(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({
+        "head_sha": "current",
+        "review_rounds": 1,
+        "last_review": {"verdict": "approve"},
+        "last_review_head": "current",
+        "automerge_blocked": "only 1 review round(s) so far, need 2",
+    })
+    prior = sched.runs.new_run(task.id, "local", mode="review")
+    prior.status = "done"
+    prior.env_snapshot = {"review_head": "current"}
+    prior.result = {"verdict": "approve"}
+    prior.save()
+    st["last_review_run"] = prior.run_id
+
+    sched._audit_review_continuations(sched.store.tasks(), TickReport())
+
+    assert not st.get("automerge_blocked")
+
+
+def test_review_audit_retires_queued_count_only_round_for_current_approval(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({
+        "head_sha": "current",
+        "review_rounds": 1,
+        "last_review": {"verdict": "approve"},
+        "last_review_head": "current",
+        "pending_reviews": [
+            {"kind": "review", "count_round": True},
+            {"kind": "persona", "name": "security", "required": True},
+        ],
+        "review_recovery": {
+            "head": "current",
+            "attempts": 1,
+            "reason": "legacy second round did not start",
+        },
+        "automerge_blocked": "only 1 review round(s) so far, need 2",
+    })
+    approved = sched.runs.new_run(task.id, "local", mode="review")
+    approved.status = "done"
+    approved.result = {"verdict": "approve"}
+    approved.env_snapshot = {"review_head": "current", "count_round": True}
+    approved.save()
+    st["last_review_run"] = approved.run_id
+
+    sched._audit_review_continuations(sched.store.tasks(), TickReport())
+
+    assert st["pending_reviews"] == [
+        {"kind": "persona", "name": "security", "required": True},
+    ]
+    assert not st.get("review_recovery")
+    assert not st.get("automerge_blocked")
+
+
+def test_review_audit_keeps_non_counted_review_for_current_approval(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st.update({
+        "head_sha": "current",
+        "last_review": {"verdict": "approve"},
+        "last_review_head": "current",
+        "pending_reviews": [{"kind": "review", "count_round": False}],
+        "review_recovery": {"head": "current", "attempts": 1},
+    })
+    approved = sched.runs.new_run(task.id, "local", mode="review")
+    approved.status = "done"
+    approved.result = {"verdict": "approve"}
+    approved.env_snapshot = {"review_head": "current"}
+    approved.save()
+    st["last_review_run"] = approved.run_id
+
+    sched._audit_review_continuations(sched.store.tasks(), TickReport())
+
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+    assert st["review_recovery"] == {"head": "current", "attempts": 1}
 
 
 def test_review_audit_does_not_restore_an_extra_round_for_a_hard_task(sched):

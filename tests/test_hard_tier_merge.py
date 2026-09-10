@@ -63,11 +63,13 @@ def test_medium_tier_unaffected_by_hard_policy(sched, fake_github):
 
 
 # ---- each extra gate ---------------------------------------------------------
-def test_hard_tier_honours_a_configured_higher_review_minimum(sched, fake_github):
+def test_hard_tier_ignores_a_configured_higher_review_minimum(sched, fake_github):
     t, st, pr = _hard_in_review(sched, fake_github, rounds=1)
     sched.cfg.data["github"]["automerge_min_review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "need 2" in reason
+    assert not ok and "scratch-merge check" in reason
+    ok, reason = sched._automerge_gate(t, pr, require_scratch=False)
+    assert ok, reason
 
 
 def test_hard_tier_held_until_scratch_check_passes(sched, fake_github):

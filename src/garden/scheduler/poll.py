@@ -501,16 +501,6 @@ class PollMixin:
             return prod[key]
         return self.cfg.get(f"github.{key}", default)
 
-    def _needs_second_review_round(self, product: str) -> bool:
-        """Whether a PR against `product` needs a second approving round before automerge.
-
-        A product with `self: true` (the garden's own repo) or `provides_tool: true` (the
-        product that ships the `garden` binary) can change the loop that merges it, so one LLM
-        review is not enough: it takes two approving rounds by default, or a person merging by
-        hand. An explicit per-product `automerge_min_review_rounds` overrides this default."""
-        p = self.cfg.product(product)
-        return bool(self.cfg.product_self(product) or p.get("provides_tool"))
-
     def _automerge_enabled(self, task: Task) -> bool:
         if self.external_stack_owner(task):
             return False  # a stack owner, not garden, decides whether its branch may merge
@@ -538,18 +528,12 @@ class PollMixin:
         return bool(sm.get("ok")) and str(sm.get("diff") or "") == str(st.get("last_diff_hash") or "")
 
     def _automerge_min_review_rounds(self, task: Task) -> int:
-        """Return the automated-review minimum for a task's configured product policy."""
-        min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
-        self_product_default = (self.cfg.product_self(task.product)
-                                and "automerge_min_review_rounds" not in self.cfg.product(task.product))
-        if self_product_default:
-            # The second opinion is supplied by a current-head persona or a human, so only
-            # one automated review round is required by the default self-product policy.
-            return max(min_rounds, 1)
-        if (self._needs_second_review_round(task.product)
-                and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
-            return max(min_rounds, 2)
-        return min_rounds
+        """Return the fixed review-count minimum.
+
+        Historical configuration may still name a larger value, but review count is no
+        longer a policy lever. Other gates independently require a current-head approval.
+        """
+        return 1
 
     def _automerge_gate(self, task: Task, pr: PRInfo, require_scratch: bool = True) -> tuple[bool, str]:
         """Whether every gate the loop already has is green, and the first reason it is not.
@@ -587,15 +571,8 @@ class PollMixin:
         if not require_current_base and reviewed_head != pr.head_sha:
             return False, "the approved review is not for the current PR head"
         min_rounds = self._automerge_min_review_rounds(task)
-        self_product_default = (self.cfg.product_self(task.product)
-                                and "automerge_min_review_rounds" not in self.cfg.product(task.product))
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
-        if (self_product_default and int(st.get("review_rounds", 0)) >= 1
-                and pr.review_decision != "APPROVED"
-                and not any(str(item.get("head") or "") == str(pr.head_sha or "")
-                            for item in st.get("persona_reviews", []) if isinstance(item, dict))):
-            return False, "the second review must be a persona review or human approval"
         if str(st.get("pending_feedback") or "").strip():
             return False, "feedback is pending a revise run"
         review_run = st.get("review_run")

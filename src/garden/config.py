@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import os
 import tempfile
+import warnings
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +69,30 @@ def no_live_garden_root(base: Path) -> str:
     """A path under `base` guaranteed not to contain a garden.yaml, for GARDEN_ROOT in
     worker and check subprocess environments (see find_root)."""
     return str(base / NO_LIVE_GARDEN)
+
+
+def _normalize_review_count_policy(data: dict[str, Any]) -> None:
+    """Keep legacy review-count settings loadable without letting them add a gate."""
+    locations = [("github.automerge_min_review_rounds", data.get("github"))]
+    locations.extend(
+        (f"products.{name}.automerge_min_review_rounds", product)
+        for name, product in (data.get("products") or {}).items()
+        if isinstance(product, dict)
+    )
+    for dotted, parent in locations:
+        if not isinstance(parent, dict) or "automerge_min_review_rounds" not in parent:
+            continue
+        value = parent["automerge_min_review_rounds"]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{dotted} must be an integer")
+        if value > 1:
+            warnings.warn(
+                f"{dotted}={value} is deprecated and has been normalized to 1; "
+                "Garden requires at most one current-head approval",
+                UserWarning,
+                stacklevel=3,
+            )
+            parent["automerge_min_review_rounds"] = 1
 
 
 # The fields whose value shapes what a dispatched run, its setup command or a check
@@ -292,7 +317,7 @@ DEFAULTS: dict[str, Any] = {
         "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
         "automerge_method": "squash",           # squash | merge | rebase
         "automerge_require_current_base": True,  # rebase onto the latest base before merging
-        "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
+        "automerge_min_review_rounds": 1,        # legacy values above one are normalized to one
         "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge under the plain policy
         "automerge_hard_tier": True,             # also merge hard-tier PRs after the configured review
                                                  # rounds and the garden's own scratch-merge check; off to
@@ -379,6 +404,7 @@ class Config:
                 documents.append((name, raw))
         _validate_product_policies(data)
         validate_configuration(data)
+        _normalize_review_count_policy(data)
         return cls(root=root, data=data, sources=sources, env=env,
                    source_documents=documents)
 

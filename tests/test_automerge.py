@@ -246,15 +246,15 @@ def test_merge_call_atomically_rejects_a_head_changed_after_the_gate(
     assert any("head changed before merge" in error for error in rep.errors)
 
 
-def test_gate_min_review_rounds(sched, fake_github):
+def test_gate_legacy_global_min_review_rounds_is_ignored(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     st["review_rounds"] = 1
     sched.cfg.data["github"]["automerge_min_review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "review round" in reason
+    assert ok, reason
 
 
-def test_hard_task_uses_the_configured_review_minimum(sched, fake_github):
+def test_hard_task_ignores_the_configured_review_minimum(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     t.difficulty = "hard"
     sched.cfg.data["github"]["automerge_hard_tier"] = True
@@ -266,11 +266,10 @@ def test_hard_task_uses_the_configured_review_minimum(sched, fake_github):
     sched.cfg.data["github"]["automerge_min_review_rounds"] = 3
     st["review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "need 3" in reason
+    assert ok, reason
 
 
-def test_self_product_uses_independent_second_opinion(sched, fake_github):
-    """A self-product PR gets one automated approval and an independent current-head opinion."""
+def test_self_product_uses_one_current_head_approval(sched, fake_github):
     sched.cfg.data["products"]["demo"]["self"] = True
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
     sched.cfg.data["github"]["automerge"] = True
@@ -288,52 +287,35 @@ def test_self_product_uses_independent_second_opinion(sched, fake_github):
     pr.checks = "SUCCESS"
     sched.tick()  # an ordinary follow-up tick must not schedule a same-product second pass
     assert len([r for r in sched.runs.runs_for(t.id) if r.mode == "review"]) == 1
-    pr.review_decision = "APPROVED"
-    # Current-head human approval supplies the independent second opinion.
-    ok, reason = sched._automerge_gate(t, pr)
-    assert ok, reason
     pr.review_decision = ""
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "second review" in reason
-
-    # Two automated approvals alone remain insufficient, even if an old implementation has
-    # left that state behind.
-    st["review_rounds"] = 2
-    ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "second review" in reason
-
-    # A human approval remains the other independent path when the old state has two rounds.
-    pr.review_decision = "APPROVED"
-    ok, reason = sched._automerge_gate(t, pr)
     assert ok, reason
 
 
-def test_gate_provides_tool_product_needs_two_rounds_by_default(sched, fake_github):
+def test_gate_provides_tool_product_needs_one_round(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["provides_tool"] = True
     st["review_rounds"] = 1
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "review round" in reason
+    assert ok, reason
 
 
-def test_gate_self_product_two_round_default_is_overridable_per_product(sched, fake_github):
-    """An explicit per-product `automerge_min_review_rounds` overrides the self/tool default."""
+def test_gate_self_product_accepts_legacy_per_product_floor(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["self"] = True
-    sched.cfg.data["products"]["demo"]["automerge_min_review_rounds"] = 1
+    sched.cfg.data["products"]["demo"]["automerge_min_review_rounds"] = 4
     st["review_rounds"] = 1
     ok, reason = sched._automerge_gate(t, pr)
     assert ok, reason
 
 
-def test_gate_self_product_honours_a_stricter_global(sched, fake_github):
-    """A global setting above the self/tool floor still wins (max, not replace)."""
+def test_gate_self_product_ignores_a_stricter_global(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["products"]["demo"]["self"] = True
     sched.cfg.data["github"]["automerge_min_review_rounds"] = 3
     st["review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
-    assert not ok and "need 3" in reason
+    assert ok, reason
 
 
 def test_gate_normal_product_still_needs_one_round(sched, fake_github):
