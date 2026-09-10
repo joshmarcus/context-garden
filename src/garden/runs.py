@@ -1210,6 +1210,44 @@ class RunStore:
             (self.archive_dir / "pending.json").unlink(missing_ok=True)
             return moved
 
+    def repair_pending_archive(self) -> bool:
+        """Resolve one interrupted archive transaction without selecting new runs.
+
+        Before the directory move, the live source remains authoritative and repair
+        aborts the transaction. After the move, repair completes compaction and verifies
+        every archived reference before rebuilding the index. The pending marker remains
+        durable on every failure so ordinary history readers continue to fail closed.
+        """
+        pending_path = self.archive_dir / "pending.json"
+        with self._archive_mutation():
+            if not pending_path.exists():
+                return False
+            try:
+                pending = json.loads(pending_path.read_text())
+                task_id = str(pending["task_id"])
+                run_id = str(pending["run_id"])
+                source = Path(pending["source"])
+                target = Path(pending["target"])
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise HistoryUnavailable("archive pending record is unreadable") from exc
+            expected_source = self.dir / task_id / run_id
+            expected_target = self.archive_dir / task_id / run_id
+            if (pending.get("version") != self.ARCHIVE_VERSION
+                    or source != expected_source or target != expected_target):
+                raise HistoryUnavailable("archive pending record is invalid")
+            source_exists = source.is_dir()
+            target_exists = target.is_dir()
+            if source_exists == target_exists:
+                raise HistoryUnavailable("archive pending paths are ambiguous")
+            if target_exists:
+                self._compact_archived_run(target)
+                self._verify_archived_run(target)
+                self._index.dirty_tasks.add(task_id)
+            self._write_archive_index()
+            pending_path.unlink()
+            self._fsync_directory(self.archive_dir)
+            return True
+
     def archive_preview(self, before: dt.datetime, protected_run_ids: set[str] | None = None,
                         limit: int | None = None) -> dict[str, Any]:
         """Return a bounded, read-only inventory using the same eligibility rules as apply."""
@@ -1359,6 +1397,37 @@ class RunStore:
             # The verified manifest and blob are durable before the redundant original
             # is retired. A failed unlink merely leaves a safe duplicate for the retry.
             path.unlink()
+
+    def _verify_archived_run(self, run_dir: Path) -> None:
+        """Read every compacted artifact through the production archive reader."""
+        run = Run.load(run_dir)
+        manifest_path = run_dir / "archive.json"
+        if not manifest_path.exists():
+            return
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            files = manifest["files"]
+            if manifest.get("version") != self.ARCHIVE_VERSION or not isinstance(files, dict):
+                raise TypeError
+            for relative, entry in files.items():
+                data = run.read_bytes(relative)
+                if len(data) != int(entry["bytes"]):
+                    raise HistoryUnavailable(f"archive artifact size mismatch: {relative}")
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise HistoryUnavailable(f"archive manifest is unreadable: {manifest_path}") from exc
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        try:
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            # Directory handles are unavailable on some supported platforms. File
+            # replacement remains atomic there, matching the other durable writers.
+            pass
 
     def restore_archived(self, task_id: str, run_id: str) -> bool:
         """Restore one archived run atomically for recovery or inspection tooling."""

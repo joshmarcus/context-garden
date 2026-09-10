@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -211,6 +212,28 @@ def test_state_history_crash_before_compact_state_commit_keeps_original(tmp_path
     monkeypatch.setattr(state, "save", original_save)
 
     assert State(path).get("CG-001")["review_feedback_history"] == payload
+
+
+def test_state_history_rejects_corrupt_existing_blob_without_compacting(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    payload = [{"body": "important failure"}]
+    state.get("CG-001")["review_feedback_history"] = payload
+    state.save()
+    raw = json.dumps(
+        {"review_feedback_history": payload}, sort_keys=True, separators=(",", ":")
+    ).encode()
+    sha = hashlib.sha256(raw).hexdigest()
+    blob = state.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"corrupt")
+
+    with pytest.raises(StateCorruptionError, match="verification failed"):
+        state.archive_completed({"CG-001"}, limit=1)
+
+    fresh = State(path)
+    assert fresh.get("CG-001")["review_feedback_history"] == payload
+    assert "_history_ref" not in fresh.get("CG-001")
 
 
 # ── concurrent-write tests ─────────────────────────────────────────────────────
