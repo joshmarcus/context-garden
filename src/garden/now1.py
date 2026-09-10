@@ -55,7 +55,8 @@ TYPICAL_MIN_SAMPLES = 3
 # The growth-stage word for a phase's merged fraction: nothing merged is a seed, then each
 # quarter is a stage, and everything merged is in fruit.
 STAGE_BANDS = ((0.25, "in leaf"), (0.5, "in bud"), (0.75, "in flower"))
-WINDOWS = (("hour", "last hour"), ("today", "today"), ("24h", "last 24 hours"), ("phase", "this phase"))
+WINDOWS = (("hour", "last hour"), ("today", "today"), ("24h", "last 24 hours"),
+           ("week", "Last week"), ("phase", "this phase"))
 # The rows of the runs-by-harness-and-model table, in the order the loop takes work: the
 # writing modes, the mechanical ones, the reading ones; a mode not listed sorts after them.
 MODE_ORDER = ("work", "revise", "resume", "trial", "rebase", "check", "review", "persona", "compare",
@@ -472,6 +473,8 @@ def resolve_window(key: str, now: dt.datetime, phase_start: str = "") -> tuple[s
         return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(), "hour", key
     if key == "24h":
         return (now - dt.timedelta(hours=24)).replace(microsecond=0).isoformat(), "hour", key
+    if key == "week":
+        return (now - dt.timedelta(days=7)).replace(microsecond=0).isoformat(), "day", key
     if key == "phase":
         return phase_start, "day", key
     return (now - dt.timedelta(hours=1)).replace(microsecond=0).isoformat(), "hour", "hour"

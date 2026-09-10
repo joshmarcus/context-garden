@@ -90,6 +90,7 @@ def test_resolve_window():
     assert now1.resolve_window("hour", NOW) == ("2026-09-06T01:00:00+00:00", "hour", "hour")
     assert now1.resolve_window("today", NOW) == ("2026-09-06T00:00:00+00:00", "hour", "today")
     assert now1.resolve_window("24h", NOW) == ("2026-09-05T02:00:00+00:00", "hour", "24h")
+    assert now1.resolve_window("week", NOW) == ("2026-08-30T02:00:00+00:00", "day", "week")
     assert now1.resolve_window("phase", NOW, "2026-09-01T00:00:00+00:00") == ("2026-09-01T00:00:00+00:00", "day", "phase")
     # no open phase with a dispatch: the phase window falls back to the last 24 hours
     assert now1.resolve_window("phase", NOW) == ("2026-09-05T02:00:00+00:00", "hour", "24h")
