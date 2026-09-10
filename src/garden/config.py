@@ -596,7 +596,21 @@ class Config:
         products use a mapping so their web host, API base, and token source travel
         together instead of relying on ambient ``gh`` configuration.
         """
-        value = self.product(name).get("github")
+        product = self.product(name)
+        source = product.get("source_control")
+        if isinstance(source, dict):
+            if str(source.get("provider") or "") != "github":
+                return {}
+            value = {
+                "slug": source.get("repository"),
+                "host": source.get("host"),
+                "api_base": source.get("api_url"),
+                "token_env": source.get("credential_env"),
+                "ca_bundle": source.get("ca_bundle"),
+                "proxy": source.get("proxy"),
+            }
+        else:
+            value = product.get("github")
         if isinstance(value, str):
             return {"slug": value, "host": "github.com"}
         if not isinstance(value, dict):
@@ -610,6 +624,34 @@ class Config:
             "host": host,
             "api_base": str(value.get("api_base") or value.get("api_url") or ""),
             "token_env": str(value.get("token_env") or ""),
+            "ca_bundle": str(value.get("ca_bundle") or ""),
+            "proxy": str(value.get("proxy") or ""),
+        }
+
+    def product_source_control(self, name: str) -> dict[str, str]:
+        """Return a provider-neutral repository route, retaining ``github`` compatibility."""
+        value = self.product(name).get("source_control")
+        if value is None:
+            github = self.product_github(name)
+            return ({"provider": "github", "repository": github.pop("slug"), **github}
+                    if github else {})
+        if not isinstance(value, dict):
+            raise ValueError(f"products.{name}.source_control must be a mapping")
+        provider = str(value.get("provider") or "")
+        repository = str(value.get("repository") or "")
+        if not provider or not repository:
+            raise ValueError(
+                f"products.{name}.source_control requires provider and repository"
+            )
+        return {
+            "provider": provider,
+            "repository": repository,
+            "host": str(value.get("host") or ""),
+            "web_url": str(value.get("web_url") or ""),
+            "api_base": str(value.get("api_url") or ""),
+            "token_env": str(value.get("credential_env") or ""),
+            "ca_bundle": str(value.get("ca_bundle") or ""),
+            "proxy": str(value.get("proxy") or ""),
         }
 
     def product_project_users(self, name: str) -> list[str]:

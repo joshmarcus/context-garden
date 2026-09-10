@@ -32,6 +32,7 @@ from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
 from ..runs import Run, RunStore
+from ..source_control import ConnectionPolicy, UnsupportedOperation
 from ..store import Store
 from ..trials import TrialLog
 from .aux import AuxMixin
@@ -154,11 +155,28 @@ class Scheduler(
             default = GitHub(**common)
             routes = {}
             for product in (self.cfg.data.get("products") or {}):
-                route = self.cfg.product_github(str(product))
-                if isinstance(self.cfg.product(str(product)).get("github"), dict):
-                    routes[(route["host"], route["slug"])] = GitHub(
-                        **common, host=route["host"], api_base=route.get("api_base", ""),
+                route = self.cfg.product_source_control(str(product))
+                if route and route["provider"] != "github":
+                    raise UnsupportedOperation(
+                        f"source-control provider {route['provider']!r} has no registered adapter"
+                    )
+                configured = self.cfg.product(str(product))
+                if route and (isinstance(configured.get("github"), dict)
+                              or isinstance(configured.get("source_control"), dict)):
+                    host = route.get("host") or route.get("web_url", "").removeprefix("https://")
+                    api_base = route.get("api_base") or (
+                        "https://api.github.com" if host == "github.com"
+                        else f"https://{host}/api/v3"
+                    )
+                    policy = ConnectionPolicy(
+                        web_url=route.get("web_url") or f"https://{host}", api_url=api_base,
+                        credential_env=route.get("token_env", ""),
+                        ca_bundle=route.get("ca_bundle", ""), proxy=route.get("proxy", ""),
+                    )
+                    routes[(host, route["repository"])] = GitHub(
+                        **common, host=host, api_base=api_base,
                         token_env=route.get("token_env", ""),
+                        connection_policy=policy,
                     )
             self.github = GitHubRouter(default, routes)
         self._runner_factory = runner_factory
