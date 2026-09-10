@@ -15,6 +15,7 @@ from garden.review import (
     interaction_evidence_gaps,
     parse_review,
     review_brief,
+    review_implementation_failure_signal,
     review_item_id,
     review_to_markdown,
     validation_plan,
@@ -1006,6 +1007,40 @@ def test_review_brief_and_parse(garden):
     fb = feedback_from_review(rev)
     assert "blocking" in fb and "pr_body" in fb
     assert parse_review("nothing") == {}
+
+
+def test_review_brief_requests_typed_failure_categories(garden):
+    store = Store(garden)
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main",
+                        pr_title="T", pr_body="B", diff="+x", max_diff_chars=100)
+
+    assert "failure_category" in text
+    assert "infrastructure" in text and "unavailable_evidence" in text
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["infrastructure", "admission", "stale_check", "unavailable_evidence", "owner_input", "unknown"],
+)
+def test_nonimplementation_review_categories_are_not_escalation_signals(category):
+    review = {
+        "criteria": [{"criterion": "outcome", "met": False, "failure_category": category}],
+        "findings": [{"severity": "blocking", "failure_category": category}],
+    }
+
+    assert review_implementation_failure_signal(review) == ""
+
+
+def test_implementation_review_category_selects_the_objective_signal():
+    criterion = {"criteria": [{
+        "criterion": "outcome", "met": False, "failure_category": "implementation",
+    }]}
+    finding = {"findings": [{
+        "severity": "blocking", "failure_category": "implementation",
+    }]}
+
+    assert review_implementation_failure_signal(criterion) == "unmet_acceptance_criteria"
+    assert review_implementation_failure_signal(finding) == "verification_rejected"
 
 
 @pytest.mark.parametrize("interaction", [{}, {"unverified": None}, {"unverified": []}])

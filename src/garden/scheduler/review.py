@@ -24,6 +24,7 @@ from ..review import (
     interaction_evidence_gaps,
     parse_review,
     review_brief,
+    review_implementation_failure_signal,
     review_is_description_only,
     review_to_markdown,
     validation_plan,
@@ -1240,6 +1241,7 @@ class ReviewMixin:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({
                     "severity": "blocking", "file": "", "line": None,
+                    "failure_category": "stale_check",
                     "summary": "Verification contradicts the reviewed source or leaves an outcome unmet: " + "; ".join(gaps),
                     "fix": "Resolve the concrete contradiction or unmet outcome and verify it proportionately.",
                 })
@@ -1401,13 +1403,8 @@ class ReviewMixin:
                           f"automated review: {verdict} (description rewritten){cost}", task.pr or "")
                 return True
             if verdict == "request_changes":
-                unmet = criteria_total > criteria_met
-                blocking = any(
-                    isinstance(finding, dict) and finding.get("severity") == "blocking"
-                    for finding in review.get("findings") or []
-                )
-                if unmet or blocking:
-                    signal = "unmet_acceptance_criteria" if unmet else "verification_rejected"
+                signal = review_implementation_failure_signal(review)
+                if signal:
                     self._record_implementation_failure(
                         task, signal, run.run_id,
                         str(review.get("summary") or "automated review rejected the implementation"),
