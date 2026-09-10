@@ -545,6 +545,12 @@ def test_real_serve_auto_upgrade_reexecs_and_serves_new_build(garden, tmp_path):
             "        return {\"active\": installed_commit() or \"\"}\n\n"
         )
         app_py.write_text(app_text.replace(marker, route + marker))
+        access_py = source / "src/garden/web/access.py"
+        access_text = access_py.read_text()
+        access_marker = "OPERATOR_READ_PATHS = frozenset({\n"
+        access_py.write_text(access_text.replace(
+            access_marker, access_marker + '    "/upgrade-proof",\n',
+        ))
         commit_b = _commit(source, "fixture build B adds proof route")
 
         def upgraded() -> bool:
