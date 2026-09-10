@@ -3,10 +3,14 @@ review minimum and the garden's own scratch-merge check, as a config choice that
 
 from __future__ import annotations
 
+import pytest
+
 from garden import gitops
 from garden.events import EventLog
 from garden.model import Status, Task
 from garden.runner.base import run_setup, setup_marker
+from garden.scheduler.resources import ResourcePressureError
+from garden.storage import StorageVolume
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -151,6 +155,26 @@ def test_recreated_scratch_checkout_reruns_setup_before_check(sched, fake_github
     ]
     assert len(scratch_runs) == 1
     assert tally.read_text().splitlines().count(scratch.name) == 2  # stale generation + new one
+
+
+def test_scratch_merge_low_space_denial_precedes_git_staging(sched, fake_github, monkeypatch):
+    """The scratch-check reservation is acquired before fetch, worktree, or rebase writes."""
+    task, _, _ = _hard_in_review(sched, fake_github, rounds=1)
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    monkeypatch.setattr("garden.scheduler.resources.measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", 19 << 30),
+    ))
+    writes: list[str] = []
+    monkeypatch.setattr(gitops, "fetch", lambda *_args, **_kwargs: writes.append("fetch"))
+    monkeypatch.setattr(gitops, "remove_worktree", lambda *_args, **_kwargs: writes.append("remove"))
+    monkeypatch.setattr(gitops, "add_detached_worktree", lambda *_args, **_kwargs: writes.append("add"))
+    monkeypatch.setattr(gitops, "rebase_onto_capture", lambda *_args, **_kwargs: writes.append("rebase"))
+
+    with pytest.raises(ResourcePressureError, match="local filesystem has"):
+        sched._dispatch_scratch_merge(task, type("Report", (), {"dispatched": []})())
+
+    assert writes == []
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
 
 
 def test_hard_tier_scratch_check_failure_holds_the_merge(sched, fake_github):
