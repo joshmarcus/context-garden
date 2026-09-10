@@ -82,7 +82,9 @@ def test_record_from_codex_transcript_uses_latest_cumulative_usage_without_doubl
     assert rec["list_price_usd"] is None
     assert rec["price_status"] == "unavailable"
     assert rec["usage_status"] == "available"
-    assert ops.to_cost_events([rec]) == []
+    event = ops.to_cost_events([rec])[0]
+    assert event["cost_usd"] is None
+    assert event["mode"] == "operator" and event["session"] == "codex-operator"
 
 
 def test_record_from_codex_transcript_without_usage_marks_usage_unavailable(tmp_path):
@@ -156,6 +158,45 @@ def test_to_cost_events_turns_cumulative_heartbeats_into_deltas():
     assert b["cost_usd"] == 0.5
 
 
+def test_attributed_totals_preserve_baseline_across_phase_and_window_changes():
+    records = [
+        {"at": "2026-09-04T10:00:00+00:00", "session": "a", "turns": 5,
+         "list_price_usd": 10.0, "product": "other", "phase": "phase-01"},
+        {"at": "2026-09-05T10:00:00+00:00", "session": "a", "turns": 7,
+         "list_price_usd": 12.0, "product": "context-garden", "phase": "phase-05"},
+        {"at": "2026-09-05T11:00:00+00:00", "session": "a", "turns": 10,
+         "list_price_usd": 15.0},
+        {"at": "2026-09-05T12:00:00+00:00", "session": "b", "turns": 4,
+         "list_price_usd": 8.0, "product": "other", "phase": "phase-02"},
+    ]
+    since = "2026-09-05T00:00:00+00:00"
+    def selected(row):
+        return (row.get("product"), row.get("phase")) == ("context-garden", "phase-05")
+
+    def unattributed(row):
+        return not row.get("product") and not row.get("phase")
+
+    assert ops.attributed_totals(records, since=since, include=selected) == (2.0, 2)
+    assert ops.attributed_totals(records, since=since, include=unattributed) == (3.0, 3)
+
+    # Independent later spend cannot change either selected total.
+    records.append({"at": "2026-09-05T13:00:00+00:00", "session": "b", "turns": 6,
+                    "list_price_usd": 11.0, "product": "other", "phase": "phase-02"})
+    assert ops.attributed_totals(records, since=since, include=selected) == (2.0, 2)
+    assert ops.attributed_totals(records, since=since, include=unattributed) == (3.0, 3)
+
+
+def test_attributed_summary_distinguishes_zero_priced_and_unpriced_deltas():
+    records = [
+        {"at": "2026-09-05T10:00:00+00:00", "session": "priced", "turns": 1,
+         "list_price_usd": 0.0, "product": "demo", "phase": "p1"},
+        {"at": "2026-09-05T10:01:00+00:00", "session": "unknown", "turns": 2,
+         "list_price_usd": None, "product": "demo", "phase": "p1"},
+    ]
+    summary = ops.attributed_summary(records, include=lambda row: row.get("product") == "demo")
+    assert summary == {"known_cost_usd": 0.0, "turns": 3, "priced_records": 1,
+                       "unpriced_records": 1, "cost_complete": False}
+
 def test_to_cost_events_never_produces_a_negative_delta_if_a_heartbeat_regresses():
     records = [
         {"at": "2026-09-05T10:00:00+00:00", "session": "a", "list_price_usd": 5.0},
@@ -178,6 +219,19 @@ def test_total_cost_windows_by_since():
     ]
     assert ops.total_cost(records) == 3.0
     assert ops.total_cost(records, since="2026-09-05T00:00:00+00:00") == 2.0  # only the second heartbeat's delta
+
+
+def test_total_cost_returns_known_portion_when_a_price_is_unavailable():
+    records = [
+        {"at": "2026-09-04T10:00:00+00:00", "session": "priced", "list_price_usd": 1.0},
+        {"at": "2026-09-05T10:00:00+00:00", "session": "unknown", "list_price_usd": None},
+    ]
+
+    assert ops.total_cost(records) == 1.0
+    assert ops.attributed_summary(records, include=lambda _record: True) == {
+        "known_cost_usd": 1.0, "turns": 0, "priced_records": 1,
+        "unpriced_records": 1, "cost_complete": False,
+    }
 
 
 def test_session_rows_uses_latest_heartbeat_and_counts_compactions():

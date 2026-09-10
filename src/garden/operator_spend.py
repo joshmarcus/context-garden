@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -236,56 +237,88 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def delta_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert complete cumulative session history to attributable heartbeat deltas.
+
+    Filtering belongs after this conversion so a phase or time window retains the
+    cumulative baseline established by earlier heartbeats. Unpriced rows still carry
+    their incremental turn count, but have no cost delta.
+    """
+    by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        if record.get("kind") != "compacted":
+            by_session[str(record.get("session") or "")].append(record)
+    out: list[dict[str, Any]] = []
+    for sid, rows in by_session.items():
+        rows.sort(key=lambda row: str(row.get("at") or ""))
+        previous_cost = 0.0
+        previous_turns = 0
+        for row in rows:
+            reported_cost = row.get("list_price_usd")
+            priced = isinstance(reported_cost, (int, float)) and not isinstance(reported_cost, bool)
+            cost = (round(max(float(reported_cost) - previous_cost, 0.0), 4)
+                    if priced else None)
+            if priced:
+                previous_cost = float(reported_cost)
+            turns = int(row.get("turns") or 0)
+            out.append({**row, "session": sid, "cost_usd": cost,
+                        "turns": max(turns - previous_turns, 0)})
+            previous_turns = turns
+    return sorted(out, key=lambda row: str(row.get("at") or ""))
+
+
 def to_cost_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Spend records, turned into `run_finished`-shaped events `costs.cost_series` can bucket
     like any other run. Each heartbeat's `list_price_usd` is a running total for its session,
     so the event's cost is the increase since that session's previous heartbeat (the first
     heartbeat's full total, since there is no earlier one to subtract). Compacted markers
     carry no cost and are never turned into a cost event; see `compaction_marks`."""
-    by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for r in records:
-        if r.get("kind") == "compacted":
-            continue
-        by_session[str(r.get("session") or "")].append(r)
     out: list[dict[str, Any]] = []
-    for sid, rows in by_session.items():
-        rows.sort(key=lambda r: str(r.get("at") or ""))
-        prev = 0.0
-        for r in rows:
-            reported_total = r.get("list_price_usd")
-            if not isinstance(reported_total, (int, float)):
-                continue
-            total = float(reported_total)
-            delta = max(total - prev, 0.0)
-            prev = total
-            out.append({"kind": "run_finished", "at": str(r.get("at") or ""), "mode": "operator",
-                       "session": sid, "task": "", "model": "", "harness": "",
-                       "cost_usd": round(delta, 4), "usage": {}})
+    for row in delta_records(records):
+        out.append({"kind": "run_finished", "at": str(row.get("at") or ""), "mode": "operator",
+                    "session": row["session"], "task": "", "model": "", "harness": "",
+                    "cost_usd": row["cost_usd"], "usage": {},
+                    "product": str(row.get("product") or ""), "phase": str(row.get("phase") or "")})
     return out
 
 
+def attributed_summary(records: list[dict[str, Any]], *, since: str = "",
+                       include: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+    """Known spend, completeness and turns for selected operator heartbeat deltas."""
+    selected = [row for row in delta_records(records)
+                if (not since or str(row.get("at") or "") >= since) and include(row)]
+    priced = [row for row in selected if row["cost_usd"] is not None]
+    return {
+        "known_cost_usd": round(sum(float(row["cost_usd"]) for row in priced), 4),
+        "turns": sum(int(row["turns"]) for row in selected),
+        "priced_records": len(priced),
+        "unpriced_records": len(selected) - len(priced),
+        "cost_complete": len(priced) == len(selected),
+    }
+
+
 def total_cost(records: list[dict[str, Any]], since: str = "") -> float:
-    """The operator's total spend, windowed the same way `cost_series` windows a run:
-    delta events at or after `since` (empty = all time)."""
-    return round(sum(e["cost_usd"] for e in to_cost_events(records) if not since or e["at"] >= since), 4)
+    """The operator's known spend in the window (empty ``since`` = all time).
+
+    This compatibility helper returns only the priced portion. Callers that present the
+    result must use :func:`attributed_summary` so they can also expose completeness.
+    """
+    events = [event for event in to_cost_events(records)
+              if (not since or event["at"] >= since) and event["cost_usd"] is not None]
+    return round(sum(float(event["cost_usd"]) for event in events), 4)
 
 
 def total_turns(records: list[dict[str, Any]], since: str = "") -> int:
     """Return turns added in the window, accounting for cumulative heartbeats."""
-    by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for record in records:
-        if record.get("kind") != "compacted":
-            by_session[str(record.get("session") or "")].append(record)
-    total = 0
-    for rows in by_session.values():
-        rows.sort(key=lambda row: str(row.get("at") or ""))
-        previous = 0
-        for row in rows:
-            turns = int(row.get("turns") or 0)
-            if not since or str(row.get("at") or "") >= since:
-                total += max(turns - previous, 0)
-            previous = turns
-    return total
+    return sum(int(row["turns"]) for row in delta_records(records)
+               if not since or str(row.get("at") or "") >= since)
+
+
+def attributed_totals(records: list[dict[str, Any]], *, since: str = "",
+                      include: Callable[[dict[str, Any]], bool]) -> tuple[float, int]:
+    """Cost and turns for selected delta rows, converted from full session history first."""
+    summary = attributed_summary(records, since=since, include=include)
+    return summary["known_cost_usd"], summary["turns"]
 
 
 def compaction_marks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

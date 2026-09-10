@@ -20,6 +20,101 @@ METRICS = {
 IMPLEMENTATION = {"work", "revise", "resume"}
 
 
+def canonical_phase_key(product: str, phase: str) -> str:
+    """Canonicalize an attributed phase without guessing its product.
+
+    Operator ledgers support both ``phase-05`` and ``context-garden/phase-05``. A
+    short name is meaningful only with its product, keeping same-named phases in
+    different products distinct.
+    """
+    product, phase = str(product or ""), str(phase or "")
+    if not phase or "/" in phase:
+        return phase
+    return f"{product}/{phase}" if product else phase
+
+
+def attributed_phase_key(event: dict[str, Any], task: Any | None = None) -> str:
+    """Return the canonical phase key for a task run or attributed taskless event."""
+    if task is not None:
+        return str(getattr(task, "key", ""))
+    return canonical_phase_key(str(event.get("product") or ""), str(event.get("phase") or ""))
+
+
+def acceptance_cohort(
+    events: list[dict[str, Any]], tasks: dict[str, Any], *, since: str = "", until: str = "",
+    product: str = "", phase: str = "", difficulty: str = "", model: str = "", harness: str = "",
+) -> dict[str, Any]:
+    """Return the common accepted-task cost cohort used by every reporting surface.
+
+    Membership is determined by a proven base-branch acceptance in the half-open
+    completion window ``[since, until)``.  Product, phase and difficulty describe the
+    current task; model and harness match any implementation route used before acceptance.
+    The numerator contains every run for a member task through its acceptance, including
+    review/check/rebase runs.  One missing run price makes that task, and therefore the
+    cohort average, incomplete instead of silently contributing zero dollars.
+    """
+    start = timestamp(since) or dt.datetime.min.replace(tzinfo=dt.UTC)
+    end = timestamp(until) or dt.datetime.max.replace(tzinfo=dt.UTC)
+    history = sorted((e for e in events if timestamp(e.get("at")) and timestamp(e["at"]) < end),
+                     key=lambda e: timestamp(e["at"]))
+    merge_facts = {str(e.get("task")) for e in history
+                   if e.get("kind") == "automerged" and e.get("task")}
+    accepted_at: dict[str, dt.datetime] = {}
+    for event in history:
+        tid = str(event.get("task") or "")
+        at = timestamp(event.get("at"))
+        if tid in tasks and at is not None and start <= at < end and base_acceptance(event, merge_facts):
+            accepted_at.setdefault(tid, at)
+
+    members: list[dict[str, Any]] = []
+    for tid, accepted in accepted_at.items():
+        task = tasks[tid]
+        if product and getattr(task, "product", "") != product:
+            continue
+        if phase and getattr(task, "key", "") != canonical_phase_key(product, phase):
+            continue
+        if difficulty and getattr(task, "difficulty", "") != difficulty:
+            continue
+        life = [e for e in history if str(e.get("task") or "") == tid
+                and timestamp(e.get("at")) <= accepted]
+        implementation = [e for e in life if e.get("kind") in ("dispatch", "run_finished")
+                          and e.get("mode") in IMPLEMENTATION]
+        models = {str(e.get("model") or "unknown") for e in implementation}
+        harnesses = {str(e.get("harness") or "unknown") for e in implementation}
+        if model and model not in models:
+            continue
+        if harness and harness not in harnesses:
+            continue
+        runs = [e for e in life if e.get("kind") == "run_finished"]
+        first_review = next((str(e.get("verdict") or "") for e in life
+                             if e.get("kind") == "review"
+                             and e.get("verdict") in ("approve", "request_changes")), "")
+        unpriced = sum(not isinstance(e.get("cost_usd"), (int, float))
+                       or isinstance(e.get("cost_usd"), bool) for e in runs)
+        known_cost = sum(float(e["cost_usd"]) for e in runs
+                         if isinstance(e.get("cost_usd"), (int, float))
+                         and not isinstance(e.get("cost_usd"), bool))
+        members.append({"id": tid, "accepted_at": accepted.isoformat(), "runs": len(runs),
+                        "priced_runs": len(runs) - unpriced, "unpriced_runs": unpriced,
+                        "known_cost_usd": round(known_cost, 4),
+                        "cost_usd": round(known_cost, 4) if runs and not unpriced else None,
+                        "models": sorted(models), "harnesses": sorted(harnesses),
+                        "difficulty": getattr(task, "difficulty", "") or "medium",
+                        "first_review": first_review})
+    known = sum(m["known_cost_usd"] for m in members)
+    priced_tasks = sum(m["cost_usd"] is not None for m in members)
+    return {"accepted": len(members), "priced_tasks": priced_tasks,
+            "unpriced_tasks": len(members) - priced_tasks,
+            "priced_runs": sum(m["priced_runs"] for m in members),
+            "unpriced_runs": sum(m["unpriced_runs"] for m in members),
+            "known_cost_usd": round(known, 4),
+            "cost_complete": priced_tasks == len(members),
+            "cost_per_accepted_task": (round(known / len(members), 4)
+                                       if members and priced_tasks == len(members) else None),
+            "tasks": members,
+            "contract": "acceptance completion in [since, until); all task runs through acceptance"}
+
+
 def timestamp(value: Any) -> dt.datetime | None:
     try:
         t = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))

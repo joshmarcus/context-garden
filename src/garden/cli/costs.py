@@ -61,9 +61,24 @@ def costs(
     table.add_column("share", justify="right")
     for g in series["groups"]:
         row = series["totals"][g]
-        table.add_row(g, str(row["runs"]), f"${row['cost_usd']:.2f}",
+        known = ("partial " if not row["cost_complete"] else "") + f"${row['cost_usd']:.2f}"
+        table.add_row(g, str(row["runs"]), known,
                       f"${row['mean_cost_usd']:.2f}" if row["mean_cost_usd"] is not None else "",
                       f"{row['share'] * 100:.0f}%" if row["share"] is not None else "")
     console.print(table)
     grand = series["grand_total"]
-    console.print(f"[dim]grand total: ${grand['cost_usd']:.2f} over {grand['runs']} run(s), bucketed by {bucket}[/dim]")
+    completeness = "partial known spend " if not grand["cost_complete"] else ""
+    console.print(f"[dim]grand total: {completeness}${grand['cost_usd']:.2f} over "
+                  f"{grand['runs']} run(s) ({grand['priced_runs']} priced, "
+                  f"{grand['unpriced_runs']} unpriced), bucketed by {bucket}[/dim]")
+    accepted = series["accepted"]
+    average = accepted["cost_per_accepted_task"]
+    console.print(f"[dim]accepted: {accepted['accepted']} ({accepted['priced_tasks']} priced, "
+                  f"{accepted['unpriced_tasks']} unpriced); cost/accepted: "
+                  f"{f'${average:.2f}' if average is not None else 'unavailable'}[/dim]")
+    if series["unattributed_operator"]["runs"]:
+        unknown = series["unattributed_operator"]
+        completeness = "partial known spend " if unknown["unpriced_runs"] else ""
+        console.print(f"[dim]unattributed operator spend: {completeness}${unknown['cost_usd']:.2f} "
+                      f"over {unknown['runs']} record(s) ({unknown['priced_runs']} priced, "
+                      f"{unknown['unpriced_runs']} unpriced)[/dim]")

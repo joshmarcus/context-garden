@@ -12,10 +12,10 @@ from ..brief import brief_gaps
 from ..events import phase_summary
 from ..github import GitHubError
 from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal, slugify
+from ..operator_spend import attributed_summary as operator_attributed_summary
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
-from ..operator_spend import total_cost as operator_total_cost
-from ..operator_spend import total_turns as operator_total_turns
+from ..outcomes import attributed_phase_key
 from ..personas import (
     SEVERITY_PRIORITY,
     finding_body,
@@ -549,10 +549,22 @@ class RetroMixin:
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
         ledger_path = operator_spend_path(self.store.root, self.cfg, phase.path.parent)
         operator_records = read_operator_records(ledger_path)
-        operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
-        numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"],
-                                  operator_turns=operator_total_turns(operator_records, since=summary["first_dispatch"]),
-                                  operator_ledger_path=ledger_path)
+        operator = operator_attributed_summary(
+            operator_records, since=summary["first_dispatch"],
+            include=lambda record: record.get("product") == phase.product
+            and attributed_phase_key(record) == phase.key)
+        unattributed = operator_attributed_summary(
+            operator_records, since=summary["first_dispatch"],
+            include=lambda record: not record.get("product") or not record.get("phase"))
+        numbers = numbers_section(summary["cost_usd"], operator["known_cost_usd"], summary["metrics"],
+                                  operator_turns=operator["turns"],
+                                  operator_priced_records=operator["priced_records"],
+                                  operator_unpriced_records=operator["unpriced_records"],
+                                  operator_ledger_path=ledger_path,
+                                  unattributed_operator_cost_usd=unattributed["known_cost_usd"],
+                                  unattributed_operator_turns=unattributed["turns"],
+                                  unattributed_operator_priced_records=unattributed["priced_records"],
+                                  unattributed_operator_unpriced_records=unattributed["unpriced_records"])
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, filed_questions=questions, followups=followups,
                                                blocking=blocking, next_phase=next_phase,

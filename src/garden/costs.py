@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from .model import Task
+from .outcomes import acceptance_cohort, attributed_phase_key, canonical_phase_key
 
 # The fixed activity vocabulary the costs chart names in order (CG-214): every other mode
 # a run can carry (trial, compare, edit, and any future one) folds into "other"
@@ -49,7 +50,7 @@ def _group_key(ev: dict[str, Any], task: Task | None, group_by: str) -> str:
     if group_by == "difficulty":
         return str(task.difficulty) if task else "unknown"
     if group_by == "phase":
-        return task.key if task else "unknown"
+        return attributed_phase_key(ev, task) or "unknown"
     if group_by == "task":
         return str(ev.get("task") or "unknown")
     if group_by == "session":
@@ -102,7 +103,8 @@ def _finish_row(row: dict[str, Any], grand_cost: float | None = None) -> None:
     row["taskless_cost_usd"] = round(row["taskless_cost_usd"], 4)
     row["cost_complete"] = row["unpriced_runs"] == 0
     row["tasked_cost_complete"] = row["tasked_unpriced_runs"] == 0
-    row["mean_cost_usd"] = round(row["cost_usd"] / row["runs"], 4) if row["runs"] else None
+    row["mean_cost_usd"] = (round(row["cost_usd"] / row["runs"], 4)
+                            if row["runs"] and row["cost_complete"] else None)
     # Taskless activity remains in the total, but cannot belong in a per-task numerator.
     # Only an unpriced tasked run makes a tasked average incomplete.
     row["cost_per_task_usd"] = (
@@ -154,9 +156,10 @@ def cost_series(
             continue
         if harness and str(ev.get("harness") or "") != harness:
             continue
-        if phase and (not t or t.key != phase):
+        selected_phase = canonical_phase_key(product, phase)
+        if phase and attributed_phase_key(ev, t) != selected_phase:
             continue
-        if product and (not t or t.product != product):
+        if product and ((t.product if t else str(ev.get("product") or "")) != product):
             continue
         if task and tid != task:
             continue
@@ -173,6 +176,11 @@ def cost_series(
     for row_set in ordered_buckets:
         for row in row_set["groups"].values():
             _finish_row(row)
+    unattributed_operator = [ev for ev in events if ev.get("kind") == "run_finished"
+                             and ev.get("mode") == "operator"
+                             and (not ev.get("product") or not ev.get("phase"))
+                             and (not since or str(ev.get("at") or "") >= since)
+                             and (not until or str(ev.get("at") or "") < until)]
     return {
         "buckets": ordered_buckets,
         "totals": totals,
@@ -180,4 +188,18 @@ def cost_series(
         "groups": sorted(totals, key=lambda g: -totals[g]["cost_usd"]),
         "group_by": group_by,
         "bucket": bucket,
+        "accepted": acceptance_cohort(events, tasks, since=since, until=until, product=product,
+                                      phase=phase, difficulty=difficulty, model=model, harness=harness),
+        "unattributed_operator": {
+            "runs": len(unattributed_operator),
+            "priced_runs": sum(isinstance(ev.get("cost_usd"), (int, float))
+                               and not isinstance(ev.get("cost_usd"), bool)
+                               for ev in unattributed_operator),
+            "unpriced_runs": sum(not isinstance(ev.get("cost_usd"), (int, float))
+                                 or isinstance(ev.get("cost_usd"), bool)
+                                 for ev in unattributed_operator),
+            "cost_usd": round(sum(float(ev["cost_usd"]) for ev in unattributed_operator
+                                  if isinstance(ev.get("cost_usd"), (int, float))
+                                  and not isinstance(ev.get("cost_usd"), bool)), 4),
+        },
     }

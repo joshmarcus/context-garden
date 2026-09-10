@@ -28,7 +28,7 @@ from .criteria import criteria_counts
 from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metrics
 from .inbox import automated_review_is_queued, merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
-from .outcomes import base_acceptance
+from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance
 from .plants import plant_info
 from .runs import Run, RunStore
 from .store import Store
@@ -516,12 +516,18 @@ def rebase_rounds(window: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
             "agent_per_merge": round(rb["agent"] / merges, 2) if merges else None}
 
 
-def operator_share(op_window: list[dict[str, Any]], total: float) -> dict[str, Any]:
+def operator_share(op_window: list[dict[str, Any]], total: float, *, total_complete: bool = True) -> dict[str, Any]:
     """The operator's spend in the window from the ledger's cost events and its share of the
     window's whole spend (runs plus operator), None when nothing was spent at all."""
-    spend = sum(float(e.get("cost_usd") or 0.0) for e in op_window)
-    return {"spend": round(spend, 2), "share": round(spend / total, 4) if total else None,
-            "sessions": len({str(e.get("session") or "") for e in op_window})}
+    priced = [e for e in op_window if isinstance(e.get("cost_usd"), (int, float))
+              and not isinstance(e.get("cost_usd"), bool)]
+    spend = sum(float(e["cost_usd"]) for e in priced)
+    complete = len(priced) == len(op_window)
+    return {"spend": round(spend, 2),
+            "share": round(spend / total, 4) if total and complete and total_complete else None,
+            "sessions": len({str(e.get("session") or "") for e in op_window}),
+            "priced_records": len(priced), "unpriced_records": len(op_window) - len(priced),
+            "cost_complete": complete}
 
 
 def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks: dict[str, Any],
@@ -531,12 +537,27 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     page), cost per accepted task, the hand's work (hand merges, hand steps, rebase rounds
     per merge split into mechanical and agent, the operator's spend and share), the
     cost-by-activity series with its annotations, throughput per bucket, and the two kinds of
-    shaded table: runs by harness and model, and the five difficulty-by-model tables."""
-    window = [e for e in events if str(e.get("at") or "") >= since]
+    shaded table: runs by harness and model, and the five difficulty-by-model tables. ``tasks``
+    is the selected phase cohort. Task lifecycle and worker spend must belong to it; operator
+    spend must name that product and phase, while unattributed operator spend is only reported
+    separately."""
+    task_ids = set(tasks)
+    selected_products = {str(task.product) for task in tasks.values()}
+    selected_phases = {str(task.key) for task in tasks.values()}
+
+    def selected_event(event: dict[str, Any]) -> bool:
+        tid = str(event.get("task") or "")
+        return not tid or tid in task_ids
+
+    def selected_operator(event: dict[str, Any]) -> bool:
+        product = str(event.get("product") or "")
+        return product in selected_products and attributed_phase_key(event) in selected_phases
+
+    window = [e for e in events if str(e.get("at") or "") >= since and selected_event(e)]
     done_at: dict[str, str] = {}
     merge_facts = {str(e.get("task")) for e in events if e.get("kind") == "automerged" and e.get("task")}
     for e in window:
-        if base_acceptance(e, merge_facts) and e.get("task"):
+        if e.get("task") in task_ids and base_acceptance(e, merge_facts):
             done_at[e["task"]] = e["at"]
     # A merge the loop made emits `automerged` for the task (the digest's rule); a task that
     # reached done without one was merged by hand, the phase's definition-of-done number.
@@ -544,19 +565,22 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     hand_merged = sorted(t for t in done_at if t not in automerged)
     first_review: dict[str, dict[str, Any]] = {}
     for e in events:
-        if e.get("kind") == "review" and e.get("task") and e["task"] not in first_review:
+        if e.get("kind") == "review" and e.get("task") in task_ids and e["task"] not in first_review:
             first_review[e["task"]] = e
     reviewed = [e for e in first_review.values() if e["at"] >= since]
     approved = sum(1 for e in reviewed if e.get("verdict") == "approve")
-    cost_by_task: dict[str, float] = defaultdict(float)
-    for e in events:
-        if e.get("kind") == "run_finished":
-            cost_by_task[str(e.get("task") or "")] += float(e.get("cost_usd") or 0.0)
-    finished = [e for e in window if e.get("kind") == "run_finished"]
-    op_window = [e for e in op_events if str(e.get("at") or "") >= since]
-    cost = sum(float(e.get("cost_usd") or 0.0) for e in finished + op_window)
-    accepted_cost = sum(cost_by_task[t] for t in done_at)
-    series = cost_series(events + op_events, tasks, since=since, bucket=bucket, group_by="activity")
+    finished = [e for e in window if e.get("kind") == "run_finished" and e.get("task") in tasks]
+    op_window = [e for e in op_events if str(e.get("at") or "") >= since and selected_operator(e)]
+    unattributed_op_window = [e for e in op_events if str(e.get("at") or "") >= since
+                              and (not e.get("product") or not e.get("phase"))]
+    cost_events = finished + op_window
+    priced_cost_events = [e for e in cost_events if isinstance(e.get("cost_usd"), (int, float))
+                          and not isinstance(e.get("cost_usd"), bool)]
+    cost = sum(float(e["cost_usd"]) for e in priced_cost_events)
+    cost_complete = len(priced_cost_events) == len(cost_events)
+    cohort = acceptance_cohort(events, tasks, since=since)
+    scoped_events = [e for e in events if str(e.get("task") or "") in task_ids]
+    series = cost_series(scoped_events + op_window, tasks, since=since, bucket=bucket, group_by="activity")
     buckets = [b["bucket"] for b in series.get("buckets") or []]
     per_bucket = Counter(bucket_key(e["at"], bucket) for e in finished)
     hand_steps = [e for e in window if e.get("kind") in HAND_KINDS]
@@ -564,15 +588,21 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     # The window is quiet only when nothing at all was recorded in it. A window with only the
     # operator's ledger entries, a hand step or a profile change still shows its figures, so
     # the operator's spend and share are never hidden behind "no runs".
-    quiet = not (finished or done_at or op_window or hand_steps or annotations)
+    quiet = not (finished or done_at or op_window or unattributed_op_window or hand_steps or annotations)
     return {
         "since": since, "bucket": bucket, "quiet": quiet, "merged": len(done_at), "merged_ids": sorted(done_at),
         "first_pass": {"approved": approved, "reviewed": len(reviewed)},
-        "cost": round(cost, 2), "per_accepted": round(accepted_cost / len(done_at), 2) if done_at else None,
+        "cost": round(cost, 2), "cost_complete": cost_complete,
+        "priced_cost_records": len(priced_cost_events),
+        "unpriced_cost_records": len(cost_events) - len(priced_cost_events),
+        "per_accepted": cohort["cost_per_accepted_task"],
+        "priced_accepted": cohort["priced_tasks"], "unpriced_accepted": cohort["unpriced_tasks"],
         "runs": len(finished), "hand_steps": len(hand_steps),
         "hand_kinds": dict(Counter(e["kind"] for e in hand_steps)),
         "hand_merges": len(hand_merged), "hand_merged_ids": hand_merged,
-        "rebase": rebase_rounds(window, tasks), "operator": operator_share(op_window, cost),
+        "rebase": rebase_rounds(window, tasks),
+        "operator": operator_share(op_window, cost, total_complete=cost_complete),
+        "unattributed_operator": operator_share(unattributed_op_window, 0.0),
         "by_model": runs_by_model(finished),
         "tiers": difficulty_by_model(events, tasks, since),
         "series": series, "throughput": [per_bucket.get(b, 0) for b in buckets],
@@ -643,7 +673,13 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
         "next": {"dispatch": dispatch_lines(sched),
                  "merge": merge_queue(store, tasks, state, events, strips, sched, str(tick.get("at") or ""))},
         "where": {"primary": primary, "others": sheets[1:], "closed": closed},
-        "period": period(events, op_events, tasks, since, bucket),
+        "period": period(
+            events,
+            op_events,
+            {tid: task for tid, task in tasks.items() if not primary or task.key == primary["key"]},
+            since,
+            bucket,
+        ),
     }
 
 
@@ -666,12 +702,21 @@ def hand_lines(w: dict[str, Any]) -> list[str]:
         steps += " (" + ", ".join(f"{k.replace('_', ' ')} {n}" for k, n in w["hand_kinds"].items()) + ")"
     rebases = (f"rebase rounds per merge {per_merge(rb['mechanical_per_merge'])} mechanical · {per_merge(rb['agent_per_merge'])} agent"
                f" ({rb['mechanical']} + {rb['agent']} over {rb['merges']} merge{'s' if rb['merges'] != 1 else ''})")
-    if op["spend"]:
+    if op["sessions"]:
         share = f" · {round(100 * op['share'])} % of the window's spend" if op["share"] is not None else ""
-        operator = f"operator {money(op['spend'])}{share}"
+        partial = "partial known spend " if not op["cost_complete"] else ""
+        operator = (f"operator {partial}{money(op['spend'])}{share} "
+                    f"({op['priced_records']} priced, {op['unpriced_records']} unpriced records)")
     else:
         operator = "operator: no ledger entry in this window"
-    return [merges, steps, rebases, operator]
+    lines = [merges, steps, rebases, operator]
+    unattributed = w.get("unattributed_operator") or {}
+    if unattributed.get("sessions"):
+        partial = "partial known spend " if not unattributed["cost_complete"] else ""
+        lines.append(f"unattributed operator {partial}{money(unattributed['spend'])} "
+                     f"({unattributed['priced_records']} priced, {unattributed['unpriced_records']} unpriced records) "
+                     "· excluded from this phase")
+    return lines
 
 
 def render_text(snap: dict[str, Any]) -> str:
@@ -758,7 +803,10 @@ def render_text(snap: dict[str, Any]) -> str:
     first = f"{round(100 * fp['approved'] / fp['reviewed'])} % ({fp['approved']} of {fp['reviewed']})" if fp["reviewed"] else "—"
     out.append(f"  merged {w['merged']}" + (f" ({', '.join(w['merged_ids'][:4])}{' and more' if len(w['merged_ids']) > 4 else ''})" if w["merged_ids"] else ""))
     over = f"over {w['runs']} runs" if w["runs"] else "with no run finished"
-    out.append(f"  first-pass approval {first} · cost {money(w['cost'])} {over} · per accepted task {money(w['per_accepted'])}")
+    cost = ("partial known spend " if not w["cost_complete"] else "") + money(w["cost"])
+    out.append(f"  first-pass approval {first} · cost {cost} {over} "
+               f"({w['priced_cost_records']} priced, {w['unpriced_cost_records']} unpriced) "
+               f"· per accepted task {money(w['per_accepted'])}")
     out += [f"  {line}" for line in hand_lines(w)]
     if w["throughput"]:
         out.append(f"  runs finished per {w['bucket']}: " + " ".join(str(n) for n in w["throughput"]))
