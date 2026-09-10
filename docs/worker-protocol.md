@@ -140,6 +140,9 @@ explicit development mode and leaves operator routes locally accessible.
 
 `garden worker --garden URL --host build-1 --doctor --repo REPO --harness claude` checks
 the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
+The standalone command uses the same durable worker identity, bounded event history, active
+supervisor recovery, and pending-result delivery as a managed worker before it requests new
+work, so restarting either daemon does not replay an accepted execution.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
 the whole result contract. For the local runner, publication of the task branch, pull request
