@@ -10,6 +10,7 @@ import pytest
 from garden import gitops
 from garden.events import EventLog, digest
 from garden.model import Status, Task
+from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 
 BRANCH = "garden/dm-001-first-task"
 
@@ -594,7 +595,7 @@ def test_command_validation_requires_durable_receipt_for_exact_pr_head(sched, fa
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["github"]["automerge_require_current_base"] = False
     sched.cfg.data["products"]["demo"]["validation"] = {
-        "provider": "command", "command": "make validate"
+        "provider": "command", "command": "pytest -q"
     }
     pr.head_sha = gitops.head_sha(sched.worktree_for(t))
     # Command validation does not require a duplicate GitHub checks rollup.
@@ -604,13 +605,26 @@ def test_command_validation_requires_durable_receipt_for_exact_pr_head(sched, fa
 
     evidence = sched.cfg.garden_dir / "runs" / t.id / "remote-work" / "validations" / "1"
     evidence.mkdir(parents=True)
-    for name, value in (("execution.json", "{}"), ("exit_code", "0"), ("stderr.log", "")):
+    execution = {
+        "state": "finished", "slot": 0, "limit": 1, "requested_limit": 1,
+        "pid": 123, "owner_scoped": True, "owner": "run:test",
+        "execution_started_at": "2026-09-10T01:00:00+00:00",
+        "timeout_seconds": 900, "deadline_at": "2026-09-10T01:15:00+00:00",
+    }
+    for name, value in (("execution.json", json.dumps(execution)),
+                        ("exit_code", "0"), ("stderr.log", "")):
         (evidence / name).write_text(value)
+    requested = ["pytest", "-q"]
+    effective = [*requested, *POLICY_ADDOPTS]
     (evidence / "result.json").write_text(json.dumps({
-        "source_sha": pr.head_sha,
-        "command": "make validate",
-        "selection": ["make", "validate"],
-        "exit_code": 0,
+        "version": 1, "source_sha": pr.head_sha, "command": "pytest -q",
+        "selection": effective, "exit_code": 0,
         "log_location": str(evidence),
+        "source_dirty": "", "source_changed": False,
+        "policy": {
+            "version": 1, "source_sha": POLICY_SOURCE_SHA, "kind": "pytest",
+            "stress_opt_in": False, "excluded_nodes": list(STRESS_NODES),
+            "requested_selection": requested, "effective_selection": effective,
+        },
     }))
     assert sched._automerge_gate(t, pr)[0]

@@ -224,6 +224,7 @@ def test_manual_pr_refresh_records_current_head_conflict_without_action(sched, f
     task.runner = "manual"
     sched.store.save(task)
     pr = fake_github.prs["garden/dm-001-first-task"]
+    fake_github.remote = None
     pr.head_sha, pr.mergeable, pr.checks, pr.updated_at = "new-head", "CONFLICTING", "FAILURE", "t2"
     fake_github.feedback[pr.number] = Feedback(items=[{
         "id": "comment:9", "kind": "comment", "author": "josh", "body": "change this", "created": "t2"
@@ -343,6 +344,7 @@ def test_ci_failure_without_pr_timestamp_change_triggers_one_revise(sched, fake_
     sched.tick()
     sched.tick()
     pr = fake_github.prs["garden/dm-001-first-task"]
+    fake_github.remote = None
     original_updated_at = pr.updated_at
 
     pr.checks = "PENDING"
