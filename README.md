@@ -4,7 +4,7 @@
 
 You can change the direction of the project in the same place you define it. Each worker gets a focused brief built from the shared context, and each phase leaves evidence you can use to improve the next one: what shipped, where agents got stuck, how reviewers responded, and what the work cost.
 
-[Features](#what-you-can-do) · [See it in action](#feature-tour) · [Install](#install) · [First project](#your-first-project) · [CLI](#use-the-cli) · [Operating guide](docs/operations.md)
+[Features](#what-you-can-do) · [See it in action](#feature-tour) · [Getting started](docs/getting-started.md) · [Operating guide](docs/operations.md) · [Contributing](docs/contributing.md) · [All documentation](docs/README.md)
 
 ![The development loop: maintain principles, product context, goals, and specs; plan and approve; build and check; review and merge. Feedback drives revisions, and retrospectives inform the next phase.](docs/development-loop.svg)
 
@@ -120,6 +120,9 @@ garden --help
 Without uv, create the environment with `python3 -m venv .venv`, activate it, and run `python -m pip install -e .`. Keep that environment active when you move into your garden directory.
 
 ## Your first project
+
+The steps below are a compact preview. The [getting-started guide](docs/getting-started.md)
+adds platform notes, expected outcomes, command explanations, and setup recovery.
 
 ### 1. Create a garden and choose a harness
 
@@ -250,6 +253,9 @@ The [operating guide](docs/operations.md) covers merge policy, capacity, remote 
 
 ## Development and documentation
 
+- [Documentation map](docs/README.md): the canonical path for each audience.
+- [Getting started](docs/getting-started.md): installation through the first completed PR.
+- [Contributor guide](docs/contributing.md): setup, repository structure, tests, and docs.
 - [CLI guide](docs/cli.md): day-to-day commands, control modes, and scripting.
 - [Design](docs/design.md): vocabulary and the development loop.
 - [Architecture](docs/architecture.md): modules, state, scheduling, configuration, and merge policy.
@@ -258,6 +264,7 @@ The [operating guide](docs/operations.md) covers merge policy, capacity, remote 
 - [Test suites](docs/test-suites.md) and [worker CI](docs/worker-ci.md): focused checks and the full regression gate.
 - [Screenshot capture](docs/screenshots/README.md): reproduce this README's example garden and images.
 
-For development, install `uv pip install -e ".[dev]"` into the active environment. Follow the focused serial test selections, lint with `ruff check src tests scripts`, and run `python3 scripts/check_ci.py` on an authorized, committed `codex/` or `garden/` branch to push it and await its exact-commit CI. Tests use fake harnesses and spend no model tokens.
+For development, follow the [contributor guide](docs/contributing.md). Tests use fake
+harnesses and spend no model tokens.
 
 MIT licensed. See [LICENSE](LICENSE).
