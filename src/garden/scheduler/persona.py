@@ -50,6 +50,15 @@ class PersonaMixin:
 
     def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
                                min_severity: str = "low", run_id: str = "") -> Run:
+        prepared = self.prepare_persona_phase(phase, name, file_tasks, min_severity, run_id)
+        self._commit_prepared_aux(prepared)
+        self._launch_prepared_aux(prepared)
+        return prepared["run"]
+
+    def prepare_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
+                              min_severity: str = "low", run_id: str = "",
+                              source: str = "") -> dict[str, Any]:
+        """Prepare a phase persona's exact worktree and brief without launching its worker."""
         valid_name(name)
         product = phase.product
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
@@ -59,7 +68,7 @@ class PersonaMixin:
             raise RuntimeError(refusal)
         harness_name = str(self.cfg.get("review.harness") or "")
         repo = self.repo_for(probe)
-        base = self.final_base_for(probe)
+        base = source or self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_phase-{product}-{phase.name}")
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
         prepared_run = None
@@ -98,11 +107,20 @@ class PersonaMixin:
                     gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
         references: dict[str, str] = {}
         text = phase_brief(self.store, phase, name, base, self.phase_prs(phase), references)
-        return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
-                                                             "persona": name, "target": "phase", "file_tasks": file_tasks,
-                                                             "min_severity": min_severity},
-                                 harness_name=harness_name, difficulty=str(self.effective("retro.difficulty") or "hard"),
-                                 prepared_run=prepared_run, reference_files=references, run_id=run_id)
+        prepared = self._prepare_aux(
+            "persona", None, text, wt,
+            {"id": probe.id, "product": product, "phase": phase.name,
+             "persona": name, "target": "phase", "file_tasks": file_tasks,
+             "min_severity": min_severity},
+            harness_name=harness_name,
+            difficulty=str(self.effective("retro.difficulty") or "hard"),
+            reference_files=references,
+            run_id=run_id,
+        )
+        if source:
+            prepared["run"].branch = source
+            prepared["run"].base = source
+        return prepared
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
                             required_evidence: bool = False,
