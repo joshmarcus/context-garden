@@ -1163,6 +1163,21 @@ def test_attach_pr_refuses_a_checkout_owned_by_an_active_run(sched, fake_github)
         sched.attach_pr(task, pr.url)
 
 
+def test_attach_pr_recovers_a_stale_running_task_without_an_active_run(sched, fake_github):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    pr = fake_github.create_pr("test/demo", "operator/recovered", "main", "external", "")
+    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
+
+    sched.attach_pr(task, pr.url)
+
+    recovered = sched.store.task(task.id)
+    assert recovered.status == Status.IN_REVIEW
+    assert recovered.pr == pr.url
+    assert recovered.branch == pr.head
+
+
 def test_attached_pr_revision_keeps_the_verified_non_default_pr(sched, fake_github):
     """An adopted PR receives an ordinary feedback revision, never a replacement PR."""
     task = sched.store.task("DM-001")

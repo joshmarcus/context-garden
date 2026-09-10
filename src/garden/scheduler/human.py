@@ -835,7 +835,7 @@ class HumanMixin:
                    "pr_base": pr.base, "pr_draft": pr.is_draft, "checks": pr.checks,
                    "failed_checks": list(pr.failed_checks), "review_decision": pr.review_decision})
         note = f"PR attached: {pr.url} ({pr.head}@{pr.head_sha}, pr_number {old_number or 'none'} -> {pr.number})"
-        if task.status in (Status.READY, Status.DRAFT, Status.FAILED):
+        if task.status in (Status.READY, Status.DRAFT, Status.RUNNING, Status.FAILED):
             self._transition(task, Status.IN_REVIEW, note)
         else:
             task.log(note)
