@@ -187,6 +187,73 @@ def _authoritative_limit(requested: int) -> tuple[int, str | None]:
             return existing, f"configured limit {requested} conflicts with authoritative limit {existing}"
 
 
+def reset_authoritative_limit(requested: int) -> tuple[int, int]:
+    """Replace the shared capacity only when every lease in its namespace is idle.
+
+    The capacity guard prevents a new supervisor from resolving or claiming a slot while
+    the old slot set is inspected and the metadata is replaced.  Holding every old slot
+    proves that changing the authority cannot reinterpret an active garden's lease.
+    """
+    if requested < 0:
+        raise ValueError("heavy validation capacity must be zero or greater")
+    root = _private_runtime_dir()
+    metadata_name = f"garden-heavy-test-{os.getuid()}-capacity.json"
+    guard_name = f"garden-heavy-test-{os.getuid()}-capacity.lock"
+    with _safe_runtime_file(root, guard_name) as guard:
+        fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+        with _safe_runtime_file(root, metadata_name) as metadata:
+            existing = _read_limit(metadata)
+            if existing is None:
+                raise RuntimeError("shared heavy-validation capacity metadata is invalid")
+            if existing == requested:
+                return existing, requested
+            held: list[IO[str]] = []
+            try:
+                for slot in range(existing):
+                    handle = _safe_runtime_file(
+                        root, f"garden-heavy-test-{os.getuid()}-{slot}.lock"
+                    )
+                    try:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError as exc:
+                        handle.close()
+                        raise RuntimeError(
+                            "shared heavy-validation capacity is active; wait for every "
+                            "garden in this user/runtime namespace to become idle"
+                        ) from exc
+                    held.append(handle)
+                _write_limit(metadata, requested)
+            finally:
+                for handle in held:
+                    handle.close()
+    return existing, requested
+
+
+def _claim_authoritative_slot(requested: int, root: Path) -> tuple[int, str | None, int | None, IO[str] | None]:
+    """Resolve capacity and claim a slot under the same namespace guard."""
+    metadata_name = f"garden-heavy-test-{os.getuid()}-capacity.json"
+    guard_name = f"garden-heavy-test-{os.getuid()}-capacity.lock"
+    with _safe_runtime_file(root, guard_name) as guard:
+        fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+        with _safe_runtime_file(root, metadata_name) as metadata:
+            authoritative = _read_limit(metadata)
+            if authoritative is None:
+                _write_limit(metadata, requested)
+                authoritative = requested
+            conflict = None if authoritative == requested else (
+                f"configured limit {requested} conflicts with authoritative limit {authoritative}"
+            )
+        for slot in range(authoritative):
+            handle = _safe_runtime_file(root, f"garden-heavy-test-{os.getuid()}-{slot}.lock")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                continue
+            return authoritative, conflict, slot, handle
+    return authoritative, conflict, None, None
+
+
 def _set_execution_state(run_dir: Path, state: str) -> None:
     path = run_dir / "execution.json"
     try:
@@ -275,14 +342,8 @@ def _execution_slot(run_dir: Path, should_stop: object, *, owner_scoped: bool = 
     while True:
         if should_stop():
             raise InterruptedError
-        authoritative, conflict = _authoritative_limit(limit)
-        for slot in range(authoritative):
-            handle = _safe_runtime_file(lock_root, f"garden-heavy-test-{os.getuid()}-{slot}.lock")
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                handle.close()
-                continue
+        authoritative, conflict, slot, handle = _claim_authoritative_slot(limit, lock_root)
+        if handle is not None and slot is not None:
             waiting_since = _recorded_waiting_since(run_dir)
             running = {
                 "state": "running", "slot": slot, "limit": authoritative, "pid": os.getpid(),

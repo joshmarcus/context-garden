@@ -476,6 +476,11 @@ release its `flock`, so reservations cannot become stale. A supported worker-iss
 uses `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <direct pytest command>` and takes
 both the host lease and a separate owner-scoped lease. The parent model session holds neither
 lease, so two validations in one run serialize without a nested-lock deadlock.
+The namespace is the OS user plus resolved runtime directory, not a garden root. Capacity changes
+are explicit and idle-only: `garden set-validation-capacity LIMIT` holds the capacity guard and
+all slots from the old authority while replacing it, and fails without changing metadata when any
+slot is leased. Gardens must be configured consistently before that migration; a mismatch never
+changes capacity on its own.
 Opaque scripts and build-tool launchers are rejected at this boundary because they could clear
 the current pytest selection policy before delegating; non-pytest tools run directly.
 Raw child commands are still contained by the aggregate cgroup but cannot be recognized as

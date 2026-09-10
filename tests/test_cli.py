@@ -43,6 +43,21 @@ def test_persona_review_help_lists_the_ontologist(garden):
     assert "ontologist" in result.output
 
 
+def test_set_validation_capacity_changes_an_idle_shared_authority(garden, monkeypatch, tmp_path):
+    from garden.run_supervisor import _authoritative_limit
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    assert _authoritative_limit(1) == (1, None)
+
+    result = run(garden, "set-validation-capacity", "2")
+
+    assert result.exit_code == 0, result.output
+    assert "shared validation capacity changed from 1 to 2" in result.output
+    assert _authoritative_limit(2) == (2, None)
+
+
 def test_assign_and_owner_filtered_machine_output(garden):
     goals = garden / "demo" / "p1" / "goals.md"
     goals.write_text("# p1\n")
