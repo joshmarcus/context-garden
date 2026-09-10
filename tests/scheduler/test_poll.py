@@ -104,7 +104,7 @@ def test_repository_refresh_reuses_linked_pr_and_deduplicates_feedback_after_res
     pr.updated_at = "t2"
     item = {"id": "comment:41", "kind": "comment", "author": "josh", "body": "please rename it",
             "created": "2099-01-01T00:00:00Z"}
-    fake_github.feedback[pr.number] = Feedback(items=[item])
+    fake_github.feedback[pr.number] = Feedback(items=[item], high_water="2099-01-01T00:00:00Z")
     calls = {"list": 0, "get": 0}
     original_list, original_get = fake_github.list_open_prs, fake_github.get_pr
     fake_github.list_open_prs = lambda slug, users=None: (
@@ -120,8 +120,15 @@ def test_repository_refresh_reuses_linked_pr_and_deduplicates_feedback_after_res
 
     from garden.scheduler import Scheduler
     restarted = Scheduler(sched.store, github=fake_github)
+    incremental = {"calls": 0}
+    original_incremental = fake_github.incremental_feedback_since
+    fake_github.incremental_feedback_since = lambda *args, **kwargs: (
+        incremental.__setitem__("calls", incremental["calls"] + 1)
+        or original_incremental(*args, **kwargs)
+    )
     restarted.tick()
     assert restarted.state.get("DM-001")["revisions"] == 1
+    assert incremental["calls"] == 1
 
 
 def test_repository_refresh_passes_configured_project_users(sched, fake_github):
@@ -137,6 +144,43 @@ def test_repository_refresh_passes_configured_project_users(sched, fake_github):
     sched.tick()
 
     assert seen == [["maintainer"]]
+
+
+def test_incremental_feedback_failure_keeps_the_persisted_cursor(sched, fake_github):
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    row = next(row for row in sched.state.get("__open_prs__")["demo"]["prs"] if row["number"] == pr.number)
+    row["feedback_since"] = "2026-09-04T10:00:00Z"
+    sched.state.save()
+
+    def unavailable(*args, **kwargs):
+        raise GitHubError("temporary provider failure")
+
+    fake_github.incremental_feedback_since = unavailable
+    rep = sched.tick()
+
+    row = next(row for row in sched.state.get("__open_prs__")["demo"]["prs"] if row["number"] == pr.number)
+    assert row["feedback_since"] == "2026-09-04T10:00:00Z"
+    assert any("open PR refresh failed" in error for error in rep.errors)
+
+
+def test_incremental_feedback_does_not_regress_the_persisted_cursor(sched, fake_github):
+    """An older review alone must not widen the next incremental poll."""
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    row = next(row for row in sched.state.get("__open_prs__")["demo"]["prs"] if row["number"] == pr.number)
+    row["feedback_since"] = "2026-09-04T10:00:00Z"
+    sched.state.save()
+
+    fake_github.incremental_feedback_since = lambda *args, **kwargs: Feedback(
+        high_water="2026-09-04T09:00:00Z"
+    )
+    sched.tick()
+
+    row = next(row for row in sched.state.get("__open_prs__")["demo"]["prs"] if row["number"] == pr.number)
+    assert row["feedback_since"] == "2026-09-04T10:00:00Z"
 
 
 def test_first_observation_seeds_linked_pr_feedback_before_existing_cursor(sched, fake_github):

@@ -56,6 +56,16 @@ class PollMixin:
                            ("kind", "author", "created", "path", "line", "state", "body"))
         return hashlib.sha256(stable.encode()).hexdigest()
 
+    @staticmethod
+    def _advance_feedback_cursor(cursor: str, high_water: str) -> str:
+        """Keep the durable feedback timestamp from moving backwards.
+
+        A cursor-scoped response can contain only older reviews while both comment
+        endpoints are empty.  Its response-local high water is therefore not
+        necessarily the PR's durable high water.
+        """
+        return max(cursor, high_water)
+
     def _new_feedback(self, record: dict[str, Any], feedback: Feedback) -> Feedback:
         seen = set(record.get("feedback_seen") or [])
         items = [item for item in feedback.items if self._feedback_key(item) not in seen]
@@ -120,10 +130,11 @@ class PollMixin:
                 rows = []
                 for pr in prs:
                     old = dict(old_rows.get(pr.number) or {})
-                    # Identity-based deduplication deliberately rereads provider pages. A
-                    # timestamp cursor alone can skip a comment sharing the cursor timestamp.
-                    # This makes equal timestamps, repeated pages, and restarts safe.
-                    fb = self.github.feedback_since(slug, pr.number, "")
+                    # The persisted timestamp narrows routine provider reads. Stable IDs are
+                    # still retained because a same-timestamp comment must survive a restart.
+                    cursor = str(old.get("feedback_since") or "")
+                    fb = (self.github.incremental_feedback_since(slug, pr.number, cursor)
+                          if cursor else self.github.feedback_since(slug, pr.number, ""))
                     linked_task = linked.get((product, pr.number))
                     if linked_task is not None and "feedback_seen" not in old and linked_task.last_dispatched_at:
                         # Existing tasks used last_dispatched_at as their feedback cursor before
@@ -140,9 +151,8 @@ class PollMixin:
                     fresh = self._new_feedback(old, fb)
                     if (product, pr.number) not in linked:
                         self._remember_feedback(old, fresh)
-                    timestamps = [str(i.get("created") or "") for i in [*fb.items, *fb.ignored]]
-                    if timestamps:
-                        old["feedback_since"] = max(timestamps)
+                    if fb.high_water:
+                        old["feedback_since"] = self._advance_feedback_cursor(cursor, fb.high_water)
                     old.update(asdict(pr))
                     old["number"] = pr.number
                     old["new_feedback"] = len(fresh.items)
@@ -436,7 +446,12 @@ class PollMixin:
         repository = self.state.get(self._PR_OBSERVATIONS).get(task.product) or {}
         record = next((row for row in repository.get("prs", [])
                        if int(row.get("number") or 0) == number), {})
-        fb = self._new_feedback(record, self.github.feedback_since(slug, number, ""))
+        cursor = str(record.get("feedback_since") or "")
+        fetched = (self.github.incremental_feedback_since(slug, number, cursor)
+                   if cursor else self.github.feedback_since(slug, number, ""))
+        fb = self._new_feedback(record, fetched)
+        if fetched.high_water:
+            record["feedback_since"] = self._advance_feedback_cursor(cursor, fetched.high_water)
         if fb.ignored:
             self._log_ignored_feedback(task, fb.ignored)
         # Save the consumed run and rerun accounting in the same state write as the

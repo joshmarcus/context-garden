@@ -498,6 +498,9 @@ class FakeGitHub:
     def feedback_since(self, slug, number, since_iso, exclude_logins=None):
         return self.feedback.get(number, Feedback())
 
+    def incremental_feedback_since(self, slug, number, since_iso, exclude_logins=None):
+        return self.feedback_since(slug, number, since_iso, exclude_logins)
+
     def complete_feedback(self, slug, number):
         return self.complete_feedback_snapshots.get(number, {
             "repository": slug, "pr": number, "fetched_at": "2026-01-01T00:00:00+00:00",
