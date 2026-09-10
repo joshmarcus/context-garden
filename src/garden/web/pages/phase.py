@@ -111,7 +111,7 @@ def register(app: FastAPI, site: Site) -> None:
             rows=rows, hide_done=hide_done, hidden_count=hidden_count,
             has_approved=any(t.status.value != "draft" for t in ph.tasks),
             planning=hub.planning.get(ph.key, ""), fixed_tokens=fixed_tokens,
-            retro_pending=sched.retro_pending(ph.key), has_retro=bool(_retro_doc(ph)),
+            retro_pending=sched.retro_pending(ph.key), closing_review=sched.closing_review_status(ph), has_retro=bool(_retro_doc(ph)),
             new_task=_new_task_prefill(request),
             kickoff=_kickoff_panel(s, sched, ph),
             retro_verdict=verdict_view,

@@ -65,6 +65,10 @@ def status(
             pending = sched.retro_pending(ph.key)
             if pending:
                 retro_waiting.append((ph.key, pending))
+            else:
+                closing = sched.closing_review_status(ph)
+                if closing["queued"] or (store.config.get("retro.auto_start", False) and closing["reason"]):
+                    retro_waiting.append((ph.key, closing))
             if any(t.status != Status.DRAFT for t in ph.tasks) and not sched.has_kickoff(ph):
                 kickoff_missing.append(ph.key)
     if table.rows:
@@ -72,7 +76,13 @@ def status(
         legend = "  ".join(f"{short[s]} {s}" for s in cols) + "  ! needs you"
         console.print(f"[dim]{legend}[/dim]")
     for key, pending in retro_waiting:
-        console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
+        if "done" in pending:
+            console.print(f"[yellow]{key} retro: waiting for personas ({pending['done']} of {pending['total']})[/yellow]")
+        else:
+            detail = f" — {pending['reason']}" if pending.get("reason") else ""
+            source = f" · source {str(pending['source'])[:12]}" if pending.get("source") else ""
+            evidence = f" · evidence {str(pending['evidence'])[:12]}" if pending.get("evidence") else ""
+            console.print(f"[yellow]{key} closing review: {pending['stage']}{source}{evidence}{detail}[/yellow]")
     for key in kickoff_missing:
         console.print(f"[yellow]{key}: tasks approved with no kickoff report — run `garden kickoff {key}`[/yellow]")
     if closed_phases:
