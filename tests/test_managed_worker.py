@@ -60,6 +60,24 @@ def test_idle_claim_does_not_retry_permanent_response():
         claim_with_retry(Client(), {"host": "build-1"}, sleep=lambda _delay: pytest.fail("slept"))
 
 
+def test_idle_claim_stops_after_bounded_recovery_window(tmp_path):
+    from garden.worker_diagnostics import WorkerEventLog
+
+    class Client:
+        events = WorkerEventLog(tmp_path / "events.jsonl", worker_id="worker-1", generation="gen-1")
+
+        def post(self, _path, _payload):
+            raise WorkerRequestError(503, "temporary controller failure")
+
+    with pytest.raises(RuntimeError, match="recovery window exhausted"):
+        claim_with_retry(Client(), {"host": "build-1"}, sleep=lambda _delay: None,
+                         max_elapsed_seconds=0)
+    event = Client.events.read()[-1]
+    assert event["exit_reason"] == "controller_unavailable"
+    assert event["cause"] == "http_503"
+    assert event["recovery_outcome"] == "retry_window_exhausted"
+
+
 def test_worker_resources_use_shared_memory_probe(tmp_path, monkeypatch):
     import garden.managed_worker as worker
 

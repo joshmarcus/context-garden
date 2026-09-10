@@ -11,12 +11,17 @@ import json
 import os
 import shutil
 import time
-import urllib.error
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .remote_worker import WorkerClient, WorkerRequestError, execute_claim
+from .remote_worker import (
+    WorkerClient,
+    claim_with_retry,
+    deliver_pending_results,
+    execute_claim,
+    initialize_worker_lifecycle,
+    recover_active_claims,
+)
 from .system_resources import memory_bytes
 
 try:
@@ -24,22 +29,6 @@ try:
 except ImportError:  # pragma: no cover - exercised on Windows
     fcntl = None
     import msvcrt
-
-
-def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep) -> tuple[int, dict]:
-    """Repeat one logical idle claim with bounded backoff and a stable identity."""
-    request = {**payload, "claim_request_id": uuid.uuid4().hex}
-    delay = 0.25
-    while True:
-        try:
-            return client.post("/api/runs/claim", request)
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
-            sleep(delay)
-        except WorkerRequestError as exc:
-            if not exc.retryable:
-                raise
-            sleep(delay)
-        delay = min(delay * 2, 5.0)
 
 
 def resources(root: Path) -> dict:
@@ -125,8 +114,17 @@ def run(config: dict, *, once: bool = False):
     import tempfile
     tempfile.tempdir = str(temp)
     client = AttributedClient(config, root)
+    initialize_worker_lifecycle(
+        root, client, requested_worker_id=str(config.get("worker_id") or "")
+    )
     with host_slot(root):
         while True:
+            recover_active_claims(root, client)
+            deliver_pending_results(
+                root, client,
+                max_attempts=int(config.get("result_recovery_attempts", 5)),
+                max_elapsed_seconds=float(config.get("result_recovery_seconds", 30)),
+            )
             facts = resources(root)
             if (facts["memory_available_bytes"] < config.get("memory_reserve_mib", 512) * 1024**2
                     or facts["disk_free_bytes"] < config.get("disk_reserve_mib", 1024) * 1024**2):
@@ -136,7 +134,7 @@ def run(config: dict, *, once: bool = False):
                 continue
             status, claim = claim_with_retry(client, {
                 "host": config["host"], "harnesses": config["harnesses"], "capacity": 1,
-            })
+            }, max_elapsed_seconds=float(config.get("claim_recovery_seconds", 300)))
             if status == 204 or not claim:
                 if once:
                     return

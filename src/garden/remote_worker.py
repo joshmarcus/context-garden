@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import fcntl
 import fnmatch
 import hashlib
 import json
 import os
+import random
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -17,6 +20,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
@@ -25,6 +29,12 @@ from .brief import parse_result
 from .harness import Harness
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
+from .worker_diagnostics import (
+    WorkerEventLog,
+    durable_worker_identity,
+    endpoint_class,
+    safe_correlation_id,
+)
 from .workload_identity import AuthorityRedactor
 
 
@@ -179,20 +189,458 @@ def doctor_worker(token: str, repo: str, harnesses: list[str],
 
 
 class WorkerClient:
-    def __init__(self, url: str, token: str):
+    def __init__(self, url: str, token: str, events: WorkerEventLog | None = None):
         self.url = url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        self.events = events
+        self.worker_id = events.worker_id if events else ""
+        self.process_generation = events.generation if events else ""
 
     def post(self, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        request_id = safe_correlation_id(
+            payload.get("request_id") or payload.get("claim_request_id")
+        ) or uuid.uuid4().hex
+        payload = {**payload, "request_id": request_id,
+                   "worker_id": self.worker_id, "process_generation": self.process_generation}
+        operation = endpoint_class(path)
+        if self.events:
+            self.events.emit("transport_attempt", request_id=request_id, operation=operation,
+                             endpoint_class=operation, run_id=_run_id(path), work_state=_work_state(operation))
         req = urllib.request.Request(self.url + path, json.dumps(payload).encode(), self.headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=60) as response:  # noqa: S310 - operator supplied garden URL
                 raw = response.read()
+                if self.events:
+                    self.events.emit("transport_response", request_id=request_id, operation=operation,
+                                     endpoint_class=operation, run_id=_run_id(path), http_status=response.status,
+                                     outcome="success")
                 return response.status, json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
             if exc.code == 204:
+                if self.events:
+                    self.events.emit("transport_response", request_id=request_id, operation=operation,
+                                     endpoint_class=operation, http_status=204, outcome="idle")
                 return 204, {}
+            if self.events:
+                self.events.emit("transport_response", request_id=request_id, operation=operation,
+                                 endpoint_class=operation, run_id=_run_id(path), http_status=exc.code,
+                                 cause="authentication" if exc.code in {401, 403} else "controller_or_proxy",
+                                 outcome="failed")
             raise WorkerRequestError(exc.code, exc.read().decode(errors="replace")) from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            if self.events:
+                self.events.emit("transport_exception", request_id=request_id, operation=operation,
+                                 endpoint_class=operation, run_id=_run_id(path),
+                                 exception=type(exc).__name__, cause="network", outcome="failed")
+            raise
+
+
+def initialize_worker_lifecycle(
+    root: Path, client: WorkerClient, *, requested_worker_id: str = ""
+) -> WorkerEventLog:
+    """Attach one durable identity and process generation to a worker client."""
+    root.mkdir(parents=True, exist_ok=True)
+    worker_id = durable_worker_identity(root, requested_worker_id)
+    generation = uuid.uuid4().hex
+    events = WorkerEventLog(
+        root / "worker-events.jsonl", worker_id=worker_id, generation=generation
+    )
+    restart_path = root / "restart-count"
+    restart_count = (
+        int(restart_path.read_text().strip() or 0) + 1 if restart_path.exists() else 1
+    )
+    restart_path.write_text(f"{restart_count}\n")
+    events.emit("worker_start", restart_count=restart_count, exit_reason="process_start")
+    client.events = events
+    client.worker_id = worker_id
+    client.process_generation = generation
+    return events
+
+
+def claim_with_retry(
+    client: WorkerClient,
+    payload: dict[str, Any],
+    *,
+    sleep=time.sleep,
+    max_elapsed_seconds: float = 300,
+) -> tuple[int, dict[str, Any]]:
+    """Repeat one logical idle claim with bounded backoff and a stable identity."""
+    request = {**payload, "claim_request_id": uuid.uuid4().hex}
+    delay = 0.25
+    started = time.monotonic()
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            result = client.post("/api/runs/claim", request)
+            if getattr(client, "events", None) and attempts > 1:
+                client.events.emit(
+                    "transport_recovered", request_id=request["claim_request_id"],
+                    operation="claim", reconnect_attempts=attempts - 1,
+                    recovery_outcome="recovered",
+                )
+            return result
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            cause = type(exc).__name__
+        except WorkerRequestError as exc:
+            if not exc.retryable:
+                if getattr(client, "events", None):
+                    client.events.emit(
+                        "worker_exit", exit_reason="authentication_or_permanent_failure",
+                        cause="authentication" if exc.status in {401, 403} else "permanent_response",
+                        operator_action="verify worker enrollment and controller compatibility",
+                    )
+                raise
+            cause = f"http_{exc.status}"
+        elapsed = time.monotonic() - started
+        if elapsed >= max_elapsed_seconds:
+            if getattr(client, "events", None):
+                client.events.emit(
+                    "worker_exit", exit_reason="controller_unavailable", cause=cause,
+                    reconnect_attempts=attempts, recovery_outcome="retry_window_exhausted",
+                    operator_action="check controller and proxy health, then restart the worker",
+                )
+            raise RuntimeError(f"claim recovery window exhausted after {attempts} attempts")
+        jittered = delay * random.uniform(0.8, 1.2)
+        if getattr(client, "events", None):
+            client.events.emit(
+                "transport_retry", request_id=request["claim_request_id"], operation="claim",
+                reconnect_attempt=attempts, backoff_seconds=round(jittered, 3), cause=cause,
+            )
+        sleep(min(jittered, max_elapsed_seconds - elapsed))
+        delay = min(delay * 2, 5.0)
+
+
+def _run_id(path: str) -> str:
+    parts = path.strip("/").split("/")
+    return parts[2] if len(parts) > 3 and parts[:2] == ["api", "runs"] else ""
+
+
+def _work_state(operation: str) -> str:
+    return {"claim": "idle_or_queued", "heartbeat": "executing", "result": "returning_result"}.get(
+        operation, "unknown")
+
+
+def deliver_pending_results(root: Path, client: WorkerClient, *, sleep=time.sleep,
+                            max_attempts: int = 5, max_elapsed_seconds: float = 30) -> int:
+    """Replay durable finishes without letting one delivery trap supervisor startup."""
+    pending = root / "pending-results"
+    delivered = 0
+    if not pending.exists():
+        return delivered
+    for path in sorted(pending.glob("*.json")):
+        try:
+            value = json.loads(path.read_text())
+            run_id = str(value["run_id"])
+            payload = dict(value["payload"])
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _quarantine_pending(path, client, "invalid_pending_result", type(exc).__name__)
+            continue
+        started = time.monotonic()
+        delay = 0.25
+        for attempt in range(1, max(1, max_attempts) + 1):
+            try:
+                status, _ = client.post(f"/api/runs/{run_id}/finish", payload)
+                if status == 200:
+                    path.unlink()
+                    delivered += 1
+                    if client.events:
+                        client.events.emit("result_recovered", run_id=run_id,
+                                           reconnect_attempts=attempt - 1,
+                                           recovery_outcome="delivered_after_restart")
+                break
+            except WorkerRequestError as exc:
+                if not exc.retryable:
+                    cause = "authentication" if exc.status in {401, 403} else "stale_or_rejected_generation"
+                    _quarantine_pending(path, client, cause, f"http_{exc.status}", run_id)
+                    break
+                cause = f"http_{exc.status}"
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+                cause = type(exc).__name__
+            elapsed = time.monotonic() - started
+            if attempt >= max_attempts or elapsed >= max_elapsed_seconds:
+                if client.events:
+                    client.events.emit("result_recovery_deferred", run_id=run_id, cause=cause,
+                                       reconnect_attempts=attempt, recovery_outcome="retry_window_exhausted",
+                                       operator_action="check controller connectivity; delivery remains pending")
+                break
+            backoff = min(delay, max(0.0, max_elapsed_seconds - elapsed))
+            jittered = backoff * random.uniform(0.8, 1.2)
+            if client.events:
+                client.events.emit("transport_retry", run_id=run_id, operation="result",
+                                   reconnect_attempt=attempt, backoff_seconds=round(jittered, 3), cause=cause)
+            sleep(jittered)
+            delay = min(delay * 2, 5.0)
+    return delivered
+
+
+def _quarantine_pending(path: Path, client: WorkerClient, cause: str, detail: str,
+                        run_id: str = "") -> None:
+    quarantine = path.parent / "quarantine"
+    quarantine.mkdir(exist_ok=True)
+    destination = quarantine / path.name
+    path.replace(destination)
+    if client.events:
+        client.events.emit("result_recovery_quarantined", run_id=run_id, cause=cause,
+                           exception=detail, recovery_outcome="operator_action_required",
+                           operator_action="verify enrollment or lease generation, then inspect quarantined result")
+
+
+def _persist_pending_result(root: Path, run_id: str, payload: dict[str, Any]) -> Path:
+    directory = root / "pending-results"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{run_id}.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"run_id": run_id, "payload": payload}))
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+    return path
+
+
+def _retire_recovered_publication(root: Path, active_path: Path, run_id: str,
+                                  client: WorkerClient, failure: Exception) -> bool:
+    """Retire completed execution once its result is durably pending.
+
+    Publication can fail only after the result has been written, or earlier while git or
+    lease checks are still running.  The latter must retain the active handoff.  Once the
+    pending record exists, however, replay belongs exclusively to the pending-result path;
+    retaining both records would publish the same execution on every daemon restart.
+    """
+    pending_path = root / "pending-results" / f"{run_id}.json"
+    if not pending_path.exists():
+        return False
+    if isinstance(failure, WorkerRequestError) and not failure.retryable:
+        cause = "authentication" if failure.status in {401, 403} else "stale_or_rejected_generation"
+        _quarantine_pending(pending_path, client, cause, f"http_{failure.status}", run_id)
+        quarantine = active_path.parent / "quarantine"
+        quarantine.mkdir(exist_ok=True)
+        active_path.replace(quarantine / active_path.name)
+        if client.events:
+            client.events.emit(
+                "execution_recovery_quarantined", run_id=run_id, cause=cause,
+                recovery_outcome="operator_action_required",
+                operator_action="verify enrollment or lease generation, then inspect quarantined execution",
+            )
+    else:
+        active_path.unlink(missing_ok=True)
+        if client.events:
+            client.events.emit(
+                "result_recovery_deferred", run_id=run_id,
+                cause=(f"http_{failure.status}" if isinstance(failure, WorkerRequestError)
+                       else type(failure).__name__),
+                recovery_outcome="retry_window_exhausted",
+                operator_action="check controller connectivity; delivery remains pending",
+            )
+    return True
+
+
+def _active_claim_path(root: Path, run_id: str) -> Path:
+    return root / "active-claims" / f"{run_id}.json"
+
+
+def _persist_supervisor_input(execution_dir: Path, brief: str) -> Path:
+    """Durably stage complete harness input before its supervisor can launch work."""
+    path = execution_dir / "brief.md"
+    temporary = path.with_suffix(".md.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as staged:
+            staged.write(brief)
+            staged.flush()
+            os.fsync(staged.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    temporary.replace(path)
+    directory = os.open(execution_dir, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return path
+
+
+def _persist_active_claim(root: Path, run: dict[str, Any], execution_dir: Path,
+                          repo: Path, final_path: Path, supervisor_pid: int) -> Path:
+    """Save the minimum secret-bearing handoff needed by a replacement daemon.
+
+    This is operational state, not diagnostics. It is mode 0600 because the lease token
+    is authority; the brief and repository URL are deliberately omitted.
+    """
+    path = _active_claim_path(root, str(run["id"]))
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    saved_run = {key: value for key, value in run.items() if key not in {"brief", "repo"}}
+    supervisor_birth = _process_birth_identity(supervisor_pid)
+    temporary = path.with_suffix(".json.tmp")
+    payload = json.dumps({
+        "run": saved_run, "execution_dir": str(execution_dir), "repo": str(repo),
+        "final_path": str(final_path), "supervisor_pid": supervisor_pid,
+        "supervisor_birth": supervisor_birth,
+    })
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as staged:
+            staged.write(payload)
+            staged.flush()
+            os.fsync(staged.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    temporary.replace(path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return path
+
+
+def _launch_claim_supervisor(
+    command: list[str], *, root: Path, run: dict[str, Any], execution_dir: Path,
+    repo: Path, final_path: Path, env: dict[str, str], pass_fds: tuple[int, ...],
+    **popen_kwargs: Any,
+) -> tuple[subprocess.Popen[Any], Path]:
+    """Launch a supervisor whose workload is fenced behind its durable handoff."""
+    gate_read, gate_write = os.pipe()
+    launch_env = dict(env)
+    launch_env["GARDEN_LAUNCH_GATE_FD"] = str(gate_read)
+    proc: subprocess.Popen[Any] | None = None
+    try:
+        proc = subprocess.Popen(
+            command, env=launch_env, pass_fds=(*pass_fds, gate_read), **popen_kwargs,
+        )
+        os.close(gate_read)
+        gate_read = -1
+        active_claim = _persist_active_claim(
+            root, run, execution_dir, repo, final_path, proc.pid,
+        )
+        os.write(gate_write, b"1")
+        return proc, active_claim
+    except BaseException:
+        # EOF makes the supervisor fail closed before it acquires a slot or starts work.
+        if proc is not None:
+            os.close(gate_write)
+            gate_write = -1
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _stop_obsolete_process(proc)
+        raise
+    finally:
+        if gate_read >= 0:
+            os.close(gate_read)
+        if gate_write >= 0:
+            os.close(gate_write)
+
+
+def _collect_supervised_result(
+    run: dict[str, Any], execution_dir: Path, final_path: Path, rc: int,
+) -> tuple[str, dict[str, Any], dict[str, Any], float | None, str, int]:
+    """Collect mode-specific output from a completed claim supervisor."""
+    if run.get("mode") == "check":
+        result_path = execution_dir / "checks.json"
+        if result_path.exists():
+            results = json.loads(result_path.read_text())
+            error = ""
+        else:
+            timeout_result = validation_timeout_result(execution_dir, rc)
+            if timeout_result is not None:
+                results = [timeout_result]
+                error = timeout_result["details"]
+            else:
+                error = f"remote check supervisor exited {rc} without results"
+                results = [{
+                    "name": "checks", "status": "error",
+                    "summary": "check execution did not complete", "details": error,
+                }]
+        return "", {"checks": results}, {}, 0.0, error, rc
+
+    stdout = (execution_dir / "stdout.log").read_text(errors="replace")
+    stderr = (execution_dir / "stderr.log").read_text(errors="replace")
+    harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
+    collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
+    final = str(collected.get("final_text") or "")
+    parsed = collected.get("result") or parse_result(final) or {}
+    return (
+        final, parsed, collected.get("usage") or {}, collected.get("cost_usd"),
+        str(collected.get("error") or ""), rc,
+    )
+
+
+def _process_birth_identity(pid: int) -> str | None:
+    """Return a process incarnation identity, or fail closed when unavailable.
+
+    Linux start ticks are unique for a PID within one boot; including the boot id also
+    prevents a persisted handoff from matching after a host reboot. Other platforms do
+    not currently expose an equally strong identity through this portable worker, so
+    recovery quarantines their live handoffs without signalling the recorded PID. Mere
+    PID liveness and second-resolution ``ps`` start times are not process identities.
+    """
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        start_ticks = stat_fields[19]
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if boot_id and start_ticks:
+            return f"linux:{boot_id}:{start_ticks}"
+    except (OSError, IndexError):
+        return None
+
+
+def _supervisor_identity_matches(pid: int, expected_birth: object) -> bool:
+    return isinstance(expected_birth, str) and bool(expected_birth) and (
+        _process_birth_identity(pid) == expected_birth
+    )
+
+
+def _stop_recovered_supervisor(supervisor_pid: int, supervisor_birth: object, *, sleep=time.sleep) -> None:
+    """Stop a detached supervisor after its recovered claim loses authority."""
+    if not _supervisor_identity_matches(supervisor_pid, supervisor_birth):
+        return
+    try:
+        os.kill(supervisor_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except PermissionError as exc:
+        raise RuntimeError("cannot terminate recovered claim supervisor") from exc
+    deadline = time.monotonic() + 5
+    while (_supervisor_identity_matches(supervisor_pid, supervisor_birth)
+           and time.monotonic() < deadline):
+        sleep(0.05)
+    if _supervisor_identity_matches(supervisor_pid, supervisor_birth):
+        try:
+            os.kill(supervisor_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise RuntimeError("cannot kill recovered claim supervisor") from exc
+
+
+def _recovered_heartbeat_cause(run: dict[str, Any], failure: BaseException) -> str:
+    if isinstance(failure, WorkerRequestError):
+        if failure.status in {401, 403}:
+            return "authentication"
+        if failure.status == 409:
+            try:
+                deadline = dt.datetime.fromisoformat(str(run.get("execution_deadline_at") or ""))
+                if deadline <= dt.datetime.now(dt.UTC):
+                    return "execution_deadline"
+            except (TypeError, ValueError):
+                pass
+            return "stale_or_rejected_generation"
+    return "controller_unavailable"
+
+
+def _execution_deadline_expired(run: dict[str, Any]) -> bool:
+    """Whether this claim's fixed execution authority has expired locally."""
+    try:
+        deadline = dt.datetime.fromisoformat(str(run.get("execution_deadline_at") or ""))
+    except (TypeError, ValueError):
+        return False
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=dt.UTC)
+    return deadline <= dt.datetime.now(dt.UTC)
 
 
 class _LeaseHeartbeat:
@@ -486,6 +934,178 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         ) from exc
 
 
+def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
+                          heartbeat: _LeaseHeartbeat, *, final: str,
+                          parsed: dict[str, Any], usage: dict[str, Any],
+                          cost: float | None, error: str, rc: int,
+                          execution_dir: Path | None = None) -> None:
+    if subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip():
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=garden", "-c", "user.email=garden@localhost",
+             "commit", "-m", f"{run['task_id']}: remote worker changes"],
+            cwd=repo, check=False,
+        )
+    heartbeat.ensure_current()
+    subprocess.run(
+        ["git", "push", "--force", "origin", f"HEAD:{run['push_ref']}"],
+        cwd=repo, check=rc == 0,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    heartbeat.ensure_current()
+    finish_payload = {
+        "lease_token": run["lease_token"], "exit_code": rc, "final_text": final,
+        "result": parsed, "usage": usage, "cost_usd": cost, "error": error,
+        "pushed_head": head,
+    }
+    if execution_dir is not None:
+        finish_payload["validation_receipts"] = _validation_receipts(execution_dir)
+    safe_finish_payload = AuthorityRedactor(()).redact_data(finish_payload)
+    pending_result = _persist_pending_result(root, str(run["id"]), safe_finish_payload)
+    heartbeat.finish(safe_finish_payload)
+    pending_result.unlink(missing_ok=True)
+
+
+def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep) -> int:
+    """Collect supervisors which survived a managed-worker daemon restart."""
+    active = root / "active-claims"
+    recovered = 0
+    if not active.exists():
+        return recovered
+    for path in sorted(active.glob("*.json")):
+        try:
+            state = json.loads(path.read_text())
+            run = dict(state["run"])
+            execution_dir = Path(state["execution_dir"])
+            repo = Path(state["repo"])
+            final_path = Path(state["final_path"])
+            supervisor_pid = int(state["supervisor_pid"])
+            supervisor_birth = state.get("supervisor_birth")
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            _quarantine_pending(path, client, "invalid_active_claim", type(exc).__name__)
+            continue
+        heartbeat = _LeaseHeartbeat(run, client)
+        heartbeat.start()
+        try:
+            if client.events:
+                client.events.emit(
+                    "execution_reconnect", run_id=str(run["id"]), work_state="recovering",
+                    recovery_outcome="waiting_for_surviving_supervisor",
+                )
+            exit_path = execution_dir / "exit_code"
+            if not exit_path.exists() and not _supervisor_identity_matches(
+                supervisor_pid, supervisor_birth,
+            ):
+                quarantine = path.parent / "quarantine"
+                quarantine.mkdir(exist_ok=True)
+                path.replace(quarantine / path.name)
+                if client.events:
+                    client.events.emit(
+                        "execution_recovery_quarantined", run_id=str(run["id"]),
+                        work_state="recovering", cause="supervisor_identity_mismatch",
+                        exit_reason="stale_active_claim",
+                        recovery_outcome="quarantined_without_process_signal",
+                        operator_action="inspect preserved active claim and supervisor logs",
+                    )
+                continue
+            while (not exit_path.exists()
+                   and _supervisor_identity_matches(supervisor_pid, supervisor_birth)):
+                if _execution_deadline_expired(run):
+                    _stop_recovered_supervisor(
+                        supervisor_pid, supervisor_birth, sleep=sleep,
+                    )
+                    quarantine = path.parent / "quarantine"
+                    quarantine.mkdir(exist_ok=True)
+                    path.replace(quarantine / path.name)
+                    if client.events:
+                        client.events.emit(
+                            "execution_recovery_quarantined", run_id=str(run["id"]),
+                            work_state="recovering", cause="execution_deadline",
+                            exit_reason="execution_deadline_expired",
+                            recovery_outcome="supervisor_terminated_without_replay",
+                            operator_action=(
+                                "verify lease generation and execution deadline, then inspect "
+                                "the quarantined active claim"
+                            ),
+                        )
+                    break
+                try:
+                    heartbeat.ensure_not_failed()
+                except BaseException as exc:
+                    if _supervisor_identity_matches(supervisor_pid, supervisor_birth):
+                        _stop_recovered_supervisor(
+                            supervisor_pid, supervisor_birth, sleep=sleep,
+                        )
+                    quarantine = path.parent / "quarantine"
+                    quarantine.mkdir(exist_ok=True)
+                    path.replace(quarantine / path.name)
+                    failure = heartbeat.failure or exc
+                    cause = _recovered_heartbeat_cause(run, failure)
+                    if client.events:
+                        client.events.emit(
+                            "execution_recovery_quarantined", run_id=str(run["id"]),
+                            work_state="recovering", cause=cause,
+                            exit_reason=("execution_deadline_expired"
+                                         if cause == "execution_deadline"
+                                         else "terminal_heartbeat_failure"),
+                            exception=(f"http_{failure.status}"
+                                       if isinstance(failure, WorkerRequestError)
+                                       else type(failure).__name__),
+                            recovery_outcome="supervisor_terminated_without_replay",
+                            operator_action=(
+                                "verify lease generation and execution deadline, then inspect "
+                                "the quarantined active claim"
+                            ),
+                        )
+                    break
+                sleep(0.1)
+            if not path.exists():
+                continue
+            if not exit_path.exists():
+                quarantine = path.parent / "quarantine"
+                quarantine.mkdir(exist_ok=True)
+                path.replace(quarantine / path.name)
+                if client.events:
+                    client.events.emit(
+                        "worker_exit", run_id=str(run["id"]), exit_reason="process_crash",
+                        cause="supervisor_identity_lost_without_exit_record",
+                        operator_action="inspect preserved active claim and supervisor logs",
+                    )
+                continue
+            rc = int(exit_path.read_text().strip())
+            final, parsed, usage, cost, error, rc = _collect_supervised_result(
+                run, execution_dir, final_path, rc,
+            )
+            repo_lock = _acquire_repo_lock(run, root)
+            try:
+                try:
+                    _publish_claim_result(
+                        run, root, repo, heartbeat, final=final, parsed=parsed,
+                        usage=usage, cost=cost, error=error, rc=rc,
+                        execution_dir=execution_dir,
+                    )
+                except Exception as exc:
+                    if _retire_recovered_publication(root, path, str(run["id"]), client, exc):
+                        continue
+                    raise
+            finally:
+                repo_lock.close()
+            path.unlink(missing_ok=True)
+            recovered += 1
+            if client.events:
+                client.events.emit(
+                    "execution_recovered", run_id=str(run["id"]), work_state="returning_result",
+                    recovery_outcome="delivered_after_daemon_restart",
+                )
+        finally:
+            heartbeat.stop()
+    return recovered
+
+
 def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "",
                   host_config: dict[str, Any] | None = None) -> None:
     """Materialise one claim, run it, push it, and post its auditable outcome."""
@@ -507,7 +1127,6 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             return
         setup = dict(run.get("setup") or {})
         identity_target = "check" if run.get("mode") == "check" else "worker"
-        authority_redactor = AuthorityRedactor(())
         if run.get("mode") == "check":
             check_data = _host_check_data(run, repo)
             # A managed consumer passes the product command above so admission covers it.
@@ -535,38 +1154,18 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 f"{shlex.quote(sys.executable)} -m garden.checkrun "
                 f"{shlex.quote(str(execution_dir))}"
             )
-            proc = subprocess.Popen(
+            final_path = repo.parent / f"{run['id']}-final.md"
+            proc, active_claim = _launch_claim_supervisor(
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
+                root=root, run=run, execution_dir=execution_dir, repo=repo,
+                final_path=final_path,
                 cwd=repo, env=execution_env, pass_fds=(repo_lock.fileno(),),
+                start_new_session=True,
             )
             check_returncode = _wait_for_process(proc, heartbeat)
-            identity_error = execution_dir / "identity_error.json"
-            if identity_error.exists():
-                detail = json.loads(identity_error.read_text())
-                heartbeat.finish({
-                    "lease_token": run["lease_token"], "exit_code": 1,
-                    "final_text": "", "result": {}, "usage": {}, "cost_usd": None,
-                    "error": str(detail.get("error") or "workload identity failed"),
-                    "pushed_head": "",
-                    "env_error": True, "env_kind": "workload_identity",
-                })
-                return
-            result_path = execution_dir / "checks.json"
-            if result_path.exists():
-                results = json.loads(result_path.read_text())
-                error = ""
-            else:
-                timeout_result = validation_timeout_result(execution_dir, check_returncode)
-                if timeout_result is not None:
-                    results = [timeout_result]
-                    error = timeout_result["details"]
-                else:
-                    error = f"remote check supervisor exited {check_returncode} without results"
-                    results = [{
-                        "name": "checks", "status": "error",
-                        "summary": "check execution did not complete", "details": error,
-                    }]
-            final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
+            final, parsed, usage, cost, error, rc = _collect_supervised_result(
+                run, execution_dir, final_path, check_returncode,
+            )
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             # The same supervisor used by local workers supplies a usable validation
@@ -594,77 +1193,68 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             if str(raw_final) in argv:
                 execution_env["GARDEN_RAW_FINAL_PATH"] = str(raw_final)
                 execution_env["GARDEN_FINAL_PATH"] = str(final_path)
-            supervised = [sys.executable, "-m", "garden.run_supervisor",
-                          str(execution_dir), shlex.join(argv)]
-            proc = subprocess.Popen(
-                supervised, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, cwd=repo, env=execution_env,
-                pass_fds=(repo_lock.fileno(),),
+            brief_path = _persist_supervisor_input(
+                execution_dir, str(run.get("brief") or ""),
             )
-            assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-            proc.stdin.write(str(run.get("brief") or ""))
-            proc.stdin.close()
-            captured: dict[str, list[str]] = {"stdout": [], "stderr": []}
-
-            def read_stream(name: str, source: TextIO) -> None:
-                while chunk := source.read(4096):
-                    captured[name].append(chunk)
-
-            readers = [
-                threading.Thread(target=read_stream, args=("stdout", proc.stdout)),
-                threading.Thread(target=read_stream, args=("stderr", proc.stderr)),
-            ]
-            for reader in readers:
-                reader.start()
-            timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
-            deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
-            while proc.poll() is None:
-                try:
-                    heartbeat.ensure_not_failed()
-                except BaseException:
-                    _stop_obsolete_process(proc)
-                    raise
-                if deadline is not None and time.monotonic() >= deadline:
-                    _stop_obsolete_process(proc)
-                    break
-                time.sleep(0.1)
-            for reader in readers:
-                reader.join()
-            stdout, stderr = "".join(captured["stdout"]), "".join(captured["stderr"])
-            if stdout:
-                heartbeat.upload(0, stdout)
-            identity_error = execution_dir / "identity_error.json"
-            if identity_error.exists():
-                detail = json.loads(identity_error.read_text())
-                heartbeat.finish(AuthorityRedactor(()).redact_data({
-                    "lease_token": run["lease_token"], "exit_code": 1,
-                    "final_text": "", "result": {}, "usage": {}, "cost_usd": None,
-                    "error": str(detail.get("error") or "workload identity failed"), "pushed_head": "",
-                    "env_error": True, "env_kind": "workload_identity",
-                }))
-                return
+            supervised_script = (
+                f"{shlex.join(argv)} < {shlex.quote(str(brief_path))}"
+            )
+            supervised = [sys.executable, "-m", "garden.run_supervisor",
+                          str(execution_dir), supervised_script]
+            stdout_path = execution_dir / "stdout.log"
+            stderr_path = execution_dir / "stderr.log"
+            with stdout_path.open("w+") as stdout_file, stderr_path.open("w+") as stderr_file:
+                proc, active_claim = _launch_claim_supervisor(
+                    supervised, root=root, run=run, execution_dir=execution_dir,
+                    repo=repo, final_path=final_path, env=execution_env,
+                    pass_fds=(repo_lock.fileno(),), stdin=subprocess.DEVNULL,
+                    stdout=stdout_file, stderr=stderr_file, text=True, cwd=repo,
+                    start_new_session=True,
+                )
+                transcript_read_offset = 0
+                transcript_upload_offset = 0
+                timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
+                deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
+                while proc.poll() is None:
+                    try:
+                        heartbeat.ensure_not_failed()
+                    except BaseException:
+                        _stop_obsolete_process(proc)
+                        raise
+                    if deadline is not None and time.monotonic() >= deadline:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        stderr_file.write(f"\nworker timed out after {timeout_minutes:g} minutes\n")
+                        break
+                    time.sleep(0.1)
+                    stdout_file.flush()
+                    with open(stdout_file.name) as transcript_file:
+                        transcript_file.seek(transcript_read_offset)
+                        chunk = transcript_file.read()
+                        transcript_read_offset = transcript_file.tell()
+                    if chunk:
+                        transcript_upload_offset = heartbeat.upload(transcript_upload_offset, chunk)
+                stdout_file.flush()
+                stdout_file.seek(0)
+                stderr_file.seek(0)
+                stdout, stderr = stdout_file.read(), stderr_file.read()
+                stdout_file.seek(transcript_read_offset)
+                tail = stdout_file.read()
+                if tail:
+                    transcript_upload_offset = heartbeat.upload(transcript_upload_offset, tail)
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
             usage, cost, error, rc = collected.get("usage") or {}, collected.get("cost_usd"), str(collected.get("error") or ""), proc.returncode
-        if subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip():
-            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-            subprocess.run(["git", "-c", "user.name=garden", "-c", "user.email=garden@localhost", "commit", "-m", f"{run['task_id']}: remote worker changes"], cwd=repo, check=False)
-        # Confirm this lease immediately before publishing to its staging ref. The garden
-        # alone promotes that ref after accepting finish.
-        heartbeat.ensure_current()
-        push_ref = str(run["push_ref"])
-        subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
-        # PID directory names do not describe completion order. Preserve the host's
-        # observed write order so the controller can make a later rerun authoritative.
-        receipts = _validation_receipts(execution_dir)
-        heartbeat.ensure_current()
-        finish_payload = {"lease_token": run["lease_token"], "exit_code": rc,
-                          "final_text": final, "result": parsed, "usage": usage,
-                          "cost_usd": cost, "error": error, "pushed_head": head,
-                          "validation_receipts": receipts}
-        heartbeat.finish(authority_redactor.redact_data(finish_payload))
+        _publish_claim_result(
+            run, root, repo, heartbeat, final=final, parsed=parsed, usage=usage,
+            cost=cost, error=error, rc=rc, execution_dir=execution_dir,
+        )
+        active_claim.unlink(missing_ok=True)
     finally:
         if repo_lock is not None:
             repo_lock.close()
@@ -673,11 +1263,22 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
 
 def run_worker(url: str, host: str, token: str, root: Path, harnesses: list[str], tiers: list[str],
                capacity: int = 1, once: bool = False, poll_seconds: float = 5,
-               setup_command: str = "") -> None:
+               setup_command: str = "", claim_recovery_seconds: float = 300,
+               result_recovery_attempts: int = 5,
+               result_recovery_seconds: float = 30) -> None:
     client = WorkerClient(url, token)
+    initialize_worker_lifecycle(root, client, requested_worker_id=host)
     while True:
-        status, claim = client.post("/api/runs/claim", {"host": host, "harnesses": harnesses,
-                                                        "tiers": tiers, "capacity": capacity})
+        recover_active_claims(root, client)
+        deliver_pending_results(
+            root, client, max_attempts=result_recovery_attempts,
+            max_elapsed_seconds=result_recovery_seconds,
+        )
+        status, claim = claim_with_retry(
+            client, {"host": host, "harnesses": harnesses,
+                     "tiers": tiers, "capacity": capacity},
+            max_elapsed_seconds=claim_recovery_seconds,
+        )
         if status == 204 or not claim:
             if once:
                 return

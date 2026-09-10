@@ -86,6 +86,12 @@ with the bearer token named by `workers.hosts[].token_env`.
   usage, cost, and pushed commit. The scheduler verifies that staged head and promotes it to
   the task branch with a git lease, then uses its ordinary
   result, PR, review, check, and accounting paths.
+  Before posting, the worker durably saves the finish payload. After a process restart it
+  retries transient delivery for a finite configurable window with capped jittered backoff,
+  then continues serving while retaining the payload for a later attempt. Authentication,
+  validation, and replaced-generation responses move the payload to a local quarantine and
+  emit an operator-action event, so a supervisor cannot restart-loop on an undeliverable
+  result. An already accepted identical finish remains an idempotent success.
 
 Expired leases are claimable again and do not fail the task. Each reclaim gets a different
 staging ref, so an expired worker that finishes cloning, setup, checks, or execution late can
@@ -134,6 +140,13 @@ explicit development mode and leaves operator routes locally accessible.
 
 `garden worker --garden URL --host build-1 --doctor --repo REPO --harness claude` checks
 the token, git access, and harness. `--once` claims at most one run for CI-style hosts.
+The standalone command uses the same durable worker identity, bounded event history, active
+supervisor recovery, and pending-result delivery as a managed worker before it requests new
+work, so restarting either daemon does not replay an accepted execution.
+Before either a harness or remote check starts, its detached supervisor waits on a parent-owned
+launch gate. The parent fsyncs the PID/birth-fenced active-claim handoff before releasing that
+gate. A crash before persistence therefore starts no workload; a crash after persistence leaves
+a handoff that the replacement daemon can collect, without issuing the workload again.
 
 The worker's final message ends with one line, `GARDEN_RESULT: {...}`, and that line is
 the whole result contract. For the local runner, publication of the task branch, pull request
@@ -296,6 +309,36 @@ bounded exponential backoff through the claim's total recovery window (the lease
 recovery grace, 420 seconds with the defaults). Each successful heartbeat starts a fresh total
 window matching the controller's renewed durable deadlines. Authentication failures and other
 4xx rejections are terminal.
+
+Managed workers also keep a bounded, secret-free `worker-events.jsonl` in their work directory.
+It survives daemon restarts and records UTC timestamps, a stable logical worker id, a new process
+generation and increasing restart count, request/claim correlation, operation and endpoint class,
+work state, HTTP status or exception class, retries/backoff, recovery outcome, and terminal reason.
+The controller records request receipt and the corresponding accepted or rejected outcome in
+`.garden/worker-events.jsonl` and
+serves a bounded local-only view at `GET /api/worker-diagnostics`; inventory pages can consume that
+API without contacting hosts. Request bodies, authorization values, private transcripts, and
+physical provider identities are not recorded. A missing controller-side correlation means the
+request did not reach this controller, not proof of which network component dropped it.
+
+An idle claim uses a configurable finite `claim_recovery_seconds` window (300 seconds by default),
+then exits with an operator action instead of retrying silently forever. The service supervisor may
+restart it, producing a new process generation. A permanent authentication response exits without
+retry. Before launching model work, managed workers write a mode-0600 active-claim handoff without
+the brief or repository URL. Harness output is written to claim-scoped files and the execution
+supervisor runs in its own session. A replacement daemon renews the same lease, waits for that
+surviving supervisor, and collects and publishes its result before requesting more work. This does
+not relaunch the harness. The handoff records the supervisor's process-birth identity as well as
+its PID. Recovery verifies both before waiting or sending a signal; a missing or mismatched identity
+is quarantined without touching that process, so PID reuse cannot transfer execution ownership.
+Linux uses boot identity plus kernel process start ticks. On platforms where the worker cannot
+obtain an equally strong incarnation identity, including macOS, an unfinished handoff fails
+closed and is quarantined without signalling its recorded PID. A completed handoff remains
+collectible from its durable exit record.
+Completed finish payloads are written mode 0600 under
+`pending-results/` before transmission;
+on restart they are delivered before another claim and removed only after the controller's
+idempotent acknowledgement. A replaced lease rejects the saved generation and never re-executes it.
 When the durable recovery deadline passes, the old token is rejected and the run becomes
 claimable with a new token and staging ref. Thus a stale generation can neither renew itself
 nor publish after confirmed replacement.

@@ -26,11 +26,18 @@ from garden.remote_worker import (
     WorkerRequestError,
     _claim_suffix,
     _host_check_data,
+    _launch_claim_supervisor,
     _LeaseHeartbeat,
+    _persist_active_claim,
+    _persist_pending_result,
+    _process_birth_identity,
     _validation_receipts,
     _wait_for_process,
+    deliver_pending_results,
     doctor_worker,
     execute_claim,
+    recover_active_claims,
+    run_worker,
 )
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
@@ -65,6 +72,175 @@ def isolated_execution_runtime(tmp_path, monkeypatch):
     runtime = tmp_path / "worker-runtime"
     runtime.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+
+@pytest.mark.parametrize("mode", ["work", "check"])
+def test_claim_supervisor_waits_for_durable_handoff_before_workload(
+    tmp_path, monkeypatch, mode,
+):
+    """Harness and check workloads fail closed when active-claim persistence fails."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / mode
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "stdout.log").write_text("")
+    (execution_dir / "stderr.log").write_text("")
+    marker = execution_dir / "workload-started"
+    run = {"id": f"run-{mode}", "task_id": "DM-001", "mode": mode}
+
+    def fail_persistence(*_args, **_kwargs):
+        raise OSError("simulated durable handoff failure")
+
+    monkeypatch.setattr("garden.remote_worker._persist_active_claim", fail_persistence)
+    with pytest.raises(OSError, match="durable handoff failure"):
+        _launch_claim_supervisor(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+             f"printf started > {marker}"],
+            root=root, run=run, execution_dir=execution_dir, repo=repo,
+            final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+            start_new_session=True,
+        )
+
+    assert not marker.exists()
+    assert not (root / "active-claims" / f"run-{mode}.json").exists()
+    assert (execution_dir / "exit_code").read_text() == "1"
+
+
+@pytest.mark.parametrize("mode", ["work", "check"])
+def test_durable_handoff_releases_supervisor_workload_once(tmp_path, monkeypatch, mode):
+    """Once fenced metadata exists, either workload kind starts exactly once."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / mode
+    execution_dir.mkdir(parents=True)
+    marker = execution_dir / "workload-started"
+    run = {"id": f"run-{mode}", "task_id": "DM-001", "mode": mode}
+
+    proc, active = _launch_claim_supervisor(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+         f"printf run >> {marker}"],
+        root=root, run=run, execution_dir=execution_dir, repo=repo,
+        final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+        start_new_session=True,
+    )
+    proc.wait(timeout=5)
+
+    state = json.loads(active.read_text())
+    assert state["supervisor_pid"] == proc.pid
+    assert state["supervisor_birth"]
+    assert marker.read_text() == "run"
+
+
+def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monkeypatch):
+    """A detached supervisor never depends on its daemon surviving to stream input."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "work"
+    execution_dir.mkdir(parents=True)
+    received = execution_dir / "received.md"
+    brief = "begin\n" + ("complete-input-\N{SNOWMAN}\n" * 16_384) + "end\n"
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "from garden.remote_worker import _launch_claim_supervisor, _persist_supervisor_input\n"
+        "root, repo, execution_dir, received, brief_source = map(Path, sys.argv[1:])\n"
+        "brief_path = _persist_supervisor_input(execution_dir, brief_source.read_text())\n"
+        "run = {'id': 'run-work', 'task_id': 'DM-001', 'mode': 'work'}\n"
+        "_launch_claim_supervisor(\n"
+        "    [sys.executable, '-m', 'garden.run_supervisor', str(execution_dir),\n"
+        "     f'cat < {brief_path} > {received}'],\n"
+        "    root=root, run=run, execution_dir=execution_dir, repo=repo,\n"
+        "    final_path=execution_dir / 'final.md', env=dict(os.environ), pass_fds=(),\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL, start_new_session=True,\n"
+        ")\n"
+        "os._exit(73)\n"
+    )
+    brief_source = tmp_path / "source-brief.md"
+    brief_source.write_text(brief)
+
+    daemon = subprocess.run(
+        [sys.executable, str(launcher), str(root), str(repo), str(execution_dir),
+         str(received), str(brief_source)],
+        env=dict(os.environ), check=False,
+    )
+
+    assert daemon.returncode == 73
+    deadline = time.monotonic() + 5
+    while not received.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert received.read_text() == brief
+    staged = execution_dir / "brief.md"
+    assert staged.stat().st_mode & 0o777 == 0o600
+    assert json.loads((root / "active-claims" / "run-work.json").read_text())["supervisor_pid"]
+
+
+@pytest.mark.parametrize("mode", ["work", "check"])
+def test_replacement_recovers_crash_immediately_after_durable_handoff(
+    tmp_path, monkeypatch, mode,
+):
+    """A lost release is a recoverable cancelled execution, never an orphan workload."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / mode
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "stdout.log").write_text("")
+    (execution_dir / "stderr.log").write_text("")
+    marker = execution_dir / "workload-started"
+    run = {
+        "id": f"run-{mode}", "task_id": "DM-001", "mode": mode,
+        "lease_token": "lease-1", "heartbeat_seconds": 0.05,
+        "recovery_seconds": 1, "harness": "claude", "harness_config": {},
+        "model": "small", "push_ref": f"refs/recovery/{mode}",
+    }
+    real_write = os.write
+
+    def lose_release(fd, data):
+        if data == b"1":
+            raise BrokenPipeError("simulated daemon loss after handoff")
+        return real_write(fd, data)
+
+    monkeypatch.setattr("garden.remote_worker.os.write", lose_release)
+    with pytest.raises(BrokenPipeError, match="after handoff"):
+        _launch_claim_supervisor(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+             f"printf run >> {marker}"],
+            root=root, run=run, execution_dir=execution_dir, repo=repo,
+            final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+            start_new_session=True,
+        )
+    monkeypatch.setattr("garden.remote_worker.os.write", real_write)
+    publications = []
+    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
+        "final_text": "", "result": {}, "usage": {}, "cost_usd": 0.0,
+        "error": "cancelled before launch",
+    })
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *args, **kwargs: publications.append(kwargs),
+    )
+
+    class ReplacementClient:
+        events = None
+
+        def post(self, path, _payload):
+            assert path == f"/api/runs/run-{mode}/heartbeat"
+            return 200, {}
+
+    assert recover_active_claims(root, ReplacementClient()) == 1
+    assert recover_active_claims(root, ReplacementClient()) == 0
+    assert not marker.exists()
+    assert len(publications) == 1
+    assert publications[0]["rc"] == 1
 
 
 def queued_run(store, task_id="DM-001"):
@@ -117,6 +293,642 @@ def test_lost_successful_claim_response_replays_one_generation(garden, monkeypat
     assert calls == 2
     assert saved.lease_token == executed[0]["lease_token"]
     assert len(saved.claim_history) == 1
+
+
+def test_worker_diagnostic_export_correlates_claim_without_request_body(garden, monkeypatch):
+    http, store = remote_client(garden, monkeypatch)
+    queued = queued_run(store)
+    response = http.post("/api/runs/claim", json={
+        "host": "build-1", "harnesses": ["claude"],
+        "claim_request_id": "diagnostic-request-id", "request_id": "transport-request-id",
+    }, headers={"Authorization": "Bearer secret-token"})
+    assert response.status_code == 200
+
+    exported = http.get("/api/worker-diagnostics?limit=10")
+    assert exported.status_code == 200
+    event = exported.json()[-1]
+    assert event["request_id"] == "transport-request-id"
+    assert event["run_id"] == queued.run_id
+    assert event["operation"] == "claim"
+    serialized = json.dumps(event)
+    assert "secret-token" not in serialized and "safe brief" not in serialized
+
+
+def test_controller_diagnostics_capture_and_deduplicate_failed_requests(garden, monkeypatch):
+    http, _store = remote_client(garden, monkeypatch)
+    payload = {"host": "build-1", "harnesses": ["claude"],
+               "claim_request_id": "failed-request-identity"}
+
+    assert http.post("/api/runs/claim", json=payload,
+                     headers={"Authorization": "Bearer wrong"}).status_code == 403
+    assert http.post("/api/runs/claim", json=payload,
+                     headers={"Authorization": "Bearer wrong"}).status_code == 403
+    assert http.post("/api/runs/claim", json={**payload, "claim_request_id": "recovered-request-id"},
+                     headers={"Authorization": "Bearer secret-token"}).status_code == 204
+
+    diagnostics = http.get("/api/worker-diagnostics?limit=20").json()
+    outcomes = [event for event in diagnostics if event["event"] == "controller_outcome"]
+    assert [event["http_status"] for event in outcomes[-3:]] == [403, 403, 204]
+    notices = http.get("/api/events").json()
+    assert [item["kind"] for item in notices] == ["worker_failure", "worker_recovery"]
+
+
+def test_controller_diagnostics_keep_worker_recoveries_separate(garden, monkeypatch):
+    http, _store = remote_client(garden, monkeypatch)
+    headers = {"Authorization": "Bearer secret-token"}
+
+    failed = http.post("/api/runs/missing/heartbeat", json={
+        "worker_id": "worker-a", "process_generation": "a" * 32,
+        "request_id": "worker-a-failure", "lease_token": "missing",
+    }, headers=headers)
+    assert failed.status_code == 404
+    assert http.post("/api/runs/claim", json={
+        "worker_id": "worker-b", "process_generation": "b" * 32,
+        "request_id": "worker-b-success", "host": "build-1", "harnesses": ["claude"],
+    }, headers=headers).status_code == 204
+
+    outcomes = [event for event in http.get("/api/worker-diagnostics").json()
+                if event["event"] == "controller_outcome"]
+    assert [(event["worker_id"], event["http_status"]) for event in outcomes[-2:]] == [
+        ("worker-a", 404), ("worker-b", 204),
+    ]
+    notices = http.get("/api/events").json()
+    assert [(event["kind"], event["worker_id"]) for event in notices] == [
+        ("worker_failure", "worker-a"),
+    ]
+
+
+def test_pending_finish_is_delivered_after_worker_restart(tmp_path):
+    pending = tmp_path / "pending-results"
+    pending.mkdir()
+    (pending / "run-1.json").write_text(json.dumps({
+        "run_id": "run-1", "payload": {"lease_token": "opaque", "exit_code": 0},
+    }))
+    calls = []
+
+    class Client:
+        events = None
+
+        def post(self, path, payload):
+            calls.append((path, payload))
+            return 200, {"already_finished": True}
+
+    assert deliver_pending_results(tmp_path, Client()) == 1
+    assert calls == [("/api/runs/run-1/finish", {"lease_token": "opaque", "exit_code": 0})]
+    assert not list(pending.iterdir())
+
+
+def test_replacement_daemon_collects_surviving_supervisor_once(tmp_path, monkeypatch):
+    """A real detached supervisor finishes while only replacement-daemon state observes it."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-live"
+    execution_dir.mkdir(parents=True)
+    final_path = repo.parent / "run-1-final.md"
+    stdout_path = execution_dir / "stdout.log"
+    stderr_path = execution_dir / "stderr.log"
+    script = f"sleep 0.2; printf survived > {stdout_path}"
+    with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+        supervisor = subprocess.Popen(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), script],
+            stdout=stdout, stderr=stderr, start_new_session=True,
+        )
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 5, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    _persist_active_claim(root, run, execution_dir, repo, final_path, supervisor.pid)
+    published = []
+    collected_output = []
+
+    class ReplacementClient:
+        events = None
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            return 200, {}
+
+    def parse(_harness, stdout, stderr, *_args, **_kwargs):
+        collected_output.append((stdout, stderr))
+        return {"final_text": stdout, "result": {"status": "done"}, "usage": {},
+                "cost_usd": 0.0, "error": stderr}
+
+    monkeypatch.setattr(Harness, "parse", parse)
+    monkeypatch.setattr("garden.remote_worker._publish_claim_result",
+                        lambda *args, **kwargs: published.append(kwargs))
+
+    assert recover_active_claims(root, ReplacementClient()) == 1
+    supervisor.wait(timeout=5)
+    assert collected_output == [("survived", "")]
+    assert published[0]["final"] == "survived"
+    assert published[0]["rc"] == 0
+    assert recover_active_claims(root, ReplacementClient()) == 0
+
+
+def test_standalone_worker_recovers_execution_and_pending_result_before_claim(
+    tmp_path, monkeypatch,
+):
+    """A restarted CLI drains both durable handoffs without launching duplicate work."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "standalone-host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-live"
+    execution_dir.mkdir(parents=True)
+    stdout_path = execution_dir / "stdout.log"
+    stderr_path = execution_dir / "stderr.log"
+    with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
+        supervisor = subprocess.Popen(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+             f"sleep 0.2; printf survived > {stdout_path}"],
+            stdout=stdout, stderr=stderr, start_new_session=True,
+        )
+    active_run = {
+        "id": "active-run", "task_id": "DM-001", "lease_token": "active-lease",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 5, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/active",
+    }
+    _persist_active_claim(
+        root, active_run, execution_dir, repo, repo.parent / "active-final.md", supervisor.pid,
+    )
+    _persist_pending_result(root, "pending-run", {
+        "lease_token": "pending-lease", "exit_code": 0,
+        "error": "Bearer must-not-appear-in-diagnostics",
+    })
+    order = []
+
+    class Client:
+        def __init__(self, _url, _token):
+            self.events = None
+            self.worker_id = ""
+            self.process_generation = ""
+
+        def post(self, path, _payload):
+            if path == "/api/runs/active-run/heartbeat":
+                return 200, {}
+            if path == "/api/runs/pending-run/finish":
+                order.append("pending-result")
+                return 200, {"already_finished": True}
+            if path == "/api/runs/claim":
+                order.append("claim")
+                return 204, {}
+            raise AssertionError(path)
+
+    monkeypatch.setattr("garden.remote_worker.WorkerClient", Client)
+    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
+        "final_text": "survived", "result": {"status": "done"}, "usage": {},
+        "cost_usd": 0.0, "error": "",
+    })
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *_args, **_kwargs: order.append("active-result"),
+    )
+    monkeypatch.setattr(
+        "garden.remote_worker.execute_claim",
+        lambda *_args, **_kwargs: pytest.fail("a new execution was started"),
+    )
+
+    run_worker(
+        "https://garden.example", "build-1", "secret-token", root,
+        ["claude"], [], once=True,
+    )
+    supervisor.wait(timeout=5)
+
+    assert order == ["active-result", "pending-result", "claim"]
+    assert not (root / "active-claims" / "active-run.json").exists()
+    assert not (root / "pending-results" / "pending-run.json").exists()
+    events = (root / "worker-events.jsonl").read_text()
+    assert "build-1" in events and "process_generation" in events
+    assert "secret-token" not in events and "must-not-appear" not in events
+
+
+def test_replacement_daemon_collects_surviving_check_once(tmp_path, monkeypatch):
+    """A replacement daemon collects check output without replaying the check command."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "check-live"
+    execution_dir.mkdir(parents=True)
+    count_path = execution_dir / "executions"
+    result_path = execution_dir / "checks.json"
+    script = (
+        f"sleep 0.2; printf run >> {count_path}; "
+        f"printf '[{{\"name\":\"unit\",\"status\":\"pass\"}}]' > {result_path}"
+    )
+    supervisor = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), script],
+        start_new_session=True,
+    )
+    run = {
+        "id": "run-1", "task_id": "DM-001", "mode": "check",
+        "lease_token": "lease-1", "heartbeat_seconds": 0.05, "recovery_seconds": 5,
+        "push_ref": "refs/recovery/run-1",
+    }
+    _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "unused-final.md", supervisor.pid,
+    )
+    published = []
+
+    class ReplacementClient:
+        events = None
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            return 200, {}
+
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *args, **kwargs: published.append(kwargs),
+    )
+
+    assert recover_active_claims(root, ReplacementClient()) == 1
+    supervisor.wait(timeout=5)
+    assert count_path.read_text() == "run"
+    assert published[0]["parsed"] == {
+        "checks": [{"name": "unit", "status": "pass"}],
+    }
+    assert published[0]["rc"] == 0
+    assert recover_active_claims(root, ReplacementClient()) == 0
+    assert count_path.read_text() == "run"
+
+
+def test_replacement_daemon_stops_execution_after_local_deadline(tmp_path, monkeypatch):
+    """A fixed deadline remains a terminal fence after the worker daemon restarts."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-expired"
+    execution_dir.mkdir(parents=True)
+    count_path = execution_dir / "executions"
+    stopped_path = execution_dir / "stopped"
+    child = execution_dir / "author.py"
+    child.write_text(
+        "import signal, time\n"
+        "from pathlib import Path\n"
+        f"count = Path({str(count_path)!r})\n"
+        f"stopped = Path({str(stopped_path)!r})\n"
+        "count.write_text(count.read_text() + 'run' if count.exists() else 'run')\n"
+        "def stop(*_args):\n"
+        "    stopped.write_text('deadline')\n"
+        "    raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True: time.sleep(0.05)\n"
+    )
+    supervisor = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+         f"{sys.executable} {child}"],
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while not count_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert count_path.read_text() == "run"
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "expired-lease",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 1, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+        "execution_deadline_at": "2026-09-10T01:00:00+00:00",
+    }
+    _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", supervisor.pid,
+    )
+
+    recorded = []
+
+    class Events:
+        def emit(self, kind, **fields):
+            recorded.append((kind, fields))
+
+    class DeadlineClient:
+        events = Events()
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            raise WorkerRequestError(409, "execution deadline expired")
+
+    assert recover_active_claims(root, DeadlineClient()) == 0
+    supervisor.wait(timeout=5)
+    assert stopped_path.read_text() == "deadline"
+    assert count_path.read_text() == "run"
+    assert not (root / "active-claims" / "run-1.json").exists()
+    assert (root / "active-claims" / "quarantine" / "run-1.json").exists()
+    terminal = [fields for kind, fields in recorded
+                if kind == "execution_recovery_quarantined"]
+    assert terminal == [{
+        "run_id": "run-1", "work_state": "recovering", "cause": "execution_deadline",
+        "exit_reason": "execution_deadline_expired",
+        "recovery_outcome": "supervisor_terminated_without_replay",
+        "operator_action": (
+            "verify lease generation and execution deadline, then inspect the quarantined "
+            "active claim"
+        ),
+    }]
+
+    assert recover_active_claims(root, DeadlineClient()) == 0
+    assert count_path.read_text() == "run"
+
+
+def test_replacement_daemon_enforces_deadline_during_controller_outage(tmp_path, monkeypatch):
+    """Controller unavailability cannot extend a recovered execution's fixed deadline."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-outage"
+    execution_dir.mkdir(parents=True)
+    started_path = execution_dir / "started"
+    stopped_path = execution_dir / "stopped"
+    child = execution_dir / "author.py"
+    child.write_text(
+        "import signal, time\n"
+        "from pathlib import Path\n"
+        f"started = Path({str(started_path)!r})\n"
+        f"stopped = Path({str(stopped_path)!r})\n"
+        "started.write_text('run')\n"
+        "def stop(*_args):\n"
+        "    stopped.write_text('deadline')\n"
+        "    raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True: time.sleep(0.05)\n"
+    )
+    supervisor = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+         f"{sys.executable} {child}"],
+        start_new_session=True,
+    )
+    wait_deadline = time.monotonic() + 5
+    while not started_path.exists() and time.monotonic() < wait_deadline:
+        time.sleep(0.02)
+    assert started_path.read_text() == "run"
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "current-lease",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 5, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+        "execution_deadline_at": (
+            dt.datetime.now(dt.UTC) + dt.timedelta(milliseconds=200)
+        ).isoformat(),
+    }
+    _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", supervisor.pid,
+    )
+    recorded = []
+
+    class Events:
+        def emit(self, kind, **fields):
+            recorded.append((kind, fields))
+
+    class UnavailableClient:
+        events = Events()
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            raise WorkerRequestError(503, "controller unavailable")
+
+    assert recover_active_claims(root, UnavailableClient()) == 0
+    supervisor.wait(timeout=5)
+    assert stopped_path.read_text() == "deadline"
+    assert (root / "active-claims" / "quarantine" / "run-1.json").exists()
+    terminal = [fields for kind, fields in recorded
+                if kind == "execution_recovery_quarantined"]
+    assert terminal == [{
+        "run_id": "run-1", "work_state": "recovering", "cause": "execution_deadline",
+        "exit_reason": "execution_deadline_expired",
+        "recovery_outcome": "supervisor_terminated_without_replay",
+        "operator_action": (
+            "verify lease generation and execution deadline, then inspect the quarantined "
+            "active claim"
+        ),
+    }]
+
+
+def test_replacement_daemon_quarantines_reused_pid_without_signalling_or_replay(
+    tmp_path, monkeypatch,
+):
+    """A stale handoff cannot confer ownership of an unrelated process reusing its PID."""
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-stale"
+    execution_dir.mkdir(parents=True)
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 30, "recovery_seconds": 1, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    active = _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", os.getpid(),
+    )
+    state = json.loads(active.read_text())
+    state["supervisor_birth"] = "linux:previous-boot:previous-start"
+    active.write_text(json.dumps(state))
+    signals = []
+    publications = []
+    monkeypatch.setattr("garden.remote_worker.os.kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *args, **kwargs: publications.append((args, kwargs)),
+    )
+    recorded = []
+
+    class Events:
+        def emit(self, kind, **fields):
+            recorded.append((kind, fields))
+
+    class Client:
+        events = Events()
+
+        def post(self, _path, _payload):
+            return 200, {}
+
+    assert recover_active_claims(root, Client()) == 0
+    assert signals == []
+    assert publications == []
+    assert not active.exists()
+    assert (active.parent / "quarantine" / active.name).exists()
+    assert recorded[-1] == ("execution_recovery_quarantined", {
+        "run_id": "run-1", "work_state": "recovering",
+        "cause": "supervisor_identity_mismatch", "exit_reason": "stale_active_claim",
+        "recovery_outcome": "quarantined_without_process_signal",
+        "operator_action": "inspect preserved active claim and supervisor logs",
+    })
+
+
+def test_process_birth_identity_fails_closed_without_procfs(tmp_path, monkeypatch):
+    """A non-Linux host never substitutes a second-resolution process start time."""
+    real_read_text = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if str(path).startswith("/proc/"):
+            raise FileNotFoundError(path)
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    ps_calls = []
+    monkeypatch.setattr(
+        "garden.remote_worker.subprocess.run",
+        lambda *args, **kwargs: ps_calls.append((args, kwargs)),
+    )
+
+    assert _process_birth_identity(os.getpid()) is None
+    assert ps_calls == []
+
+
+def test_same_second_ps_identity_cannot_authorize_reused_pid(tmp_path, monkeypatch):
+    """A legacy macOS lstart value cannot authorize signals after same-second PID reuse."""
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-stale"
+    execution_dir.mkdir(parents=True)
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 30, "recovery_seconds": 1, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    active = _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", os.getpid(),
+    )
+    state = json.loads(active.read_text())
+    state["supervisor_birth"] = "ps:Wed Sep 10 10:00:00 2026"
+    active.write_text(json.dumps(state))
+    monkeypatch.setattr("garden.remote_worker._process_birth_identity", lambda _pid: None)
+    signals = []
+    monkeypatch.setattr("garden.remote_worker.os.kill", lambda pid, sig: signals.append((pid, sig)))
+
+    class Client:
+        events = None
+
+    assert recover_active_claims(root, Client()) == 0
+    assert signals == []
+    assert (active.parent / "quarantine" / active.name).exists()
+
+
+class HealthyHeartbeatClient:
+    events = None
+
+    def post(self, path, _payload):
+        assert path == "/api/runs/run-1/heartbeat"
+        return 200, {}
+
+
+def recovered_execution(tmp_path, monkeypatch):
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-complete"
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "exit_code").write_text("0")
+    (execution_dir / "stdout.log").write_text("survived")
+    (execution_dir / "stderr.log").write_text("")
+    final_path = repo.parent / "run-1-final.md"
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 30, "recovery_seconds": 0, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    _persist_active_claim(root, run, execution_dir, repo, final_path, 99999999)
+    monkeypatch.setattr(
+        Harness, "parse",
+        lambda *_args, **_kwargs: {
+            "final_text": "survived", "result": {"status": "done"}, "usage": {},
+            "cost_usd": 0.0, "error": "",
+        },
+    )
+    return root
+
+
+@pytest.mark.parametrize("failure", [
+    WorkerRequestError(401, "enrollment rejected"),
+    WorkerRequestError(403, "enrollment rejected"),
+    WorkerRequestError(409, "lease replaced"),
+])
+def test_recovered_finish_terminal_rejection_is_quarantined_once(tmp_path, monkeypatch, failure):
+    root = recovered_execution(tmp_path, monkeypatch)
+    publications = []
+
+    def reject(_run, result_root, _repo, _heartbeat, **_kwargs):
+        publications.append(str(_run["id"]))
+        _persist_pending_result(result_root, str(_run["id"]), {"lease_token": "stale"})
+        raise failure
+
+    monkeypatch.setattr("garden.remote_worker._publish_claim_result", reject)
+
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert publications == ["run-1"]
+    assert (root / "active-claims" / "quarantine" / "run-1.json").exists()
+    assert (root / "pending-results" / "quarantine" / "run-1.json").exists()
+
+
+def test_recovered_finish_transient_exhaustion_defers_without_reentry(tmp_path, monkeypatch):
+    root = recovered_execution(tmp_path, monkeypatch)
+    publications = []
+
+    def unavailable(_run, result_root, _repo, _heartbeat, **_kwargs):
+        publications.append(str(_run["id"]))
+        _persist_pending_result(result_root, str(_run["id"]), {"lease_token": "current"})
+        raise WorkerRequestError(503, "controller unavailable")
+
+    monkeypatch.setattr("garden.remote_worker._publish_claim_result", unavailable)
+
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert recover_active_claims(root, HealthyHeartbeatClient()) == 0
+    assert publications == ["run-1"]
+    assert not (root / "active-claims" / "run-1.json").exists()
+    assert (root / "pending-results" / "run-1.json").exists()
+
+
+def test_pending_finish_retries_transient_failure_without_blocking_startup(tmp_path):
+    pending = tmp_path / "pending-results"
+    pending.mkdir()
+    result = pending / "run-1.json"
+    result.write_text(json.dumps({"run_id": "run-1", "payload": {"lease_token": "opaque"}}))
+
+    class Client:
+        events = None
+
+        def post(self, _path, _payload):
+            raise WorkerRequestError(503, "controller unavailable")
+
+    assert deliver_pending_results(tmp_path, Client(), sleep=lambda _delay: None,
+                                   max_attempts=2) == 0
+    assert result.exists()
+
+
+def test_pending_finish_quarantines_terminal_failure(tmp_path):
+    pending = tmp_path / "pending-results"
+    pending.mkdir()
+    result = pending / "run-1.json"
+    result.write_text(json.dumps({"run_id": "run-1", "payload": {"lease_token": "stale"}}))
+
+    class Client:
+        events = None
+
+        def post(self, _path, _payload):
+            raise WorkerRequestError(409, "lease replaced")
+
+    assert deliver_pending_results(tmp_path, Client(), sleep=lambda _delay: None) == 0
+    assert not result.exists()
+    assert (pending / "quarantine" / "run-1.json").exists()
+
+
+def test_worker_diagnostics_bound_bytes_and_external_fields(tmp_path):
+    from garden.worker_diagnostics import MAX_BYTES, WorkerEventLog
+
+    log = WorkerEventLog(tmp_path / "events.jsonl")
+    for index in range(700):
+        log.emit("transport_attempt", request_id=(str(index) + "x" * 1000),
+                 **{f"external_{field}": "y" * 1000 for field in range(20)})
+
+    assert log.path.stat().st_size <= MAX_BYTES
+    assert all(len(event.get("request_id", "")) <= 256 for event in log.read(limit=1000))
+    event = log.emit("transport_attempt", request_id="Bearer secret-shaped-value")
+    assert event["request_id"] == ""
 
 
 def test_claim_request_replay_fences_host_generation_and_expiry(garden, monkeypatch):
