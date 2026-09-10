@@ -495,8 +495,12 @@ def _run_setup(run_dir: Path) -> bool:
     from garden.runner.base import RunnerError, run_setup
 
     try:
-        run_setup(Path.cwd(), json.loads(payload.read_text()), log_path=run_dir / "setup.log",
-                  env=dict(os.environ))
+        data = json.loads(payload.read_text())
+        # Older durable run records contain the setup mapping directly.
+        setup = data.get("setup", data)
+        config = data.get("config", {}) if "setup" in data else {}
+        run_setup(Path.cwd(), setup, log_path=run_dir / "setup.log",
+                  env=dict(os.environ), config=config)
     except (OSError, ValueError, RunnerError) as exc:
         (run_dir / "stderr.log").write_text(f"{exc}\n")
         (run_dir / "exit_code").write_text("1")
