@@ -172,6 +172,27 @@ def test_revision_denied_before_stash_or_branch_sync(sched, monkeypatch):
     assert task.attempts == 0
 
 
+def test_phase_persona_denial_precedes_repository_writes(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    readings = iter((30 << 30, 19 << 30))
+    import garden.scheduler.resources as resources
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", next(readings)),
+    ))
+    from garden import gitops
+    writes: list[str] = []
+    monkeypatch.setattr(gitops, "fetch", lambda *_: writes.append("fetch"))
+    monkeypatch.setattr(gitops, "git", lambda *_args, **_kwargs: writes.append("git"))
+
+    with pytest.raises(ResourcePressureError, match="phase persona checkout materialization"):
+        sched.dispatch_persona_phase(sched.store.phase("demo", "p1"), "security")
+
+    assert writes == []
+    assert sched.store.task("DM-001").attempts == 0
+    run = sched.runs.latest("_demo-p1")
+    assert run is not None and run.status == "failed" and run.pid is None
+
+
 def _claim_slot(root: str, start, outcomes) -> None:
     from garden.scheduler import Scheduler
     from garden.store import Store
