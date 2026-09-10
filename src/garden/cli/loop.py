@@ -948,7 +948,7 @@ def persona_review(
     min_severity: str = typer.Option("low", "--min-severity", help="With --file-tasks: lowest severity to file (low, medium, high)"),
     request_changes: bool = typer.Option(False, help="PR reviews: high findings trigger a revise run"),
 ):
-    """Persona reviews (designer, project-manager, staff-engineer, usability-expert, user, security, or your own)."""
+    """Persona reviews (designer, project-manager, staff-engineer, usability-expert, user, security, ontologist, or your own)."""
     if min_severity not in ("low", "medium", "high"):
         err.print(f"[red]--min-severity must be low, medium or high, got {min_severity!r}[/red]")
         raise typer.Exit(1)

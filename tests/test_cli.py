@@ -36,6 +36,13 @@ def test_status_ls_graph_validate(garden):
     assert run(garden, "validate").exit_code == 0
 
 
+def test_persona_review_help_lists_the_ontologist(garden):
+    result = run(garden, "persona-review", "--help")
+
+    assert result.exit_code == 0, result.output
+    assert "ontologist" in result.output
+
+
 def test_assign_and_owner_filtered_machine_output(garden):
     goals = garden / "demo" / "p1" / "goals.md"
     goals.write_text("# p1\n")
