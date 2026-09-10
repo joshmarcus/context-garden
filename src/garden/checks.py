@@ -141,7 +141,13 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
             # The sentinel wins over any product env: a check must never act on the live garden.
             env["GARDEN_ROOT"] = no_live_garden_root(Path(cwd) if cwd else Path.cwd())
             command = str(spec["command"])
-            argv, mechanism = policy.command_argv(command, cwd or Path.cwd())
+            protected = [Path(path) for path in (ctx.get("fence_paths") or [])]
+            argv, mechanism = policy.command_argv(
+                command, cwd or Path.cwd(),
+                additional_writable_roots=[Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP")
+                                           if env.get(name)],
+                protected_roots=protected,
+            )
             env.update(policy.report_env(mechanism))
             proc = subprocess.run(
                 argv, shell=False, cwd=str(cwd) if cwd else None, env=env,
