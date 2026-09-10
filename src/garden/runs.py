@@ -703,8 +703,17 @@ class RunStore:
             task for task in set(task_fingerprints) | set(idx.task_fingerprints)
             if task_fingerprints.get(task) != idx.task_fingerprints.get(task)
         }) | idx.dirty_tasks
+        archive_changed = initial or idx.archive_dirty or archive_fingerprint != idx.archive_fingerprint
+        if not changed and not archive_changed:
+            # The age boundary checks only the cheap bucket/ledger fingerprints. Avoid
+            # traversing, sorting, or rebuilding indexes from terminal history when no
+            # durable source changed.
+            idx.built_generation = idx.generation
+            idx.built_at = time.monotonic()
+            idx.scans += 1
+            return
         previous_archived = [r for r in idx.runs if r.path.is_relative_to(self.archive_dir)]
-        if initial or idx.archive_dirty or archive_fingerprint != idx.archive_fingerprint:
+        if archive_changed:
             archived = self._archived_runs()
             # A changed ledger also tells an existing reader in another process which
             # live buckets moved, even if their directory timestamps/size did not change.

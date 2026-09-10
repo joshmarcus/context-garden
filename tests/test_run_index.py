@@ -142,6 +142,11 @@ def test_claim_request_lookup_copies_only_matching_run(tmp_path: Path, monkeypat
         return copy_value(value)
 
     monkeypatch.setattr("garden.runs.deepcopy", observe_copy)
+    monkeypatch.setattr("garden.runs._totals", lambda _runs: pytest.fail("rebuilt cached history"))
+    clock = [100.0]
+    monkeypatch.setattr("garden.runs.time.monotonic", lambda: clock[0])
+    rs._index.built_at = clock[0]
+    clock[0] += rs.MAX_INDEX_AGE_SECONDS + 0.05
     replay = rs.claim_request("durable-request-identity")
 
     assert replay is not None and replay.run_id == claimed.run_id
