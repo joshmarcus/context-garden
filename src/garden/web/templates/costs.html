@@ -86,7 +86,7 @@
 {% from "_cost_comparisons.html" import comparisons with context %}
 <div class="panel cost-comparisons" style="margin-top:14px">
   <div class="eyebrow">Cost comparisons for this cohort</div>
-  <p class="muted" style="margin:8px 0 0;font-size:12.5px">These use the selected window and applicable task, model and harness filters. The spend-over-time chart above is the cost-by-activity view when grouped by activity.</p>
+  <p class="muted" style="margin:8px 0 0;font-size:12.5px">These use the selected window and applicable task, model, harness and session filters. The spend-over-time chart above is the cost-by-activity view when grouped by activity.</p>
   {{ comparisons(comparison, f) }}
 </div>
 <div class="panel" style="margin-top:14px">

@@ -114,7 +114,8 @@ def cell_text(cell: dict[str, Any] | None, unit: str) -> str:
     if not cell:
         return "—"
     mark = "▲ " if cell["best"] else "▽ " if cell["worst"] else ""
-    return f"{mark}{format_cell(unit, cell['value'])} ({'~' if cell['thin'] else ''}n {cell['n']})"
+    partial = "partial " if not cell.get("cost_complete", True) else ""
+    return f"{mark}{partial}{format_cell(unit, cell['value'])} ({'~' if cell['thin'] else ''}n {cell['n']})"
 
 
 def short_title(title: str, n: int = 56) -> str:
@@ -487,22 +488,34 @@ def runs_by_model(finished: list[dict[str, Any]]) -> dict[str, Any]:
     within the row from best to worst (lower is better) with the best, worst and thin marks
     `shade_row` decides. Each column's head carries its total cost and run count, the
     two figures the old flat list gave, so nothing is lost by turning it on its side."""
-    samples: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    totals: dict[str, dict[str, float]] = defaultdict(lambda: {"runs": 0, "cost": 0.0})
+    samples: dict[str, dict[str, list[tuple[float, bool]]]] = defaultdict(lambda: defaultdict(list))
+    totals: dict[str, dict[str, float]] = defaultdict(lambda: {"runs": 0, "cost": 0.0, "unpriced": 0})
     for e in finished:
         who = f"{e['harness']}:{e.get('model') or e.get('mode')}" if e.get("harness") else "garden"
-        cost = float(e.get("cost_usd") or 0.0)
-        samples[str(e.get("mode") or "run")][who].append(cost)
+        price = e.get("cost_usd")
+        priced = isinstance(price, (int, float)) and not isinstance(price, bool)
+        cost = float(price) if priced else 0.0
+        samples[str(e.get("mode") or "run")][who].append((cost, priced))
         totals[who]["runs"] += 1
         totals[who]["cost"] += cost
+        totals[who]["unpriced"] += int(not priced)
     columns = sorted(totals, key=lambda w: (-totals[w]["cost"], -totals[w]["runs"], w))
     modes = [m for m in MODE_ORDER if m in samples] + sorted(m for m in samples if m not in MODE_ORDER)
     rows: dict[str, dict[str, dict[str, Any]]] = {}
     for mode in modes:
-        cells = {who: {"value": round(sum(v) / len(v), 3), "n": len(v)} for who, v in samples[mode].items()}
+        cells = {
+            who: {"value": round(sum(cost for cost, _ in values) / len(values), 3), "n": len(values)}
+            for who, values in samples[mode].items()
+        }
+        for who, values in samples[mode].items():
+            if not all(priced for _, priced in values):
+                cells[who]["cost_complete"] = False
         shade_row(cells, "low")
         rows[mode] = cells
-    heads = {who: f"{money(t['cost'])} · {int(t['runs'])} run{'s' if t['runs'] != 1 else ''}" for who, t in totals.items()}
+    heads = {
+        who: f"{'partial ' if t['unpriced'] else ''}{money(t['cost'])} · {int(t['runs'])} run{'s' if t['runs'] != 1 else ''}"
+        for who, t in totals.items()
+    }
     return {"label": "cost per run", "unit": "usd", "better": "low", "n_unit": "runs",
             "columns": columns, "rows": rows, "heads": heads, "thin": THIN_SAMPLE}
 

@@ -30,21 +30,29 @@ def resolve_since(since: str) -> str:
     return parse_since(since) if since else ""
 
 
+def comparison_events(events: list[dict[str, Any]], tasks: dict[str, Any],
+                      *, model: str = "", harness: str = "", session: str = "") -> list[dict[str, Any]]:
+    """Keep a comparison cohort's lifecycle facts while filtering its completed runs."""
+    scoped = [event for event in events if str(event.get("task") or "") in tasks]
+    if not (model or harness or session):
+        return scoped
+    return [
+        event for event in scoped
+        if event.get("kind") != "run_finished"
+        or (not model or str(event.get("model") or "") == model)
+        and (not harness or str(event.get("harness") or "") == harness)
+        and (not session or str(event.get("session") or "") == session)
+    ]
+
+
 def comparison_data(events: list[dict[str, Any]], tasks: dict[str, Any], since: str,
-                    *, model: str = "", harness: str = "") -> dict[str, object]:
+                    *, model: str = "", harness: str = "", session: str = "") -> dict[str, object]:
     """The Now comparison tables, scoped to the Costs cohort and its run filters.
 
     Lifecycle facts stay with their task so accepted-task comparisons retain their history;
-    model and harness restrict the runs that supply spend and model credit.
+    model, harness and session restrict the runs that supply spend and model credit.
     """
-    scoped = [event for event in events if str(event.get("task") or "") in tasks]
-    if model or harness:
-        scoped = [
-            event for event in scoped
-            if event.get("kind") != "run_finished"
-            or (not model or str(event.get("model") or "") == model)
-            and (not harness or str(event.get("harness") or "") == harness)
-        ]
+    scoped = comparison_events(events, tasks, model=model, harness=harness, session=session)
     finished = [
         event for event in scoped
         if event.get("kind") == "run_finished" and str(event.get("at") or "") >= since
@@ -83,8 +91,13 @@ def register(app: FastAPI, site: Site) -> None:
             selected_tasks = {tid: t for tid, t in selected_tasks.items() if t.difficulty == difficulty}
         if task:
             selected_tasks = {tid: t for tid, t in selected_tasks.items() if tid == task}
-        comparison = comparison_data(events, selected_tasks, window_since, model=model, harness=harness)
-        outcomes = metrics(events, selected_tasks, since=window_since)
+        filtered_comparison_events = comparison_events(
+            events, selected_tasks, model=model, harness=harness, session=session,
+        )
+        comparison = comparison_data(
+            events, selected_tasks, window_since, model=model, harness=harness, session=session,
+        )
+        outcomes = metrics(filtered_comparison_events, selected_tasks, since=window_since)
         runs = [e for e in events if e.get("kind") == "run_finished"]
         models = sorted({str(e["model"]) for e in runs if e.get("model")})
         harnesses = sorted({str(e["harness"]) for e in runs if e.get("harness")})

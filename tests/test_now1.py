@@ -171,6 +171,16 @@ def test_runs_by_model_is_a_shaded_table_of_mode_by_who():
                                       "columns": [], "rows": {}, "heads": {}, "thin": 3}
 
 
+def test_runs_by_model_marks_missing_prices_partial_instead_of_zero():
+    table = now1.runs_by_model([
+        {"kind": "run_finished", "mode": "work", "harness": "codex", "model": "terra", "cost_usd": None},
+    ])
+
+    assert table["heads"] == {"codex:terra": "partial $0.00 · 1 run"}
+    assert table["rows"]["work"]["codex:terra"]["value"] == 0.0
+    assert table["rows"]["work"]["codex:terra"]["cost_complete"] is False
+
+
 def test_a_flat_row_is_green_with_no_end_marked():
     """Two solid cells with the same value: both at rank 0, neither best nor worst, so the page
     never marks one cell as both ends of a row."""

@@ -373,6 +373,29 @@ def test_costs_page_shares_now_comparisons_and_last_week_label(garden):
     assert "By difficulty and model" in page
 
 
+def test_costs_comparisons_honor_session_and_mark_unpriced_runs(garden):
+    from garden.web.pages.costs import comparison_data
+    from tests.test_web import client
+
+    events = [
+        {"at": "2026-09-05T09:00:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work",
+         "model": "sonnet", "harness": "claude", "session": "included", "cost_usd": 2.0},
+        {"at": "2026-09-05T09:01:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "work",
+         "model": "opus", "harness": "claude", "session": "excluded", "cost_usd": 9.0},
+        {"at": "2026-09-05T09:02:00+00:00", "kind": "run_finished", "task": "DM-001", "mode": "review",
+         "model": "sonnet", "harness": "claude", "session": "included", "cost_usd": None},
+    ]
+    _write_events(garden, events)
+
+    page = client(garden).get("/costs?session=included").text
+    comparison = comparison_data(events, Store(garden).tasks(), "", session="included")
+
+    assert "partial $2.00 · 2 runs" in page
+    assert "one or more samples have no recorded price" in page
+    assert comparison["by_model"]["columns"] == ["claude:sonnet"]
+    assert comparison["by_model"]["rows"]["review"]["claude:sonnet"]["cost_complete"] is False
+
+
 def test_costs_page_switches_to_average_per_task_and_preserves_total_context(garden):
     from tests.test_web import client
 

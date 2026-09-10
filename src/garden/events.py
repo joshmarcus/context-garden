@@ -703,7 +703,7 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
     import statistics
 
     work_runs: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    cost_to: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    cost_to: dict[str, list[tuple[str, float, bool]]] = defaultdict(list)
     revises: dict[str, list[str]] = defaultdict(list)
     first_dispatch: dict[str, str] = {}
     first_review: dict[str, dict[str, Any]] = {}
@@ -713,7 +713,9 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
         if not t or t not in tasks:
             continue
         if k == "run_finished":
-            cost_to[t].append((at, float(e.get("cost_usd") or 0.0)))
+            price = e.get("cost_usd")
+            priced = isinstance(price, (int, float)) and not isinstance(price, bool)
+            cost_to[t].append((at, float(price) if priced else 0.0, priced))
             if e.get("mode") in WORK_MODES and e.get("model"):
                 work_runs[t].append((at, str(e["model"])))
         elif k == "dispatch":
@@ -724,19 +726,21 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
             first_review.setdefault(t, e)
         elif k == "transition" and e.get("to") == "done":
             done_at[t] = at
-    samples: dict[str, dict[str, dict[str, list[float]]]] = {
+    samples: dict[str, dict[str, dict[str, list[tuple[float, bool]]]]] = {
         key: {d: defaultdict(list) for d in DIFFICULTIES} for key, *_ in DIFFICULTY_MODEL_METRICS}
 
-    def add(metric: str, task_id: str, model: str, value: float) -> None:
+    def add(metric: str, task_id: str, model: str, value: float, *, cost_complete: bool = True) -> None:
         d = getattr(tasks[task_id], "difficulty", "") or "medium"
         if model and d in samples[metric]:
-            samples[metric][d][model].append(value)
+            samples[metric][d][model].append((value, cost_complete))
 
     for t, at in done_at.items():
         if at < since:
             continue
         model = _model_at(work_runs[t], at)
-        add("cost_per_accepted", t, model, sum(c for when, c in cost_to[t] if when <= at))
+        costs = [(cost, priced) for when, cost, priced in cost_to[t] if when <= at]
+        add("cost_per_accepted", t, model, sum(cost for cost, _ in costs),
+            cost_complete=all(priced for _, priced in costs))
         add("revise_rounds", t, model, sum(1 for when in revises[t] if when <= at))
         if t in first_dispatch:
             add("lead_time", t, model, (_ts(at) - _ts(first_dispatch[t])).total_seconds() / 3600)
@@ -746,7 +750,10 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
     for e in events:
         if (e.get("kind") == "run_finished" and e.get("mode") in WORK_MODES and e.get("model")
                 and str(e.get("at") or "") >= since and e.get("task") in tasks):
-            add("work_run_cost", str(e["task"]), str(e["model"]), float(e.get("cost_usd") or 0.0))
+            price = e.get("cost_usd")
+            priced = isinstance(price, (int, float)) and not isinstance(price, bool)
+            add("work_run_cost", str(e["task"]), str(e["model"]), float(price) if priced else 0.0,
+                cost_complete=priced)
 
     weight: dict[str, int] = defaultdict(int)
     for by_d in samples.values():
@@ -759,10 +766,13 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
         rows: dict[str, dict[str, dict[str, Any]]] = {}
         for d in DIFFICULTIES:
             cells = {}
-            for model, vals in samples[key][d].items():
+            for model, values in samples[key][d].items():
+                vals = [value for value, _ in values]
                 value = statistics.median(vals) if key == "lead_time" else sum(vals) / len(vals)
                 cells[model] = {"value": round(value, 3), "n": len(vals), "thin": len(vals) < THIN_SAMPLE,
                                 "rank": None, "best": False, "worst": False}
+                if key in ("cost_per_accepted", "work_run_cost"):
+                    cells[model]["cost_complete"] = all(priced for _, priced in values)
             _rank_row(cells, better)
             rows[d] = cells
         tables.append({"key": key, "label": label, "unit": unit, "better": better, "n_unit": n_unit, "rows": rows})
