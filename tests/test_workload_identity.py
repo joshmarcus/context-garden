@@ -149,6 +149,23 @@ def test_supervisor_redacts_local_run_records_before_completion(tmp_path, monkey
         assert (tmp_path / name).read_text() == f"prefix <redacted> in {name}"
 
 
+def test_atomic_final_replacement_is_redacted_before_publication(tmp_path):
+    from garden.run_supervisor import _FinalOutput
+
+    raw = tmp_path / ".final.raw"
+    final = tmp_path / "final.md"
+    os.mkfifo(raw, 0o600)
+    collector = _FinalOutput(raw, final, AuthorityRedactor(("synthetic-secret",)))
+    replacement = tmp_path / "replacement"
+    replacement.write_text("result synthetic-secret")
+    replacement.replace(raw)
+
+    collector.finish()
+
+    assert final.read_text() == "result <redacted>"
+    assert not raw.exists()
+
+
 def test_running_supervisor_streams_redacted_output_and_fails_on_rotated_renewal(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

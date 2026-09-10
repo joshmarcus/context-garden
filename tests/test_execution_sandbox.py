@@ -195,17 +195,16 @@ def test_sandboxed_codex_result_uses_narrow_output_root(
     assert output.parent in [Path(path) for path in payload["writable_roots"]]
     assert str(run_dir) not in payload["writable_roots"]
     assert str(tmp_path / "controller") in payload["protected_roots"]
-    assert str(output) in argv[-1]
+    assert str(output) not in argv
 
 
 def test_trusted_supervisor_publishes_sandboxed_codex_result(
         tmp_path: Path, sandbox_wrapper: Path):
     agent = tmp_path / "codex"
     agent.write_text("""#!/usr/bin/env python3
-import pathlib, sys
-args = sys.argv[1:]
-pathlib.Path(args[args.index('--output-last-message') + 1]).write_text('sandbox result')
+import json, sys
 sys.stdin.read()
+print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'sandbox result'}}))
 """)
     agent.chmod(agent.stat().st_mode | stat.S_IXUSR)
     worktree = tmp_path / "worktree"
@@ -220,8 +219,6 @@ sys.stdin.read()
         {"timeout_minutes": 0, "sandbox": {"required": True, "command": [str(sandbox_wrapper)]}},
         Harness("codex", {"bin": str(agent)}),
     )
-    output = runner.harness_output_path(run, worktree)
-
     env = dict(os.environ)
     for name in (
         "GARDEN_EXECUTION_RUN_DIR", "GARDEN_EXECUTION_OWNER", "GARDEN_HEAVY_EXECUTION",
@@ -233,12 +230,11 @@ sys.stdin.read()
     os.waitpid(run.pid, 0)
 
     assert run.read_exit_code() == 0
-    assert (run_dir / "final.md").read_text() == "sandbox result"
+    assert runner.collect(run)["final_text"] == "sandbox result"
     command = (run_dir / "command.txt").read_text()
-    assert f"--output-last-message {output}" in command
-    # The sandbox can write only its narrow output root.  The trusted supervisor reads that
-    # FIFO and publishes the result into the protected controller record; the worker command
-    # never receives a controller-owned copy operation.
+    assert "--output-last-message" not in command
+    # Structured stdout crosses the trusted redaction boundary; the worker command never
+    # receives a controller-owned output path or copy operation.
     assert " cp " not in command
     assert str(run_dir / "final.md") not in command
 

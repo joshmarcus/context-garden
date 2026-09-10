@@ -861,6 +861,66 @@ def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path
     assert (tmp_path / "heavy.txt").read_text() == "0 1"
 
 
+@pytest.mark.parametrize("writer, expected_code", [
+    ("fifo", 0), ("replace", 0), ("empty", 0), ("none", 0), ("failed", 9),
+])
+def test_supervisor_collects_final_path_without_blocking(tmp_path, writer, expected_code):
+    """FIFO completion variants are deterministic because the reader exists before launch."""
+    run_dir = tmp_path / writer
+    run_dir.mkdir()
+    raw = run_dir / ".final.raw"
+    final = run_dir / "final.md"
+    env = _standalone_supervisor_env(
+        GARDEN_RAW_FINAL_PATH=str(raw), GARDEN_FINAL_PATH=str(final),
+    )
+    payload = "final evidence"
+    scripts = {
+        "fifo": f"printf %s {shlex.quote(payload)} > {shlex.quote(str(raw))}",
+        "replace": (
+            f"printf %s {shlex.quote(payload)} > {shlex.quote(str(raw) + '.new')} && "
+            f"mv {shlex.quote(str(raw) + '.new')} {shlex.quote(str(raw))}"
+        ),
+        "empty": f": > {shlex.quote(str(raw))}",
+        "none": "exit 0",
+        "failed": "exit 9",
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), scripts[writer]],
+        env=env, capture_output=True, text=True, timeout=3,
+    )
+
+    assert result.returncode == expected_code
+    assert (run_dir / "exit_code").read_text() == str(expected_code)
+    assert final.read_text() == (payload if writer in {"fifo", "replace"} else "")
+    assert not raw.exists()
+
+
+def test_supervisor_drains_final_held_by_descendant_and_keeps_child_failure(tmp_path):
+    run_dir = tmp_path / "descendant"
+    run_dir.mkdir()
+    raw = run_dir / ".final.raw"
+    final = run_dir / "final.md"
+    env = _standalone_supervisor_env(
+        GARDEN_RAW_FINAL_PATH=str(raw), GARDEN_FINAL_PATH=str(final),
+    )
+    writer = tmp_path / "writer.py"
+    writer.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text('descendant final')\n"
+    )
+    script = f"{shlex.quote(sys.executable)} {shlex.quote(str(writer))} {shlex.quote(str(raw))} & exit 7"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), script],
+        env=env, capture_output=True, text=True, timeout=3,
+    )
+
+    assert result.returncode == 7
+    assert (run_dir / "exit_code").read_text() == "7"
+    assert final.read_text() == "descendant final"
+
+
 def test_two_supported_pytest_launches_share_one_real_workload_slot(tmp_path):
     """A real focused pytest target runs once while the other supported launch waits."""
     from garden.harness import Harness
