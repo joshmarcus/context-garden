@@ -1485,6 +1485,32 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     payload = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy", "medium", "hard"]}, headers=auth).json()
     assert payload["repo"].endswith("remote.git")
 
+    # A standalone scheduler process takes its observation before the authenticated
+    # finish, then attempts the obsolete lifecycle write after finish commits.
+    stale_ready = tmp_path / "stale-ready"
+    stale_release = tmp_path / "stale-release"
+    stale_writer = subprocess.Popen([
+        sys.executable, "-c",
+        """
+import sys, time
+from pathlib import Path
+from garden.runs import Run
+run = Run.load(Path(sys.argv[1]))
+Path(sys.argv[2]).write_text("ready")
+while not Path(sys.argv[3]).exists():
+    time.sleep(0.01)
+run.status = "failed"
+run.error = "no commits pushed"
+run.save()
+""",
+        str(RunStore(store.config.garden_dir).latest("DM-001").path),
+        str(stale_ready), str(stale_release),
+    ])
+    deadline = time.monotonic() + 5
+    while not stale_ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert stale_ready.exists()
+
     class PostingClient:
         def post(self, path, body):
             response = client.post(path, json=body, headers=auth)
@@ -1492,8 +1518,11 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
     execute_claim(payload, tmp_path / "independent-host", PostingClient())
+    stale_release.write_text("save")
+    assert stale_writer.wait(timeout=5) == 0
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.process_finished() and saved.pushed_head
+    assert saved.status == "running" and not saved.error
     assert (tmp_path / "independent-host" / "repos" / "DM-001" / ".git").exists()
     assert (saved.path / "remote_result.json").exists()
     assert saved.stdout_text(), "the completed harness transcript is uploaded"

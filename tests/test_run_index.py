@@ -113,6 +113,33 @@ def test_obsolete_finish_cannot_cross_reclaimed_lease_generation(tmp_path: Path)
         obsolete.save()
 
 
+def test_three_way_save_preserves_concurrent_scheduler_lifecycle_state(tmp_path: Path):
+    run = RunStore(tmp_path).new_run("CG-001", "remote", run_id="lifecycle-race")
+    stale = Run.load(run.path)
+    completed = Run.load(run.path)
+    completed.status = "done"
+    completed.finished_at = "2026-01-01T00:02:00+00:00"
+    completed.result = {"status": "done", "summary": "original"}
+    completed.usage = {"input_tokens": 17}
+    completed.cost_usd = 0.25
+    completed.completion_attempts = [{"status": "accepted"}]
+    completed.recovery_artifacts = [{"name": "saved-work", "sha": "abc123"}]
+    completed.save()
+
+    stale.diff_stat = "one file changed"
+    stale.save()
+
+    saved = Run.load(run.path)
+    assert saved.status == "done"
+    assert saved.finished_at == completed.finished_at
+    assert saved.result == completed.result
+    assert saved.usage == completed.usage
+    assert saved.cost_usd == completed.cost_usd
+    assert saved.completion_attempts == completed.completion_attempts
+    assert saved.recovery_artifacts == completed.recovery_artifacts
+    assert saved.diff_stat == "one file changed"
+
+
 def test_archive_round_trip_preserves_summary_and_artifacts(tmp_path: Path):
     rs = RunStore(tmp_path)
     run = _finished(rs, "CG-001", "20260101T000000Z-work", 3.25)
