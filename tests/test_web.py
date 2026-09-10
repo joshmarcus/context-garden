@@ -551,7 +551,7 @@ def test_inbox_journey_separates_automated_deferred_and_operator_work(garden):
     assert "Deferred work" in page.text and "View freeze policy" in page.text
     assert "Deployment prerequisite" in page.text
     assert "Operator recovery: Deployment prerequisite" in page.text
-    assert "Deployment completed, resume" in page.text
+    assert "Deployment completed — continue" in page.text
     assert "set-status DM-001 done" not in page.text
 
 
@@ -1268,7 +1268,8 @@ def test_terminal_check_card_uses_guarded_recovery_not_plain_resume(garden):
     state = State(store.config.garden_dir / "state.json")
     state.get(task.id)["needs_human"] = {"kind": "check_did_not_run", "run": "terminal-check",
                                            "reason": "check did not run"}
-    state.get(task.id)["recovery_check"] = {"run": "terminal-check", "stage": "ci"}
+    state.get(task.id)["recovery_check"] = {
+        "run": "terminal-check", "stage": "ci", "source_head": "current-head"}
     state.get(task.id)["checks"] = "SUCCESS"
     state.save()
 
@@ -1802,7 +1803,7 @@ def test_failed_worker_decision_card_keeps_evidence_and_actions_separate(garden)
 
     inbox = client(garden).get("/").text
     card = inbox[inbox.index('<div class="item'):inbox.index("</section>", inbox.index('<div class="item'))]
-    assert run.run_id in card and "Continue the loop" in card and "Open PR" in card
+    assert run.run_id in card and "Send failure to the worker" in card and "Open PR" in card
     assert card.index('class="what decision-content"') < card.index('class="decision-evidence"')
     assert card.index('class="decision-evidence"') < card.index('class="card-actions decision-actions"')
     assert 'class="decision-action"' in card

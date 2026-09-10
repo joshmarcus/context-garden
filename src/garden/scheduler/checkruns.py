@@ -22,7 +22,8 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import required_evidence
-from ..model import Status, Task, now_iso
+from ..github import GitHubError
+from ..model import Status, Task, ensure_open, now_iso
 from ..preflight import _is_ui_path as _is_preflight_ui_path
 from ..preflight import capture_infrastructure_reason, mechanical_results
 from ..review import validation_plan, visual_source_digest
@@ -46,6 +47,33 @@ class CheckRunMixin:
     # ---- dispatch / reap ---------------------------------------------------
     def _run_by_id(self, task: Task, run_id: str) -> Run | None:
         return next((r for r in self.runs.runs_for(task.id) if r.run_id == run_id), None)
+
+    def _require_current_success_head(self, task: Task, expected_head: str) -> None:
+        """Fail closed before treating cached successful PR checks as current."""
+        if not expected_head:
+            raise RuntimeError(
+                f"{task.id} successful check has no recorded source head; its stop was not cleared"
+            )
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if not self.github.available or not slug or not number:
+            raise RuntimeError(
+                f"{task.id} current PR head could not be established; its check stop was not cleared"
+            )
+        try:
+            current_head = str(self.github.get_pr(slug, number).head_sha or "")
+        except (GitHubError, KeyError, OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"{task.id} current PR head could not be established; its check stop was not cleared"
+            ) from exc
+        if not current_head:
+            raise RuntimeError(
+                f"{task.id} current PR head could not be established; its check stop was not cleared"
+            )
+        if expected_head != current_head:
+            raise RuntimeError(
+                f"{task.id} moved to a different PR head; its successful check stop was not cleared"
+            )
 
     def _pre_pr_cont(self, worker_run: Run | None, worktree: Path, branch: str, base: str, cost: str,
                      diff_h: str | None = None, body_h: str | None = None, stalled: bool = False) -> dict[str, Any]:
@@ -167,6 +195,7 @@ class CheckRunMixin:
 
     def recover_waiting_check(self, task: Task, rep: TickReport | None = None) -> str:
         """Atomically recover a stale check stop without disturbing a live continuation."""
+        ensure_open(task)
         with self.tick_lock():
             # Actions and tests can have just changed their scheduler-local State.  Its
             # dirty-key merge preserves concurrent keys before this recovery reloads the
@@ -226,12 +255,20 @@ class CheckRunMixin:
                 return (f"recovery check {recovery_run_id} does not match stopped check {stopped_run_id}; "
                         "left both continuations untouched")
 
-            st.pop("check_run", None)
-            st.pop("needs_human", None)
-            st.pop("recovery_check", None)
             failed_checks = [str(name) for name in st.get("failed_checks") or [] if str(name)]
             ci_failed = str(st.get("checks") or "").upper() == "FAILURE"
             feedback = str(st.get("pending_feedback") or "").strip()
+            if task.pr and not (feedback or ci_failed or failed_checks):
+                # A task's observed head is mutable polling state and cannot prove which
+                # source the stopped check actually validated.  Prefer the parked
+                # continuation, with the immutable run record as the legacy fallback;
+                # if neither recorded a source, successful recovery must fail closed.
+                expected_head = str(recovery.get("source_head") or run.source_head or "")
+                self._require_current_success_head(task, expected_head)
+
+            st.pop("check_run", None)
+            st.pop("needs_human", None)
+            st.pop("recovery_check", None)
             if feedback or ci_failed or failed_checks:
                 if not feedback:
                     names = ", ".join(failed_checks) or "unknown"
@@ -255,10 +292,23 @@ class CheckRunMixin:
             self.state.save()
             return outcome
 
-        if not run_id and task.status != Status.WAITING_HUMAN:
+        if (not run_id and task.status != Status.WAITING_HUMAN
+                and stop_info.get("kind") != "check_did_not_run"):
             return "no check recovery is needed"
 
+        if any(run.task_id == task.id for run in self.runs.active()):
+            raise RuntimeError(f"{task.id} has active work; stale recovery was not applied")
+        if (task.pr and str(st.get("checks") or "").upper() == "SUCCESS"
+                and not st.get("pending_feedback") and not st.get("failed_checks")):
+            # ``head_sha`` is refreshed by PR polling and therefore cannot identify
+            # the source that produced a cached check result.  Only the parked check
+            # continuation carries immutable provenance for this legacy no-run path.
+            self._require_current_success_head(task, str(recovery.get("source_head") or ""))
         st.pop("check_run", None)
+        stop = st.get("needs_human") or {}
+        if isinstance(stop, dict) and stop.get("kind") == "check_did_not_run":
+            st.pop("needs_human", None)
+            st.pop("recovery_check", None)
         if st.get("question") or st.get("decision"):
             status = Status.WAITING_HUMAN
         elif st.get("pending_feedback"):
@@ -521,7 +571,7 @@ class CheckRunMixin:
         self.state.get(task.id)["recovery_check"] = {
             "stage": stage, "cont": cont, "specs": specs, "retries": retries,
             "run": run.run_id, "cause": cause, "backend": backend or run.runner,
-            "provenance": provenance,
+            "provenance": provenance, "source_head": run.source_head,
         }
         self._set_needs_human(task, "check_did_not_run", note, run=run.run_id, cause=cause, stage=stage,
                               delegated_recovery=bool(self.cfg.get("recovery.delegated", False)))

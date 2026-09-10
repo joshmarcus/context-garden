@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from garden import gitops
-from garden.github import GitHubError
+from garden.github import GitHubError, PRInfo
 from garden.model import Status, now_iso
 from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
@@ -858,10 +858,14 @@ def test_delegated_check_recovery_keeps_stop_when_resource_admission_defers(sche
     task.status = Status.IN_REVIEW
     task.pr = "https://example.com/pull/101"
     sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="current-head"
+    )
     st = sched.state.get(task.id)
     st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out",
                          "delegated_recovery": True}
-    st["recovery_check"] = {"stage": "ci", "specs": [{"name": "unit", "command": "true"}],
+    st["recovery_check"] = {"stage": "ci", "source_head": "current-head",
+                            "specs": [{"name": "unit", "command": "true"}],
                             "cont": {"worktree": str(sched.worktree_for(task)), "branch": "garden/test", "base": "main"}}
     monkeypatch.setattr(sched, "_dispatch_check_run", lambda *_a, **_k: (_ for _ in ()).throw(ResourcePressureError("full")))
 
@@ -869,6 +873,74 @@ def test_delegated_check_recovery_keeps_stop_when_resource_admission_defers(sche
         sched.delegate_recovery(task)
     assert st["needs_human"]["kind"] == "check_did_not_run"
     assert not st.get("delegated_recovery_fingerprints")
+
+
+def test_interrupted_check_recovery_is_bounded_without_product_delegation(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="current-head"
+    )
+    st = sched.state.get(task.id)
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out twice"}
+    st["recovery_check"] = {"stage": "ci", "source_head": "current-head",
+                            "specs": [{"name": "unit", "command": "true"}],
+                            "cont": {"worktree": str(sched.worktree_for(task)), "branch": "garden/test", "base": "main"}}
+    launches = []
+    monkeypatch.setattr(sched, "_dispatch_check_run", lambda *args, **kwargs: launches.append((args, kwargs)))
+
+    assert sched.delegate_recovery(task) == "one preserved check continuation queued"
+    assert len(launches) == 1
+    assert not st.get("needs_human") and not st.get("recovery_check")
+    assert st.get("delegated_recovery_fingerprints")
+
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out twice"}
+    st["recovery_check"] = {"stage": "ci", "source_head": "current-head",
+                            "specs": [{"name": "unit", "command": "true"}],
+                            "cont": {"worktree": str(sched.worktree_for(task)), "branch": "garden/test", "base": "main"}}
+    with pytest.raises(RuntimeError, match="unchanged recovery"):
+        sched.delegate_recovery(task)
+
+
+def test_interrupted_check_recovery_refuses_a_new_pr_head(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="new-head"
+    )
+    st = sched.state.get(task.id)
+    st["head_sha"] = "old-head"
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out twice"}
+    st["recovery_check"] = {"stage": "ci", "source_head": "old-head",
+                            "specs": [{"name": "unit", "command": "true"}], "cont": {}}
+
+    with pytest.raises(RuntimeError, match="different PR head"):
+        sched.delegate_recovery(task)
+
+    assert st.get("needs_human") and st.get("recovery_check")
+
+
+def test_interrupted_ci_recovery_fails_closed_without_source_identity(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    sched.store.save(task)
+    sched.github.prs["garden/test"] = PRInfo(
+        number=101, url=task.pr, state="OPEN", head_sha="current-head"
+    )
+    st = sched.state.get(task.id)
+    st["needs_human"] = {"kind": "check_did_not_run", "reason": "timed out twice"}
+    st["recovery_check"] = {"stage": "ci", "specs": [{"name": "unit", "command": "true"}],
+                            "cont": {}}
+
+    with pytest.raises(RuntimeError, match="no recorded source head"):
+        sched.delegate_recovery(task)
+
+    assert st.get("needs_human") and st.get("recovery_check")
 
 
 def test_infrastructure_and_missing_ci_are_operator_actions_not_owner_cards(sched):

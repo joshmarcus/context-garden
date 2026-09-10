@@ -116,6 +116,7 @@
         {% for a in it.actions %}
         <div class="decision-action">
           {% if a.kind == 'resume' %}<form method="post" action="/tasks/{{ it.task }}/resume"><button class="primary">{{ a.label }}</button></form>
+          {% elif a.kind == 'recover' %}<form method="post" action="/tasks/{{ it.task }}/recover"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'review-again' %}<form method="post" action="/tasks/{{ it.task }}/review"><button class="primary">{{ a.label }}</button></form>
           {% elif a.kind == 'retry' %}<form method="post" action="/tasks/{{ it.task }}/retry"><button>{{ a.label }}</button></form>
           {% elif a.kind == 'troubled-continue' %}<form method="post" action="/tasks/{{ it.task }}/troubled-continue"><button class="primary">{{ a.label }}</button></form>

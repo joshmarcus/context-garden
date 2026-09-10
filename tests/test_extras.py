@@ -191,6 +191,8 @@ def test_ci_checks_feed_revise_and_flaky_rerun(sched, fake_github, tmp_path, mon
     monkeypatch.setenv("FAKE_CI_MODE", "flaky")
     pr.updated_at, pr.checks, pr.failed_checks = "t2", "FAILURE", ["build"]
     dispatched = set(sched.tick().dispatched)  # poll starts the CI check run
+    ci_run = next(r for r in sched.runs.runs_for("DM-001") if r.mode == "check")
+    assert ci_run.source_head == pr.head_sha
     rep = sched.tick()  # reap it: flaky -> rerun
     dispatched |= set(rep.dispatched)
     assert rerun_file.read_text().strip() == "rerun"
