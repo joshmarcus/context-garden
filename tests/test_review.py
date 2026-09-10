@@ -1623,6 +1623,44 @@ def test_out_of_scope_limitation_is_visible_but_does_not_block_cg430_shape(tmp_p
     assert "September 8 launch failures" in review_to_markdown(review)
 
 
+def test_pending_external_gate_preserves_requirement_without_requesting_author_changes():
+    criterion = {
+        "criterion": "Exact-head CI passes before merge", "met": False,
+        "failure_category": "external_gate", "gate_state": "pending",
+        "reason": "the source-bound validation is still running",
+    }
+    review = enforce_criteria_verdict({
+        "verdict": "request_changes", "criteria": [criterion], "findings": [],
+    })
+
+    assert review["verdict"] == "approve"
+    assert review["criteria"] == [criterion]
+    assert "⏳ Exact-head CI passes before merge" in review_to_markdown(review)
+
+
+@pytest.mark.parametrize("category,state", [
+    ("implementation", ""),
+    ("external_gate", "failure"),
+    ("external_gate", ""),
+])
+def test_real_or_untyped_failure_remains_actionable(category, state):
+    criterion = {
+        "criterion": "Required behavior works", "met": False,
+        "failure_category": category,
+    }
+    if state:
+        criterion["gate_state"] = state
+
+    review = enforce_criteria_verdict({
+        "verdict": "approve", "criteria": [criterion], "findings": [],
+    })
+
+    assert review["verdict"] == "request_changes"
+    assert review_implementation_failure_signal(review) == (
+        "unmet_acceptance_criteria" if category == "implementation" else ""
+    )
+
+
 def test_second_review_dispatch_supersedes_the_first(sched, fake_github):
     """CG-144: dispatching a second review while the first is still `running` (a person
     pressed "one more review", or the poll re-reviewed a fresh push) closes the first as
