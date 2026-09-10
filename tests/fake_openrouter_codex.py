@@ -6,6 +6,21 @@ import json
 import os
 import sys
 import urllib.request
+from pathlib import Path
+
+
+def ancestor_environments() -> list[bytes]:
+    """Read every available Linux ancestor environment for credential-isolation coverage."""
+    environments = []
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            environments.append(Path(f"/proc/{pid}/environ").read_bytes())
+            fields = Path(f"/proc/{pid}/stat").read_text().split()
+            pid = int(fields[3])
+        except (OSError, ValueError, IndexError):
+            break
+    return environments
 
 
 def config(args: list[str], name: str) -> str:
@@ -17,6 +32,8 @@ def config(args: list[str], name: str) -> str:
 args = sys.argv[1:]
 if os.environ.get("OPENROUTER_API_KEY") != "garden-local-openrouter-proxy":
     raise SystemExit("provider key leaked to Codex child")
+if any(b"offline-test-key" in environment for environment in ancestor_environments()):
+    raise SystemExit("provider key leaked through a Codex ancestor environment")
 base_url = config(args, "model_providers.openrouter.base_url")
 model = args[args.index("-m") + 1]
 request = urllib.request.Request(f"{base_url}/responses",

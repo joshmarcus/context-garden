@@ -407,9 +407,14 @@ def _execution_timeout_seconds() -> float | None:
 
 
 def _preserved_child_fds() -> tuple[int, ...]:
-    """Return worker-owned lock descriptors that must follow the author process tree."""
+    """Return private descriptors that must reach their intended workload process."""
     descriptors = []
-    for raw in os.environ.get("GARDEN_PRESERVE_FDS", "").split(","):
+    configured = os.environ.get("GARDEN_PRESERVE_FDS", "").split(",")
+    # An OpenRouter credential is consumed and closed by its adapter.  Passing the
+    # descriptor through the supervisor avoids ever materialising the secret in an
+    # ancestor environment; the adapter closes it before starting Codex.
+    configured.append(os.environ.get("GARDEN_HARNESS_API_KEY_FD", ""))
+    for raw in configured:
         if not raw.strip():
             continue
         try:
@@ -499,27 +504,6 @@ def _run_setup(run_dir: Path) -> bool:
     return True
 
 
-def _harness_environment() -> dict[str, str]:
-    """Return the child-only environment, admitting a piped provider credential.
-
-    The descriptor is deliberately consumed after setup. Python subprocesses close it by
-    default, so neither setup nor the harness can recover the transport capability itself.
-    """
-    env = dict(os.environ)
-    raw_fd = env.pop("GARDEN_HARNESS_API_KEY_FD", "")
-    name = env.pop("GARDEN_HARNESS_API_KEY_NAME", "")
-    if not raw_fd or not name:
-        return env
-    fd = int(raw_fd)
-    try:
-        value = os.read(fd, 1024 * 1024).decode()
-    finally:
-        os.close(fd)
-    if value:
-        env[name] = value
-    return env
-
-
 def main() -> int:
     if len(sys.argv) != 3:
         return 2
@@ -581,7 +565,7 @@ def main() -> int:
     # that deliberately create another session; other POSIX kernels provide no equivalent.
     child = subprocess.Popen(
         ["sh", "-c", script],
-        env=_harness_environment(),
+        env=dict(os.environ),
         pass_fds=_preserved_child_fds(),
         start_new_session=True,
     )
