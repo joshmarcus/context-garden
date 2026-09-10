@@ -66,7 +66,7 @@ def test_phase_fixed_tokens_measured_once_per_phase(garden):
     assert phase_fixed_tokens(store, []) == 0
 
 
-def test_brief_oversized_reading_is_referenced(garden):
+def test_brief_labels_oversized_garden_reading_as_controller_owned(garden):
     store = Store(garden)
     big = garden / "demo" / "p1" / "specs" / "big.md"
     big.write_text("x" * 30000)
@@ -74,11 +74,42 @@ def test_brief_oversized_reading_is_referenced(garden):
     t.reading.append("demo/p1/specs/big.md")
     t.reading.append("demo/p1/specs/nope.md")
     b = build_brief(store, t)
-    assert "demo/p1/specs/big.md" in b.referenced
-    assert "Reading list (read these)" in b.text
+    assert "demo/p1/specs/big.md" in b.controller_owned
+    assert "demo/p1/specs/big.md" not in b.referenced
+    assert "## Controller-owned references" in b.text
+    assert "do not try to read these paths from the checkout" in b.text
     assert b.missing == ["demo/p1/specs/nope.md"]
     assert "`demo/p1/specs/nope.md`" not in b.referenced
     assert "## Brief gaps" in b.text
+
+
+def test_brief_keeps_oversized_product_reading_checkout_readable(garden, tmp_path):
+    from tests.conftest import git
+
+    repo = tmp_path / "product"
+    repo.mkdir()
+    git("init", "-q", "-b", "main", cwd=repo)
+    git("config", "user.email", "test@example.com", cwd=repo)
+    git("config", "user.name", "Test", cwd=repo)
+    source = repo / "src" / "large.py"
+    source.parent.mkdir()
+    source.write_text("x" * 30000)
+    git("add", ".", cwd=repo)
+    git("commit", "-qm", "add product source", cwd=repo)
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"]["demo"]["repo"] = str(repo)
+    config_path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.reading = ["src/large.py"]
+
+    brief = build_brief(store, task, base="main")
+
+    assert brief.referenced == ["src/large.py"]
+    assert brief.controller_owned == []
+    assert "## Reading list (read from the checkout)" in brief.text
 
 
 def test_brief_directory_reading(garden):
@@ -206,7 +237,7 @@ def test_brief_never_names_the_garden_root(garden):
     text = build_brief(store, task).text
     assert str(garden) not in text
     assert "context garden root" not in text
-    assert "relative to your current directory" in text
+    assert "not in your checkout" in text
     assert "Work only in the directory you were started in" in text
 
 

@@ -149,7 +149,9 @@ def test_design_context_is_run_scoped_and_referenced_without_dirtying_checkout(s
 
     context = run.path / "design-context.json"
     assert context.exists()
-    assert str(context) in (run.path / "brief.md").read_text()
+    brief = (run.path / "brief.md").read_text()
+    assert str(context) in brief
+    assert "controller-owned file is not in your checkout" in brief
     assert (Path(run.worktree) / "docs" / "design" / "snapshot.json").read_text() == '{"curated": true}\n'
     assert subprocess.run(
         ["git", "status", "--porcelain"], cwd=run.worktree, capture_output=True, text=True, check=True,
