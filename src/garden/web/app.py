@@ -37,6 +37,7 @@ from ..plants import (
 from ..runs import HistoryUnavailable
 from ..store import Store
 from . import actions, pages
+from .access import loopback_listener, route_access
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
 from .trust import OriginCheck, safe_json, server_origins
 
@@ -69,10 +70,22 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
               for h in (store.config.get("workers.hosts") or [])]
     from ..hosts.registry import authenticate_worker, worker_configuration
 
+    operator_env = str(store.config.get("web.operator_token_env") or "")
+    operator_token = os.environ.get(operator_env, "") if operator_env else ""
+    require_operator_auth = not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
+    if require_operator_auth and not operator_token:
+        raise RuntimeError(
+            "operator authentication is required for this listener; set web.operator_token_env "
+            "to an environment variable containing its bearer token"
+        )
+    if operator_token and authenticate_worker(worker_configuration(store.config), operator_token) is not None:
+        raise RuntimeError("operator and worker credentials must be different")
+
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
         worker_authenticator=lambda token: authenticate_worker(
             worker_configuration(store.config), token) is not None,
+        operator_token=operator_token, require_operator_auth=require_operator_auth,
     )
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
@@ -152,6 +165,20 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     site = Site(hub, templates, plates)
     pages.register(app, site)
     actions.register(app, site)
+
+    # Make route additions fail at construction until their authority is selected in the
+    # single policy inventory. FastAPI supplies HEAD alongside GET; the GET classification
+    # covers both. A mounted static application is audited as one route.
+    for route in app.routes:
+        path = str(getattr(route, "path", ""))
+        methods = getattr(route, "methods", None)
+        if methods is None:
+            route_access("MOUNT", path)
+            continue
+        for method in methods:
+            if method == "HEAD" and "GET" in methods:
+                continue
+            route_access(str(method), path)
 
     @app.exception_handler(HistoryUnavailable)
     async def unavailable_history_page(_request: Request, exc: HistoryUnavailable) -> PlainTextResponse:

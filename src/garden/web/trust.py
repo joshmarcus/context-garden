@@ -7,11 +7,14 @@ markdown to an allowlist of tags and attributes with safe link targets, so nothi
 worker or a commenter wrote can run script in the person's browser. `safe_json` makes a
 JSON blob safe to inline in an attribute or a script.
 
-Every state-changing route is a plain form POST with no token, and the server listens on
-localhost, so a page on any site could post a form at it from the person's browser.
+In local-only development, state-changing routes are plain form POSTs without operator
+credentials, so a page on any site could post a form at them from the person's browser.
 `OriginCheck` refuses a POST whose `Origin` (or, failing that, `Referer`) is not an
 allowed origin: the origins the server binds to (`server_origins`) plus `web.trusted_origins`.
-The request's own `Host` header is never consulted — a page whose name was rebound to the
+On an exposed listener, a distinct configured bearer token protects every operator route,
+including reads, before this browser-origin check runs. Worker bearer tokens apply only to
+the three worker protocol operations. The request's own `Host` and forwarded headers are
+never consulted — a page whose name was rebound to the
 loopback address carries the attacker's own `Origin`, which is not an allowed one, so the
 POST is refused even though `Host` and `Origin` agree. A request with neither header is not
 a browser's and is let through: there is no ambient credential to forge with.
@@ -22,6 +25,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import secrets
 from collections.abc import Callable, Iterable
 from html.parser import HTMLParser
 from typing import Any
@@ -30,6 +34,8 @@ from urllib.parse import urlsplit
 from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from .access import OPERATOR_MUTATION, OPERATOR_READ, WORKER_PROTOCOL, request_access
 
 
 def safe_relative_path(value: str) -> str:
@@ -211,28 +217,52 @@ class OriginCheck:
     """ASGI middleware: refuse a POST (or any unsafe method) whose Origin/Referer is not an allowed origin."""
 
     def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = (), worker_tokens: Iterable[str] = (),
-                 worker_authenticator: Callable[[str], bool] | None = None):
+                 worker_authenticator: Callable[[str], bool] | None = None, operator_token: str = "",
+                 require_operator_auth: bool = False):
         self.app = app
         self.allowed = [str(o) for o in allowed_origins]
         self.worker_tokens = {str(t) for t in worker_tokens if t}
         self.worker_authenticator = worker_authenticator
+        self.operator_token = operator_token
+        self.require_operator_auth = require_operator_auth
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and str(scope.get("method", "GET")).upper() not in SAFE_METHODS:
+        if scope["type"] == "http":
+            method = str(scope.get("method", "GET")).upper()
+            path = str(scope.get("path", ""))
             headers = Headers(scope=scope)
             auth = headers.get("authorization") or ""
-            token_ok = auth.startswith("Bearer ") and auth[7:] in self.worker_tokens
-            if (not token_ok and auth.startswith("Bearer ") and self.worker_authenticator
-                    and str(scope.get("path", "")).startswith("/api/runs/")):
+            supplied = auth[7:] if auth.startswith("Bearer ") else ""
+            worker_ok = bool(supplied) and any(
+                secrets.compare_digest(supplied, token) for token in self.worker_tokens
+            )
+            if (not worker_ok and supplied and self.worker_authenticator and path.startswith("/api/runs/")):
                 try:
-                    token_ok = self.worker_authenticator(auth[7:])
+                    worker_ok = self.worker_authenticator(supplied)
                 except (OSError, TypeError, ValueError):
-                    token_ok = False
-            if str(scope.get("path", "")).startswith("/api/runs/") and token_ok:
-                await self.app(scope, receive, send)
+                    worker_ok = False
+            operator_ok = bool(supplied and self.operator_token) and secrets.compare_digest(
+                supplied, self.operator_token
+            )
+            access = request_access(method, path)
+            if access == WORKER_PROTOCOL and not worker_ok:
+                # Preserve browser CSRF diagnostics at worker ingress too. A real worker
+                # has no Origin and must still authenticate; an untrusted browser origin
+                # is rejected independently before credentials are discussed.
+                problem = origin_problem(headers, self.allowed)
+                if problem:
+                    await PlainTextResponse(problem, status_code=403)(scope, receive, send)
+                    return
+                status = 401 if not auth else 403
+                await PlainTextResponse("worker authentication required", status_code=status)(scope, receive, send)
                 return
-            problem = origin_problem(headers, self.allowed)
-            if problem:
-                await PlainTextResponse(problem, status_code=403)(scope, receive, send)
+            if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth and not operator_ok:
+                status = 401 if not auth else 403
+                await PlainTextResponse("operator authentication required", status_code=status)(scope, receive, send)
                 return
+            if access == OPERATOR_MUTATION:
+                problem = origin_problem(headers, self.allowed)
+                if problem:
+                    await PlainTextResponse(problem, status_code=403)(scope, receive, send)
+                    return
         await self.app(scope, receive, send)
