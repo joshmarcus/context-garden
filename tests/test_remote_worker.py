@@ -18,6 +18,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden import gitops, managed_worker
+from garden.ci_status import worker_check_status
 from garden.harness import Harness
 from garden.remote_worker import (
     WorkerRequestError,
@@ -625,7 +626,17 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
                        "validation_receipts": [{"source_sha": "abc", "command": "pytest -q",
                                                 "selection": ["pytest", "-q"], "exit_code": 0,
                                                 "log_location": "/remote/path",
-                                                "durable_execution": {"state": "finished"},
+                                                "durable_execution": {
+                                                    "state": "finished", "slot": 0,
+                                                    "limit": 1, "requested_limit": 1,
+                                                    "pid": 123, "owner_scoped": True,
+                                                    "owner": "run:test",
+                                                    "execution_started_at":
+                                                        "2026-09-10T01:00:00+00:00",
+                                                    "timeout_seconds": 900,
+                                                    "deadline_at":
+                                                        "2026-09-10T01:15:00+00:00",
+                                                },
                                                 "durable_exit_code": 0,
                                                 "durable_stderr": ""}]}, headers=auth)
     assert done.status_code == 200
@@ -635,9 +646,9 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     receipt = json.loads((saved.path / "validations" / "remote-0" / "result.json").read_text())
     assert receipt["source_sha"] == "abc" and receipt["exit_code"] == 0
     assert receipt["log_location"].endswith("validations/remote-0")
-    assert json.loads((saved.path / "validations/remote-0/execution.json").read_text()) == {
-        "state": "finished",
-    }
+    assert json.loads(
+        (saved.path / "validations/remote-0/execution.json").read_text()
+    )["owner"] == "run:test"
     assert (saved.path / "validations/remote-0/exit_code").read_text().strip() == "0"
     assert (saved.path / "validations/remote-0/stderr.log").read_text() == ""
     saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
@@ -1739,9 +1750,21 @@ def test_remote_harness_receives_working_owned_validation(
     assert evidence["owner"] != "wrong-owner"
     assert not (tmp_path / "wrong-run").exists()
     transported = next(saved.path.glob("validations/remote-*/result.json"))
-    assert json.loads((transported.parent / "execution.json").read_text())["state"] == "finished"
+    execution = json.loads((transported.parent / "execution.json").read_text())
+    assert execution["state"] == "finished"
+    assert execution["owner"] and execution["owner_scoped"] is True
+    assert dt.datetime.fromisoformat(execution["deadline_at"]) == (
+        dt.datetime.fromisoformat(execution["execution_started_at"])
+        + dt.timedelta(seconds=execution["timeout_seconds"])
+    )
     assert int((transported.parent / "exit_code").read_text()) == validation_exit
     assert (transported.parent / "stderr.log").exists()
+    transported_receipt = json.loads(transported.read_text())
+    status = worker_check_status(
+        store.config.garden_dir, "DM-001", transported_receipt["source_sha"],
+        {"command": transported_receipt["command"]},
+    )
+    assert status.state == ("success" if validation_exit == 0 else "failure")
 
 def test_worker_renews_short_lease_during_setup_and_check(garden, monkeypatch, tmp_path, fake_github):
     isolated_execution_runtime(tmp_path, monkeypatch)
