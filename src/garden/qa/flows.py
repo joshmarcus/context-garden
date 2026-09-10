@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from threading import Event, Thread
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -49,27 +50,43 @@ class Client:
         """Make a request without allowing it to outlive the containing flow."""
         remaining = self._remaining()
         deadline = self._flow_deadline or time.monotonic() + remaining
+        complete = Event()
+        completed_response: list[httpx.Response] = []
+        read_error: list[Exception] = []
+        active_response: list[httpx.Response] = []
+
+        def read_response() -> None:
+            try:
+                # HTTPX's scalar timeout is an inactivity timeout for each phase, not a
+                # deadline for the whole response.  Read in a separate thread so the
+                # caller can enforce the flow's wall-clock deadline while a response
+                # stream is stalled between chunks.
+                with self.http.stream(method, path, timeout=remaining, **kwargs) as response:
+                    active_response.append(response)
+                    content = b"".join(response.iter_bytes())
+                    completed_response.append(httpx.Response(
+                        response.status_code,
+                        headers=response.headers,
+                        content=content,
+                        request=response.request,
+                        extensions=response.extensions,
+                    ))
+            except Exception as error:
+                read_error.append(error)
+            finally:
+                complete.set()
+
+        Thread(target=read_response, daemon=True).start()
+        if not complete.wait(remaining):
+            if active_response:
+                active_response[0].close()
+            raise FlowFailed("flow deadline expired during request")
         try:
-            # HTTPX's scalar timeout is an inactivity timeout for each phase, not a
-            # deadline for the whole response.  Consume the stream ourselves so a
-            # server sending trickle bytes cannot keep this request alive forever.
-            with self.http.stream(method, path, timeout=remaining, **kwargs) as response:
-                if time.monotonic() >= deadline:
-                    raise FlowFailed("flow deadline expired during request")
-                content = bytearray()
-                for chunk in response.iter_bytes():
-                    content.extend(chunk)
-                    if time.monotonic() >= deadline:
-                        raise FlowFailed("flow deadline expired during request")
-                if time.monotonic() >= deadline:
-                    raise FlowFailed("flow deadline expired during request")
-                return httpx.Response(
-                    response.status_code,
-                    headers=response.headers,
-                    content=bytes(content),
-                    request=response.request,
-                    extensions=response.extensions,
-                )
+            if read_error:
+                raise read_error[0]
+            if time.monotonic() >= deadline:
+                raise FlowFailed("flow deadline expired during request")
+            return completed_response[0]
         except httpx.TimeoutException as e:
             raise FlowFailed(f"flow deadline expired during request: {e}") from e
 

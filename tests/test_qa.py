@@ -5,6 +5,7 @@ with tests/fake_claude.py in its `qa` mode."""
 import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -150,27 +151,30 @@ def test_scripted_client_reports_flow_expiry_during_request(monkeypatch):
         client.close()
 
 
-def test_scripted_client_bounds_a_trickle_response_to_the_flow_deadline():
-    """Periodic response bytes must not extend a flow past its wall-clock budget."""
-    chunks = (b"a", b"b", b"c", b"d")
+def test_scripted_client_bounds_a_stalled_response_read_to_the_flow_deadline():
+    """A response that stalls after one byte cannot outlive the flow deadline."""
+    release = threading.Event()
 
-    class TrickleStream(httpx.SyncByteStream):
+    class StalledStream(httpx.SyncByteStream):
         def __iter__(self):
-            for chunk in chunks:
-                time.sleep(0.05)
-                yield chunk
+            yield b"first"
+            release.wait()
+            yield b"second"
 
     transport = httpx.MockTransport(
-        lambda request: httpx.Response(200, stream=TrickleStream(), request=request)
+        lambda request: httpx.Response(200, stream=StalledStream(), request=request)
     )
-    client = Client("http://example.test", timeout=0.12)
+    client = Client("http://example.test", timeout=0.05)
     client.http.close()
     client.http = httpx.Client(transport=transport, base_url="http://example.test")
     try:
         client.begin_flow()
+        started = time.monotonic()
         with pytest.raises(FlowFailed, match="flow deadline expired during request"):
             client.get("/")
+        assert time.monotonic() - started < 0.15
     finally:
+        release.set()
         client.close()
 
 
