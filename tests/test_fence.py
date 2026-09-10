@@ -16,6 +16,7 @@ from garden import gitops
 from garden.gitops import head_sha
 from garden.harness import Harness
 from garden.inbox import build_inbox
+from garden.scheduler import StateCorruptionError
 from garden.scheduler.report import TickReport
 
 
@@ -166,19 +167,22 @@ def test_worker_writing_garden_yaml_is_caught_by_hash_check_without_git(sched, g
 
 
 def test_worker_writing_state_json_is_caught_and_fails(sched, garden, monkeypatch):
-    """A worker state.json write is detected, attributed and restored at reap."""
+    """Malformed worker output is preserved until an operator deliberately repairs it."""
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_FILE", ".garden/state.json")
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_COMMIT", "0")
 
-    sched.tick()
+    with pytest.raises(StateCorruptionError, match="state is corrupt"):
+        sched.tick()
+
+    corrupt = sched.state.path.read_text()
+    assert corrupt.endswith("\n# edited by a runaway worker\n")
+    sched.state.path.write_text(corrupt.removesuffix("\n# edited by a runaway worker\n"))
+    sched.state.save()  # the failed save retained the scheduler's pending state changes
     sched.tick()
 
     assert sched.store.task("DM-001").status.value == "failed"
-    assert "state.json" in _attention_card(sched, "DM-001")
-    full = sched.state.get("DM-001")["needs_human"]
-    assert "state.json" in full and "reverted" in full.lower()
     assert not sched.github.created
 
 

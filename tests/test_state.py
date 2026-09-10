@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from garden.scheduler import State, _TaskState
+import pytest
+
+from garden.scheduler import State, StateCorruptionError, _TaskState
 
 # ── _TaskState unit tests ──────────────────────────────────────────────────────
 
@@ -126,6 +128,47 @@ def test_task_state_list_append_survives(tmp_path):
 
     final = State(path)
     assert final.get("_aux")["runs"] == [{"run_id": "r1"}]
+
+
+def test_initial_corruption_is_reported_and_preserved(tmp_path):
+    path = tmp_path / "state.json"
+    corrupt = b'{"_control":{"dispatch":"paused"}'
+    path.write_bytes(corrupt)
+
+    with pytest.raises(StateCorruptionError, match=r"state is corrupt.*line 1 column") as exc:
+        State(path)
+
+    assert path.read_bytes() == corrupt
+    assert "Repair it in place or move it aside" in str(exc.value)
+
+
+def test_save_time_corruption_preserves_disk_and_pending_changes(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text('{"_control":{"dispatch":"paused"}}')
+    state = State(path)
+    pending_key = state.get("CG-001")
+    pending_key["continuation"] = {"stage": "review"}
+    corrupt = b"not json\xff"
+    path.write_bytes(corrupt)
+
+    with pytest.raises(StateCorruptionError, match="state is corrupt"):
+        state.save()
+
+    assert path.read_bytes() == corrupt
+    assert pending_key["continuation"] == {"stage": "review"}
+    assert pending_key.dirty == {"continuation"}
+
+
+def test_fence_recovery_refuses_to_replace_corrupt_state(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    corrupt = b"{broken"
+    path.write_bytes(corrupt)
+
+    with pytest.raises(StateCorruptionError, match="state is corrupt"):
+        state.restore_other_task_keys({"CG-002": {"lease": "old"}}, "CG-001", {"CG-001", "CG-002"})
+
+    assert path.read_bytes() == corrupt
 
 
 # ── concurrent-write tests ─────────────────────────────────────────────────────

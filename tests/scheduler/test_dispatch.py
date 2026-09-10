@@ -10,10 +10,23 @@ from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.model import Status
+from garden.scheduler import StateCorruptionError
 from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
 from garden.scheduler.report import TickReport
 from garden.suggestions import record_suggestion
 from tests.scheduler.conftest import statuses
+
+
+def test_tick_refuses_to_schedule_from_corrupt_state(sched):
+    corrupt = b'{"_control":{"dispatch":"paused"}'
+    sched.state.path.write_bytes(corrupt)
+    runs_before = list(sched.runs.active())
+
+    with pytest.raises(StateCorruptionError, match="state is corrupt"):
+        sched.tick()
+
+    assert sched.state.path.read_bytes() == corrupt
+    assert list(sched.runs.active()) == runs_before
 
 
 def test_duplicate_task_id_quarantined_the_tick_survives_and_dispatch_continues(sched, garden, fake_github):
