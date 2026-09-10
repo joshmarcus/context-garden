@@ -261,6 +261,12 @@ body.page-now .rail-running { display:none; }
   if (!root || !window.EventSource) return;
   var live = document.getElementById("now-live");
   var win = root.dataset.window || "hour";
+  var burstRoot = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+  var burstSeq = 0;
+  function burst() { burstSeq += 1; return burstRoot + "-" + burstSeq; }
+  function partialUrl(region, reading) {
+    return "/partials/now/" + region + "?window=" + encodeURIComponent(win) + "&burst=" + reading;
+  }
   function say(text) { if (live) live.textContent = text; }
   function parse(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
   async function fetchText(url) {
@@ -279,24 +285,24 @@ body.page-now .rail-running { display:none; }
   }
   // ---- the regions: each re-fetches its partial and swaps the one element that holds it
   var regions = {
-    head: async function () {
-      var frag = parse(await fetchText("/partials/now/head?window=" + win));
+    head: async function (reading) {
+      var frag = parse(await fetchText(partialUrl("head", reading || burst())));
       replaceHead(frag);
     },
-    now: async function () {
-      var frag = parse(await fetchText("/partials/now/now?window=" + win));
+    now: async function (reading) {
+      var frag = parse(await fetchText(partialUrl("now", reading || burst())));
       document.getElementById("now-body").replaceWith(frag.getElementById("now-body"));
       countdown();
     },
-    next: async function () {
-      var frag = parse(await fetchText("/partials/now/next?window=" + win));
+    next: async function (reading) {
+      var frag = parse(await fetchText(partialUrl("next", reading || burst())));
       var fresh = frag.getElementById("next-body"), old = document.getElementById("next-body");
       moveLines(old, fresh);
       old.replaceWith(fresh);
       countdown();
     },
-    where: async function () {
-      var frag = parse(await fetchText("/partials/now/where?window=" + win));
+    where: async function (reading) {
+      var frag = parse(await fetchText(partialUrl("where", reading || burst())));
       var fresh = frag.getElementById("where-body"), old = document.getElementById("where-body");
       var was = parseFloat(old.dataset.fraction), now = parseFloat(fresh.dataset.fraction);
       var inked = old.querySelector(".sheet.big .inked"), mount = old.querySelector(".sheet.big .mount");
@@ -309,8 +315,8 @@ body.page-now .rail-running { display:none; }
         old.replaceWith(fresh);
       }
     },
-    period: async function () {
-      var frag = parse(await fetchText("/partials/now/period?window=" + win));
+    period: async function (reading) {
+      var frag = parse(await fetchText(partialUrl("period", reading || burst())));
       document.getElementById("period-body").replaceWith(frag.getElementById("period-body"));
     }
   };
@@ -331,14 +337,15 @@ body.page-now .rail-running { display:none; }
     });
   }
   var pairedRefresh = null, pairedRefreshAgain = false;
-  function refreshHeadAndPeriod() {
+  function refreshHeadAndPeriod(reading) {
     // Refresh shared readings immediately, but collapse events arriving during a fetch into
     // one follow-up. Fetch both before replacing either so the summary and ledger never show
     // different snapshots, including when one response fails.
     if (pairedRefresh) { pairedRefreshAgain = true; return pairedRefresh; }
+    reading = reading || burst();
     pairedRefresh = Promise.all([
-      fetchText("/partials/now/head?window=" + win),
-      fetchText("/partials/now/period?window=" + win)
+      fetchText(partialUrl("head", reading)),
+      fetchText(partialUrl("period", reading))
     ]).then(function (html) {
       var head = parse(html[0]), period = parse(html[1]);
       replaceHead(head);
@@ -349,7 +356,10 @@ body.page-now .rail-running { display:none; }
     });
     return pairedRefresh;
   }
-  function refreshAll() { Object.keys(regions).forEach(function (k) { regions[k]().catch(function () {}); }); }
+  function refreshAll() {
+    var reading = burst();
+    Object.keys(regions).forEach(function (k) { regions[k](reading).catch(function () {}); });
+  }
   // ---- strips: keyed by run id; a strip arrives at no height and grows, leaves by collapsing
   function strips() { return document.getElementById("now-strips"); }
   function stripFor(run) { return document.querySelector('.strip[data-run="' + run + '"]'); }
@@ -415,6 +425,7 @@ body.page-now .rail-running { display:none; }
   var PERIOD = {run_finished: 1, review: 1, automerged: 1, answer: 1, triaged: 1, decision_accepted: 1, decision_resolved: 1, dispatch_paused: 1, dispatch_resumed: 1, resumed: 1, moved: 1, budget_set: 1, config_override: 1, suggestion: 1, profile_changed: 1, config_reloaded: 1};
   function onEvent(ev) {
     var k = ev.kind;
+    var reading = burst();
     // The field reading repeats facts from Now, Next and Where. Derive its refresh set
     // from those regions' maps so a scoped event cannot update a detail while leaving
     // the prominent copy stale.
@@ -423,15 +434,15 @@ body.page-now .rail-running { display:none; }
     if (k === "dispatch" && ev.run) arrive(ev).catch(function () {});
     if (k === "run_finished" && ev.run) finish(ev).catch(function () {});
     if (NOW_HANDS[k] || (k === "transition" && (ev.to === "changes_requested" || ev.to === "waiting_human" || ev.from === "waiting_human"))) {
-      regions.now().catch(function () {});
+      regions.now(reading).catch(function () {});
     }
     // Some events change both the field reading and its detailed period ledger. Keep the
     // old pair on screen until the coalesced paired fetch can replace both; refreshing the
     // head separately here would expose a newer summary beside an older ledger.
-    if (refreshesHead && !refreshesPeriod) regions.head().catch(function () {});
-    if (NEXT[k]) regions.next().catch(function () {});
-    if (WHERE[k]) regions.where().catch(function () {});
-    if (refreshesPeriod) refreshHeadAndPeriod();
+    if (refreshesHead && !refreshesPeriod) regions.head(reading).catch(function () {});
+    if (NEXT[k]) regions.next(reading).catch(function () {});
+    if (WHERE[k]) regions.where(reading).catch(function () {});
+    if (refreshesPeriod) refreshHeadAndPeriod(reading);
   }
   // ---- the stream
   var source = new EventSource("/now/stream");
