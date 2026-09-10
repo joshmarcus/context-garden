@@ -5,6 +5,7 @@ events off the tick's path."""
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from markupsafe import Markup
+from starlette.requests import ClientDisconnect
 
 from ... import now1
 from ...charts import cost_stack_svg, sparkline_svg
@@ -23,6 +25,22 @@ from ..common import Site
 WINDOW_KEYS = {key for key, _ in now1.WINDOWS}
 REGIONS = ("head", "now", "next", "where", "period")
 _monotonic = time.monotonic
+
+
+class SSEStreamingResponse(StreamingResponse):
+    """End an SSE response quietly when its client or server goes away.
+
+    Streaming responses run after the route handler has returned, so these expected
+    lifecycle signals do not pass through the app's ordinary exception handler. Keep
+    the exception boundary narrow: application errors from the iterator or response
+    still need to reach the server's error reporting.
+    """
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except (asyncio.CancelledError, ClientDisconnect):
+            return
 
 
 def _chart(p: dict[str, Any], width: int = 640) -> Markup:
@@ -149,5 +167,5 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         deadline = time.monotonic() + seconds if seconds is not None else None
         body = now1.stream(s, hub.tick_state, start=start, limit=limit, deadline=deadline)
-        return StreamingResponse(body, media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return SSEStreamingResponse(body, media_type="text/event-stream",
+                                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
