@@ -47,8 +47,29 @@ class Client:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         """Make a request without allowing it to outlive the containing flow."""
+        remaining = self._remaining()
+        deadline = self._flow_deadline or time.monotonic() + remaining
         try:
-            return self.http.request(method, path, timeout=self._remaining(), **kwargs)
+            # HTTPX's scalar timeout is an inactivity timeout for each phase, not a
+            # deadline for the whole response.  Consume the stream ourselves so a
+            # server sending trickle bytes cannot keep this request alive forever.
+            with self.http.stream(method, path, timeout=remaining, **kwargs) as response:
+                if time.monotonic() >= deadline:
+                    raise FlowFailed("flow deadline expired during request")
+                content = bytearray()
+                for chunk in response.iter_bytes():
+                    content.extend(chunk)
+                    if time.monotonic() >= deadline:
+                        raise FlowFailed("flow deadline expired during request")
+                if time.monotonic() >= deadline:
+                    raise FlowFailed("flow deadline expired during request")
+                return httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=bytes(content),
+                    request=response.request,
+                    extensions=response.extensions,
+                )
         except httpx.TimeoutException as e:
             raise FlowFailed(f"flow deadline expired during request: {e}") from e
 

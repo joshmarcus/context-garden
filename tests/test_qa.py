@@ -5,6 +5,7 @@ with tests/fake_claude.py in its `qa` mode."""
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -81,7 +82,7 @@ def test_scripted_client_uses_the_flow_timeout_for_http_requests(monkeypatch):
 
 def test_scripted_client_uses_remaining_flow_budget_for_each_request(monkeypatch):
     observed = []
-    now = iter((100.0, 104.0))
+    now = iter((100.0, 104.0, 105.0, 106.0, 107.0))
 
     class FakeHTTPClient:
         base_url = httpx.URL("http://example.test/")
@@ -89,12 +90,23 @@ def test_scripted_client_uses_remaining_flow_budget_for_each_request(monkeypatch
         def __init__(self, **kwargs):
             pass
 
-        def request(self, method, path, **kwargs):
+        def stream(self, method, path, **kwargs):
             observed.append(kwargs["timeout"])
-            return type("Response", (), {"status_code": 200, "text": "ok"})()
+            response = httpx.Response(200, content=b"ok", request=httpx.Request(method, path))
+            return _FakeStreamContext(response)
 
         def close(self):
             pass
+
+    class _FakeStreamContext:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self.response
+
+        def __exit__(self, *args):
+            return None
 
     monkeypatch.setattr("garden.qa.flows.httpx.Client", FakeHTTPClient)
     monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: next(now))
@@ -112,7 +124,7 @@ def test_scripted_client_reports_flow_expiry_during_request(monkeypatch):
         def __init__(self, **kwargs):
             pass
 
-        def request(self, method, path, **kwargs):
+        def stream(self, method, path, **kwargs):
             raise httpx.ReadTimeout("upstream stalled")
 
         def close(self):
@@ -133,6 +145,30 @@ def test_scripted_client_reports_flow_expiry_during_request(monkeypatch):
         client.begin_flow()
         monkeypatch.setattr("garden.qa.flows.time.monotonic", lambda: 161.0)
         with pytest.raises(FlowFailed, match="flow deadline expired"):
+            client.get("/")
+    finally:
+        client.close()
+
+
+def test_scripted_client_bounds_a_trickle_response_to_the_flow_deadline():
+    """Periodic response bytes must not extend a flow past its wall-clock budget."""
+    chunks = (b"a", b"b", b"c", b"d")
+
+    class TrickleStream(httpx.SyncByteStream):
+        def __iter__(self):
+            for chunk in chunks:
+                time.sleep(0.05)
+                yield chunk
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, stream=TrickleStream(), request=request)
+    )
+    client = Client("http://example.test", timeout=0.12)
+    client.http.close()
+    client.http = httpx.Client(transport=transport, base_url="http://example.test")
+    try:
+        client.begin_flow()
+        with pytest.raises(FlowFailed, match="flow deadline expired during request"):
             client.get("/")
     finally:
         client.close()
