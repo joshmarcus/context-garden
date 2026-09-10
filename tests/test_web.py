@@ -3327,7 +3327,10 @@ def test_exposed_listener_separates_worker_and_operator_authority(garden, monkey
     c = TestClient(create_app(Store(garden), watch=False, host="0.0.0.0"))
 
     assert c.get("/healthz").status_code == 200
-    assert c.get("/api/tasks").status_code == 401
+    missing = c.get("/api/tasks")
+    assert missing.status_code == 401
+    assert missing.headers["WWW-Authenticate"] == "Bearer"
+    assert missing.text == "operator authentication required"
     # Neither a worker credential nor proxy headers can confer operator authority.
     spoofed = {"Authorization": "Bearer worker-secret", "X-Forwarded-For": "127.0.0.1",
                "X-Forwarded-Host": "localhost", "X-Forwarded-Proto": "http"}

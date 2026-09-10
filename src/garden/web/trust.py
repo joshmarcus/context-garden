@@ -254,11 +254,17 @@ class OriginCheck:
                     await PlainTextResponse(problem, status_code=403)(scope, receive, send)
                     return
                 status = 401 if not auth else 403
-                await PlainTextResponse("worker authentication required", status_code=status)(scope, receive, send)
+                response_headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+                await PlainTextResponse(
+                    "worker authentication required", status_code=status, headers=response_headers
+                )(scope, receive, send)
                 return
             if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth and not operator_ok:
                 status = 401 if not auth else 403
-                await PlainTextResponse("operator authentication required", status_code=status)(scope, receive, send)
+                response_headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+                await PlainTextResponse(
+                    "operator authentication required", status_code=status, headers=response_headers
+                )(scope, receive, send)
                 return
             if access == OPERATOR_MUTATION:
                 problem = origin_problem(headers, self.allowed)
