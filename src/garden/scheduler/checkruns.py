@@ -516,6 +516,12 @@ class CheckRunMixin:
         )
 
     @staticmethod
+    def _candidate_failure_is_implementation(results: list[dict[str, Any]]) -> bool:
+        """Respect typed attribution while preserving legacy untyped check failures."""
+        typed = any(result.get("failure_category") for result in results)
+        return (not typed) or CheckRunMixin._has_typed_implementation_failure(results)
+
+    @staticmethod
     def _trusted_generated_ui_result(run: Run, index: int) -> bool:
         """Whether this result position belongs to an exact generated ui_check spec."""
         raw = (run.env_snapshot or {}).get("generated_ui_check_indices")
@@ -769,13 +775,14 @@ class CheckRunMixin:
         base_failures = self._blocking_check_failures(run, results)
         if not base_failures:
             # The base is clean: this branch owns the failure.
-            identity = f"{worker_run.run_id if worker_run else 'unknown'}:{base_sha}:" + ",".join(
-                sorted(str(item.get("name") or "") for item in failed)
-            )
-            self._record_implementation_failure(
-                task, "failed_final_verification", identity,
-                "branch-owned pre-PR verification failed",
-            )
+            if self._candidate_failure_is_implementation(failed):
+                identity = f"{worker_run.run_id if worker_run else 'unknown'}:{base_sha}:" + ",".join(
+                    sorted(str(item.get("name") or "") for item in failed)
+                )
+                self._record_implementation_failure(
+                    task, "failed_final_verification", identity,
+                    "branch-owned pre-PR verification failed",
+                )
             self._start_check_revise(task, failed, rep, cost)
             return
         names = ", ".join(str(f.get("name")) for f in base_failures)

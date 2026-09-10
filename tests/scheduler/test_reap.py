@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from garden import gitops
 from garden.model import Status
 from garden.preflight import PREFLIGHT_ITEMS
@@ -102,6 +104,50 @@ def test_mismatched_base_probe_receipt_cannot_park_the_base(sched, fake_github, 
     assert "branch guard failed" in sched.state.get(task.id)["pending_feedback"]
     events = sched.events.read(task_id=task.id, kinds=["base_probe_provenance_failure"])
     assert events and events[-1]["advertised"] == advertised
+
+
+@pytest.mark.parametrize(
+    ("category", "escalates"),
+    [
+        ("infrastructure", False),
+        ("admission", False),
+        ("unavailable_evidence", False),
+        ("stale_check", False),
+        (None, True),
+    ],
+)
+def test_clean_base_probe_respects_typed_candidate_failure(
+    sched, fake_github, tmp_path, monkeypatch, category, escalates
+):
+    """A clean base does not turn a typed infrastructure failure into a source failure."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    failed = [{"name": "guard", "status": "fail", "summary": "candidate failed", "details": ""}]
+    if category is not None:
+        failed[0]["failure_category"] = category
+    revised = []
+    monkeypatch.setattr(sched, "_start_check_revise", lambda *args, **kwargs: revised.append(args[1]))
+
+    sched._after_base_probe_check(
+        task,
+        run,
+        [{"name": "guard", "status": "pass", "summary": "ok", "details": ""}],
+        {
+            "probe": str(tmp_path / "missing-probe"),
+            "worktree": str(tmp_path / "branch"),
+            "branch": task.default_branch(),
+            "base": "main",
+            "cost": "",
+            "failed": failed,
+            "base_sha": "a" * 40,
+            "moved": False,
+        },
+        TickReport(),
+    )
+
+    routes = sched.state.get(task.id).get("implementation_failure_escalations", [])
+    assert bool(routes) is escalates
+    assert revised == [failed]
 
 
 def test_interrupted_reap_finalizes_on_next_tick_instead_of_redispatching(sched, fake_github, monkeypatch):
