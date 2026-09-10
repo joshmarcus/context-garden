@@ -503,6 +503,29 @@ def test_pause_state_persists_in_state_json(sched, fake_github):
     assert fresh["dispatch"] == "paused" and fresh["reason"] == "hold" and fresh["by"] == "cli"
 
 
+def test_empty_maintenance_read_cannot_overwrite_concurrent_request(sched):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    assert not sched.maintenance_requested()
+    assert "maintenance" not in sched.control()
+    assert not sched.state.get("_control").dirty
+
+    newer = Scheduler(Store(sched.store.root))
+    newer.request_maintenance_pause(by="test", reason="concurrent reinstall")
+    sched.control()["unrelated_tick_note"] = "saved after maintenance request"
+    sched.state.save()
+
+    fresh = Scheduler(Store(sched.store.root))
+    assert fresh.maintenance_requested()
+    assert fresh.control()["maintenance"]["reason"] == "concurrent reinstall"
+    assert fresh.control()["unrelated_tick_note"] == "saved after maintenance request"
+    fresh.tick()
+    assert fresh.maintenance_quiesced()
+    fresh.resume_maintenance(by="test")
+    assert not Scheduler(Store(sched.store.root)).maintenance_requested()
+
+
 def test_maintenance_pause_freezes_collection_until_explicit_resume(sched, fake_github):
     """A finished worker result remains durable through a scheduler restart boundary."""
     sched.tick()  # start DM-001's fake worker

@@ -112,8 +112,13 @@ class BudgetMixin:
 
     # ---- maintenance pause -------------------------------------------------
     def maintenance(self) -> dict[str, Any]:
-        """The durable whole-scheduler stop used around an installation."""
-        return self.control().setdefault("maintenance", {})
+        """The whole-scheduler stop used around an installation, if one exists.
+
+        Reading an absent request must stay observational: a stale scheduler can
+        otherwise persist its empty entry over a request another controller saved.
+        ``request_maintenance_pause`` is the sole path that creates the durable entry.
+        """
+        return self.control().get("maintenance", {})
 
     def maintenance_requested(self) -> bool:
         return self.maintenance().get("status") in {"requested", "quiesced"}
@@ -123,7 +128,7 @@ class BudgetMixin:
 
     def request_maintenance_pause(self, by: str = "cli", reason: str = "") -> None:
         """Acknowledge a request; a following locked tick records quiescence."""
-        entry = self.maintenance()
+        entry = self.control().setdefault("maintenance", {})
         if entry.get("status") == "quiesced":
             return
         entry.update(status="requested", by=by, at=now_iso(), reason=reason)
