@@ -936,7 +936,8 @@ def test_auto_closing_review_waits_for_terminal_tasks_and_is_idempotently_queued
     entries = [entry for entry in sched._retro_list() if entry["phase"] == phase.key]
     assert len(entries) == 1
     assert entries[0]["stage"] == "queued"
-    assert entries[0]["source"]
+    assert entries[0]["request_id"]
+    assert entries[0]["source"] == ""
     assert rep.transitions == ["retro demo/p1 queued"]
 
 
@@ -952,7 +953,7 @@ def test_auto_closing_review_exposes_freeze_prerequisite_and_owner_holds(sched):
     status = sched.closing_review_status(phase)
     assert not status["eligible"]
     assert "phase frozen" in status["reason"]
-    assert "prerequisite demo/p2 is not closed" in status["reason"]
+    assert "prerequisite demo/p2 is missing" in status["reason"]
     assert "owner approval is required" in status["reason"]
 
 
@@ -963,9 +964,64 @@ def test_manual_start_claims_an_automatically_queued_review(sched, monkeypatch):
              "self_product": "demo", "stage": "queued", "persona_runs": {}, "no_file": False}
     sched._retro_list().append(entry)
     started = []
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
     monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append((ph.key, queued)))
-    assert sched.start_retro(phase) is entry
-    assert started == [(phase.key, entry)]
+    returned = sched.start_retro(phase)
+    assert returned["request_id"]
+    assert started == [(phase.key, returned)]
+
+
+def test_closing_review_preparation_runs_after_tick_releases_controller_lock(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {},
+             "no_file": False, "automatic": True, "request_id": "request-one"}
+    sched._retro_list().append(entry)
+    held = False
+    original_lock = sched._controller_lock
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def tracked_lock():
+        nonlocal held
+        with original_lock():
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+    monkeypatch.setattr(sched, "_controller_lock", tracked_lock)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: held is False or pytest.fail("lock held"))
+    sched._closing_review_claims = []
+    sched.dispatch_queued_closing_reviews(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+
+    assert entry["stage"] == "dispatching"
+    assert "preparation_claim" not in entry
+
+
+def test_restart_reclaims_an_interrupted_closing_review_preparation(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "preparing", "persona_runs": {},
+             "no_file": False, "automatic": True, "request_id": "request-one",
+             "preparation_claim": "abandoned", "preparation_pid": 99999999}
+    sched._retro_list().append(entry)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    started = []
+    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append(queued["request_id"]))
+    sched._closing_review_claims = []
+
+    sched.dispatch_queued_closing_reviews(TickReport())
+    assert entry["preparation_claim"] != "abandoned"
+    sched.prepare_claimed_closing_reviews(TickReport())
+
+    assert started == ["request-one"]
 
 
 def test_automatic_review_reuses_only_reports_for_its_accepted_source(sched):
@@ -1001,8 +1057,9 @@ def test_reconcile_dispatch_refuses_a_paused_harness(tmp_path, fake_github, monk
 
     sched.pause_harness("claude", "quota limit hit on claude")
     ph = store.phase("gdn", "p1")
-    with pytest.raises(RuntimeError, match="paused"):
-        sched.start_retro(ph, ["designer"], skip_personas=True)
+    entry = sched.start_retro(ph, ["designer"], skip_personas=True)
+    assert entry["stage"] == "queued"
+    assert "paused" in entry["waiting_reason"]
     assert not fake_github.created
 
 
