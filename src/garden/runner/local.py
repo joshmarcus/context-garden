@@ -58,10 +58,12 @@ class LocalRunner(Runner):
             # writable sandbox grant; required isolation owns the result location.
             final_path = self.harness_output_path(run, worktree)
         if run.mode == "resume" and run.session_id:
-            cmd = self.harness.resume_command(run.session_id, run.model, final_path, deny_paths=deny,
+            cmd = self.harness.resume_command(run.session_id, run.model, final_path,
+                                              difficulty=run.difficulty, deny_paths=deny,
                                               worktree=worktree, sandbox_policy=policy)
         else:
-            cmd = self.harness.command(run.model, final_path, deny_paths=deny, worktree=worktree,
+            cmd = self.harness.command(run.model, final_path, difficulty=run.difficulty,
+                                       deny_paths=deny, worktree=worktree,
                                        sandbox_policy=policy)
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:

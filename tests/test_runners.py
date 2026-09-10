@@ -864,14 +864,17 @@ def test_openrouter_key_is_added_only_to_harness_environment(tmp_path, monkeypat
     assert runner.harness_environment(worker)["OPENROUTER_API_KEY"] == "provider-secret"
 
 
-def test_local_runner_selects_openrouter_turn_cap_from_run_difficulty(tmp_path):
+@pytest.mark.parametrize("mode, session_id", [("work", ""), ("resume", "session-1")])
+def test_local_runner_selects_openrouter_turn_cap_from_run_difficulty(
+        tmp_path, mode: str, session_id: str):
     from garden.harness import Harness
     from garden.runs import Run
 
     runner = LocalRunner({}, Harness("openrouter", {
         "max_turns": {"easy": 2, "medium": 4, "hard": 6},
     }))
-    run = Run(task_id="T-1", run_id="r1", dir=str(tmp_path / "run"), runner="local",
+    run = Run(task_id="T-1", run_id="r1", dir=str(tmp_path / "run"), runner="local", mode=mode,
+              session_id=session_id,
               difficulty="hard", model="openrouter/openai/test")
 
     argv = runner.harness_argv(run, tmp_path, tmp_path / "final.md")

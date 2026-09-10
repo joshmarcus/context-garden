@@ -188,6 +188,8 @@ class Harness:
                 deny_paths: list[str] | None = None, worktree: Path | str | None = None,
                 permission_override: str = "", sandbox_policy: Any = None) -> list[str]:
         """Argv for one headless run. The brief arrives on stdin; cwd is the worktree."""
+        mode = permission_override or str(self.cfg.get("permission_mode") or "")
+        mechanism = sandbox_policy.native_harness(self.name, mode) if sandbox_policy else ""
         if self.cfg.get("command"):
             # fully custom: a list with {model} / {final} placeholders
             out = []
@@ -196,8 +198,6 @@ class Harness:
                 if a:
                     out.append(a)
             return out
-        mode = permission_override or str(self.cfg.get("permission_mode") or "")
-        mechanism = sandbox_policy.native_harness(self.name, mode) if sandbox_policy else ""
         if self.output == "claude-json":
             fmt = str(self.cfg.get("output_format") or "json")
             cmd = [self.bin, "-p", "--output-format", fmt]
@@ -331,6 +331,8 @@ class Harness:
                        sandbox_policy: Any = None) -> list[str]:
         """Argv that continues a previous session; the follow-up prompt arrives on stdin."""
         if self.cfg.get("resume_command"):
+            if sandbox_policy:
+                sandbox_policy.native_harness(self.name, str(self.cfg.get("permission_mode") or ""))
             return [str(a).replace("{session}", session_id).replace("{model}", model).replace("{final}", str(final_path or ""))
                     for a in self.cfg["resume_command"] if str(a)]
         if self.output == "claude-json":
