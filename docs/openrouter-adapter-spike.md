@@ -40,11 +40,12 @@ a live provider or provider spend.
 
 ### CG-213 — harness configuration
 
-CG-213 should expose and document `harnesses.codex.base_url` and `api_key_env`, and ensure
-the named key is admitted through `worker_env.pass`. It should decide whether to reject a
-non-HTTPS URL outside tests and how configured OpenRouter prices override Codex defaults.
-Live provider compatibility, authentication errors, quota errors, and resume behavior
-remain CG-213 integration work; this spike deliberately makes no paid request.
+CG-213 should promote the prototype `harnesses.codex.base_url` and `api_key_env` fields into
+supported configuration: document and validate them, and ensure the named key is admitted
+through `worker_env.pass`. It should decide whether to reject a non-HTTPS URL outside tests
+and how configured OpenRouter prices override Codex defaults. Live provider compatibility,
+authentication errors, quota errors, and resume behavior remain CG-213 integration work;
+this spike deliberately makes no paid request.
 
 ### CG-230 — member syntax
 
