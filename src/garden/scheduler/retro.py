@@ -246,12 +246,53 @@ class RetroMixin:
                             self.state.save()
                     continue
                 if action == "reconcile":
-                    self._dispatch_reconcile(entry, run_id=str(entry["reconcile_launch_run_id"]))
+                    prepared = self._prepare_reconcile(
+                        entry, run_id=str(entry["reconcile_launch_run_id"])
+                    )
                     with self._controller_lock():
+                        # Preparation may include Git operations and remote PR metadata. Reload
+                        # the durable claim after that work so a concurrent policy/evidence
+                        # update cannot launch a reconciliation for stale accepted inputs.
+                        self.state = type(self.state)(self.state.path)
                         entry = next((item for item in self._retro_list()
                                       if item.get("request_id") == request_id), None)
-                        if entry and entry.get("preparation_claim") == claim:
-                            self._clear_retro_preparation(entry)
+                        if (entry is None or entry.get("stage") != expected_stage
+                                or entry.get("preparation_claim") != claim):
+                            self._discard_prepared_reconcile(
+                                prepared, "reconciliation preparation claim was superseded"
+                            )
+                            continue
+                        phase = self.store.phase(entry["product"], entry["phase_name"])
+                        if entry.get("automatic"):
+                            policy = self._closing_review_policy(phase)
+                            current_source = self._current_phase_source(phase)
+                            identity_changed = (
+                                str(entry.get("source") or "") != current_source
+                                or str(entry.get("evidence") or "")
+                                != str(policy.get("evidence") or "")
+                            )
+                            if not policy["eligible"] or identity_changed:
+                                reason = policy.get("reason") or (
+                                    "accepted source or stabilization evidence changed during "
+                                    "reconciliation preparation; re-preparing"
+                                )
+                                entry.update(stage="queued", source="",
+                                             evidence=str(policy.get("evidence") or ""),
+                                             waiting_reason=reason)
+                                self._clear_retro_preparation(entry)
+                                self.state.save()
+                                self._discard_prepared_reconcile(prepared, reason)
+                                continue
+                        self._commit_prepared_reconcile(entry, prepared)
+                        self._clear_retro_preparation(entry)
+                        self.state.save()
+                    self._launch_prepared_reconcile(prepared)
+                    with self._controller_lock():
+                        self.state = type(self.state)(self.state.path)
+                        entry = next((item for item in self._retro_list()
+                                      if item.get("request_id") == request_id), None)
+                        if entry and entry.get("recon_run_id") == prepared["run"].run_id:
+                            entry["stage"] = "reconciling"
                             self.state.save()
                     continue
                 source = self._current_phase_source(phase) if entry.get("automatic") else ""
@@ -298,6 +339,17 @@ class RetroMixin:
                 rep.transitions.append(f"retro {phase.key} started")
             except RuntimeError as exc:
                 self.log(f"retro preparation {request_id} deferred: {exc}")
+                if action == "reconcile":
+                    probe_id = f"_retro-{entry['product']}-{entry['phase_name']}"
+                    run_id = str(entry.get("reconcile_launch_run_id") or "")
+                    run = next((candidate for candidate in self.runs.runs_for(probe_id)
+                                if candidate.run_id == run_id), None)
+                    if run is not None and run.pid is None and not run.finished_at:
+                        run.status = "failed"
+                        run.error = f"reconciliation preparation failed: {exc}"
+                        run.finished_at = now_iso()
+                        run.preparer_pid = None
+                        run.save()
                 with self._controller_lock():
                     entry = next((item for item in self._retro_list()
                                   if item.get("request_id") == request_id), None)
@@ -505,7 +557,11 @@ class RetroMixin:
         have = self._reports_for_entry(phase, entry)
         missing = [] if entry.get("skip_personas") else [n for n in names if n not in have]
         if not missing:
-            self._dispatch_reconcile(entry)
+            if entry.get("automatic"):
+                entry["stage"] = "personas"
+                self._claim_retro_preparation(entry, "reconcile")
+            else:
+                self._dispatch_reconcile(entry)
         else:
             entry["stage"] = "personas"
             launched = self._dispatch_retro_personas(phase, entry, missing)
@@ -613,7 +669,8 @@ class RetroMixin:
             self.state.save()
             return
 
-    def _dispatch_reconcile(self, entry: dict[str, Any], run_id: str = "") -> None:
+    def _prepare_reconcile(self, entry: dict[str, Any], run_id: str = "") -> dict[str, Any]:
+        """Build one immutable reconciliation launch payload outside ``tick.lock``."""
         self.require_maintenance_running()
         phase = self.store.phase(entry["product"], entry["phase_name"])
         probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
@@ -643,18 +700,47 @@ class RetroMixin:
                                reports, task_rows, merged, entry["next_phase"])
         run.worktree = str(wt)
         run.brief_tokens = max(1, len(text) // 4)
-        entry.update({"recon_run_id": run.run_id, "recon_task": probe.id,
-                      "branch": branch, "worktree": str(wt), "base": base,
-                      "slug": self.slug_for(probe) or ""})
+        return {"run": run, "runner": runner, "worktree": wt, "text": text,
+                "phase": phase, "probe": probe, "branch": branch, "base": base}
+
+    def _commit_prepared_reconcile(self, entry: dict[str, Any], prepared: dict[str, Any]) -> None:
+        """Persist the exact prepared launch identity while holding ``tick.lock``."""
+        run = prepared["run"]
+        entry.update({"recon_run_id": run.run_id, "recon_task": prepared["probe"].id,
+                      "branch": prepared["branch"], "worktree": str(prepared["worktree"]),
+                      "base": prepared["base"], "slug": self.slug_for(prepared["probe"]) or "",
+                      "stage": "launching_reconcile"})
         run.save()
-        # Preserve everything restart reconciliation needs before handing the durable run
-        # identity to a runner. The preparation claim remains authoritative until launch.
-        self.state.save()
-        runner.start(run, wt, text)
+
+    def _discard_prepared_reconcile(self, prepared: dict[str, Any], reason: str) -> None:
+        """Close an admitted run whose prepared input lost its durable launch claim."""
+        run = prepared["run"]
+        run.status = "failed"
+        run.error = reason
+        run.finished_at = now_iso()
+        run.preparer_pid = None
+        run.save()
+
+    def _launch_prepared_reconcile(self, prepared: dict[str, Any]) -> None:
+        """Launch exactly the payload whose identity was durably committed under the lock."""
+        run = prepared["run"]
+        runner = prepared["runner"]
+        phase = prepared["phase"]
+        probe = prepared["probe"]
+        runner.start(run, prepared["worktree"], prepared["text"])
         self.events.emit("dispatch", run.task_id, run=run.run_id, mode="retro", model=run.model,
                          harness=run.harness, phase=probe.phase)
+        self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id,
+                         branch=prepared["branch"])
+
+    def _dispatch_reconcile(self, entry: dict[str, Any], run_id: str = "") -> None:
+        """Synchronous/manual compatibility path for reconciliation dispatch."""
+        prepared = self._prepare_reconcile(entry, run_id=run_id)
+        self._commit_prepared_reconcile(entry, prepared)
+        self.state.save()
+        self._launch_prepared_reconcile(prepared)
         entry["stage"] = "reconciling"
-        self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)
+        self.state.save()
 
     @staticmethod
     def _clear_retro_preparation(entry: dict[str, Any]) -> None:
@@ -692,6 +778,36 @@ class RetroMixin:
     def reap_retro(self, rep: TickReport) -> None:
         for entry in list(self._retro_list()):
             try:
+                if entry.get("stage") == "launching_reconcile":
+                    run_id = str(entry.get("recon_run_id") or "")
+                    probe_id = str(entry.get("recon_task") or "")
+                    run = next((r for r in self.runs.runs_for(probe_id)
+                                if r.run_id == run_id), None)
+                    owner_pid = int(run.preparer_pid or 0) if run else 0
+                    if owner_pid:
+                        try:
+                            os.kill(owner_pid, 0)
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            continue
+                        else:
+                            continue
+                    if run is not None and run.pid is not None and not run.finished_at:
+                        entry["stage"] = "reconciling"
+                    else:
+                        # The controller stopped after committing the launch identity but
+                        # before a worker became observable. Retire that reservation and
+                        # prepare a new exact input; never adopt it as a completed launch.
+                        if run is not None and not run.finished_at:
+                            run.status = "failed"
+                            run.error = "reconciliation launch interrupted before worker start"
+                            run.finished_at = now_iso()
+                            run.preparer_pid = None
+                            run.save()
+                        entry["stage"] = "personas"
+                        entry.pop("reconcile_launch_run_id", None)
+                    self.state.save()
                 if entry.get("stage") in {"preparing_personas", "preparing_reconcile"}:
                     owner_pid = int(entry.get("preparation_pid") or 0)
                     if owner_pid:
