@@ -102,6 +102,33 @@ def archive_runs(
     )
 
 
+@app.command("cleanup-branches", rich_help_panel=PANEL_DIAG)
+def cleanup_branches(
+    apply: bool = typer.Option(False, "--apply", help="Delete candidates after guarded rechecks."),
+    limit: int = typer.Option(20, min=1, help="Maximum removable branches to process."),
+):
+    """Preview Garden-owned worker branches and their retention reasons."""
+    store = _store()
+    scheduler = _scheduler(store)
+    rows = scheduler.branch_cleanup_inventory()
+    table = Table("repository", "branch", "head", "classification", "reason")
+    for row in rows:
+        table.add_row(row.product, row.branch, (row.remote_head or row.local_head)[:12],
+                      row.classification, row.reason)
+    console.print(table)
+    if apply:
+        from ..scheduler import State
+        from ..scheduler.report import TickReport
+
+        with scheduler.tick_lock():
+            store.invalidate_tasks()
+            scheduler.state = State(scheduler.state.path)
+            results = scheduler.sweep_worker_branches(TickReport(), limit=limit)
+            scheduler.state.save()
+        for result in results:
+            console.print(f"{result['branch']}: {result['outcome']}")
+
+
 @app.command("restore-run", rich_help_panel=PANEL_DIAG)
 def restore_run(task_id: str, run_id: str):
     """Restore one archived run to the active run directory for recovery work."""
