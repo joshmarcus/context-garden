@@ -17,7 +17,7 @@ from ..model import Status, Task, now_iso
 from ..notify import notify
 from ..preflight import missing_preflight
 from ..runner.base import Runner, run_temp_dir
-from ..runs import Run
+from ..runs import Run, RunMutationConflict
 from .human import validate_investigation_report
 from .report import TickReport
 
@@ -107,6 +107,11 @@ class ReapMixin:
         # a revise is still in flight (CG-177) — is left to reap_review/reap_orphaned, so its
         # record can never be read as "no active run found" and send the task back to ready.
         run = self.latest_worker_run(task.id)
+        # A standalone watch may have retained this object while another process accepted
+        # the worker's finish. Refresh before interpreting its source/receipt identity;
+        # Run.save additionally merges that monotonic state if finish lands later.
+        if run is not None and run.path.joinpath("run.json").exists():
+            run = Run.load(run.path)
         # garden finish is the sole finaliser of manual runs.  Skip the task
         # while a manual run is active (status "running") or while finalize()
         # has completed the run record but has not yet written the task
@@ -162,6 +167,8 @@ class ReapMixin:
         finished = run.process_finished() if self._manual_reserved(task) else self._finished_or_timed_out(run, runner)
         if not finished:
             return False
+        if run.runner == "remote":
+            run = Run.load(run.path)
         if run.status == "timeout":
             if run.mode == "investigation":
                 self._fail_investigation(task, run, rep, "investigation agent timed out")
@@ -207,7 +214,10 @@ class ReapMixin:
                 # heartbeat/result is then rejected even when its former lease had time left.
                 run.lease_token = ""
                 run.lease_expires_at = ""
-            run.save()
+            try:
+                run.save()
+            except RunMutationConflict:
+                return False
             return True
         admission_reason = run.supervisor_waiting_reason()
         if admission_reason is not None:
@@ -222,7 +232,10 @@ class ReapMixin:
                 run.status = "timeout"
                 run.finished_at = now_iso()
                 run.error = f"admission wait {round(waiting_minutes)} min ({admission_reason})"
-                run.save()
+                try:
+                    run.save()
+                except RunMutationConflict:
+                    return False
                 return True
             # A waiting supervisor has made its reason visible. It is awaiting operator-owned
             # resource admission, not silently failing to make code progress.
@@ -238,7 +251,10 @@ class ReapMixin:
                 # Idle expiry fences the claim just as the overall deadline does.
                 run.lease_token = ""
                 run.lease_expires_at = ""
-            run.save()
+            try:
+                run.save()
+            except RunMutationConflict:
+                return False
             return True
         return False
 

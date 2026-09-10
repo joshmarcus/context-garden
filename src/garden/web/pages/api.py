@@ -19,7 +19,7 @@ from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
 from ...model import effective_owner
-from ...runs import Run
+from ...runs import Run, RunMutationConflict
 from ...workers import WorkerContactStore
 from ...workers import snapshot as worker_snapshot
 from ..common import Site
@@ -524,7 +524,10 @@ def register(app: FastAPI, site: Site) -> None:
                     }
                 run.claim_response = payload
                 persist_host_facts(run, body.get("host_facts"), host_cfg)
-                run.save()
+                try:
+                    run.save()
+                except RunMutationConflict:
+                    raise HTTPException(409, "run claim changed during allocation") from None
                 record_worker_contact(host_cfg, body, outcome="claimed")
                 return JSONResponse(payload)
         return Response(status_code=204)
@@ -572,7 +575,10 @@ def register(app: FastAPI, site: Site) -> None:
                     dt.datetime.fromisoformat(run.lease_expires_at), deadline
                 ).isoformat()
             run.lease_updated_at = now.isoformat()
-            run.save()
+            try:
+                run.save()
+            except RunMutationConflict:
+                raise HTTPException(409, "run lease changed during heartbeat") from None
         transcript = run.path / "stdout.json"
         return {"ok": True, "lease_expires_at": run.lease_expires_at,
                 "transcript_offset": transcript.stat().st_size if transcript.exists() else 0}
@@ -625,6 +631,12 @@ def register(app: FastAPI, site: Site) -> None:
             persist_host_facts(run, body.get("host_facts"), host)
             run.pushed_head = str(body.get("pushed_head") or "")
             run.final_received_at = dt.datetime.now(dt.UTC).isoformat()
+            # Commit the fenced generation before writing result artifacts. A concurrent
+            # reclaim then rejects this finish without letting it replace accepted bytes.
+            try:
+                run.save()
+            except RunMutationConflict:
+                raise HTTPException(409, "run lease changed during finish") from None
             (run.path / "final.md").write_text(final)
             (run.path / "remote_result.json").write_text(json.dumps(posted))
             for index, receipt in enumerate(body.get("validation_receipts") or []):
@@ -651,7 +663,6 @@ def register(app: FastAPI, site: Site) -> None:
                                "summary": "check execution did not complete",
                                "details": posted["error"]}]
                 (run.path / "checks.json").write_text(json.dumps(checks))
-            run.save()
             # Completion is written last: once visible, claim skips this run and the accepted
             # generation remains immutable until reap promotes its staging commit.
             (run.path / "exit_code").write_text(str(exit_code))

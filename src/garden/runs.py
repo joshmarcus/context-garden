@@ -15,6 +15,7 @@ import fcntl
 import json
 import os
 import signal
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -23,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .hosts.locking import file_lock
 from .proctree import pid_alive as _pid_alive
 from .proctree import process_group_alive as _process_group_alive
 
@@ -72,6 +74,10 @@ class RecoveryLaunchConflict(RuntimeError):
     def __init__(self, current_run_id: str):
         super().__init__("the expected run is stale")
         self.current_run_id = current_run_id
+
+
+class RunMutationConflict(RuntimeError):
+    """A writer attempted to commit an obsolete worker claim generation."""
 
 
 @dataclass
@@ -143,6 +149,7 @@ class Run:
     # Dirty worktree material is never folded into a worker's branch by recovery. Dispatch
     # and reap record named stash artifacts here so provenance stays with the run.
     recovery_artifacts: list[dict[str, Any]] = field(default_factory=list)
+    record_version: int = 0  # optimistic generation for process-safe whole-record writes
 
     @property
     def path(self) -> Path:
@@ -164,12 +171,61 @@ class Run:
 
     def save(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
-        (self.path / "run.json").write_text(json.dumps(asdict(self), indent=2))
+        record = self.path / "run.json"
+        # Run metadata has two independent writers in a split-controller deployment:
+        # worker HTTP requests and the standalone scheduler. Serialize the replacement and
+        # retain a newer worker generation/completion when a scheduler saves an object it
+        # read before that request. Lock order is run-mutation.lock, then run.json; callers
+        # must not acquire the scheduler tick lock while holding this lock.
+        with file_lock(self.path.parents[2] / "run-mutation.lock"):
+            if record.exists():
+                current = Run.load(self.path)
+                self._preserve_newer_worker_state(current)
+                self.record_version = current.record_version + 1
+            else:
+                self.record_version = 1
+            payload = json.dumps(asdict(self), indent=2)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=self.path, prefix=".run-", delete=False
+            ) as staged:
+                staged.write(payload)
+                staged_path = Path(staged.name)
+            os.replace(staged_path, record)
         # A metadata rewrite does not change the parent directory mtime by itself.  Touch
         # the task bucket so other processes can detect this one changed without statting
         # every run.json in it.
         self.path.parent.touch()
         _invalidate_index(self.path.parents[1], self.task_id)
+
+    def _preserve_newer_worker_state(self, current: Run) -> None:
+        """Merge worker-owned monotonic state from a newer durable record."""
+        stale = current.record_version > self.record_version
+        newer_claim = stale and len(current.claim_history) > len(self.claim_history)
+        divergent_claim = bool(
+            stale
+            and current.claim_history and self.claim_history
+            and len(current.claim_history) == len(self.claim_history)
+            and current.lease_token != self.lease_token
+        )
+        newer_lease = stale and (current.lease_updated_at or "") > (self.lease_updated_at or "")
+        lifecycle_conflict = newer_lease and self.status != current.status
+        if (self.final_received_at and newer_claim) or divergent_claim or lifecycle_conflict:
+            raise RunMutationConflict("run claim generation changed before mutation committed")
+        if newer_claim or newer_lease:
+            for name in (
+                "host", "claimed_at", "execution_started_at", "lease_updated_at",
+                "claim_history", "claim_request_id", "claim_response", "lease_expires_at",
+                "recovery_expires_at", "lease_token", "pushed_ref", "start_head",
+            ):
+                setattr(self, name, deepcopy(getattr(current, name)))
+        if current.final_received_at and not self.final_received_at:
+            for name in (
+                "final_received_at", "pushed_head", "host", "claimed_at",
+                "execution_started_at", "lease_updated_at", "claim_history",
+                "claim_request_id", "claim_response", "lease_expires_at",
+                "recovery_expires_at", "lease_token", "pushed_ref", "start_head",
+            ):
+                setattr(self, name, deepcopy(getattr(current, name)))
 
     @classmethod
     def load(cls, d: Path) -> Run:

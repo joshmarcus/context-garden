@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from garden.runs import HistoryUnavailable, RunStore
+from garden.runs import HistoryUnavailable, Run, RunMutationConflict, RunStore
 
 
 def _finished(rs: RunStore, task: str, run_id: str, cost: float = 1.0):
@@ -53,6 +53,64 @@ def test_run_save_invalidates_index_and_results_are_isolated(tmp_path: Path):
     run.cost_usd = 2.5
     run.save()
     assert rs.totals()["cost_usd"] == 2.5
+
+
+def test_stale_scheduler_save_preserves_authenticated_worker_completion(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = rs.new_run("CG-001", "remote", run_id="20260101T000000Z-work")
+    run.host = "worker-1"
+    run.lease_token = "generation-one"
+    run.pushed_ref = "refs/heads/garden-worker/run/generation-one"
+    run.claim_history = [{"host": run.host, "lease_token_sha256": "hash-one",
+                          "pushed_ref": run.pushed_ref}]
+    run.save()
+    stale = Run.load(run.path)
+
+    script = """
+import json
+import sys
+from pathlib import Path
+from garden.runs import Run
+
+run = Run.load(Path(sys.argv[1]))
+run.pushed_head = "abc123"
+run.final_received_at = "2026-01-01T00:01:00+00:00"
+(run.path / "remote_result.json").write_text(
+    json.dumps({"result": {"status": "done"}, "usage": {"input_tokens": 7}})
+)
+run.save()
+(run.path / "exit_code").write_text("0")
+"""
+    subprocess.run([sys.executable, "-c", script, str(run.path)], check=True)
+
+    stale.status = "failed"
+    stale.error = "no commits pushed"
+    stale.save()
+
+    saved = Run.load(run.path)
+    assert saved.pushed_head == "abc123"
+    assert saved.final_received_at == "2026-01-01T00:01:00+00:00"
+    assert json.loads((saved.path / "remote_result.json").read_text())["usage"] == {
+        "input_tokens": 7
+    }
+
+
+def test_obsolete_finish_cannot_cross_reclaimed_lease_generation(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = rs.new_run("CG-001", "remote", run_id="20260101T000000Z-work")
+    run.lease_token = "generation-one"
+    run.claim_history = [{"lease_token_sha256": "hash-one"}]
+    run.save()
+    obsolete = Run.load(run.path)
+
+    current = Run.load(run.path)
+    current.lease_token = "generation-two"
+    current.claim_history.append({"lease_token_sha256": "hash-two"})
+    current.save()
+    obsolete.final_received_at = "2026-01-01T00:01:00+00:00"
+
+    with pytest.raises(RunMutationConflict):
+        obsolete.save()
 
 
 def test_archive_round_trip_preserves_summary_and_artifacts(tmp_path: Path):
