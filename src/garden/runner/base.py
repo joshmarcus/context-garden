@@ -320,13 +320,13 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         # observes completion instead of launching the command twice.
         if marker.exists() and marker.read_text().strip() == stamp:
             return
-        temp_marker = marker.with_suffix(marker.suffix + ".tmp")
-        wrapped = (f"({command}) && printf %s {shlex.quote(stamp)} > {shlex.quote(str(temp_marker))} "
-                   f"&& mv {shlex.quote(str(temp_marker))} {shlex.quote(str(marker))}")
         from ..sandbox import SandboxPolicy
 
         policy = SandboxPolicy.from_config(config)
-        argv, mechanism = policy.command_argv(wrapped, worktree)
+        scratch_writes = [Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP") if env.get(name)]
+        argv, mechanism = policy.command_argv(
+            command, worktree, additional_writable_roots=scratch_writes,
+        )
         env.update(policy.report_env(mechanism))
         proc = subprocess.Popen(
             argv, shell=False, cwd=str(worktree), env=env,
@@ -348,6 +348,12 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
                 # so reuse the pre-termination ownership snapshot for the hard stop.
                 _signal_process_tree(proc.pid, signal.SIGKILL, owned_pids=owned_pids)
             raise RunnerError(f"setup command timed out after {timeout:g}s: {command}") from exc
+        if proc.returncode == 0:
+            # Keep the lock through trusted bookkeeping so a concurrent controller observes
+            # the completed stamp instead of launching the setup command a second time.
+            temp_marker = marker.with_suffix(marker.suffix + ".tmp")
+            temp_marker.write_text(stamp)
+            temp_marker.replace(marker)
     out = ((stdout or "") + "\n" + (stderr or "")).strip()
     if log_path is not None:
         try:
