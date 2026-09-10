@@ -79,8 +79,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     @app.middleware("http")
     async def request_store_snapshot(request: Request, call_next: Any) -> Response:
-        """Give all reads used to render one response one fresh Store snapshot."""
-        token = hub.begin_request()
+        """Give each response a stable discovery generation.
+
+        Safe requests borrow the current copy-on-write generation; actions get a private
+        Store because schedulers intentionally mutate their task objects before saving.
+        """
+        token = (hub.begin_request() if request.method in {"GET", "HEAD", "OPTIONS"}
+                 else hub.begin_action_request())
         try:
             return await call_next(request)
         finally:
