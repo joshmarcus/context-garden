@@ -254,6 +254,13 @@ def test_saved_changes_are_atomic_layer_aware_and_reject_locked_reset(tmp_path):
     assert (tmp_path / "garden.yaml").read_text() == contents
 
 
+def test_revision_ignores_scheduler_runtime_metadata():
+    data = configured()
+    with_runtime_metadata = {**data, "_notification_delivery_path": "/private/runtime/path"}
+
+    assert revision(with_runtime_metadata) == revision(data)
+
+
 def test_cli_saved_project_edit_and_locked_bypass_use_shared_boundary(garden, monkeypatch):
     monkeypatch.chdir(garden)
     monkeypatch.delenv("GARDEN_ROOT", raising=False)

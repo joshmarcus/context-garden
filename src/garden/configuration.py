@@ -257,8 +257,15 @@ def assert_mutation_allowed(data: dict[str, Any], key: str, *, product: str | No
 
 
 def revision(data: dict[str, Any]) -> str:
-    """Stable optimistic-concurrency token for a configuration document."""
-    encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode()
+    """Stable optimistic-concurrency token for a persisted configuration document.
+
+    The notification ledger location is scheduler-owned runtime metadata.  It is never
+    loaded from or saved to ``garden.yaml`` and therefore must not make an unchanged
+    document look stale to the shared CLI/web mutation boundary.
+    """
+    persisted = {key: value for key, value in data.items()
+                 if key != "_notification_delivery_path"}
+    encoded = json.dumps(persisted, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
