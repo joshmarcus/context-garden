@@ -65,9 +65,12 @@ fonts, Skia builds, and encoders can change pixels or MP4 bytes; reproduce the
 original environment for pixel matching. The input hashes and font hashes in the
 receipt make those differences inspectable.
 
-On Windows, a local drive checkout is the simplest place to run npm and render.
-Capture with Python and Git inside WSL, then copy the resulting snapshot to that
-checkout. Linux and macOS use their native Python, Git, Node, and FFmpeg. There
+On Windows, copy this directory from a WSL checkout to a local drive before
+running npm and rendering. A sparse Git checkout of only `scripts/history-film/`
+also works. The full product contains `aux.py`, which Git cannot check out onto
+a native Windows filesystem. Capture with Python and Git inside WSL, then copy
+the resulting snapshot into the local utility directory. Linux and macOS use
+their native Python, Git, Node, and FFmpeg. There
 are no hardcoded usernames, WSL distribution names, systemd services, browser
 dependencies, or Codex runtime paths. If FFmpeg is outside PATH:
 

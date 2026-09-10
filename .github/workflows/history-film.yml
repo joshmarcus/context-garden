@@ -17,6 +17,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The runtime contains aux.py, a reserved Windows filename. This
+          # standalone utility only needs its own directory and capture tests.
+          sparse-checkout: |
+            scripts/history-film/
+            tests/test_history_film.py
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
