@@ -63,11 +63,25 @@ def test_scheduler_health_preserves_starting_until_running_or_tick_evidence(tmp_
     )["kind"] == "healthy"
 
 
-def test_scheduler_health_bounds_lease_reads(tmp_path):
+def test_scheduler_health_bounds_retained_evidence(tmp_path):
     for pid in range(MAX_WATCHERS + 5):
         _lease(tmp_path / "watchers", pid)
     result = scheduler_health(tmp_path, now=NOW, process_matches=lambda pid, identity: True)
     assert len(result["records"]) == MAX_WATCHERS
+
+
+def test_scheduler_health_prioritizes_fresh_lease_over_expired_history(tmp_path):
+    watchers = tmp_path / "watchers"
+    for pid in range(MAX_WATCHERS + 5):
+        _lease(watchers, pid, age=1000)
+    _lease(watchers, 999, age=0)
+
+    result = scheduler_health(
+        tmp_path, now=NOW, process_matches=lambda pid, identity: pid == 999
+    )
+
+    assert result["kind"] == "healthy"
+    assert [record["pid"] for record in result["records"]] == [999]
 
 
 def test_scheduler_health_does_not_hide_mixed_failed_or_stale_evidence(tmp_path):

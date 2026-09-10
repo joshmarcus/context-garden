@@ -78,7 +78,7 @@ def scheduler_health(
     now = now or dt.datetime.now(dt.UTC)
     records: list[dict[str, Any]] = []
     directory = garden_dir / "watchers"
-    paths = sorted(directory.glob("*.json"))[:MAX_WATCHERS] if directory.is_dir() else []
+    paths = sorted(directory.glob("*.json")) if directory.is_dir() else []
     for path in paths:
         try:
             record = json.loads(path.read_text())
@@ -90,6 +90,10 @@ def scheduler_health(
             records.append(record)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             continue
+    # Lease filenames identify process instances, not chronology. Parse before bounding so
+    # accumulated leases from earlier restarts cannot hide the current watch process.
+    records.sort(key=lambda record: (record["age_seconds"], record["source"]))
+    records = records[:MAX_WATCHERS]
 
     healthy: list[dict[str, Any]] = []
     starting: list[dict[str, Any]] = []
