@@ -1486,6 +1486,59 @@ def test_pushed_completion_waits_for_checkout_storage_then_resumes(
     assert (sched.worktree_for(task) / "result.txt").read_text() == "durable result\n"
 
 
+def test_pushed_completion_existing_checkout_waits_before_fetch_or_reset(
+    sched, fake_github, tmp_path, monkeypatch,
+):
+    """Updating an existing result checkout uses the same recoverable staging gate."""
+    from garden.scheduler import resources
+    from garden.storage import StorageVolume
+
+    task = sched.store.task("DM-001")
+    branch = "operator/existing-storage-recovery"
+    sched.dispatch(task, runner=ManualRunner({}), worktree=False,
+                   branch_override=branch, completion_mode="pushed")
+    clone = tmp_path / "existing-storage-recovery-clone"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(clone)], check=True)
+    gitops.git("config", "user.email", "author@example.com", cwd=clone)
+    gitops.git("config", "user.name", "Author", cwd=clone)
+    gitops.git("checkout", "-q", "-b", branch, cwd=clone)
+    (clone / "result.txt").write_text("durable result\n")
+    gitops.git("add", "result.txt", cwd=clone)
+    gitops.git("commit", "-q", "-m", "external result", cwd=clone)
+    pushed_sha = gitops.git("rev-parse", "HEAD", cwd=clone).strip()
+    gitops.git("push", "-q", "origin", branch, cwd=clone)
+    worktree = sched.worktree_for(task)
+    gitops.prepare_worktree(sched.repo_for(task), worktree, branch, "main")
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    free = {"bytes": 19 << 30}
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", free["bytes"]),
+    ))
+    original_git = gitops.git
+    checkout_writes: list[str] = []
+
+    def recording_git(*args, **kwargs):
+        if kwargs.get("cwd") == worktree and args and args[0] in {"fetch", "reset"}:
+            checkout_writes.append(args[0])
+        return original_git(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "git", recording_git)
+    sched.finish_manual(task, {
+        "status": "done", "summary": "collected", "repository": "test/demo",
+        "branch": branch, "pushed_sha": pushed_sha,
+    })
+
+    assert checkout_writes == []
+    assert sched.store.task(task.id).status == Status.RUNNING
+    assert sched.runs.latest(task.id).env_snapshot["remote_branch_promoted"] is True
+
+    free["bytes"] = 30 << 30
+    sched.tick()
+
+    assert checkout_writes == ["fetch", "reset"]
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+
+
 @pytest.mark.parametrize(
     ("repository", "branch", "sha", "message"),
     [
