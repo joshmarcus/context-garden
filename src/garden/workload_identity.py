@@ -13,11 +13,69 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 
 class WorkloadIdentityError(RuntimeError):
     """An actionable environment failure at credential resolution or use."""
+
+
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True, repr=False)
+class AuthorityRedactor:
+    """Remove resolved authority values from data leaving an execution boundary."""
+
+    _values: tuple[str, ...]
+
+    def redact(self, text: str) -> str:
+        for value in self._values:
+            text = text.replace(value, "<redacted>")
+        return text
+
+    def redact_data(self, value: _T) -> _T:
+        """Redact strings nested in the JSON-compatible result payload."""
+        if isinstance(value, str):
+            return self.redact(value)  # type: ignore[return-value]
+        if isinstance(value, dict):
+            return {key: self.redact_data(item) for key, item in value.items()}  # type: ignore[return-value]
+        if isinstance(value, list):
+            return [self.redact_data(item) for item in value]  # type: ignore[return-value]
+        if isinstance(value, tuple):
+            return tuple(self.redact_data(item) for item in value)  # type: ignore[return-value]
+        return value
+
+    def stream(self) -> AuthorityStreamRedactor:
+        return AuthorityStreamRedactor(self)
+
+    def __repr__(self) -> str:
+        return "AuthorityRedactor(<redacted>)"
+
+
+class AuthorityStreamRedactor:
+    """Redact arbitrary stream chunks, including values split across chunk edges."""
+
+    def __init__(self, redactor: AuthorityRedactor):
+        self._redactor = redactor
+        self._pending = ""
+        self._keep = max((len(value) for value in redactor._values), default=1) - 1
+
+    def feed(self, chunk: str) -> str:
+        redacted = self._redactor.redact(self._pending + chunk)
+        if not self._keep:
+            self._pending = ""
+            return redacted
+        if len(redacted) <= self._keep:
+            self._pending = redacted
+            return ""
+        output, self._pending = redacted[:-self._keep], redacted[-self._keep:]
+        return output
+
+    def finish(self) -> str:
+        output = self._redactor.redact(self._pending)
+        self._pending = ""
+        return output
 
 
 @dataclass(frozen=True)
@@ -130,6 +188,13 @@ class ResolvedAuthority:
             raise WorkloadIdentityError("workload identity is not configured for this protocol request")
         authority = self._ensure_current()
         return {**base, **_bound_values(self.bindings, authority.values)}
+
+    def redactor(self) -> AuthorityRedactor:
+        """Return the boundary's output filter without exposing values to callers."""
+        authority = self._ensure_current()
+        values = tuple(sorted((value for value in authority.values.values() if value),
+                              key=len, reverse=True))
+        return AuthorityRedactor(values)
 
     def close(self) -> None:
         self._closed = True
@@ -249,13 +314,15 @@ class WorkloadIdentityResolver:
 
 @contextmanager
 def subprocess_authority(config: Mapping[str, Any], target: str, run_identity: str,
-                         base: Mapping[str, str]) -> Iterator[tuple[dict[str, str], AuthorityMetadata | None]]:
+                         base: Mapping[str, str]) -> Iterator[
+                             tuple[dict[str, str], AuthorityMetadata | None, AuthorityRedactor]
+                         ]:
     """Apply the host-configured identity, if any, to exactly one subprocess target."""
     section = config.get("workload_identity") or {}
     boundaries = section.get("boundaries") or {}
     boundary = boundaries.get(target) if isinstance(boundaries, Mapping) else None
     if boundary is None:
-        yield dict(base), None
+        yield dict(base), None, AuthorityRedactor(())
         return
     if not isinstance(boundary, Mapping):
         raise WorkloadIdentityError(f"workload identity boundary {target!r} must be a mapping")
@@ -274,4 +341,4 @@ def subprocess_authority(config: Mapping[str, Any], target: str, run_identity: s
         str(boundary.get("reference") or ""), str(boundary.get("operation") or ""),
         str(boundary.get("audience") or ""), run_identity, lifetime, scopes, target=target,
     ) as authority:
-        yield authority.subprocess_env(base, target), authority.metadata
+        yield authority.subprocess_env(base, target), authority.metadata, authority.redactor()

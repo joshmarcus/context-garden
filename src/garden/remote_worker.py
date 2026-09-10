@@ -508,7 +508,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             identity_operation = subprocess_authority(
                 host_config or {}, identity_target, f"automation:{run['id']}", env,
             )
-            execution_env, _identity_metadata = identity_operation.__enter__()
+            execution_env, _identity_metadata, authority_redactor = identity_operation.__enter__()
         except WorkloadIdentityError as exc:
             _finish_materialization_failure(
                 run, heartbeat, ClaimMaterializationError("workload identity", str(exc))
@@ -581,6 +581,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             supervised = [sys.executable, "-m", "garden.run_supervisor",
                           str(execution_dir), shlex.join(argv)]
             with tempfile.NamedTemporaryFile(mode="w+") as stdout_file, tempfile.TemporaryFile(mode="w+") as stderr_file:
+                transcript_redactor = authority_redactor.stream()
                 proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
                                         text=True, cwd=repo, env=execution_env,
                                         pass_fds=(repo_lock.fileno(),))
@@ -613,7 +614,11 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         chunk = transcript_file.read()
                         transcript_read_offset = transcript_file.tell()
                     if chunk:
-                        transcript_upload_offset = heartbeat.upload(transcript_upload_offset, chunk)
+                        safe_chunk = transcript_redactor.feed(chunk)
+                        if safe_chunk:
+                            transcript_upload_offset = heartbeat.upload(
+                                transcript_upload_offset, safe_chunk
+                            )
                 stdout_file.flush()
                 stdout_file.seek(0)
                 stderr_file.seek(0)
@@ -621,7 +626,20 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 stdout_file.seek(transcript_read_offset)
                 tail = stdout_file.read()
                 if tail:
-                    transcript_upload_offset = heartbeat.upload(transcript_upload_offset, tail)
+                    safe_tail = transcript_redactor.feed(tail)
+                    if safe_tail:
+                        transcript_upload_offset = heartbeat.upload(
+                            transcript_upload_offset, safe_tail
+                        )
+                final_chunk = transcript_redactor.finish()
+                if final_chunk:
+                    transcript_upload_offset = heartbeat.upload(
+                        transcript_upload_offset, final_chunk
+                    )
+            stdout = authority_redactor.redact(stdout)
+            stderr = authority_redactor.redact(stderr)
+            if final_path.exists():
+                final_path.write_text(authority_redactor.redact(final_path.read_text()))
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
@@ -639,10 +657,11 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
         # observed write order so the controller can make a later rerun authoritative.
         receipts = _validation_receipts(execution_dir)
         heartbeat.ensure_current()
-        heartbeat.finish({"lease_token": run["lease_token"], "exit_code": rc,
+        finish_payload = {"lease_token": run["lease_token"], "exit_code": rc,
                           "final_text": final, "result": parsed, "usage": usage,
                           "cost_usd": cost, "error": error, "pushed_head": head,
-                          "validation_receipts": receipts})
+                          "validation_receipts": receipts}
+        heartbeat.finish(authority_redactor.redact_data(finish_payload))
     finally:
         if identity_operation is not None:
             identity_operation.__exit__(None, None, None)

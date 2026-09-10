@@ -1493,6 +1493,7 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
             return response.status_code, response.json()
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
+    monkeypatch.setenv("FAKE_CLAUDE_ECHO_ENV", "SERVICE_TOKEN")
     env_dump = tmp_path / "remote-worker.env"
     monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(env_dump))
     payload["env_allowlist"] = [*payload.get("env_allowlist", []), "FAKE_CLAUDE_*"]
@@ -1507,6 +1508,10 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert (tmp_path / "independent-host" / "repos" / "DM-001" / ".git").exists()
     assert (saved.path / "remote_result.json").exists()
     assert saved.stdout_text(), "the completed harness transcript is uploaded"
+    remote_payload = json.loads((saved.path / "remote_result.json").read_text())
+    serialized_output = saved.stdout_text() + json.dumps(remote_payload)
+    assert "synthetic-secret-" not in serialized_output
+    assert "<redacted>" in serialized_output
     report = scheduler.tick()  # reap work and dispatch the remote pre-PR check
     assert not report.errors, report
     assert any("check" in x for x in report.dispatched), (report, scheduler.state.get("DM-001"))
