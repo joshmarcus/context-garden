@@ -195,6 +195,37 @@ def test_completed_state_history_is_compressed_exact_and_restorable(tmp_path):
     assert State(path).get("CG-001")["review_feedback_history"] == feedback
 
 
+def test_state_history_commit_skips_payload_changed_after_preparation(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    state.get("CG-001")["review_feedback_history"] = [{"body": "original" * 1000}]
+    state.save()
+    prepared = state.prepare_completed({"CG-001"}, limit=1)
+
+    state.get("CG-001")["review_feedback_history"].append({"body": "new finding"})
+    report = state.commit_completed(prepared, {"CG-001"})
+
+    assert report["tasks"] == 0
+    assert "_history_ref" not in state.get("CG-001")
+    assert len(state.get("CG-001")["review_feedback_history"]) == 2
+
+
+def test_state_history_preparation_respects_target_volume_headroom(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    state = State(path)
+    state.get("CG-001")["review_feedback_history"] = [{"body": "original" * 1000}]
+
+    class Usage:
+        free = 1024
+
+    monkeypatch.setattr("garden.scheduler.state.shutil.disk_usage", lambda _path: Usage())
+
+    with pytest.raises(OSError, match="reserved headroom"):
+        state.prepare_completed({"CG-001"}, limit=1, min_free_bytes=2048)
+
+    assert "_history_ref" not in state.get("CG-001")
+
+
 def test_state_history_crash_before_compact_state_commit_keeps_original(tmp_path, monkeypatch):
     path = tmp_path / "state.json"
     state = State(path)

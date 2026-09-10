@@ -109,6 +109,16 @@ class RunMutationConflict(RuntimeError):
     """A writer attempted to commit an obsolete worker claim generation."""
 
 
+@dataclass(frozen=True)
+class ArchivePreparation:
+    """Verified CAS objects and source identities ready for a short archive commit."""
+
+    task_id: str
+    run_id: str
+    files: dict[str, dict[str, Any]]
+    source_files: dict[str, tuple[int, int, int]]
+
+
 @dataclass
 class Run:
     task_id: str
@@ -752,6 +762,7 @@ class RunStore:
     MAX_INDEX_AGE_SECONDS = 1.0
     ARCHIVE_VERSION = 2
     COMPACT_MIN_BYTES = 4096
+    COPY_CHUNK_BYTES = 1024 * 1024
 
     def __init__(self, garden_dir: Path):
         self.dir = garden_dir / "runs"
@@ -1209,6 +1220,175 @@ class RunStore:
             self._write_archive_index()
             (self.archive_dir / "pending.json").unlink(missing_ok=True)
             return moved
+
+    def prepare_terminal_archive(
+        self,
+        before: dt.datetime,
+        protected_run_ids: set[str] | None = None,
+        *,
+        limit: int | None = None,
+        min_free_bytes: int = 0,
+    ) -> list[ArchivePreparation]:
+        """Stream and verify a bounded set of archive blobs without moving live records.
+
+        Preparation intentionally does not take the archive mutation lock or alter a run.
+        A later commit compares the complete source-file identity set and eligibility again,
+        so a worker/controller update merely makes this preparation stale.
+        """
+        protected = protected_run_ids or set()
+        prepared: list[ArchivePreparation] = []
+        for run in self._active_disk_runs():
+            if limit is not None and len(prepared) >= limit:
+                break
+            if not self._archive_eligible(run, before, protected):
+                continue
+            files: dict[str, dict[str, Any]] = {}
+            source_files = self._source_file_identities(run.path)
+            for relative, identity in source_files.items():
+                path = run.path / relative
+                if (relative in {"run.json", "archive.json"}
+                        or "ui" in Path(relative).parts
+                        or identity[0] < self.COMPACT_MIN_BYTES):
+                    continue
+                files[relative] = self._prepare_blob(path, min_free_bytes=min_free_bytes)
+            prepared.append(ArchivePreparation(run.task_id, run.run_id, files, source_files))
+        return prepared
+
+    def commit_terminal_archive(
+        self,
+        prepared: list[ArchivePreparation],
+        before: dt.datetime,
+        protected_run_ids: set[str] | None = None,
+    ) -> int:
+        """Commit already-prepared runs after rechecking liveness and every source file."""
+        protected = protected_run_ids or set()
+        moved = 0
+        with self._archive_mutation():
+            for plan in prepared:
+                source = self.dir / plan.task_id / plan.run_id
+                try:
+                    run = Run.load(source)
+                except (OSError, json.JSONDecodeError, TypeError):
+                    continue
+                if (not self._archive_eligible(run, before, protected)
+                        or self._source_file_identities(source) != plan.source_files):
+                    continue
+                target = self.archive_dir / plan.task_id / plan.run_id
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    continue
+                self._durable_replace(
+                    self.archive_dir / "pending.json",
+                    json.dumps({"version": self.ARCHIVE_VERSION, "task_id": plan.task_id,
+                                "run_id": plan.run_id, "source": str(source),
+                                "target": str(target)}).encode(),
+                )
+                os.replace(source, target)
+                manifest = {"version": self.ARCHIVE_VERSION, "files": plan.files, "repair": None}
+                self._durable_replace(
+                    target / "archive.json", json.dumps(manifest, indent=2, sort_keys=True).encode()
+                )
+                self._index.dirty_tasks.add(plan.task_id)
+                moved += 1
+            self._write_archive_index()
+            (self.archive_dir / "pending.json").unlink(missing_ok=True)
+        return moved
+
+    def retire_prepared_archive(self, prepared: list[ArchivePreparation]) -> None:
+        """Verify committed blobs again, then retire only unchanged redundant originals."""
+        verified: list[tuple[ArchivePreparation, str]] = []
+        for plan in prepared:
+            run_dir = self.archive_dir / plan.task_id / plan.run_id
+            if not run_dir.is_dir():
+                continue
+            for relative in plan.files:
+                source = run_dir / relative
+                if not source.exists():
+                    continue
+                self._prepare_blob(source, min_free_bytes=0)
+                verified.append((plan, relative))
+        with self._archive_mutation():
+            for plan, relative in verified:
+                source = self.archive_dir / plan.task_id / plan.run_id / relative
+                try:
+                    stat = source.stat()
+                except FileNotFoundError:
+                    continue
+                if (stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ino", 0)) != (
+                    plan.source_files[relative]
+                ):
+                    continue
+                source.unlink()
+
+    @staticmethod
+    def _archive_eligible(run: Run, before: dt.datetime, protected: set[str]) -> bool:
+        terminal = {"done", "blocked", "failed", "timeout", "cancelled", "superseded"}
+        if run.status not in terminal or not run.finished_at or run.run_id in protected:
+            return False
+        try:
+            return dt.datetime.fromisoformat(run.finished_at) < before
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _source_file_identities(run_dir: Path) -> dict[str, tuple[int, int, int]]:
+        identities: dict[str, tuple[int, int, int]] = {}
+        for path in sorted(path for path in run_dir.rglob("*") if path.is_file()):
+            stat = path.stat()
+            identities[path.relative_to(run_dir).as_posix()] = (
+                stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ino", 0)
+            )
+        return identities
+
+    def _prepare_blob(self, path: Path, *, min_free_bytes: int) -> dict[str, Any]:
+        """Create and byte-verify one CAS blob while retaining the authoritative source."""
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as source:
+            while chunk := source.read(self.COPY_CHUNK_BYTES):
+                digest.update(chunk)
+                size += len(chunk)
+        sha = digest.hexdigest()
+        blob = self._blob_path(sha)
+        if not blob.exists():
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(blob.parent).free
+            # gzip can be slightly larger than incompressible input. Reserve a chunk for
+            # format overhead and require the configured operational floor afterwards.
+            required = size + self.COPY_CHUNK_BYTES + min_free_bytes
+            if free < required:
+                raise OSError(
+                    f"archive volume has {free} free bytes; {required} required "
+                    f"({min_free_bytes} bytes reserved headroom)"
+                )
+            with tempfile.NamedTemporaryFile(
+                dir=blob.parent, prefix=f".{blob.name}-", delete=False
+            ) as raw:
+                staged_blob = Path(raw.name)
+            try:
+                with path.open("rb") as source, staged_blob.open("wb") as raw:
+                    with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+                        shutil.copyfileobj(source, compressed, length=self.COPY_CHUNK_BYTES)
+                    raw.flush()
+                    os.fsync(raw.fileno())
+                os.replace(staged_blob, blob)
+                self._fsync_directory(blob.parent)
+            finally:
+                staged_blob.unlink(missing_ok=True)
+        reconstructed_digest = hashlib.sha256()
+        reconstructed_size = 0
+        try:
+            with gzip.open(blob, "rb") as reconstructed:
+                while chunk := reconstructed.read(self.COPY_CHUNK_BYTES):
+                    reconstructed_digest.update(chunk)
+                    reconstructed_size += len(chunk)
+        except (OSError, EOFError, gzip.BadGzipFile) as exc:
+            raise ValueError(f"archive blob verification failed: {blob}") from exc
+        if reconstructed_size != size or reconstructed_digest.hexdigest() != sha:
+            raise ValueError(f"archive blob verification failed: {blob}")
+        stat = path.stat()
+        return {"sha256": sha, "bytes": size, "mode": stat.st_mode & 0o777,
+                "mtime_ns": stat.st_mtime_ns, "encoding": "gzip"}
 
     def repair_pending_archive(self) -> bool:
         """Resolve one interrupted archive transaction without selecting new runs.

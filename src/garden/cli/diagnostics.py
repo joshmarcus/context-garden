@@ -112,19 +112,25 @@ def archive_runs(
             raise typer.Exit(2) from None
     scheduler = _scheduler(store)
     before = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
-    with scheduler.tick_lock():
-        # The controller lock freezes task finalization while eligibility and every
-        # destructive commit are rechecked. Worker record updates remain visible here.
+
+    def reference_analysis():
         store.invalidate_tasks()
-        tasks = store.tasks()
+        current_tasks = store.tasks()
+        scheduler.state = type(scheduler.state)(scheduler.state.path)
+        state_text = json.dumps(scheduler.state.data)
+        current_records = rs.all_runs()
+        current_protected = {run.run_id for run in current_records if run.run_id in state_text}
+        current_protected.update(scheduler.unreaped_run_ids())
+        current_protected.update(
+            run.run_id for run in current_records
+            if run.task_id in current_tasks and not current_tasks[run.task_id].status.terminal
+        )
+        return current_tasks, current_protected
+
+    with scheduler.tick_lock():
+        # Freeze task finalization for the reference snapshot used by the preview.
         try:
-            scheduler.state = type(scheduler.state)(scheduler.state.path)
-            state_text = json.dumps(scheduler.state.data)
-            records = rs.all_runs()
-            protected = {run.run_id for run in records if run.run_id in state_text}
-            protected.update(scheduler.unreaped_run_ids())
-            protected.update(run.run_id for run in records
-                             if run.task_id in tasks and not tasks[run.task_id].status.terminal)
+            tasks, protected = reference_analysis()
             preview = rs.archive_preview(before, protected, limit=limit)
             fence_report = scheduler.fence_history_report(apply=False, limit=limit)
         except (OSError, ValueError, json.JSONDecodeError, HistoryUnavailable,
@@ -140,15 +146,46 @@ def archive_runs(
         if not apply:
             console.print("preview only; pass --apply to archive and compact these runs")
             return
+        # A first migration creates CAS directories during unlocked preparation. Publish
+        # the valid empty ledger first so concurrent history readers never mistake those
+        # prepared (but not yet referenced) blobs for an index-less archive.
+        if not (rs.archive_dir / "index.json").exists():
+            rs.rebuild_archive_index()
+
+    # Hashing, gzip compression, fsync and byte verification can be lengthy. They retain
+    # the live originals and deliberately run without the scheduler tick lock. The actual
+    # move below compares all source identities and repeats the authoritative reference
+    # analysis while the scheduler is briefly stopped.
+    min_free_mb = int(store.config.get("doctor.min_free_mb", 2048) or 0)
+    try:
+        prepared = rs.prepare_terminal_archive(
+            before, protected, limit=limit, min_free_bytes=min_free_mb * 1024 * 1024
+        )
+        prepared_state = scheduler.state.prepare_completed(
+            {task.id for task in tasks.values() if task.status.terminal},
+            limit=limit,
+            min_free_bytes=min_free_mb * 1024 * 1024,
+        )
+    except (OSError, ValueError, HistoryUnavailable) as exc:
+        err.print(f"[red]archive preparation stopped safely: {exc}[/red]")
+        raise typer.Exit(2) from None
+
+    with scheduler.tick_lock():
         try:
-            moved = rs.archive_terminal(before, protected, limit=limit)
-            state_report = scheduler.state.archive_completed(
-                {task.id for task in tasks.values() if task.status.terminal}, limit=limit
+            tasks, protected = reference_analysis()
+            moved = rs.commit_terminal_archive(prepared, before, protected)
+            state_report = scheduler.state.commit_completed(
+                prepared_state, {task.id for task in tasks.values() if task.status.terminal}
             )
             fence_report = scheduler.fence_history_report(apply=True, limit=limit)
         except (OSError, ValueError, HistoryUnavailable, StateCorruptionError) as exc:
             err.print(f"[red]archive maintenance stopped safely: {exc}[/red]")
             raise typer.Exit(2) from None
+    try:
+        rs.retire_prepared_archive(prepared)
+    except (OSError, ValueError, HistoryUnavailable) as exc:
+        err.print(f"[red]archive verification stopped safely; originals retained: {exc}[/red]")
+        raise typer.Exit(2) from None
     console.print(
         f"archived {moved} terminal run(s) finished before {before.isoformat()} to "
         f"{rs.archive_dir}; retained {len(protected)} recovery-referenced run(s)"
