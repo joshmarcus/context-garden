@@ -351,6 +351,31 @@ def test_controller_owned_ci_diagnostic_is_head_bound_and_redacted_for_revision(
     assert "controller-secret" not in brief and "token=<redacted>" in brief
 
 
+def test_controller_ci_handoff_redacts_complete_authorization_headers(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    task.runner = "remote"
+    sched.store.save(task)
+    secret_values = ("bearer-controller-secret", "basic-controller-secret")
+    check = _ci_run(sched, task, pr.head_sha)
+
+    sched._after_ci_check(task, check, [{
+        "name": "actions",
+        "status": "fail",
+        "summary": f"Authorization: Bearer {secret_values[0]}",
+        "details": (
+            f"authorization=Basic {secret_values[1]}; request rejected\n"
+            "failed test_authorization"
+        ),
+    }], {"head": pr.head_sha, "ci_note": "CI failed"}, TickReport())
+    revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+
+    brief = (revise.path / "brief.md").read_text()
+    assert "Authorization: <redacted>" in brief
+    assert "authorization=<redacted>; request rejected" in brief
+    assert "failed test_authorization" in brief
+    assert all(secret not in brief for secret in secret_values)
+
+
 def test_distinct_same_second_comments_survive_and_edits_replace_the_same_id(sched, fake_github):
     task, pr = _open_task(sched, fake_github)
     common = {"kind": "line comment", "author": "josh", "created": "2026-09-09T11:15:00Z",
