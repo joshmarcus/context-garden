@@ -6,6 +6,7 @@ a workplace development-host service can therefore use the same lifecycle.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -46,6 +47,7 @@ class EnvironmentProfile:
     persistent_workspace: bool = False
     health_path: str = "/health"
     provider_options: dict[str, Any] = field(default_factory=dict)
+    source_head: str = ""
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,15 @@ class HostDeclaration:
     host_id: str
     operation_id: str
     pool: PoolDeclaration
+    deadline_utc: str = ""
+
+
+def host_operation_id(pool: PoolDeclaration, slot: int, scale_operation_id: str = "") -> str:
+    """Bind a slot to its admitted generation; keep the generic legacy identity stable."""
+    raw = f"{CONTRACT_VERSION}\0{pool.owner}\0{pool.name}\0{slot}"
+    if scale_operation_id:
+        raw += "\0" + scale_operation_id
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 @dataclass(frozen=True)

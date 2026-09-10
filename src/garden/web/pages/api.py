@@ -6,7 +6,6 @@ import datetime as dt
 import hashlib
 import json
 import math
-import os
 import re
 import secrets
 from pathlib import Path
@@ -28,16 +27,34 @@ from ..common import Site
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
 
+    def request_object(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise HTTPException(422, "request body must be an object")
+        return value
+
+    async def worker_request(request: Request) -> dict[str, Any]:
+        try:
+            value = await request.json()
+        except ValueError:
+            raise HTTPException(422, "request body must be valid JSON") from None
+        return request_object(value)
+
     def host_facts(value: Any) -> dict[str, Any] | None:
         """Validate the small, durable host-attribution record at the HTTP boundary."""
         if value is None:
             return None
         if not isinstance(value, dict):
             raise HTTPException(422, "host_facts must be an object")
-        text_fields = ("profile_version", "bootstrap_version", "source_head", "provider_id")
+        text_fields = ("profile_version", "bootstrap_version", "source_head", "provider_id",
+                       "operation_id")
         number_fields = ("memory_available_bytes", "memory_total_bytes", "disk_free_bytes",
                          "cpu_count", "observed_at")
         facts: dict[str, Any] = {}
+        schema_version = value.get("schema_version")
+        if schema_version is not None:
+            if schema_version != 1 or isinstance(schema_version, bool):
+                raise HTTPException(422, "host_facts.schema_version must be 1")
+            facts["schema_version"] = 1
         for name in text_fields:
             item = value.get(name)
             if item is not None:
@@ -51,20 +68,90 @@ def register(app: FastAPI, site: Site) -> None:
                         or item < 0 or item > 2**63 - 1 or not math.isfinite(item):
                     raise HTTPException(422, f"host_facts.{name} must be a finite number between 0 and 2**63-1")
                 facts[name] = item
+        attestations = value.get("readiness_attestations")
+        if attestations is not None:
+            if not isinstance(attestations, dict):
+                raise HTTPException(422, "host_facts.readiness_attestations must be an object")
+            if schema_version is None:
+                allowed = {"bootstrap_manifest", "authenticated_registration", "repository_ci"}
+                if (set(attestations) - allowed
+                        or any(item is not True and item is not False
+                               for item in attestations.values())):
+                    raise HTTPException(422, "legacy host readiness attestations must contain known booleans")
+                facts["readiness_attestations"] = attestations
+            else:
+                shapes = {
+                    "bootstrap_manifest": {"ok", "source_head", "profile_version",
+                                           "bootstrap_version", "bootstrap_sha256",
+                                           "installed_distribution", "direct_url_commit"},
+                    "authenticated_registration": {"ok", "method"},
+                    "repository_access": {"ok", "repository", "method"},
+                    "ci_provider_read": {"ok", "provider", "repository", "source_head",
+                                         "authenticated"},
+                }
+                if (set(attestations) - set(shapes) or any(not isinstance(item, dict)
+                                                           for item in attestations.values())):
+                    raise HTTPException(422, "versioned host readiness attestations contain unknown records")
+                if (len(json.dumps(attestations)) > 4096
+                        or any(set(item) - shapes[name]
+                               or (name != "authenticated_registration" and item.get("ok") is not True)
+                               or (name == "authenticated_registration"
+                                   and item.get("ok") is not True and item.get("ok") is not False)
+                               for name, item in attestations.items())
+                        or any(not isinstance(field, (str, bool)) or len(str(field)) > 256
+                               for item in attestations.values() for key, field in item.items()
+                               if key != "ok")):
+                    raise HTTPException(422, "versioned host readiness attestations must be bounded successes")
+                facts["readiness_attestations"] = {name: dict(item)
+                                                    for name, item in attestations.items()}
+        source_bootstrap = value.get("source_bootstrap")
+        if source_bootstrap is not None:
+            expected = {"source_head", "bootstrap_sha256", "operation_id"}
+            if (schema_version != 1 or not isinstance(source_bootstrap, dict)
+                    or set(source_bootstrap) != expected
+                    or any(not isinstance(source_bootstrap.get(name), str)
+                           for name in expected)
+                    or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}",
+                                        source_bootstrap["source_head"])
+                    or not re.fullmatch(r"[0-9a-f]{64}", source_bootstrap["bootstrap_sha256"])
+                    or not source_bootstrap["operation_id"]
+                    or len(source_bootstrap["operation_id"]) > 128):
+                raise HTTPException(422, "host_facts.source_bootstrap is invalid")
+            facts["source_bootstrap"] = source_bootstrap
+            if (facts.get("source_head") != source_bootstrap["source_head"]
+                    or facts.get("operation_id") != source_bootstrap["operation_id"]):
+                raise HTTPException(422, "host_facts source/bootstrap identity is inconsistent")
         return facts
 
-    def persist_host_facts(run: Any, value: Any) -> None:
+    def bound_host_facts(value: Any, host: dict[str, Any]) -> dict[str, Any] | None:
         facts = host_facts(value)
         if facts is not None:
+            for name in ("provider_id", "operation_id", "source_head", "profile_version",
+                         "bootstrap_version"):
+                expected = host.get(name)
+                if expected and facts.get(name) != expected:
+                    raise HTTPException(409, f"host_facts.{name} does not match authenticated host")
+        return facts
+
+    def persist_host_facts(run: Any, value: Any, host: dict[str, Any]) -> None:
+        facts = bound_host_facts(value, host)
+        if facts is not None:
+            if run.host != host.get("name"):
+                raise HTTPException(409, "host facts do not belong to the leased host")
             (run.path / "host_facts.json").write_text(json.dumps(facts))
 
     def worker_host(authorization: str) -> dict[str, Any]:
+        from ...hosts.registry import authenticate_worker, worker_configuration
+
         if not authorization.startswith("Bearer "):
             raise HTTPException(401, "bearer token required")
         token = authorization[7:]
-        for host in (hub.store.config.get("workers.hosts") or []):
-            if token and token == os.environ.get(str(host.get("token_env") or ""), ""):
-                return dict(host)
+        try:
+            host = authenticate_worker(worker_configuration(hub.store.config), token)
+        except (OSError, TypeError, ValueError):
+            raise HTTPException(503, "worker enrollment registry is unavailable") from None
+        if host is not None:
+            return host
         raise HTTPException(403, "unknown worker token")
 
     def leased(run: Any) -> bool:
@@ -213,9 +300,19 @@ def register(app: FastAPI, site: Site) -> None:
         grace); it cannot be reused after expiry, reclaim, completion, or by another host.
         """
         host_cfg = worker_host(authorization)
-        body = await request.json()
+        body = await worker_request(request)
         if str(body.get("host") or "") != str(host_cfg.get("name") or ""):
             raise HTTPException(403, "token does not belong to this host")
+        for name in ("harnesses", "tiers"):
+            offered_values = body.get(name) or []
+            if (not isinstance(offered_values, list)
+                    or any(not isinstance(item, str) for item in offered_values)):
+                raise HTTPException(422, f"{name} must be a list of strings")
+        requested_capacity = body.get("capacity", 1)
+        if (isinstance(requested_capacity, bool) or not isinstance(requested_capacity, int)
+                or not 1 <= requested_capacity <= 1024):
+            raise HTTPException(422, "capacity must be an integer between 1 and 1024")
+        bound_host_facts(body.get("host_facts"), host_cfg)
         request_id = body.get("claim_request_id")
         if request_id is None:
             # Compatibility for older independent workers. New workers supply this value
@@ -223,9 +320,9 @@ def register(app: FastAPI, site: Site) -> None:
             request_id = secrets.token_urlsafe(24)
         if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id):
             raise HTTPException(422, "claim_request_id must be 16-128 URL-safe characters")
-        offered = {str(x) for x in (body.get("harnesses") or [])}
-        tiers = {str(x) for x in (body.get("tiers") or [])}
-        capacity = min(max(1, int(body.get("capacity") or 1)), int(host_cfg.get("max_parallel") or 1))
+        offered = set(body.get("harnesses") or [])
+        tiers = set(body.get("tiers") or [])
+        capacity = min(requested_capacity, int(host_cfg.get("max_parallel") or 1))
         in_place = bool(host_cfg.get("in_place"))
         with hub.action_lock:
             from ...runner.base import pass_env_patterns
@@ -393,7 +490,7 @@ def register(app: FastAPI, site: Site) -> None:
                         **({"ci_rerun": True} if check_payload.get("ci_rerun") else {}),
                     }
                 run.claim_response = payload
-                persist_host_facts(run, body.get("host_facts"))
+                persist_host_facts(run, body.get("host_facts"), host_cfg)
                 run.save()
                 return JSONResponse(payload)
         return Response(status_code=204)
@@ -401,19 +498,25 @@ def register(app: FastAPI, site: Site) -> None:
     @app.post("/api/runs/{run_id}/heartbeat")
     async def heartbeat(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
-        body = await request.json()
+        body = await worker_request(request)
+        bound_host_facts(body.get("host_facts"), host)
+        transcript_value = body.get("transcript", "")
+        if not isinstance(transcript_value, str):
+            raise HTTPException(422, "transcript must be a string")
+        offset_value = body.get("transcript_offset")
+        if (offset_value is not None
+                and (isinstance(offset_value, bool) or not isinstance(offset_value, int)
+                     or offset_value < 0)):
+            raise HTTPException(422, "transcript_offset must be a non-negative integer")
         with hub.action_lock:
             run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
-            persist_host_facts(run, body.get("host_facts"))
-            chunk = str(body.get("transcript") or "")
+            chunk = transcript_value
             if chunk:
                 transcript = run.path / "stdout.json"
                 current = transcript.stat().st_size if transcript.exists() else 0
-                offset = body.get("transcript_offset")
+                offset = offset_value
                 if offset is None:  # compatibility with workers deployed before CG-428
                     offset = current
-                if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-                    raise HTTPException(422, "transcript_offset must be a non-negative integer")
                 encoded = chunk.encode()
                 if offset < current:
                     with transcript.open("rb") as f:
@@ -425,6 +528,7 @@ def register(app: FastAPI, site: Site) -> None:
                 else:
                     with transcript.open("ab") as f:
                         f.write(encoded)
+            persist_host_facts(run, body.get("host_facts"), host)
             renew(run)
             now = dt.datetime.now(dt.UTC)
             deadline = execution_deadline(run)
@@ -441,12 +545,26 @@ def register(app: FastAPI, site: Site) -> None:
     @app.post("/api/runs/{run_id}/finish")
     async def finish(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
-        body = await request.json()
+        body = await worker_request(request)
+        result = body.get("result", {})
+        usage = body.get("usage", {})
+        if not isinstance(result, dict):
+            raise HTTPException(422, "result must be an object")
+        if not isinstance(usage, dict):
+            raise HTTPException(422, "usage must be an object")
+        checks = result.get("checks", [])
+        if (not isinstance(checks, list)
+                or any(not isinstance(item, dict) for item in checks)):
+            raise HTTPException(422, "result.checks must be a list of objects")
+        exit_code = body.get("exit_code", 0)
+        if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+            raise HTTPException(422, "exit_code must be an integer")
+        bound_host_facts(body.get("host_facts"), host)
         with hub.action_lock:
             run = run_for(run_id)
             token = str(body.get("lease_token") or "")
             final = str(body.get("final_text") or "")
-            posted = {"result": body.get("result") or {}, "usage": body.get("usage") or {},
+            posted = {"result": result, "usage": usage,
                       "cost_usd": body.get("cost_usd"), "final_text": final,
                       "error": str(body.get("error") or ""),
                       "session_id": str(body.get("session_id") or ""),
@@ -461,7 +579,7 @@ def register(app: FastAPI, site: Site) -> None:
                 result_path = run.path / "remote_result.json"
                 prior = json.loads(result_path.read_text()) if result_path.exists() else {}
                 same = (run.pushed_head == str(body.get("pushed_head") or "")
-                        and run.read_exit_code() == int(body.get("exit_code") or 0)
+                        and run.read_exit_code() == exit_code
                         and prior == posted)
                 if not same:
                     raise HTTPException(409, "completed run result is immutable")
@@ -469,12 +587,12 @@ def register(app: FastAPI, site: Site) -> None:
             if run.status != "running":
                 raise HTTPException(409, "run lease has been revoked")
             run = claimed_run(run_id, host, token)
+            persist_host_facts(run, body.get("host_facts"), host)
             run.pushed_head = str(body.get("pushed_head") or "")
             run.final_received_at = dt.datetime.now(dt.UTC).isoformat()
             (run.path / "final.md").write_text(final)
             (run.path / "remote_result.json").write_text(json.dumps(posted))
             if run.mode == "check":
-                checks = (body.get("result") or {}).get("checks") or []
                 if posted["env_error"] and posted["env_kind"] == "materialization":
                     checks = [{"name": "checks", "status": "error",
                                "summary": "check execution did not complete",
@@ -483,5 +601,5 @@ def register(app: FastAPI, site: Site) -> None:
             run.save()
             # Completion is written last: once visible, claim skips this run and the accepted
             # generation remains immutable until reap promotes its staging commit.
-            (run.path / "exit_code").write_text(str(int(body.get("exit_code") or 0)))
+            (run.path / "exit_code").write_text(str(exit_code))
         return {"ok": True}

@@ -67,7 +67,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     allowed = server_origins(host, port) + [str(o) for o in (store.config.get("web.trusted_origins") or [])]
     tokens = [os.environ.get(str(h.get("token_env") or ""), "")
               for h in (store.config.get("workers.hosts") or [])]
-    app.add_middleware(OriginCheck, allowed_origins=allowed, worker_tokens=tokens)
+    from ..hosts.registry import authenticate_worker, worker_configuration
+
+    app.add_middleware(
+        OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
+        worker_authenticator=lambda token: authenticate_worker(
+            worker_configuration(store.config), token) is not None,
+    )
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
 

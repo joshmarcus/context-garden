@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import datetime as dt
+import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
 
 from garden.hosts import (
+    Enrollment,
     EnvironmentProfile,
     HostLifecycle,
     HostState,
     JsonStateStore,
     PoolDeclaration,
+    ScaleOperation,
+    durable_worker_readiness,
     pool_from_dict,
 )
 from garden.hosts.ec2 import OPERATION_TAG, OWNER_TAG, POOL_TAG, EC2Provider
@@ -290,6 +296,30 @@ def test_ec2_policy_tags_and_standard_credits(tmp_path):
         EC2Provider(client, required_tags={OWNER_TAG: "someone-else"})
 
 
+def test_ec2_deadline_enforcement_is_verified_before_launch():
+    from garden.hosts.models import HostDeclaration
+
+    client = StubEC2()
+    spec = pool(provider="ec2", profile=replace(profile(), endpoint=""), provider_options={
+        "instance_type": "t3.xlarge", "subnet_id": "subnet-test", "security_group_ids": ["sg-test"],
+        "instance_profile_arn": "arn:role", "hourly_usd": 0.18})
+    declaration = HostDeclaration("worker-0", "op-deadline", spec, "2030-01-01T00:00:00Z")
+    with pytest.raises(ValueError, match="external termination enforcer"):
+        EC2Provider(client).provision(declaration)
+    assert client.run_args is None
+
+    events = []
+
+    class Enforcer:
+        def arm_and_verify(self, value):
+            assert client.run_args is None
+            events.append(value)
+
+    EC2Provider(client, deadline_enforcer=Enforcer()).provision(declaration)
+    assert events == [declaration]
+    assert client.run_args["InstanceInitiatedShutdownBehavior"] == "terminate"
+
+
 def test_ec2_does_not_claim_termination_before_aws_confirms():
     client = StubEC2()
     client.instances = [{"InstanceId": "i-owned", "State": {"Name": "running"}, "Tags": [
@@ -327,3 +357,207 @@ def test_endpoint_bootstrap_requires_prebuilt_contract():
     from garden.hosts.models import HostDeclaration
     with pytest.raises(ValueError, match="verified prebuilt AMI"):
         EC2Provider._user_data(HostDeclaration("host", "op", pool()))
+
+
+class Enrollments:
+    def __init__(self, values=None):
+        self.values = values or {}
+        self.revoked = []
+
+    def resolve(self, host_id):
+        return self.values.get(host_id, Enrollment())
+
+    def ensure(self, host_id, _secret_ref):
+        return self.resolve(host_id)
+
+    def revoke(self, host_id):
+        self.revoked.append(host_id)
+        return (f"secret:{host_id}",)
+
+
+def ready_enrollment(host_id="workers-0", **changes):
+    return replace(Enrollment(secret_ref=f"secret/{host_id}", model_identity="codex-host",
+                              repository_identity="github-installation",
+                              tailnet_identity="tailscale-tag-worker",
+                              controller_identity="worker-token"), **changes)
+
+
+def test_scale_operation_resumes_missing_and_expired_enrollment_without_duplicates(tmp_path):
+    provider = FakeProvider()
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "lifecycle.json"))
+    enrollments = Enrollments({"workers-0": ready_enrollment()})
+    def clock():
+        return dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    operation = ScaleOperation(lifecycle, tmp_path / "workers-scale.json", enrollments, now=clock)
+    requested = pool(enabled=True, desired=2, maximum=2,
+                     profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    deadline = dt.datetime(2026, 9, 9, tzinfo=dt.UTC)
+
+    status = operation.request(requested, deadline=deadline, aggregate_spend_limit_usd=80)
+    assert status.desired == 2 and status.missing_setup == {
+        "workers-1": ("scoped bootstrap secret", "dedicated model identity",
+                      "repository installation/key identity", "tag-limited tailnet enrollment",
+                      "scoped controller enrollment")}
+    assert operation.continue_(requested).healthy == 1
+    enrollments.values["workers-1"] = ready_enrollment("workers-1",
+        model_expires_at="2026-09-07T00:00:00+00:00")
+    assert operation.continue_(requested).missing_setup["workers-1"] == (
+        "renew expired model identity",)
+    enrollments.values["workers-1"] = ready_enrollment("workers-1",
+        model_expires_at="2026-09-10T00:00:00+00:00")
+    assert operation.continue_(requested).healthy == 2
+    assert operation.continue_(requested).healthy == 2
+    assert provider.provision_calls == 2
+
+
+def test_scale_continuation_rejects_unadmitted_capacity_change(tmp_path):
+    provider = FakeProvider()
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "life.json"))
+    enrollments = Enrollments({f"workers-{slot}": ready_enrollment(f"workers-{slot}")
+                               for slot in range(4)})
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    operation = ScaleOperation(lifecycle, tmp_path / "pool-scale.json", enrollments,
+                               now=lambda: now)
+    admitted = pool(enabled=True, desired=1, maximum=4,
+                    profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    operation.request(admitted, deadline=now + dt.timedelta(hours=1),
+                      aggregate_spend_limit_usd=80)
+    operation.continue_(admitted)
+
+    with pytest.raises(ValueError, match="new admitted scale request"):
+        operation.continue_(replace(admitted, desired=4))
+    assert provider.provision_calls == 1
+
+
+def test_concurrent_requests_cannot_race_past_aggregate_admission(tmp_path):
+    provider = FakeProvider(hourly_usd=0.4)
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+
+    def admit(name):
+        requested = replace(
+            pool(enabled=True, desired=1), name=name,
+            profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"),
+        )
+        operation = ScaleOperation(
+            HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / f"{name}-life.json")),
+            tmp_path / f"{name}-scale.json", Enrollments(), now=lambda: now,
+        )
+        try:
+            operation.request(requested, deadline=now + dt.timedelta(hours=1),
+                              aggregate_spend_limit_usd=0.5)
+            return "admitted"
+        except ValueError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(admit, ("workers-a", "workers-b")))
+    assert outcomes.count("admitted") == 1
+    assert sum("aggregate admitted worker budget" in item for item in outcomes) == 1
+
+
+@pytest.mark.parametrize("expiry", ["not-a-date", "2026-09-09T00:00:00"])
+def test_model_identity_expiry_must_be_valid_and_timezone_aware(expiry):
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    assert ready_enrollment(model_expires_at=expiry).missing(now) == (
+        "valid model identity expiry",)
+
+
+def test_scale_partial_bootstrap_failure_preserves_ready_sibling_and_cleanup(tmp_path):
+    provider = FakeProvider()
+    def checks(host, _pool):
+        return (host.host_id == "workers-0",
+                "durable real-task result returned" if host.host_id == "workers-0"
+                else "pinned bootstrap failed")
+    lifecycle = HostLifecycle({"fake": provider}, JsonStateStore(tmp_path / "life.json"),
+                              health_check=checks)
+    enrollments = Enrollments({f"workers-{slot}": ready_enrollment(f"workers-{slot}")
+                               for slot in range(2)})
+    now = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    operation = ScaleOperation(lifecycle, tmp_path / "pool-scale.json", enrollments,
+                               now=lambda: now)
+    requested = pool(enabled=True, desired=2, maximum=2,
+                     profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    operation.request(requested, deadline=now + dt.timedelta(hours=1))
+
+    result = operation.continue_(requested)
+    assert result.healthy == 1
+    assert any(host.state == HostState.TERMINATED for host in result.hosts)
+    cleaned = operation.cleanup(requested)
+    assert cleaned.healthy == 0
+    assert enrollments.revoked == ["workers-0", "workers-1"]
+    assert cleaned.pending_credential_revocations == (
+        "secret:workers-0", "secret:workers-1")
+
+
+def test_scale_deadline_and_aggregate_budget_survive_restart(tmp_path):
+    provider = FakeProvider(hourly_usd=1)
+    state = tmp_path / "pool-scale.json"
+    lifecycle_state = tmp_path / "life.json"
+    enrollments = Enrollments({"workers-0": ready_enrollment()})
+    before = dt.datetime(2026, 9, 8, tzinfo=dt.UTC)
+    requested = pool(enabled=True, desired=1, estimated_runtime_hours=2, spend_limit_usd=10,
+                     profile=replace(profile(), enrollment_secret_ref="secret/{host_id}"))
+    first = ScaleOperation(HostLifecycle({"fake": provider}, JsonStateStore(lifecycle_state)),
+                           state, enrollments, now=lambda: before)
+    with pytest.raises(ValueError, match="aggregate"):
+        first.request(requested, deadline=before + dt.timedelta(hours=1),
+                      aggregate_spend_limit_usd=1)
+    first.request(requested, deadline=before + dt.timedelta(hours=1),
+                  aggregate_spend_limit_usd=80)
+    assert first.continue_(requested).healthy == 1
+    after = before + dt.timedelta(hours=2)
+    restarted = ScaleOperation(HostLifecycle({"fake": provider}, JsonStateStore(lifecycle_state)),
+                               state, enrollments, now=lambda: after)
+    assert restarted.continue_(requested).healthy == 0
+    assert provider.destroy_calls == [("fake-1", True)]
+
+
+def test_production_readiness_requires_matching_pinned_durable_task_result(tmp_path):
+    check = durable_worker_readiness(tmp_path / ".garden")
+    requested = pool(profile=replace(profile(), source_head="a" * 40),
+                     provider_options={"bootstrap_sha256": "b" * 64})
+    host = __import__("garden.hosts", fromlist=["HostFacts"]).HostFacts(
+        "workers-0", "i-123", "op", HostState.BOOTSTRAPPING, "ami-pinned123", "0.1.0+abcdef")
+    assert check(host, requested)[0] is None
+    run = tmp_path / ".garden/runs/CG-1/run-1"
+    run.mkdir(parents=True)
+    digest = "b" * 64
+    (run / "host_facts.json").write_text(json.dumps({
+        "schema_version": 1,
+        "provider_id": "i-123", "profile_version": "1.0.0",
+        "bootstrap_version": "0.1.0+abcdef", "source_head": "a" * 40,
+        "operation_id": "op",
+        "source_bootstrap": {"source_head": "a" * 40, "bootstrap_sha256": digest,
+                             "operation_id": "op"},
+        "readiness_attestations": {
+            "bootstrap_manifest": {"ok": True, "source_head": "a" * 40,
+                                   "profile_version": "1.0.0",
+                                   "bootstrap_version": "0.1.0+abcdef",
+                                   "bootstrap_sha256": digest,
+                                   "installed_distribution": "context-garden",
+                                   "direct_url_commit": "a" * 40},
+            "authenticated_registration": {"ok": True, "method": "scoped-worker-token"},
+            "repository_access": {"ok": True, "repository": "example/project"},
+            "ci_provider_read": {"ok": True, "source_head": "a" * 40}}}))
+    (run / "run.json").write_text(json.dumps({
+        "run_id": "run-1", "host": "workers-0", "mode": "work", "status": "done",
+        "finished_at": "2026-09-08T12:00:00Z",
+        "final_received_at": "2026-09-08T11:59:59Z"}))
+    (run / "remote_result.json").write_text(json.dumps({"result": {"status": "done"}}))
+    (run / "exit_code").write_text("0")
+    healthy, detail = check(host, requested)
+    assert healthy is True and "run-1" in detail
+    saved_run = json.loads((run / "run.json").read_text())
+    saved_run["mode"] = "revise"
+    (run / "run.json").write_text(json.dumps(saved_run))
+    assert check(host, requested)[0] is True
+
+    facts = json.loads((run / "host_facts.json").read_text())
+    facts["source_head"] = requested.profile.version
+    (run / "host_facts.json").write_text(json.dumps(facts))
+    assert check(host, requested)[0] is None
+
+    facts["source_head"] = "a" * 40
+    facts["readiness_attestations"] = {"bootstrap_manifest": True}
+    (run / "host_facts.json").write_text(json.dumps(facts))
+    assert check(host, requested)[0] is None

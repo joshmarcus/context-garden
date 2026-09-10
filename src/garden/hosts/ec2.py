@@ -13,6 +13,7 @@ import re
 import shlex
 import time
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -33,6 +34,12 @@ class EC2Client(Protocol):
     def terminate_instances(self, **kwargs: Any) -> dict[str, Any]: ...
     def stop_instances(self, **kwargs: Any) -> dict[str, Any]: ...
     def start_instances(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
+class DeadlineEnforcer(Protocol):
+    """Controller-independent termination schedule armed before an instance is launched."""
+
+    def arm_and_verify(self, declaration: HostDeclaration) -> None: ...
 
 
 class EC2Provider:
@@ -56,7 +63,8 @@ class EC2Provider:
     }
 
     def __init__(self, client: EC2Client, *, required_tags: dict[str, str] | None = None,
-                 wait_seconds: float = 60, sleep=time.sleep):
+                 wait_seconds: float = 60, sleep=time.sleep,
+                 deadline_enforcer: DeadlineEnforcer | None = None):
         self.client = client
         self.required_tags = dict(required_tags or {})
         if any(k.startswith("context-garden:") or k.startswith("aws:") for k in self.required_tags):
@@ -66,6 +74,7 @@ class EC2Provider:
             raise ValueError("policy tags must be nonempty strings")
         self.wait_seconds = wait_seconds
         self.sleep = sleep
+        self.deadline_enforcer = deadline_enforcer
 
     def validate_options(self, options: dict[str, Any]) -> None:
         unknown = set(options) - self.ALLOWED_OPTIONS
@@ -106,6 +115,12 @@ class EC2Provider:
         missing = sorted(required - options.keys())
         if missing:
             raise ValueError(f"missing ec2 options: {missing}")
+        self._validate_deadline(declaration.deadline_utc)
+        if declaration.deadline_utc:
+            if options.get("shutdown_behavior", "terminate") != "terminate":
+                raise ValueError("deadline-bound instances require terminate shutdown behavior")
+            if self.deadline_enforcer is None:
+                raise ValueError("deadline-bound instances require an external termination enforcer")
         tags = {
             **self.required_tags,
             OWNED_TAG: "true",
@@ -150,7 +165,7 @@ class EC2Provider:
             ],
             "UserData": self._user_data(declaration),
         }
-        shutdown = options.get("shutdown_behavior", "stop")
+        shutdown = options.get("shutdown_behavior", "terminate" if declaration.deadline_utc else "stop")
         if shutdown not in {"stop", "terminate"}:
             raise ValueError("shutdown_behavior must be stop or terminate")
         args["InstanceInitiatedShutdownBehavior"] = shutdown
@@ -161,6 +176,11 @@ class EC2Provider:
             args["CreditSpecification"] = {"CpuCredits": credits}
         if options.get("availability_zone"):
             args["Placement"] = {"AvailabilityZone": options["availability_zone"]}
+        if declaration.deadline_utc:
+            # All declaration validation precedes the external mutation, which must still
+            # be durably verified before AWS can create a billable instance.
+            assert self.deadline_enforcer is not None
+            self.deadline_enforcer.arm_and_verify(declaration)
         try:
             response = self.client.run_instances(**args)
         except TimeoutError as exc:
@@ -223,8 +243,10 @@ class EC2Provider:
     @staticmethod
     def _user_data(declaration: HostDeclaration) -> str:
         profile = declaration.pool.profile
+        EC2Provider._validate_deadline(declaration.deadline_utc)
+        timer = EC2Provider._deadline_timer(declaration.deadline_utc)
         if not profile.endpoint:
-            return ""
+            return ("#!/bin/sh\nset -eu\n" + timer) if timer else ""
         options = {**declaration.pool.provider_options, **profile.provider_options}
         bootstrap_path = str(options.get("bootstrap_path") or "")
         if not bootstrap_path.startswith("/") or any(c.isspace() for c in bootstrap_path):
@@ -256,14 +278,59 @@ class EC2Provider:
                                     or not 60 <= runtime <= 21600):
             raise ValueError("bootstrap_runtime_seconds must be 60..21600")
         config = json.dumps({"contract_version": CONTRACT_VERSION, "host": declaration.host_id,
+                             "operation_id": declaration.operation_id,
                              "endpoint": profile.endpoint, "secret_ref": profile.enrollment_secret_ref,
                              "profile_version": profile.version,
                              "bootstrap_version": profile.bootstrap_version,
+                             "source_head": profile.source_head or profile.version,
+                             "bootstrap_sha256": digest,
+                             "deadline_utc": declaration.deadline_utc,
+                             "cpu": profile.cpu,
+                             "memory_mib": profile.memory_mib,
+                             "disk_gib": profile.disk_gib,
                              **({"runtime_seconds": runtime} if runtime is not None else {})})
         return ("#!/bin/sh\nset -eu\numask 077\n"
+                + timer
                 + installer + "test -x " + shlex.quote(bootstrap_path) + "\n"
                 + "printf '%s' " + shlex.quote(config) + " > /run/host-bootstrap.json\n"
                 + shlex.quote(bootstrap_path) + " --config /run/host-bootstrap.json\n")
+
+    @staticmethod
+    def _deadline_timer(deadline_utc: str) -> str:
+        if not deadline_utc:
+            return ""
+        parsed = EC2Provider._parse_deadline(deadline_utc)
+        calendar = parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        return ("cat > /etc/systemd/system/garden-host-deadline.service <<'EOF'\n"
+                     "[Unit]\nDescription=Terminate deadline-bound Garden host\n"
+                     "[Service]\nType=oneshot\nExecStart=/sbin/shutdown -h now\nEOF\n"
+                     "cat > /etc/systemd/system/garden-host-deadline.timer <<'EOF'\n"
+                     "[Unit]\nDescription=Absolute deadline for Garden host\n"
+                     "[Timer]\nOnCalendar=" + calendar + "\nPersistent=true\n"
+                     "Unit=garden-host-deadline.service\n"
+                     "[Install]\nWantedBy=timers.target\nEOF\n"
+                     "systemctl daemon-reload\n"
+                     "systemctl enable --now garden-host-deadline.timer\n"
+                     "systemctl is-enabled --quiet garden-host-deadline.timer\n"
+                     "systemctl is-active --quiet garden-host-deadline.timer\n")
+
+    @staticmethod
+    def _validate_deadline(value: str) -> None:
+        if not value:
+            return
+        EC2Provider._parse_deadline(value)
+
+    @staticmethod
+    def _parse_deadline(value: str) -> datetime:
+        if not isinstance(value, str):
+            raise ValueError("deadline_utc must be an absolute UTC timestamp")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("deadline_utc must be an absolute UTC timestamp") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise ValueError("deadline_utc must use UTC")
+        return parsed
 
     @staticmethod
     def _facts(instance: dict[str, Any]) -> HostFacts:

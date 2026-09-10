@@ -731,6 +731,88 @@ def test_claim_and_heartbeat_persist_only_bounded_host_facts(garden, monkeypatch
     assert json.loads((run.path / "host_facts.json").read_text()) == {**expected, "disk_free_bytes": 8192}
 
 
+def test_malformed_claim_payloads_are_rejected_before_leasing(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    payloads = (
+        [],
+        {"host": "build-1", "harnesses": "claude"},
+        {"host": "build-1", "tiers": {"hard": True}},
+        {"host": "build-1", "capacity": "1"},
+        {"host": "build-1", "capacity": True},
+        {"host": "build-1", "capacity": 0},
+    )
+    for payload in payloads:
+        assert client.post("/api/runs/claim", json=payload, headers=auth).status_code == 422
+        saved = RunStore(store.config.garden_dir).latest("DM-001")
+        assert not saved.host and not saved.lease_token
+    assert client.post("/api/runs/claim", content="{invalid-json", headers=auth).status_code == 422
+    assert not RunStore(store.config.garden_dir).latest("DM-001").lease_token
+
+
+def test_invalid_finish_payload_does_not_partially_mutate_run(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    run = RunStore(store.config.garden_dir).latest("DM-001")
+    before = (run.path / "run.json").read_bytes()
+    invalid = (
+        [],
+        {"result": []},
+        {"usage": []},
+        {"result": {"checks": ["not-an-object"]}},
+        {"exit_code": "0"},
+        {"exit_code": True},
+    )
+    for changes in invalid:
+        payload = ({"lease_token": claim["lease_token"], "exit_code": 0,
+                    "result": {"status": "done"}, **changes}
+                   if isinstance(changes, dict) else changes)
+        response = client.post(f"/api/runs/{run.run_id}/finish", json=payload, headers=auth)
+        assert response.status_code == 422
+        assert (run.path / "run.json").read_bytes() == before
+        assert not any((run.path / name).exists()
+                       for name in ("final.md", "remote_result.json", "checks.json", "exit_code"))
+
+
+def test_versioned_host_facts_are_bound_to_authenticated_registry_identity(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["workers"]["hosts"][0].update({
+        "provider_id": "i-trusted", "operation_id": "operation-trusted",
+        "source_head": "a" * 40, "profile_version": "profile-v1",
+        "bootstrap_version": "bootstrap-v1",
+    })
+    path.write_text(yaml.safe_dump(config))
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    run = queued_run(Store(garden))
+    facts = {
+        "schema_version": 1, "provider_id": "i-forged", "operation_id": "operation-trusted",
+        "source_head": "a" * 40, "profile_version": "profile-v1",
+        "bootstrap_version": "bootstrap-v1",
+    }
+    secret_bearing = {**facts, "provider_id": "i-trusted",
+                      "source_bootstrap": {"source_head": "a" * 40,
+                                           "bootstrap_sha256": "b" * 64,
+                                           "operation_id": "operation-trusted"},
+                      "readiness_attestations": {
+                          "bootstrap_manifest": {"ok": True, "secret": "must-not-persist"}}}
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                           "host_facts": secret_bearing},
+                           headers={"Authorization": "Bearer secret-token"})
+    assert response.status_code == 422
+    assert not (run.path / "host_facts.json").exists()
+    response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
+                           "host_facts": facts},
+                           headers={"Authorization": "Bearer secret-token"})
+    assert response.status_code == 409
+    assert not (run.path / "host_facts.json").exists()
+
+
 def test_reclaimed_lease_fences_stale_worker_on_same_host(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)
@@ -1999,7 +2081,21 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                 "work_dir": str(tmp_path / "http-host"), "harnesses": ["claude"],
                 "profile_version": "fixture-v1", "bootstrap_version": "fixture-v1",
                 "source_head": "a" * 40, "provider_id": "disposable-http-host",
+                "operation_id": "fixture-operation",
+                "source_bootstrap": {"source_head": "a" * 40,
+                                     "bootstrap_sha256": "b" * 64,
+                                     "operation_id": "fixture-operation"},
                 "memory_reserve_mib": 0, "disk_reserve_mib": 0,
+                "readiness_attestations": {
+                    "bootstrap_manifest": {"ok": True, "source_head": "a" * 40,
+                                           "profile_version": "fixture-v1",
+                                           "bootstrap_version": "fixture-v1",
+                                           "bootstrap_sha256": "b" * 64,
+                                           "installed_distribution": "context-garden",
+                                           "direct_url_commit": "a" * 40},
+                    "repository_access": {"ok": True, "repository": "example/project"},
+                    "ci_provider_read": {"ok": True, "source_head": "a" * 40},
+                },
             }
             config_file = tmp_path / "managed-worker.json"
             config_file.write_text(json.dumps(worker_config))
@@ -2021,6 +2117,12 @@ p.write_text(str((int(p.read_text()) if p.exists() else 0) + 1))
                     assert facts["provider_id"] == "disposable-http-host"
                     assert facts["profile_version"] == "fixture-v1"
                     assert facts["disk_free_bytes"] > 0
+                    assert facts["readiness_attestations"] == {
+                        **worker_config["readiness_attestations"],
+                        "authenticated_registration": {
+                            "ok": True, "method": "scoped-worker-token",
+                        },
+                    }
                 events.append({"mode": mode, "run": latest.run_id, "host": latest.host,
                                "setup_count": setup_counts.get(task_id), "managed": managed})
             worker("work")

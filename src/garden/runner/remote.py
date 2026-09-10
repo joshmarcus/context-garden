@@ -36,8 +36,14 @@ class RemoteRunner(Runner):
         return self.harness.parse(run.stdout_text(), run.stderr_text(), run.path / "final.md", model=run.model)
 
     def doctor(self) -> list[str]:
+        from ..hosts.registry import enrolled_hosts
+
         hosts = list(self.config.get("hosts") or [])
-        if not hosts:
+        try:
+            enrolled = enrolled_hosts(self.config)
+        except (OSError, TypeError, ValueError) as exc:
+            return [f"remote runner: {exc}"]
+        if not hosts and not enrolled:
             return ["remote runner: no hosts configured under workers.hosts"]
         return [f"remote worker {h.get('name', '?')}: token_env is required"
                 for h in hosts if not str(h.get("token_env") or "")]

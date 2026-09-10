@@ -5,6 +5,7 @@ Userdata contains only this artifact's digest and a Secrets Manager reference.
 The secret contains consumer configuration and scoped enrollment material.
 """
 import argparse
+import datetime as dt
 import hashlib
 import io
 import json
@@ -25,6 +26,86 @@ def command(*args):
 def fetch(url):
     with urllib.request.urlopen(url, timeout=60) as response:
         return response.read()
+
+
+def verify_absolute_deadline(declaration, *, unit=Path("/etc/systemd/system/garden-host-deadline.timer"),
+                             check_output=subprocess.check_output):
+    """Require userdata's independently armed absolute termination deadline."""
+    deadline = declaration.get("deadline_utc", "")
+    try:
+        parsed = dt.datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        parsed = None
+    if (parsed is None or parsed.tzinfo is None
+            or parsed.utcoffset() != dt.timedelta(0)):
+        raise ValueError("deadline_utc must be an exact absolute UTC timestamp")
+    canonical = parsed.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    if (not unit.is_file()
+            or f"OnCalendar={canonical}\n" not in unit.read_text()):
+        raise ValueError("absolute host deadline timer does not match bootstrap declaration")
+    for state in ("is-enabled", "is-active"):
+        if check_output(["systemctl", state, "garden-host-deadline.timer"],
+                        text=True, timeout=30).strip() not in {"enabled", "active"}:
+            raise ValueError("absolute host deadline timer is not armed")
+    return deadline
+
+
+def declared_resource_caps(declaration):
+    """Validate immutable profile capacity before using it in service directives."""
+    bounds = {"cpu": (1, 1024), "memory_mib": (128, 1024 * 1024),
+              "disk_gib": (1, 1024 * 1024)}
+    result = {}
+    for name, (minimum, maximum) in bounds.items():
+        value = declaration.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be an immutable positive integer capacity")
+        result[name] = value
+    return result
+
+
+def installed_source_attestation(python, expected_source, *, check_output=subprocess.check_output):
+    """Read pip's installed provenance and require the exact requested Git commit."""
+    probe = (
+        "import importlib.metadata,json;"
+        "d=importlib.metadata.distribution('context-garden');"
+        "v=json.loads(d.read_text('direct_url.json'));"
+        "print(json.dumps({'distribution':d.metadata['Name'],'version':d.version,"
+        "'commit':v.get('vcs_info',{}).get('commit_id',''),'vcs':v.get('vcs_info',{}).get('vcs','')}))"
+    )
+    value = json.loads(check_output([str(python), "-c", probe], text=True, timeout=30))
+    if value.get("distribution", "").lower() != "context-garden":
+        raise ValueError("installed worker distribution mismatch")
+    if value.get("vcs") != "git" or value.get("commit") != expected_source:
+        raise ValueError("installed worker source provenance mismatch")
+    return {"ok": True, "distribution": "context-garden", "version": value["version"],
+            "direct_url_commit": value["commit"]}
+
+
+def github_ci_read_attestation(repository, source_head, token="", *, opener=urllib.request.urlopen):
+    """Perform one bounded provider read; the optional scoped token is never returned."""
+    url = f"https://api.github.com/repos/{repository}/commits/{source_head}/check-runs?per_page=1"
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "context-garden-bootstrap"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    with opener(urllib.request.Request(url, headers=headers), timeout=30) as response:
+        value = json.loads(response.read())
+    if not isinstance(value, dict) or not isinstance(value.get("total_count"), int):
+        raise ValueError("GitHub CI read probe returned an invalid response")
+    return {"ok": True, "provider": "github", "repository": repository,
+            "source_head": source_head, "authenticated": bool(token)}
+
+
+def bootstrap_manifest_attestation(declaration, source_head, installed, *, script=Path(__file__)):
+    """Bind the executed bootstrap bytes and installed distribution to admitted identity."""
+    expected = declaration.get("bootstrap_sha256", "")
+    actual = hashlib.sha256(script.read_bytes()).hexdigest()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected) or actual != expected:
+        raise ValueError("executed bootstrap artifact digest mismatch")
+    return {"ok": True, "source_head": source_head,
+            "profile_version": declaration["profile_version"],
+            "bootstrap_version": declaration["bootstrap_version"],
+            "bootstrap_sha256": actual, "installed_distribution": installed["distribution"],
+            "direct_url_commit": installed["direct_url_commit"]}
 
 
 
@@ -130,29 +211,45 @@ def main():
     parser.add_argument("--config", required=True)
     declaration = json.loads(Path(parser.parse_args().config).read_text())
     os.umask(0o077)
-    # Independent of the controller and the worker. Launch must specify termination
-    # on OS shutdown; the operator also arms an external termination deadline.
-    runtime = int(declaration.get("runtime_seconds", 1500))
-    if not 60 <= runtime <= 21600:
-        raise ValueError("runtime_seconds must be between one minute and six hours")
-    command("systemd-run", "--unit=garden-worker-deadline", f"--on-active={runtime}s", "/sbin/shutdown", "-h", "now")
+    capacity = declared_resource_caps(declaration)
+    # Userdata persists and arms this independently of package or bootstrap network
+    # access. Never replace the admitted absolute deadline with a relative runtime.
+    verify_absolute_deadline(declaration)
     for path in Path("/etc/apt").rglob("*"):
         if path.is_file() and path.suffix in {".list", ".sources"}:
             path.write_text(path.read_text().replace("http://", "https://"))
     command("apt-get", "update", "-qq")
-    command("apt-get", "install", "-y", "-qq", "python3-venv", "python3-boto3", "git", "openssh-client", "iptables")
+    command("apt-get", "install", "-y", "-qq", "python3-venv", "python3-pip", "python3-boto3",
+            "git", "gh", "make", "openssh-client", "iptables", "libnss3", "libnspr4",
+            "libatk1.0-0", "libatk-bridge2.0-0", "libcups2", "libdrm2", "libdbus-1-3",
+            "libxkbcommon0", "libxcomposite1", "libxdamage1", "libxfixes3", "libxrandr2",
+            "libgbm1", "libasound2")
     import boto3
     secret = json.loads(boto3.client("secretsmanager", region_name="us-east-1").get_secret_value(
         SecretId=declaration["secret_ref"])["SecretString"])
-    for key in ("host", "endpoint", "profile_version", "bootstrap_version"):
+    for key in ("host", "endpoint", "profile_version", "bootstrap_version", "source_head",
+                "bootstrap_sha256", "operation_id"):
         if secret[key] != declaration[key]:
             raise ValueError("enrollment declaration mismatch: " + key)
-    source = secret["source_head"]
+    if "deadline_utc" in declaration and secret.get("deadline_utc") != declaration["deadline_utc"]:
+        raise ValueError("enrollment declaration mismatch: deadline_utc")
+    source = declaration["source_head"]
     if not re.fullmatch(r"[0-9a-f]{40}", source):
         raise ValueError("worker source must be an exact commit")
     command("python3", "-m", "venv", "/opt/garden-worker")
     command("/opt/garden-worker/bin/pip", "install", "--disable-pip-version-check",
             "context-garden @ git+https://github.com/joshmarcus/context-garden@" + source)
+    command("useradd", "--system", "--create-home", "--home-dir", "/var/lib/garden-worker", "garden-worker")
+    identity = pwd.getpwnam("garden-worker")
+    uid, gid = identity.pw_uid, identity.pw_gid
+    browsers = "/var/lib/garden-worker/browsers"
+    command("install", "-d", "-o", "garden-worker", "-g", "garden-worker", "-m", "700", browsers)
+    command("runuser", "-u", "garden-worker", "--", "env", "PLAYWRIGHT_BROWSERS_PATH=" + browsers,
+            "/opt/garden-worker/bin/python", "-m", "playwright", "install", "chromium")
+    command("runuser", "-u", "garden-worker", "--", "env", "PLAYWRIGHT_BROWSERS_PATH=" + browsers,
+            "/opt/garden-worker/bin/python", "-c",
+            "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); "
+            "b=p.chromium.launch(headless=True); b.close(); p.stop()")
     command("chmod", "-R", "a+rX", "/opt/garden-worker")
     version = "1.102.3"
     data = fetch("https://pkgs.tailscale.com/stable/tailscale_" + version + "_amd64.tgz")
@@ -176,9 +273,6 @@ def main():
                 "--accept-dns=true", "--accept-routes=false")
     finally:
         key.unlink(missing_ok=True)
-    command("useradd", "--system", "--create-home", "--home-dir", "/var/lib/garden-worker", "garden-worker")
-    identity = pwd.getpwnam("garden-worker")
-    uid, gid = identity.pw_uid, identity.pw_gid
     # Block IMDS (both address families) before starting unprivileged workload code.
     command("iptables", "-I", "OUTPUT", "-d", "169.254.169.254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
     command("ip6tables", "-I", "OUTPUT", "-d", "fd00:ec2::254", "-m", "owner", "--uid-owner", str(uid), "-j", "REJECT")
@@ -193,6 +287,14 @@ def main():
     token = fetch_imds("api/token", token=True)
     secret["provider_id"] = fetch_imds("meta-data/instance-id", token=token)
     secret["work_dir"] = "/var/lib/garden-worker/work"
+    secret["declared_resources"] = capacity
+    installed = installed_source_attestation("/opt/garden-worker/bin/python", source)
+    manifest = bootstrap_manifest_attestation(declaration, source, installed)
+    secret["source_bootstrap"] = {
+        "source_head": source, "bootstrap_sha256": declaration["bootstrap_sha256"],
+        "operation_id": declaration["operation_id"],
+    }
+    secret["readiness_attestations"] = {"bootstrap_manifest": manifest}
     canary = bool(secret.get("canary"))
     extra_environment = ""
     if canary:
@@ -203,6 +305,7 @@ def main():
         hp.chmod(0o755)
         write_worker_files({".gitconfig": '[http "' + secret["endpoint"] + '/git/"]\n    extraHeader = Authorization: Bearer ' + git_token + '\n'}, uid, gid)
     else:
+        repository = secret["git_repo"]
         files = production_files(secret)
         install_codex()
         write_worker_files(files, uid, gid)
@@ -211,6 +314,18 @@ def main():
         # Verify dedicated account credentials without starting a model.
         command("runuser", "-u", "garden-worker", "--", "env",
                 "CODEX_HOME=/var/lib/garden-worker/.codex", "/usr/local/bin/codex", "login", "status")
+        command("runuser", "-u", "garden-worker", "--", "env",
+                "HOME=/var/lib/garden-worker", "GIT_CONFIG_GLOBAL=/var/lib/garden-worker/.gitconfig",
+                "GIT_SSH_COMMAND=/usr/bin/ssh -i /var/lib/garden-worker/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/garden-worker/.ssh/known_hosts",
+                "git", "ls-remote", "https://github.com/" + repository + ".git", "HEAD")
+        command("runuser", "-u", "garden-worker", "--", "gh", "--version")
+        command("runuser", "-u", "garden-worker", "--", "make", "--version")
+        ci_read = github_ci_read_attestation(repository, source, secret.pop("github_ci_read_token", ""))
+        secret["readiness_attestations"].update({
+            "repository_access": {"ok": True, "repository": repository,
+                                  "method": "git-ls-remote"},
+            "ci_provider_read": ci_read,
+        })
     public_key = secret.pop("operator_ssh_public_key", "")
     if public_key:
         if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]+)?", public_key):
@@ -226,9 +341,12 @@ def main():
         "[Unit]\nRequires=garden-worker-firewall.service\nAfter=garden-worker-firewall.service network-online.target\n"
         "[Service]\nUser=garden-worker\nGroup=garden-worker\n"
         "Environment=HOME=/var/lib/garden-worker\nEnvironment=PATH=/opt/garden-worker/bin:/usr/local/bin:/usr/bin:/bin\n"
+        "Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/garden-worker/browsers\n"
         + extra_environment + "ExecStart=/opt/garden-worker/bin/python -m garden.managed_worker --config /etc/garden-worker.json\n"
         "StandardOutput=journal+console\nStandardError=journal+console\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\n"
-        "ReadWritePaths=/var/lib/garden-worker\nPrivateTmp=yes\nMemoryMax=12G\nMemorySwapMax=0\nCPUQuota=300%\n"
+        "ReadWritePaths=/var/lib/garden-worker\nPrivateTmp=yes\n"
+        + f"MemoryMax={capacity['memory_mib']}M\nMemorySwapMax=0\n"
+        + f"CPUQuota={capacity['cpu'] * 100}%\n"
         "[Install]\nWantedBy=multi-user.target\n")
     command("systemctl", "daemon-reload")
     command("systemctl", "enable", "--now", "garden-worker")

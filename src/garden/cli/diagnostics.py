@@ -271,6 +271,10 @@ def doctor():
         try:
             cfg = dict(store.config.get("ssh" if name == "ssh" else "workers", {}) or {}) \
                 if name in {"ssh", "remote"} else {}
+            if name == "remote":
+                from ..hosts.registry import worker_configuration
+
+                cfg = worker_configuration(store.config)
             cfg["worker_env"] = dict(store.config.get("worker_env") or {})
             adapters = store.config.get("runner_adapters") or {}
             registration = adapters.get(name) if isinstance(adapters, dict) else None
