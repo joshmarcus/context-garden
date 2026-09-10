@@ -215,7 +215,11 @@ class Harness:
                     raise ValueError(f"unsupported Codex permission_mode: {mode}")
                 cmd += ["-c", f'sandbox_mode="{sandbox}"', "-c", 'approval_policy="never"']
                 if mechanism.endswith("codex-native"):
-                    cmd += ["-c", "sandbox_workspace_write.network_access=false"]
+                    # The OS wrapper remains the destination-level authority. Codex's
+                    # native layer must permit networking when that outer allowlist is
+                    # non-empty, otherwise configured destinations are silently denied.
+                    network = "true" if sandbox_policy.network_destinations else "false"
+                    cmd += ["-c", f"sandbox_workspace_write.network_access={network}"]
             base_url = str(self.cfg.get("base_url") or "")
             if base_url:
                 # Codex owns the agent loop; garden only selects its OpenAI-compatible
