@@ -646,10 +646,6 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
                                                 },
                                                 "durable_exit_code": 0,
                                                 "durable_stderr": ""}]}, headers=auth)
-                                                "log_location": "/remote/path", "artifacts": {
-                                                    "execution.json": "{}", "exit_code": "0",
-                                                    "stderr.log": "remote output",
-                                                }}]}, headers=auth)
     assert done.status_code == 200
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert saved.host == "build-1" and saved.pushed_head == "abc"
@@ -657,11 +653,6 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     receipt = json.loads((saved.path / "validations" / "remote-0" / "result.json").read_text())
     assert receipt["source_sha"] == "abc" and receipt["exit_code"] == 0
     assert receipt["log_location"].endswith("validations/remote-0")
-    assert json.loads(
-        (saved.path / "validations/remote-0/execution.json").read_text()
-    )["owner"] == "run:test"
-    assert (saved.path / "validations/remote-0/exit_code").read_text().strip() == "0"
-    assert (saved.path / "validations/remote-0/stderr.log").read_text() == ""
     assert json.loads(
         (saved.path / "validations/remote-0/execution.json").read_text()
     )["owner"] == "run:test"

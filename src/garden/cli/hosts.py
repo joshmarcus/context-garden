@@ -13,11 +13,11 @@ from ..hosts import (
     HostLifecycle,
     JsonStateStore,
     ScaleOperation,
-    WorkerDrainStore,
     durable_worker_readiness,
     pool_from_dict,
     status_dict,
 )
+from ..hosts.drain import WorkerDrainStore
 from ..hosts.ec2 import EC2Provider, SQSEC2EventSource
 from .common import PANEL_LOOP, app, console, err
 

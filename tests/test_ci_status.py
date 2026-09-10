@@ -37,7 +37,13 @@ def receipt(source_sha="new", command="pytest -q", exit_code=0):
             "source_dirty": "", "source_changed": False}
 
 
-def write_receipt(path, row, execution=None):
+def write_receipt(path, row=None, execution=None, *, source_sha="new", selection=None,
+                  exit_code=0):
+    if row is None:
+        selection = selection or ["pytest", "-q"]
+        row = {"source_sha": source_sha, "command": " ".join(selection),
+               "selection": selection, "exit_code": exit_code}
+        execution = {} if execution is None else execution
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {**row, "log_location": str(path.parent)}
     path.write_text(json.dumps(row))
@@ -46,17 +52,6 @@ def write_receipt(path, row, execution=None):
     ))
     (path.parent / "exit_code").write_text(str(row["exit_code"]))
     (path.parent / "stderr.log").write_text("")
-
-
-def write_receipt(path, *, source_sha="new", selection=None, exit_code=0):
-    selection = selection or ["pytest", "-q"]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    (path.parent / "execution.json").write_text("{}")
-    (path.parent / "exit_code").write_text(str(exit_code))
-    (path.parent / "stderr.log").write_text("")
-    path.write_text(json.dumps({"source_sha": source_sha, "command": shlex.join(selection),
-                                "selection": selection, "exit_code": exit_code,
-                                "log_location": str(path.parent)}))
 
 
 def set_started_at(path, value):

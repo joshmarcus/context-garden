@@ -3,7 +3,6 @@
 from .command import CommandProvider, CommandResult, CommandTransport
 from .config import pool_from_dict
 from .core import EnvironmentStop, HostLifecycle, JsonStateStore
-from .drain import WorkerDrainStore
 from .models import (
     CONTRACT_VERSION,
     EnvironmentProfile,
@@ -49,7 +48,6 @@ __all__ = [
     "ProviderCapabilities",
     "ScaleOperation",
     "ScaleStatus",
-    "WorkerDrainStore",
     "DirectoryEnrollmentResolver",
     "durable_worker_readiness",
     "pool_from_dict",
