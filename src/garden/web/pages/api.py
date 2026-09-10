@@ -20,9 +20,9 @@ from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
 from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
+from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
 from ...workers import WorkerContactStore
 from ...workers import snapshot as worker_snapshot
-from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
 from ..common import Site
 
 
