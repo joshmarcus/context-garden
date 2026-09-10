@@ -4,6 +4,7 @@ through to the live garden or the product clone and fails the run with a card fo
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -475,6 +476,64 @@ def test_legacy_completed_fence_state_is_compacted_under_state_save_lock(sched):
     assert "fence" not in saved["OLD-001"]
     assert saved["_fence_guard_cache"] == {}
     assert sched.state.path.stat().st_size < before / 100
+
+
+def test_fence_history_collects_only_unreferenced_objects(sched):
+    cache = sched.cfg.garden_dir / "fence-guard-cache"
+    manifests = sched.cfg.garden_dir / "fence-guard-manifests"
+    cache.mkdir(parents=True, exist_ok=True)
+    manifests.mkdir(parents=True, exist_ok=True)
+    orphan_cache = cache / ("a" * 64)
+    orphan_cache.write_bytes(b"orphan")
+    orphan_text = "[]"
+    orphan_manifest = manifests / f"{hashlib.sha256(orphan_text.encode()).hexdigest()}.json"
+    orphan_manifest.write_text(orphan_text)
+
+    preview = sched.fence_history_report(limit=10)
+    applied = sched.fence_history_report(apply=True, limit=10)
+
+    assert preview["eligible"] == 2
+    assert applied["removed"] == 2
+    assert not orphan_cache.exists()
+    assert not orphan_manifest.exists()
+
+
+def test_fence_history_deletion_failure_is_reported_and_retryable(sched, monkeypatch):
+    cache = sched.cfg.garden_dir / "fence-guard-cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    orphan = cache / ("b" * 64)
+    orphan.write_bytes(b"retain on failure")
+    original_unlink = Path.unlink
+
+    def fail_target(path, *args, **kwargs):
+        if path == orphan:
+            raise OSError("simulated deletion failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_target)
+    report = sched.fence_history_report(apply=True, limit=1)
+
+    assert report["removed"] == 0
+    assert report["failed"] and "simulated deletion failure" in report["failed"][0]["error"]
+    assert orphan.read_bytes() == b"retain on failure"
+
+
+def test_fence_history_rechecks_new_reference_before_delete(sched, monkeypatch):
+    cache = sched.cfg.garden_dir / "fence-guard-cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    sha = "c" * 64
+    candidate = cache / sha
+    candidate.write_bytes(b"becomes referenced")
+    scans = iter([
+        {"manifests": set(), "cache": set()},
+        {"manifests": set(), "cache": {sha}},
+    ])
+    monkeypatch.setattr(sched, "_fence_history_references", lambda: next(scans))
+
+    report = sched.fence_history_report(apply=True, limit=1)
+
+    assert report["removed"] == 0
+    assert candidate.exists()
 
 
 def test_reading_config_without_changing_it_does_not_trip_the_hash_check(sched, garden, monkeypatch):

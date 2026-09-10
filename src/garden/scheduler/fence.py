@@ -16,6 +16,7 @@ from typing import Any
 
 from .. import gitops
 from ..config import Config, apply_executable_signature, executable_diff, executable_signature
+from ..locking import file_lock
 from ..model import Status, Task, now_iso
 from ..runs import Run
 from .report import TickReport
@@ -111,6 +112,11 @@ class FenceMixin:
         a test without a run record)."""
         if run is None:
             return
+        with file_lock(self.cfg.garden_dir / "fence-history.lock"):
+            self._fence_guard_snapshot_locked(run)
+
+    def _fence_guard_snapshot_locked(self, run: Run) -> None:
+        """Write one fence snapshot while collection is excluded."""
         manifest: list[dict[str, Any]] = []
         root = self.store.root
         guard_dir = run.path / "fence_guard"
@@ -163,6 +169,129 @@ class FenceMixin:
             # starting after a worker's write needs the dispatch-time executable values before
             # it can safely parse and use the changed garden.yaml.
             (run.path / "executable_config.json").write_text(json.dumps(executable_signature(self.cfg.data)))
+
+    def fence_history_report(self, *, apply: bool = False, limit: int = 100) -> dict[str, Any]:
+        """Preview or collect unreferenced fence manifests/cache blobs, failing closed."""
+        with file_lock(self.cfg.garden_dir / "fence-history.lock"):
+            references = self._fence_history_references()
+            manifest_dir = self.cfg.garden_dir / "fence-guard-manifests"
+            cache_dir = self.cfg.garden_dir / "fence-guard-cache"
+            candidates: list[tuple[str, Path]] = []
+            for path in sorted(manifest_dir.iterdir()) if manifest_dir.is_dir() else []:
+                if (not path.is_file() or path.suffix != ".json" or len(path.stem) != 64
+                        or any(char not in "0123456789abcdef" for char in path.stem)):
+                    raise ValueError(f"unknown object in authoritative fence manifest store: {path}")
+                if path.stem not in references["manifests"]:
+                    candidates.append(("fence_manifest", path))
+            for path in sorted(cache_dir.iterdir()) if cache_dir.is_dir() else []:
+                if not path.is_file() or len(path.name) != 64 or any(
+                    char not in "0123456789abcdef" for char in path.name
+                ):
+                    raise ValueError(f"unknown object in fence cache store: {path}")
+                if path.name not in references["cache"]:
+                    candidates.append(("fence_cache", path))
+            candidates = candidates[:max(0, limit)]
+            report = {
+                "eligible": len(candidates),
+                "eligible_bytes": sum(path.stat().st_size for _, path in candidates),
+                "removed": 0,
+                "bytes_reclaimed": 0,
+                "failed": [],
+            }
+            if not apply:
+                return report
+            # Repeat the complete mark while holding the same lock used by snapshot commits.
+            current = self._fence_history_references()
+            for category, path in candidates:
+                referenced = current["manifests"] if category == "fence_manifest" else current["cache"]
+                identity = path.stem if category == "fence_manifest" else path.name
+                if identity in referenced:
+                    continue
+                try:
+                    size = path.stat().st_size
+                    path.unlink()
+                except OSError as exc:
+                    report["failed"].append({"path": str(path), "error": str(exc)})
+                else:
+                    report["removed"] += 1
+                    report["bytes_reclaimed"] += size
+            return report
+
+    def _fence_history_references(self) -> dict[str, set[str]]:
+        """Mark every trusted fence reference or abort without returning a partial mark."""
+        manifests: set[str] = set()
+        cache: set[str] = set()
+        for task_state in self.state.data.values():
+            if not isinstance(task_state, dict):
+                continue
+            reference = task_state.get("fence_guard_manifest")
+            if isinstance(reference, dict) and reference.get("sha256"):
+                manifests.add(str(reference["sha256"]))
+        for run in self.runs.all_runs():
+            sha = run.fence_manifest_sha256
+            if sha:
+                if len(sha) != 64 or any(char not in "0123456789abcdef" for char in sha):
+                    raise ValueError(f"invalid fence manifest reference on {run.run_id}")
+                manifests.add(sha)
+            try:
+                text = run.read_text("fence_guard.json")
+            except (OSError, ValueError):
+                if sha or run.status in {"requested", "preparing", "running"}:
+                    raise ValueError(f"fence manifest unavailable for {run.run_id}") from None
+                continue
+            if not text:
+                if sha or run.status in {"requested", "preparing", "running"}:
+                    raise ValueError(f"fence manifest unavailable for {run.run_id}")
+                continue
+            self._mark_fence_manifest(text, cache, f"run {run.run_id}")
+        manifest_dir = self.cfg.garden_dir / "fence-guard-manifests"
+        for path in sorted(manifest_dir.glob("*.json")) if manifest_dir.is_dir() else []:
+            try:
+                text = path.read_text()
+            except OSError as exc:
+                raise ValueError(f"authoritative fence manifest unavailable: {path}") from exc
+            if hashlib.sha256(text.encode()).hexdigest() != path.stem:
+                raise ValueError(f"authoritative fence manifest checksum mismatch: {path}")
+            # Only referenced authoritative manifests keep their cache objects alive.
+            if path.stem in manifests:
+                manifests.add(path.stem)
+                self._mark_fence_manifest(text, cache, str(path))
+        for sha in manifests:
+            path = manifest_dir / f"{sha}.json"
+            try:
+                text = path.read_text()
+            except OSError as exc:
+                raise ValueError(f"referenced authoritative fence manifest unavailable: {sha}") from exc
+            if hashlib.sha256(text.encode()).hexdigest() != sha:
+                raise ValueError(f"referenced authoritative fence manifest checksum mismatch: {sha}")
+        cache_dir = self.cfg.garden_dir / "fence-guard-cache"
+        for sha in cache:
+            path = cache_dir / sha
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                raise ValueError(f"referenced fence cache object unavailable: {sha}") from exc
+            if hashlib.sha256(data).hexdigest() != sha:
+                raise ValueError(f"referenced fence cache object checksum mismatch: {sha}")
+        return {"manifests": manifests, "cache": cache}
+
+    @staticmethod
+    def _mark_fence_manifest(text: str, cache: set[str], source: str) -> None:
+        try:
+            rows = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid fence manifest in {source}") from exc
+        if not isinstance(rows, list):
+            raise ValueError(f"invalid fence manifest in {source}")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError(f"invalid fence manifest entry in {source}")
+            snap = row.get("snap")
+            if isinstance(snap, str) and snap.startswith("cache:"):
+                sha = snap.removeprefix("cache:")
+                if len(sha) != 64 or any(char not in "0123456789abcdef" for char in sha):
+                    raise ValueError(f"invalid fence cache reference in {source}")
+                cache.add(sha)
 
     @staticmethod
     def _fence_executable_signature(run: Run) -> dict[str, Any] | None:

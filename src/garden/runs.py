@@ -29,7 +29,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .locking import file_lock
 from .proctree import pid_alive as _pid_alive
 from .proctree import process_group_alive as _process_group_alive
 
