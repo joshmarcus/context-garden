@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import defaultdict
+from dataclasses import dataclass
 from statistics import mean, median
 from typing import Any
 
@@ -59,9 +60,64 @@ def attributed_phase_key(event: dict[str, Any], task: Any | None = None) -> str:
     return canonical_phase_key(str(event.get("product") or ""), str(event.get("phase") or ""))
 
 
+@dataclass(frozen=True)
+class _PreparedHistory:
+    """One parsed, chronological view used for a single accounting calculation."""
+
+    events: list[tuple[dt.datetime, dict[str, Any]]]
+    by_task: dict[str, list[tuple[dt.datetime, dict[str, Any]]]]
+    merge_facts: set[str]
+
+
+def _prepare_history(events: list[dict[str, Any]], end: dt.datetime) -> _PreparedHistory:
+    chronological: list[tuple[dt.datetime, dict[str, Any]]] = []
+    for event in events:
+        at = timestamp(event.get("at"))
+        if at is not None and at < end:
+            chronological.append((at, event))
+    # Python's stable sort preserves source order for tied events, which is the historical
+    # accounting contract for an append-only log.
+    chronological.sort(key=lambda item: item[0])
+    by_task: dict[str, list[tuple[dt.datetime, dict[str, Any]]]] = defaultdict(list)
+    merge_facts: set[str] = set()
+    for at, event in chronological:
+        tid = str(event.get("task") or "")
+        if tid:
+            by_task[tid].append((at, event))
+            if event.get("kind") == "automerged":
+                merge_facts.add(tid)
+    return _PreparedHistory(chronological, dict(by_task), merge_facts)
+
+
+def _cohort_result(members: list[dict[str, Any]]) -> dict[str, Any]:
+    known = sum(member["known_cost_usd"] for member in members)
+    priced_tasks = sum(member["cost_usd"] is not None for member in members)
+    return {"accepted": len(members), "priced_tasks": priced_tasks,
+            "unpriced_tasks": len(members) - priced_tasks,
+            "priced_runs": sum(member["priced_runs"] for member in members),
+            "unpriced_runs": sum(member["unpriced_runs"] for member in members),
+            "known_cost_usd": round(known, 4),
+            "cost_complete": priced_tasks == len(members),
+            "cost_per_accepted_task": (round(known / len(members), 4)
+                                       if members and priced_tasks == len(members) else None),
+            "tasks": members,
+            "contract": "acceptance completion in [since, until); all task runs through acceptance"}
+
+
+def cohort_subset(cohort: dict[str, Any], *, difficulty: str = "", model: str = "",
+                  harness: str = "") -> dict[str, Any]:
+    """Aggregate a filtered view of an already calculated canonical cohort."""
+    members = [member for member in cohort["tasks"]
+               if (not difficulty or member["difficulty"] == difficulty)
+               and (not model or model in member["models"])
+               and (not harness or harness in member["harnesses"])]
+    return _cohort_result(members)
+
+
 def acceptance_cohort(
     events: list[dict[str, Any]], tasks: dict[str, Any], *, since: str = "", until: str = "",
     product: str = "", phase: str = "", difficulty: str = "", model: str = "", harness: str = "",
+    _prepared: _PreparedHistory | None = None,
 ) -> dict[str, Any]:
     """Return the common accepted-task cost cohort used by every reporting surface.
 
@@ -74,15 +130,11 @@ def acceptance_cohort(
     """
     start = timestamp(since) or dt.datetime.min.replace(tzinfo=dt.UTC)
     end = timestamp(until) or dt.datetime.max.replace(tzinfo=dt.UTC)
-    history = sorted((e for e in events if timestamp(e.get("at")) and timestamp(e["at"]) < end),
-                     key=lambda e: timestamp(e["at"]))
-    merge_facts = {str(e.get("task")) for e in history
-                   if e.get("kind") == "automerged" and e.get("task")}
+    prepared = _prepared or _prepare_history(events, end)
     accepted_at: dict[str, dt.datetime] = {}
-    for event in history:
+    for at, event in prepared.events:
         tid = str(event.get("task") or "")
-        at = timestamp(event.get("at"))
-        if tid in tasks and at is not None and start <= at < end and base_acceptance(event, merge_facts):
+        if tid in tasks and start <= at and base_acceptance(event, prepared.merge_facts):
             accepted_at.setdefault(tid, at)
 
     members: list[dict[str, Any]] = []
@@ -94,8 +146,7 @@ def acceptance_cohort(
             continue
         if difficulty and getattr(task, "difficulty", "") != difficulty:
             continue
-        life = [e for e in history if str(e.get("task") or "") == tid
-                and timestamp(e.get("at")) <= accepted]
+        life = [event for at, event in prepared.by_task.get(tid, []) if at <= accepted]
         implementation = [e for e in life if e.get("kind") in ("dispatch", "run_finished")
                           and e.get("mode") in IMPLEMENTATION]
         models = {str(e.get("model") or "unknown") for e in implementation}
@@ -120,22 +171,12 @@ def acceptance_cohort(
                         "models": sorted(models), "harnesses": sorted(harnesses),
                         "difficulty": getattr(task, "difficulty", "") or "medium",
                         "first_review": first_review})
-    known = sum(m["known_cost_usd"] for m in members)
-    priced_tasks = sum(m["cost_usd"] is not None for m in members)
-    return {"accepted": len(members), "priced_tasks": priced_tasks,
-            "unpriced_tasks": len(members) - priced_tasks,
-            "priced_runs": sum(m["priced_runs"] for m in members),
-            "unpriced_runs": sum(m["unpriced_runs"] for m in members),
-            "known_cost_usd": round(known, 4),
-            "cost_complete": priced_tasks == len(members),
-            "cost_per_accepted_task": (round(known / len(members), 4)
-                                       if members and priced_tasks == len(members) else None),
-            "tasks": members,
-            "contract": "acceptance completion in [since, until); all task runs through acceptance"}
+    return _cohort_result(members)
 
 
 def delegated_effort(
     events: list[dict[str, Any]], tasks: dict[str, Any], *, since: str = "", until: str = "",
+    cohort: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Operating effort for the accepted cohort, without manufacturing human hours.
 
@@ -144,14 +185,18 @@ def delegated_effort(
     apply globally are included in that envelope, while unmatched actions remain explicit
     in coverage. Taskless operator ledger rows require matching product and phase labels.
     """
-    cohort = acceptance_cohort(events, tasks, since=since, until=until)
+    cohort = cohort or acceptance_cohort(events, tasks, since=since, until=until)
     members = {row["id"]: timestamp(row["accepted_at"]) for row in cohort["tasks"]}
     histories: dict[str, list[dict[str, Any]]] = {}
     starts: list[dt.datetime] = []
     leads: list[float] = []
+    indexed_histories: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in events:
+        tid = str(event.get("task") or "")
+        if tid in members and (at := timestamp(event.get("at"))) is not None and at <= members[tid]:
+            indexed_histories[tid].append(event)
     for tid, accepted in members.items():
-        life = [event for event in events if str(event.get("task") or "") == tid
-                and (at := timestamp(event.get("at"))) is not None and at <= accepted]
+        life = indexed_histories[tid]
         histories[tid] = life
         dispatched = [timestamp(event.get("at")) for event in life if event.get("kind") == "dispatch"]
         dispatched = [at for at in dispatched if at is not None]
@@ -315,6 +360,7 @@ def difficulty_by_model(events: list[dict], tasks: dict[str, Any], since: str = 
     history = sorted((e for e in events if timestamp(e.get("at")) and timestamp(e["at"]) < end),
                      key=lambda e: timestamp(e["at"]))
     lives: dict[str, list[dict]] = defaultdict(list)
+    finished_by_task: dict[str, list[dict]] = defaultdict(list)
     accepted: dict[str, dt.datetime] = {}
     finished: dict[tuple, dict] = {}
     merge_facts = {str(e.get("task")) for e in history if e.get("kind") == "automerged" and e.get("task")}
@@ -327,6 +373,8 @@ def difficulty_by_model(events: list[dict], tasks: dict[str, Any], since: str = 
                 accepted.setdefault(tid, at)
         if e.get("kind") == "run_finished":
             finished[(tid, e.get("run") or e["at"], e.get("mode"))] = e
+    for event in finished.values():
+        finished_by_task[str(event.get("task") or "")].append(event)
     finish_by_run = {(e.get("task"), e.get("run")): e for e in finished.values() if e.get("run")}
     models: set[str] = set()
     members = []
@@ -336,7 +384,7 @@ def difficulty_by_model(events: list[dict], tasks: dict[str, Any], since: str = 
                   if e.get("kind") in ("dispatch", "run_finished") and e.get("mode") in IMPLEMENTATION}
         routes = routes or {"unknown model"}
         models.update(routes)
-        runs = [e for e in finished.values() if e.get("task") == tid and timestamp(e["at"]) <= at]
+        runs = [e for e in finished_by_task[tid] if timestamp(e["at"]) <= at]
         dispatch = [e for e in life if e.get("kind") == "dispatch"]
         review = next((e for e in life if e.get("kind") == "review" and e.get("verdict") in ("approve", "request_changes")), None)
         completed_ids = {e.get("run") for e in runs}
