@@ -307,6 +307,83 @@ def test_replacement_daemon_collects_surviving_check_once(tmp_path, monkeypatch)
     assert count_path.read_text() == "run"
 
 
+def test_replacement_daemon_stops_execution_after_deadline_rejection(tmp_path, monkeypatch):
+    """A fixed deadline remains a terminal fence after the worker daemon restarts."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-expired"
+    execution_dir.mkdir(parents=True)
+    count_path = execution_dir / "executions"
+    stopped_path = execution_dir / "stopped"
+    child = execution_dir / "author.py"
+    child.write_text(
+        "import signal, time\n"
+        "from pathlib import Path\n"
+        f"count = Path({str(count_path)!r})\n"
+        f"stopped = Path({str(stopped_path)!r})\n"
+        "count.write_text(count.read_text() + 'run' if count.exists() else 'run')\n"
+        "def stop(*_args):\n"
+        "    stopped.write_text('deadline')\n"
+        "    raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True: time.sleep(0.05)\n"
+    )
+    supervisor = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+         f"{sys.executable} {child}"],
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 5
+    while not count_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert count_path.read_text() == "run"
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "expired-lease",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 1, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+        "execution_deadline_at": "2026-09-10T01:00:00+00:00",
+    }
+    _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", supervisor.pid,
+    )
+
+    recorded = []
+
+    class Events:
+        def emit(self, kind, **fields):
+            recorded.append((kind, fields))
+
+    class DeadlineClient:
+        events = Events()
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            raise WorkerRequestError(409, "execution deadline expired")
+
+    assert recover_active_claims(root, DeadlineClient()) == 0
+    supervisor.wait(timeout=5)
+    assert stopped_path.read_text() == "deadline"
+    assert count_path.read_text() == "run"
+    assert not (root / "active-claims" / "run-1.json").exists()
+    assert (root / "active-claims" / "quarantine" / "run-1.json").exists()
+    terminal = [fields for kind, fields in recorded
+                if kind == "execution_recovery_quarantined"]
+    assert terminal == [{
+        "run_id": "run-1", "work_state": "recovering", "cause": "execution_deadline",
+        "exit_reason": "execution_deadline_expired", "exception": "http_409",
+        "recovery_outcome": "supervisor_terminated_without_replay",
+        "operator_action": (
+            "verify lease generation and execution deadline, then inspect the quarantined "
+            "active claim"
+        ),
+    }]
+
+    assert recover_active_claims(root, DeadlineClient()) == 0
+    assert count_path.read_text() == "run"
+
+
 class HealthyHeartbeatClient:
     events = None
 
