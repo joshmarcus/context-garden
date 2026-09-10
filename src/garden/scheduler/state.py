@@ -288,9 +288,17 @@ class State:
                 if not blob.exists():
                     compressed = gzip.compress(raw, mtime=0)
                     self._durable_bytes(blob, compressed)
-                    # Verify the production reader before publishing a reference.
-                    if gzip.decompress(blob.read_bytes()) != raw:
-                        raise StateCorruptionError(f"scheduler state history verification failed: {sha}")
+                # A content-addressed path may predate this transaction. Verify both new
+                # and deduplicated blobs before publishing a reference and retiring the
+                # hot-state fields that remain the usable original on failure.
+                try:
+                    reconstructed = gzip.decompress(blob.read_bytes())
+                except (OSError, EOFError, gzip.BadGzipFile) as exc:
+                    raise StateCorruptionError(
+                        f"scheduler state history verification failed: {sha}"
+                    ) from exc
+                if reconstructed != raw or hashlib.sha256(reconstructed).hexdigest() != sha:
+                    raise StateCorruptionError(f"scheduler state history verification failed: {sha}")
                 index["tasks"][task_id] = {"sha256": sha, "keys": sorted(payload)}
                 self._durable_bytes(
                     self.history_dir / "index.json",

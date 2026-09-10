@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -295,6 +296,39 @@ def test_incomplete_archive_migration_never_silently_omits_history(tmp_path: Pat
     assert "incomplete" in rs.archive_health()
     with pytest.raises(HistoryUnavailable, match="incomplete"):
         rs.all_runs()
+
+
+def test_pending_archive_after_move_is_repaired_before_history_reads(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    payload = b"original transcript" * 1000
+    (run.path / "stdout.json").write_bytes(payload)
+    target = rs.archive_dir / run.task_id / run.run_id
+    target.parent.mkdir(parents=True)
+    pending = {"version": rs.ARCHIVE_VERSION, "task_id": run.task_id, "run_id": run.run_id,
+               "source": str(run.path), "target": str(target)}
+    rs._durable_replace(rs.archive_dir / "pending.json", json.dumps(pending).encode())
+    os.replace(run.path, target)
+
+    assert rs.repair_pending_archive()
+    assert not (rs.archive_dir / "pending.json").exists()
+    archived = RunStore(tmp_path).all_runs()[0]
+    assert archived.cost_usd == 7.0
+    assert archived.read_bytes("stdout.json") == payload
+
+
+def test_pending_archive_before_move_aborts_without_moving_live_run(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    target = rs.archive_dir / run.task_id / run.run_id
+    pending = {"version": rs.ARCHIVE_VERSION, "task_id": run.task_id, "run_id": run.run_id,
+               "source": str(run.path), "target": str(target)}
+    rs._durable_replace(rs.archive_dir / "pending.json", json.dumps(pending).encode())
+
+    assert rs.repair_pending_archive()
+    assert run.path.exists()
+    assert not target.exists()
+    assert RunStore(tmp_path).all_runs()[0].cost_usd == 7.0
 
 
 def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):

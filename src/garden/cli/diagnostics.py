@@ -86,6 +86,15 @@ def archive_runs(
 
     store = _store()
     rs = RunStore(store.config.garden_dir)
+    # Scheduler construction reads run history, which deliberately fails closed while
+    # an interrupted transaction is pending. Repair that single transaction first so
+    # the documented apply command can reach the normal locked reference analysis.
+    if apply:
+        try:
+            rs.repair_pending_archive()
+        except (OSError, ValueError, HistoryUnavailable) as exc:
+            err.print(f"[red]archive maintenance stopped safely: {exc}[/red]")
+            raise typer.Exit(2) from None
     scheduler = _scheduler(store)
     before = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
     with scheduler.tick_lock():
