@@ -78,6 +78,18 @@ def test_memory_open_pr_observation_advances_check_latency():
 
 
 @pytest.mark.parametrize("fake_cls", FAKES, ids=lambda c: c.__name__)
+def test_open_pr_observation_is_a_snapshot(fake_cls):
+    """A refresh must not reuse a mutable PR object returned by an earlier listing."""
+    gh = fake_cls()
+    pr = gh.create_pr("o/r", "garden/feature", "main", "Feature", "body")
+
+    observed = gh.list_open_prs("o/r")[0]
+    observed.head_sha = "stale-observation"
+
+    assert gh.get_pr("o/r", pr.number).head_sha != "stale-observation"
+
+
+@pytest.mark.parametrize("fake_cls", FAKES, ids=lambda c: c.__name__)
 def test_open_pr_observation_scopes_to_current_and_project_users(fake_cls):
     gh = fake_cls()
     own = gh.create_pr("o/r", "garden/own", "main", "Own", "body")

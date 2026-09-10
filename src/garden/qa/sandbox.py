@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -152,7 +152,9 @@ class MemoryGitHub:
     def list_open_prs(self, slug: str, project_users: list[str] | None = None) -> list[PRInfo]:
         authors = {self.me(), *(project_users or [])}
         return [
-            self.get_pr(slug, pr.number)
+            # Keep each repository observation independent from the in-memory backend,
+            # matching the fresh value objects returned by the real provider.
+            replace(self.get_pr(slug, pr.number))
             for pr in self.prs.values()
             if pr.state == "OPEN" and (pr.author or self.me()) in authors
         ]
