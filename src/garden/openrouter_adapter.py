@@ -19,6 +19,22 @@ from typing import Any
 import httpx
 
 
+def _provider_key(name: str) -> str:
+    """Consume the runner's one-shot credential pipe, or use env for direct invocation."""
+    raw_fd = os.environ.pop("GARDEN_HARNESS_API_KEY_FD", "")
+    transported_name = os.environ.pop("GARDEN_HARNESS_API_KEY_NAME", "")
+    environment_value = os.environ.pop(name, "")
+    if raw_fd:
+        if transported_name != name:
+            raise ValueError("OpenRouter credential transport name does not match harness configuration")
+        fd = int(raw_fd)
+        try:
+            return os.read(fd, 1024 * 1024).decode().rstrip("\n")
+        finally:
+            os.close(fd)
+    return environment_value
+
+
 def _response_objects(body: bytes) -> list[dict[str, Any]]:
     """Decode JSON or SSE response objects, ignoring non-JSON stream sentinels."""
     text = body.decode("utf-8", "replace")
@@ -112,7 +128,7 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    api_key = os.environ.get(args.api_key_env, "")
+    api_key = _provider_key(args.api_key_env)
     if not api_key:
         parser.error(f"{args.api_key_env} is not set")
     totals = UsageTotals()

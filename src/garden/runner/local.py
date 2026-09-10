@@ -81,7 +81,7 @@ class LocalRunner(Runner):
         return env
 
     def harness_environment(self, env: dict[str, str]) -> dict[str, str]:
-        """Add only this harness's configured provider key to its process environment."""
+        """Test-runner compatibility environment for an in-process harness fake."""
         result = dict(env)
         assert self.harness is not None
         key_name = self.harness.api_key_env

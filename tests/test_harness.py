@@ -1,6 +1,8 @@
 import json
 import os
+import shlex
 import subprocess
+import sys
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -8,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from garden.brief import parse_result
+from garden.credential_stream import main as stream_credential
 from garden.harness import Harness
 from garden.personas import parse_persona
 from garden.review import parse_review
@@ -46,16 +49,42 @@ def test_fake_openrouter_smoke(tmp_path):
     thread.start()
     harness = Harness("openrouter", {"bin": str(fake_codex),
         "base_url": f"http://127.0.0.1:{server.server_port}/api/v1"})
+    credential_read, credential_write = os.pipe()
+    os.write(credential_write, b"offline-test-key")
+    os.close(credential_write)
+    env = {
+        **os.environ,
+        "GARDEN_HARNESS_API_KEY_FD": str(credential_read),
+        "GARDEN_HARNESS_API_KEY_NAME": "OPENROUTER_API_KEY",
+    }
+    env.pop("OPENROUTER_API_KEY", None)
+    for name in (
+        "GARDEN_HEAVY_EXECUTION", "GARDEN_EXECUTION_LEASED", "GARDEN_EXECUTION_OWNER",
+        "GARDEN_EXECUTION_RUN_DIR", "GARDEN_OWNER_SCOPED",
+    ):
+        env.pop(name, None)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    brief = run_dir / "brief.md"
+    stdout = run_dir / "stdout.json"
+    stderr = run_dir / "stderr.log"
+    brief.write_text("# Smoke brief\nReturn the required result marker.")
+    script = (
+        f"{shlex.join(harness.command('openai/gpt-5.2-codex'))} < {shlex.quote(str(brief))} "
+        f"> {shlex.quote(str(stdout))} 2> {shlex.quote(str(stderr))}"
+    )
     try:
-        completed = subprocess.run(harness.command("openai/gpt-5.2-codex"),
-            input="# Smoke brief\nReturn the required result marker.", capture_output=True,
-            text=True, env={**os.environ, "OPENROUTER_API_KEY": "offline-test-key"},
-            cwd=tmp_path, check=False)
+        completed = subprocess.run(
+            [sys.executable, "-m", "garden.run_supervisor", str(run_dir), script],
+            capture_output=True, text=True, env=env, pass_fds=(credential_read,),
+            cwd=tmp_path, check=False,
+        )
     finally:
+        os.close(credential_read)
         server.shutdown()
         server.server_close()
         thread.join()
-    parsed = harness.parse(completed.stdout, completed.stderr)
+    parsed = harness.parse(stdout.read_text(), stderr.read_text())
 
     assert completed.returncode == 0
     assert parsed["session_id"] == "fake-codex"
@@ -67,6 +96,20 @@ def test_fake_openrouter_smoke(tmp_path):
     assert parsed["result"] == {
         "status": "done", "summary": "adapter completed",
     }
+
+
+def test_remote_credential_stream_does_not_write_key_to_script(tmp_path, monkeypatch, capsys):
+    script = tmp_path / "remote.sh"
+    marker = "__GARDEN_TEST_KEY__"
+    script.write_text(f"key={marker}\nbrief={marker}\n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "provider secret")
+    monkeypatch.setattr(
+        "sys.argv", ["garden.credential_stream", str(script), marker, "OPENROUTER_API_KEY"]
+    )
+
+    assert stream_credential() == 0
+    assert capsys.readouterr().out == f"key='provider secret'\nbrief={marker}\n"
+    assert script.read_text() == f"key={marker}\nbrief={marker}\n"
 
 
 def test_openrouter_defaults_and_probe_use_provider_configuration():

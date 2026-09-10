@@ -198,8 +198,10 @@ Persona reviews of a phase are written into the garden itself, under
 `harnesses.openrouter` uses Codex as the maintained agent and tool loop and points its
 OpenAI-compatible Responses provider at OpenRouter. It is a named harness so work pools,
 review pools, personas, and retros can route to it independently. `api_key_env` defaults to
-`OPENROUTER_API_KEY`; the runner admits that one value only to the harness process, after
-setup, while the ordinary worker environment remains scrubbed. Codex JSONL remains the raw
+`OPENROUTER_API_KEY`; the runner sends that one value to the adapter through a one-shot
+descriptor after setup, while the ordinary worker and ancestor process environments remain
+scrubbed. SSH launches first remove the key from the remote environment and substitute it
+only into the transient input stream, never the saved remote script. Codex JSONL remains the raw
 `stdout.json` transcript. A loopback proxy observes Responses usage, forwards the request
 with the provider key (Codex receives only a local placeholder), and appends the aggregate
 provider usage event. Its final message becomes `final.md`, and response usage plus the
