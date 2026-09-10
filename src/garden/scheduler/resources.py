@@ -491,6 +491,21 @@ class ResourceMixin:
                     f"{operation} deferred by resource pressure: {'; '.join(status.pressure_reasons)}"
                 )
 
+    @contextmanager
+    def _local_staging_admission(self, operation: str):
+        """Serialize unreserved controller staging with a fresh physical-space check."""
+        with self._local_admission_lock():
+            status = self.resource_status(fresh_storage=True)
+            self._record_resource_status(status)
+            if status.pressured:
+                pressure = self.control().setdefault("resource_pressure", {"at": now_iso()})
+                pressure["operation"] = operation
+                self.state.save()
+                raise ResourcePressureError(
+                    f"{operation} deferred by resource pressure: {'; '.join(status.pressure_reasons)}"
+                )
+            yield
+
     def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "",
                        runner_name: str = "local", resource_weight: int | None = None) -> Any:
         """Atomically admit and publish a running local run across all launchers."""

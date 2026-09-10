@@ -234,8 +234,9 @@ class RetroMixin:
             wt = canonical
         else:
             repo = self.repo_for(probe)
-            gitops.fetch(repo)
-            gitops.prepare_worktree(repo, wt, branch, base)
+            with self._local_staging_admission("retro checkout materialization"):
+                gitops.fetch(repo)
+                gitops.prepare_worktree(repo, wt, branch, base)
         friction, reported, comment_friction, reports, task_rows, merged = self._retro_materials(phase, entry["personas"])
         text = reconcile_brief(self.store, phase, base, friction, reported, comment_friction,
                                reports, task_rows, merged, entry["next_phase"])
