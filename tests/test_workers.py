@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import time
 
@@ -24,6 +25,13 @@ def configure(garden, *, remote=True, ssh=True):
     return Store(garden)
 
 
+def enroll(store, *hosts):
+    path = store.config.garden_dir / "hosts/enrollment/controller-hosts.json"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(json.dumps({"hosts": list(hosts)}))
+    path.chmod(0o600)
+
+
 def test_idle_contact_survives_zero_jobs_and_api_matches_ui(garden, monkeypatch):
     store = configure(garden, ssh=False)
     monkeypatch.setenv("PULL_TOKEN", "secret")
@@ -45,6 +53,50 @@ def test_idle_contact_survives_zero_jobs_and_api_matches_ui(garden, monkeypatch)
     assert page.status_code == 200
     assert "pull-a" in page.text and "0" in page.text and "polling for work" in page.text
     assert "Available pull workers poll for work" in page.text
+
+
+def test_never_contacted_enrolled_worker_is_unknown_in_api_and_ui(garden):
+    store = configure(garden, remote=False, ssh=False)
+    enroll(store, {"name": "enrolled-idle", "max_parallel": 3,
+                   "token_sha256": hashlib.sha256(b"secret-token").hexdigest()})
+    client = TestClient(create_app(store, watch=False, host="testserver"))
+
+    payload = client.get("/api/workers").json()
+    assert payload["totals"] == {
+        **{key: 0 for key in ("jobs", "available_capacity", "available", "executing",
+                              "draining", "restarting", "reconnecting", "unreachable",
+                              "terminated", "disabled")},
+        "workers": 1, "capacity": 3, "unknown": 1,
+    }
+    assert payload["workers"] == [{
+        "id": "enrolled-idle", "placement": "remote", "status": "unknown",
+        "last_contact": None, "evidence_at": None, "evidence_stale": True,
+        "capacity": 3, "available_capacity": 0, "current_jobs": [],
+        "unavailable_reason": "no recent worker-agent contact", "provider_id": None,
+        "prior_provider_ids": [],
+    }]
+    assert "token_sha256" not in json.dumps(payload)
+    page = client.get("/now/workers")
+    assert page.status_code == 200
+    assert "enrolled-idle" in page.text
+    assert '<span class="worker-state unknown">unknown</span>' in page.text
+    assert "no recent worker-agent contact" in page.text
+
+
+def test_configured_enrolled_and_contact_identity_is_counted_once(garden):
+    store = configure(garden, ssh=False)
+    enroll(store, {"name": "pull-a", "max_parallel": 4,
+                   "token_sha256": hashlib.sha256(b"secret-token").hexdigest()})
+    WorkerContactStore(store.config.garden_dir).record(
+        "pull-a", capacity=2, harnesses=["claude"], tiers=[], facts={}
+    )
+
+    fleet = snapshot(store.config, RunStore(store.config.garden_dir))
+
+    assert fleet["totals"]["workers"] == 1
+    assert [(worker["id"], worker["capacity"]) for worker in fleet["workers"]] == [
+        ("pull-a", 2)
+    ]
 
 
 def test_worker_snapshot_separates_contact_from_lease_and_excludes_reservations(garden):

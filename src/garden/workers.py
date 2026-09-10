@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .hosts.registry import enrolled_hosts, worker_configuration
 from .runs import Run, RunStore
 
 ACTIVE = {"requested", "preparing", "running"}
@@ -107,7 +108,11 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
     queued_remote = [run for run in active if run.runner == "remote" and not run.host]
     contacts = WorkerContactStore(config.garden_dir).read()
     remote_cfg = {str(row.get("name") or ""): dict(row)
-                  for row in (config.get("workers.hosts") or []) if row.get("name")}
+                  for row in enrolled_hosts(worker_configuration(config)) if row.get("name")}
+    for row in config.get("workers.hosts") or []:
+        if row.get("name"):
+            name = str(row["name"])
+            remote_cfg[name] = {**remote_cfg.get(name, {}), **dict(row)}
     ssh_cfg = {str(row.get("name") or ""): dict(row)
                for row in (config.get("ssh.hosts") or []) if row.get("name")}
     rows: list[dict[str, Any]] = []
