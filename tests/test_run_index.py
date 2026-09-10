@@ -215,6 +215,56 @@ def test_archive_compresses_and_deduplicates_large_artifacts_byte_exactly(tmp_pa
     assert (rs.dir / "CG-001" / "run-0" / "fence_guard" / ".garden__state.json").read_bytes() == payload
 
 
+def test_archive_preparation_retains_source_until_revalidated_commit(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 2.0)
+    payload = b"large immutable output" * 1000
+    (run.path / "stdout.json").write_bytes(payload)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+
+    prepared = rs.prepare_terminal_archive(before, limit=1)
+
+    assert len(prepared) == 1
+    assert (run.path / "stdout.json").read_bytes() == payload
+    assert rs.commit_terminal_archive(prepared, before) == 1
+    rs.retire_prepared_archive(prepared)
+    archived = RunStore(tmp_path).all_runs()[0]
+    assert archived.read_bytes("stdout.json") == payload
+
+
+def test_archive_commit_rejects_source_changed_during_preparation(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 2.0)
+    artifact = run.path / "stdout.json"
+    artifact.write_bytes(b"original" * 1000)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+    prepared = rs.prepare_terminal_archive(before, limit=1)
+
+    artifact.write_bytes(b"updated concurrently" * 1000)
+
+    assert rs.commit_terminal_archive(prepared, before) == 0
+    assert run.path.exists()
+    assert artifact.read_bytes() == b"updated concurrently" * 1000
+
+
+def test_archive_preparation_respects_target_volume_headroom(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 2.0)
+    (run.path / "stdout.json").write_bytes(b"x" * 5000)
+
+    class Usage:
+        free = 1024
+
+    monkeypatch.setattr("garden.runs.shutil.disk_usage", lambda _path: Usage())
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+
+    with pytest.raises(OSError, match="reserved headroom"):
+        rs.prepare_terminal_archive(before, limit=1, min_free_bytes=2048)
+
+    assert run.path.exists()
+    assert not list(rs.archive_dir.glob("blobs/*/*.gz"))
+
+
 def test_archive_report_measures_representative_multi_run_storage(tmp_path: Path):
     rs = RunStore(tmp_path)
     payloads = []

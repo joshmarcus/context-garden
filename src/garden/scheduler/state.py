@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -263,43 +264,83 @@ class State:
             restored += 1
         return restored
 
-    def archive_completed(self, task_ids: set[str], *, limit: int) -> dict[str, int]:
-        """Move bounded terminal-task payloads to a durable, indexed compressed CAS."""
+    def prepare_completed(
+        self, task_ids: set[str], *, limit: int, min_free_bytes: int = 0
+    ) -> dict[str, dict[str, Any]]:
+        """Compress and verify bounded historical payloads without changing hot state."""
+        prepared: dict[str, dict[str, Any]] = {}
+        for task_id in sorted(task_ids):
+            if len(prepared) >= limit:
+                break
+            current = self.get(task_id)
+            payload = {key: current[key] for key in self.HISTORICAL_KEYS if key in current}
+            if not payload:
+                continue
+            raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            sha = hashlib.sha256(raw).hexdigest()
+            blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            created = False
+            if not blob.exists():
+                free = shutil.disk_usage(blob.parent).free
+                required = len(raw) + 1024 * 1024 + min_free_bytes
+                if free < required:
+                    raise OSError(
+                        f"state archive volume has {free} free bytes; {required} required "
+                        f"({min_free_bytes} bytes reserved headroom)"
+                    )
+                self._durable_bytes(blob, gzip.compress(raw, mtime=0))
+                created = True
+            try:
+                reconstructed = gzip.decompress(blob.read_bytes())
+            except (OSError, EOFError, gzip.BadGzipFile) as exc:
+                raise StateCorruptionError(
+                    f"scheduler state history verification failed: {sha}"
+                ) from exc
+            if reconstructed != raw or hashlib.sha256(reconstructed).hexdigest() != sha:
+                raise StateCorruptionError(f"scheduler state history verification failed: {sha}")
+            prepared[task_id] = {
+                "sha256": sha,
+                "keys": sorted(payload),
+                "logical_bytes": len(raw),
+                "stored_bytes": blob.stat().st_size if created else 0,
+                "blob_identity": (blob.stat().st_size, blob.stat().st_mtime_ns),
+            }
+        return prepared
+
+    def commit_completed(
+        self, prepared: dict[str, dict[str, Any]], task_ids: set[str]
+    ) -> dict[str, int]:
+        """Publish prepared references only when task eligibility and payload still match."""
         report = {"tasks": 0, "logical_bytes": 0, "stored_bytes": 0}
-        counted_blobs: set[str] = set()
-        if limit <= 0:
+        if not prepared:
             return report
         lock_path = self.path.parent / "state-history.lock"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(lock_path, "a") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
             index = self._history_index()
-            for task_id in sorted(task_ids):
-                if report["tasks"] >= limit:
-                    break
+            for task_id, plan in prepared.items():
+                if task_id not in task_ids:
+                    continue
                 current = self.get(task_id)
                 payload = {key: current[key] for key in self.HISTORICAL_KEYS if key in current}
                 if not payload:
                     continue
                 raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
                 sha = hashlib.sha256(raw).hexdigest()
+                if sha != plan["sha256"] or sorted(payload) != plan["keys"]:
+                    continue
                 blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
-                blob.parent.mkdir(parents=True, exist_ok=True)
-                if not blob.exists():
-                    compressed = gzip.compress(raw, mtime=0)
-                    self._durable_bytes(blob, compressed)
-                # A content-addressed path may predate this transaction. Verify both new
-                # and deduplicated blobs before publishing a reference and retiring the
-                # hot-state fields that remain the usable original on failure.
                 try:
-                    reconstructed = gzip.decompress(blob.read_bytes())
-                except (OSError, EOFError, gzip.BadGzipFile) as exc:
+                    blob_stat = blob.stat()
+                except FileNotFoundError:
                     raise StateCorruptionError(
-                        f"scheduler state history verification failed: {sha}"
-                    ) from exc
-                if reconstructed != raw or hashlib.sha256(reconstructed).hexdigest() != sha:
-                    raise StateCorruptionError(f"scheduler state history verification failed: {sha}")
-                index["tasks"][task_id] = {"sha256": sha, "keys": sorted(payload)}
+                        f"scheduler state history blob is unavailable: {sha}"
+                    ) from None
+                if (blob_stat.st_size, blob_stat.st_mtime_ns) != tuple(plan["blob_identity"]):
+                    raise StateCorruptionError(f"scheduler state history blob changed: {sha}")
+                index["tasks"][task_id] = {"sha256": sha, "keys": plan["keys"]}
                 self._durable_bytes(
                     self.history_dir / "index.json",
                     (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
@@ -308,13 +349,15 @@ class State:
                 for key in payload:
                     current.pop(key, None)
                 report["tasks"] += 1
-                report["logical_bytes"] += len(raw)
-                if sha not in counted_blobs:
-                    report["stored_bytes"] += blob.stat().st_size
-                    counted_blobs.add(sha)
+                report["logical_bytes"] += int(plan["logical_bytes"])
+                report["stored_bytes"] += int(plan["stored_bytes"])
             # The archive and its index are durable before compact references replace data.
             self.save()
         return report
+
+    def archive_completed(self, task_ids: set[str], *, limit: int) -> dict[str, int]:
+        """Prepare and commit state history; retained for non-scheduler callers."""
+        return self.commit_completed(self.prepare_completed(task_ids, limit=limit), task_ids)
 
     @staticmethod
     def _durable_bytes(path: Path, data: bytes) -> None:
