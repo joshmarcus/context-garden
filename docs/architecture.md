@@ -165,7 +165,7 @@ of the loop touch different files.
 | `runs.py` | run records and the indexed run store used by the scheduler, runners, and web surfaces |
 | `now1.py` | Now (`/now`, `garden now`): the four regions as one snapshot from the store, state, run records and event log (runs in flight with their typical duration and progress, the dispatch and merge queues, the phase sheets, the last period's figures), the text view, and the live stream's messages (event log tail, run progress, the tick) |
 | `walkthrough.py` | render the live web app's pages to screenshots, HTML and text with an `index.md`; a phase persona review adds the newest capture to its brief |
-| `gitops.py`, `canonical.py`, `github.py` | git worktrees and pushes; fenced in-place checkout leases and reconciliation; pull requests through `gh` or the REST API |
+| `gitops.py`, `canonical.py`, `github.py`, `source_control.py` | git worktrees and pushes; fenced in-place checkout leases and reconciliation; provider-neutral change-request contracts and endpoint-scoped transport policy; GitHub pull requests through `gh` or the REST API |
 | `release.py`, `cli/release.py` | installed distribution/source identity and local release-candidate checks; the `garden release validate` command verifies the versioned annotated tag, exact commit, CI evidence, release notes, and artifact digests before a human publishes a draft or prerelease |
 | `kickoff.py` | the kickoff brief and verdict parsing |
 | `planner.py`, `plants.py`, `notify.py`, `notification_adapters.py`, `host_identity.py`, `upgrade.py`, `config.py`, `configuration.py` | the planning prompt and import; the botanical drawings; legacy notification hooks and typed, durable notification delivery; host-alias and shared-text redaction boundary; the pinned install; configuration layering and editable-setting policy metadata |
@@ -897,6 +897,7 @@ take effect within one tick.
 | a harness (another agent CLI) | a block under `harnesses:` with `bin`, `command` or argument shape, `output` format, a tier-to-model map, optional `resume_command` | none |
 | a runner (another place to run) | a subclass of `runner.base.Runner` with `start` and `collect`, registered in `runner/__init__.py` | one class |
 | a check (token-free) | `{name, command}` or `{name, python: "module:function"}` under `checks.pre_pr` or `checks.ci`; helpers in `checks.py` for log analysers | none, or one function |
+| source control | a `SourceControlProvider` adapter returning neutral change-request metadata; register it with an endpoint-scoped `ConnectionPolicy` | one adapter |
 | a persona | a markdown file under `personas/` | none |
 | context | markdown under the garden; the planner and the briefs pick it up | none |
 

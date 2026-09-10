@@ -7,7 +7,6 @@ import re
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from .. import gitops
 from ..brief import brief_gaps, resume_prompt
@@ -908,17 +907,15 @@ class HumanMixin:
         head, or a PR whose ref cannot be resolved rather than falling back to a task default.
         """
         slug = self.slug_for(task)
-        parsed = urlparse(url)
-        match = re.search(r"/pull/(\d+)$", parsed.path.rstrip("/"))
-        if not slug or not match or parsed.scheme != "https" or not parsed.hostname:
-            raise RuntimeError("PR attachment needs an accessible PR URL for the configured repository")
-        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        if not self.is_safe_change_request_url(task, url):
             raise RuntimeError("PR attachment URL has unsupported components")
-        number = int(match.group(1))
-        # Public GitHub URLs can be checked before a provider request.  Other configured
-        # hosts are checked against the canonical URL returned by that provider below.
-        if parsed.hostname.lower() == "github.com" and pull_request_number(url, slug) is None:
+        if url.lower().startswith("https://github.com/") and pull_request_number(
+            url, slug, getattr(slug, "host", "github.com")
+        ) is None:
             raise RuntimeError("PR URL does not name the configured repository")
+        number = self.change_request_number(task, url)
+        if not slug or not number:
+            raise RuntimeError("PR attachment needs an accessible PR URL for the configured repository")
         if not self.github.available:
             raise RuntimeError("PR attachment needs an available GitHub provider")
         try:
@@ -1426,8 +1423,7 @@ class HumanMixin:
         from ..runner.manual import ManualRunner
 
         url = str(result.get("pr") or run.external_pr or task.pr or "")
-        match = re.search(r"/pull/(\d+)", url)
-        pr_number = int(match.group(1)) if match else None
+        pr_number = self.change_request_number(task, url)
 
         def record_refusal(reason: str) -> None:
             attempt = {"at": now_iso(), "status": "refused", "reason": reason,
@@ -1461,7 +1457,7 @@ class HumanMixin:
             return rep
 
         slug = self.slug_for(task)
-        if not match or not slug or not self.github.available:
+        if not pr_number or not slug or not self.github.available:
             refuse("external completion needs an accessible PR URL")
         try:
             pr = self.github.get_pr(slug, pr_number)

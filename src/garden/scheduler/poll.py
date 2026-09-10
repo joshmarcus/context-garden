@@ -116,16 +116,27 @@ class PollMixin:
             if task.pr
         }
         for product in sorted(products):
-            route = self.cfg.product_github(product)
+            route = self.cfg.product_source_control(product)
             if not route:
                 continue
             prior = dict(root.get(product) or {})
             if float(prior.get("retry_at") or 0) > time.time():
                 suppressed.add(product)
                 continue
-            slug = RepositorySlug(route["slug"], route["host"])
+            if route["provider"] == "github":
+                host = route.get("host") or route.get("web_url", "").removeprefix("https://")
+                slug = RepositorySlug(route["repository"], host)
+            else:
+                from ..source_control import RepositoryIdentity
+
+                slug = RepositoryIdentity(route["repository"], route["provider"])
             try:
-                prs = self.github.list_open_prs(slug, self.cfg.product_project_users(product))
+                if route["provider"] == "github":
+                    prs = self.github.list_open_prs(
+                        slug, self.cfg.product_project_users(product),
+                    )
+                else:
+                    prs = self.github.list_open_prs(slug)
                 old_rows = {int(row["number"]): row for row in prior.get("prs", [])}
                 rows = []
                 for pr in prs:

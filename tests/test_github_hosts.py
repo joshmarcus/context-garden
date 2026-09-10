@@ -142,7 +142,7 @@ def test_scheduler_rejects_a_different_or_invalid_repository(garden, monkeypatch
     monkeypatch.setattr(sched, "repo_for", lambda _task: garden.parent / "repo")
     monkeypatch.setattr("garden.scheduler.gitops.remote_url", lambda _repo: remote)
 
-    with pytest.raises(GitError, match="does not match configured GitHub host and repository"):
+    with pytest.raises(GitError, match="does not match configured source-control repository"):
         sched.slug_for(store.task("DM-001"))
 
 
