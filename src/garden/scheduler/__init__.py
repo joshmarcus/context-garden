@@ -144,6 +144,7 @@ class Scheduler(
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
+        self._closing_review_claims: list[tuple[str, str]] = []
         self.log = log or (lambda msg: None)
         if not read_only:
             self._migrate_fence_bookkeeping()
@@ -851,8 +852,11 @@ class Scheduler(
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
         """Run one controller-owned pass, serialised across processes for this garden."""
+        self._closing_review_claims.clear()
         with self._controller_lock():
-            return self._tick_locked(dispatch)
+            rep = self._tick_locked(dispatch)
+        self.prepare_claimed_closing_reviews(rep)
+        return rep
 
     @contextmanager
     def _controller_lock(self) -> Iterator[None]:
