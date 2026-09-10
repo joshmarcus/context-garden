@@ -336,7 +336,7 @@ def test_worker_check_delays_review_until_exact_head_receipt_and_recovers(sched,
                    "stress_opt_in": False, "excluded_nodes": list(STRESS_NODES),
                    "requested_selection": requested, "effective_selection": effective},
     }))
-    (receipt.parent / "execution.json").write_text('{"state": "done"}')
+    (receipt.parent / "execution.json").write_text('{"state": "finished"}')
     (receipt.parent / "exit_code").write_text("0")
     (receipt.parent / "stderr.log").write_text("")
     rep = sched.tick()
