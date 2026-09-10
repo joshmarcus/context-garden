@@ -931,10 +931,18 @@ def test_manual_start_claims_an_automatically_queued_review(sched, monkeypatch):
     sched.state.save()
     started = []
     monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
-    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append((ph.key, queued)))
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, queued, source: {"request": queued, "personas": [],
+                                                    "missing": ["designer"], "waiting": ""})
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda queued, prepared: queued.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: started.append((phase.key, prepared["request"])))
     returned = sched.start_retro(phase)
     assert returned["request_id"]
-    assert started == [(phase.key, returned)]
+    assert [(key, queued["request_id"]) for key, queued in started] == [
+        (phase.key, returned["request_id"])
+    ]
 
 
 def test_fresh_manual_start_adopts_request_queued_during_validation(sched, monkeypatch):
@@ -954,7 +962,14 @@ def test_fresh_manual_start_adopts_request_queued_during_validation(sched, monke
     started = []
     monkeypatch.setattr(sched, "_self_product", queue_while_manual_start_is_validating)
     monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
-    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, entry: started.append(entry["request_id"]))
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, entry, source: {"request_id": entry["request_id"],
+                                                   "personas": [], "missing": ["designer"],
+                                                   "waiting": ""})
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda entry, prepared: entry.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: started.append(prepared["request_id"]))
 
     returned = sched.start_retro(phase, ["designer"])
 
@@ -988,13 +1003,21 @@ def test_closing_review_preparation_runs_after_tick_releases_controller_lock(sch
     monkeypatch.setattr(sched, "_controller_lock", tracked_lock)
     monkeypatch.setattr(sched, "_closing_review_policy", lambda ph: {"eligible": True})
     monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
-    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: held is False or pytest.fail("lock held"))
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, queued, source: ({"personas": [], "missing": ["designer"],
+                                                    "waiting": ""}
+                                                   if not held else pytest.fail("lock held")))
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda queued, prepared: queued.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: None if not held else pytest.fail("lock held"))
     sched._closing_review_claims = []
     sched.dispatch_queued_closing_reviews(TickReport())
     sched.prepare_claimed_closing_reviews(TickReport())
 
-    assert entry["stage"] == "dispatching"
-    assert "preparation_claim" not in entry
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "personas"
+    assert "preparation_claim" not in current
 
 
 def test_queued_automatic_review_rechecks_a_new_freeze_before_dispatch(sched, monkeypatch):
@@ -1012,7 +1035,7 @@ def test_queued_automatic_review_rechecks_a_new_freeze_before_dispatch(sched, mo
     sched._retro_list().append(entry)
     monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
     started = []
-    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append(queued))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start", lambda prepared: started.append(prepared))
 
     sched.dispatch_queued_closing_reviews(TickReport())
     sched.store.set_phase_frozen(phase, "new owner hold")
@@ -1068,7 +1091,14 @@ def test_restart_reclaims_an_interrupted_closing_review_preparation(sched, monke
     monkeypatch.setattr(sched, "_closing_review_policy", lambda ph: {"eligible": True})
     monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
     started = []
-    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append(queued["request_id"]))
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, queued, source: {"request_id": queued["request_id"],
+                                                    "personas": [], "missing": ["designer"],
+                                                    "waiting": ""})
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda queued, prepared: queued.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: started.append(prepared["request_id"]))
     sched._closing_review_claims = []
 
     sched.dispatch_queued_closing_reviews(TickReport())
@@ -1196,6 +1226,57 @@ def test_reconcile_preparation_requeues_when_accepted_identity_changes_at_barrie
     assert launched == []
 
 
+def test_initial_persona_preparation_requeues_when_accepted_source_changes(sched, monkeypatch):
+    """Prepared initial roles cannot launch after their accepted source becomes stale."""
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {},
+             "automatic": True, "request_id": "initial-source-race", "evidence": "evidence-a"}
+    sched._retro_list().append(entry)
+    identity = {"source": "a" * 40}
+    barrier = threading.Barrier(2)
+    prepared = {"personas": [], "missing": ["designer"], "waiting": ""}
+
+    def prepare(ph, queued, source):
+        assert source == "a" * 40
+        barrier.wait()
+        barrier.wait()
+        return prepared
+
+    def change_source():
+        barrier.wait()
+        identity["source"] = "b" * 40
+        barrier.wait()
+
+    updater = threading.Thread(target=change_source)
+    updater.start()
+    launched = []
+    discarded = []
+    monkeypatch.setattr(sched, "_closing_review_policy",
+                        lambda ph: {"eligible": True, "evidence": "evidence-a", "reason": ""})
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: identity["source"])
+    monkeypatch.setattr(sched, "_prepare_retro_start", prepare)
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start", lambda payload: launched.append(payload))
+    monkeypatch.setattr(sched, "_discard_prepared_retro_start",
+                        lambda payload, reason: discarded.append(reason))
+
+    sched.dispatch_queued_closing_reviews(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+    updater.join()
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "queued"
+    assert current["source"] == ""
+    assert "source changed during preparation" in current["waiting_reason"]
+    assert launched == []
+    assert discarded == ["accepted phase source changed during preparation"]
+
+    # Repeated readiness detection sees the durable request and cannot add another one.
+    sched.queue_eligible_closing_reviews(TickReport())
+    assert len([item for item in sched._retro_list() if item["phase"] == phase.key]) == 1
+
+
 def test_restart_reprepares_a_committed_reconcile_that_never_launched(sched):
     phase = sched.store.phase("demo", "p1")
     run = sched.runs.new_run("_retro-demo-p1", "local", mode="retro",
@@ -1314,7 +1395,7 @@ def test_queued_review_rebinds_changed_accepted_evidence_before_dispatch(sched, 
     monkeypatch.setattr(sched, "_closing_review_policy",
                         lambda ph: {"eligible": True, "evidence": "new"})
     started = []
-    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append(queued))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start", lambda prepared: started.append(prepared))
 
     sched.dispatch_queued_closing_reviews(TickReport())
     sched.prepare_claimed_closing_reviews(TickReport())
