@@ -390,23 +390,20 @@ class GitHub:
             errors: list[GitHubError] = []
             if self.gh:
                 try:
-                    payload = json.loads(self._gh(
-                        "api", f"repos/{slug}/commits/{sha}/check-runs", "-X", "GET",
-                        "-f", "per_page=100",
-                    ) or "{}")
-                    runs = payload.get("check_runs", []) if isinstance(payload, dict) else []
+                    runs = self._gh_object_pages(
+                        f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
+                        "check_runs",
+                    )
                     rollup.extend({"name": item.get("name"),
                                    "conclusion": item.get("conclusion"),
                                    "state": item.get("status")} for item in runs)
                 except GitHubError as exc:
                     errors.append(exc)
                 try:
-                    status_payload = json.loads(self._gh(
-                        "api", f"repos/{slug}/commits/{sha}/status", "-X", "GET",
-                        "-f", "per_page=100",
-                    ) or "{}")
-                    statuses = (status_payload.get("statuses", [])
-                                if isinstance(status_payload, dict) else [])
+                    statuses = self._gh_object_pages(
+                        f"repos/{slug}/commits/{sha}/status?per_page=100",
+                        "statuses",
+                    )
                     rollup.extend({"name": item.get("context"), "state": item.get("state")}
                                   for item in statuses)
                 except GitHubError as exc:
@@ -440,7 +437,7 @@ class GitHub:
                         if ("rate limit" in message.lower()
                                 or re.search(r"rate_limit_reset=(\d+)", message)):
                             break
-            if rollup or not errors:
+            if not errors or (rollup and not self.gh):
                 state, failures = _rollup_state(rollup), _rollup_failed(rollup)
             else:
                 messages = [str(exc) for exc in errors]
@@ -844,6 +841,19 @@ class GitHub:
         """Read all CLI pages as one JSON document, including a cursor boundary page."""
         data = json.loads(self._gh("api", path, "--paginate", "--slurp") or "[]")
         return [row for page in data for row in page] if data and isinstance(data[0], list) else data
+
+    def _gh_object_pages(self, path: str, field: str) -> list[dict[str, Any]]:
+        """Collect one list field from every object page returned by ``gh api``."""
+        pages = json.loads(self._gh("api", path, "--paginate", "--slurp") or "null")
+        if not isinstance(pages, list) or not pages:
+            raise ValueError("malformed paginated GitHub response")
+        rows: list[dict[str, Any]] = []
+        for page in pages:
+            batch = page.get(field) if isinstance(page, dict) else None
+            if not isinstance(batch, list) or any(not isinstance(row, dict) for row in batch):
+                raise ValueError("malformed paginated GitHub response")
+            rows.extend(batch)
+        return rows
 
     def _reviews_since(self, slug: str, number: int, since_iso: str) -> list[dict[str, Any]]:
         owner, name = slug.split("/", 1)

@@ -335,6 +335,57 @@ def test_rest_pr_paginates_check_runs_before_computing_rollup(monkeypatch):
     assert pr.checks == "FAILURE" and pr.failed_checks == ["late-failure"]
 
 
+@pytest.mark.parametrize("late_source", ["check_runs", "statuses"])
+def test_gh_pr_paginates_checks_and_statuses_before_computing_rollup(monkeypatch, late_source):
+    github = GitHub(use_gh=True)
+    github.gh = "gh"
+    calls = []
+
+    def gh(*args, **kwargs):
+        calls.append(args)
+        field = "check_runs" if "/check-runs?" in args[1] else "statuses"
+        if field == late_source:
+            if field == "check_runs":
+                passing = [
+                    {"name": f"pass-{i}", "status": "completed", "conclusion": "success"}
+                    for i in range(100)
+                ]
+                failure = {"name": "late-failure", "status": "completed", "conclusion": "failure"}
+            else:
+                passing = [
+                    {"context": f"pass-{i}", "state": "success"}
+                    for i in range(100)
+                ]
+                failure = {"context": "late-failure", "state": "failure"}
+            return json.dumps([
+                {field: passing},
+                {field: [failure]},
+            ])
+        return json.dumps([{field: []}])
+
+    monkeypatch.setattr(github, "_gh", gh)
+
+    state, failures = github._checks_for_sha("team/repo", "head-7")
+    assert state == "FAILURE" and failures == ["late-failure"]
+    assert all("--paginate" in call and "--slurp" in call for call in calls)
+
+
+def test_gh_pr_fails_closed_when_a_later_status_page_cannot_be_read(monkeypatch):
+    github = GitHub(use_gh=True)
+    github.gh = "gh"
+
+    def gh(*args, **kwargs):
+        if "/check-runs?" in args[1]:
+            return json.dumps([{"check_runs": [
+                {"name": "tests", "status": "completed", "conclusion": "success"}
+            ]}])
+        raise GitHubError("gh api pagination failed on page 2")
+
+    monkeypatch.setattr(github, "_gh", gh)
+
+    assert github._checks_for_sha("team/repo", "head-7") == ("UNAVAILABLE", [])
+
+
 @pytest.mark.parametrize("status, expected", [(403, "PERMISSION"), (503, "UNAVAILABLE")])
 def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expected):
     github = GitHub(use_gh=False, token="scoped-token")
