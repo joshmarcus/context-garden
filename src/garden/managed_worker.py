@@ -9,71 +9,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import shutil
 import time
-import urllib.error
-import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 from .remote_worker import (
     WorkerClient,
-    WorkerRequestError,
+    claim_with_retry,
     deliver_pending_results,
     execute_claim,
+    initialize_worker_lifecycle,
     recover_active_claims,
 )
 from .system_resources import memory_bytes
-from .worker_diagnostics import WorkerEventLog, durable_worker_identity
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - exercised on Windows
     fcntl = None
     import msvcrt
-
-
-def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep,
-                     max_elapsed_seconds: float = 300) -> tuple[int, dict]:
-    """Repeat one logical idle claim with bounded backoff and a stable identity."""
-    request = {**payload, "claim_request_id": uuid.uuid4().hex}
-    delay = 0.25
-    started = time.monotonic()
-    attempts = 0
-    while True:
-        attempts += 1
-        try:
-            result = client.post("/api/runs/claim", request)
-            if getattr(client, "events", None) and attempts > 1:
-                client.events.emit("transport_recovered", request_id=request["claim_request_id"],
-                                   operation="claim", reconnect_attempts=attempts - 1,
-                                   recovery_outcome="recovered")
-            return result
-        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
-            cause = type(exc).__name__
-        except WorkerRequestError as exc:
-            if not exc.retryable:
-                if getattr(client, "events", None):
-                    client.events.emit("worker_exit", exit_reason="authentication_or_permanent_failure",
-                                       cause="authentication" if exc.status in {401, 403} else "permanent_response",
-                                       operator_action="verify worker enrollment and controller compatibility")
-                raise
-            cause = f"http_{exc.status}"
-        elapsed = time.monotonic() - started
-        if elapsed >= max_elapsed_seconds:
-            if getattr(client, "events", None):
-                client.events.emit("worker_exit", exit_reason="controller_unavailable",
-                                   cause=cause, reconnect_attempts=attempts,
-                                   recovery_outcome="retry_window_exhausted",
-                                   operator_action="check controller and proxy health, then restart the worker")
-            raise RuntimeError(f"claim recovery window exhausted after {attempts} attempts")
-        jittered = delay * random.uniform(0.8, 1.2)
-        if getattr(client, "events", None):
-            client.events.emit("transport_retry", request_id=request["claim_request_id"], operation="claim",
-                               reconnect_attempt=attempts, backoff_seconds=round(jittered, 3), cause=cause)
-        sleep(min(jittered, max_elapsed_seconds - elapsed))
-        delay = min(delay * 2, 5.0)
 
 
 def resources(root: Path) -> dict:
@@ -158,17 +113,10 @@ def run(config: dict, *, once: bool = False):
     # tempfile may have been imported before the disk-backed location was installed.
     import tempfile
     tempfile.tempdir = str(temp)
-    worker_id = durable_worker_identity(root, str(config.get("worker_id") or ""))
-    generation = uuid.uuid4().hex
-    events = WorkerEventLog(root / "worker-events.jsonl", worker_id=worker_id, generation=generation)
-    restart_path = root / "restart-count"
-    restart_count = int(restart_path.read_text().strip() or 0) + 1 if restart_path.exists() else 1
-    restart_path.write_text(f"{restart_count}\n")
-    events.emit("worker_start", restart_count=restart_count, exit_reason="process_start")
     client = AttributedClient(config, root)
-    client.events = events
-    client.worker_id = worker_id
-    client.process_generation = generation
+    initialize_worker_lifecycle(
+        root, client, requested_worker_id=str(config.get("worker_id") or "")
+    )
     with host_slot(root):
         while True:
             recover_active_claims(root, client)

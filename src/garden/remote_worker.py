@@ -30,7 +30,12 @@ from .harness import Harness
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 from .workload_identity import AuthorityRedactor
-from .worker_diagnostics import WorkerEventLog, endpoint_class, safe_correlation_id
+from .worker_diagnostics import (
+    WorkerEventLog,
+    durable_worker_identity,
+    endpoint_class,
+    safe_correlation_id,
+)
 
 
 class WorkerRequestError(RuntimeError):
@@ -228,6 +233,82 @@ class WorkerClient:
                                  endpoint_class=operation, run_id=_run_id(path),
                                  exception=type(exc).__name__, cause="network", outcome="failed")
             raise
+
+
+def initialize_worker_lifecycle(
+    root: Path, client: WorkerClient, *, requested_worker_id: str = ""
+) -> WorkerEventLog:
+    """Attach one durable identity and process generation to a worker client."""
+    root.mkdir(parents=True, exist_ok=True)
+    worker_id = durable_worker_identity(root, requested_worker_id)
+    generation = uuid.uuid4().hex
+    events = WorkerEventLog(
+        root / "worker-events.jsonl", worker_id=worker_id, generation=generation
+    )
+    restart_path = root / "restart-count"
+    restart_count = (
+        int(restart_path.read_text().strip() or 0) + 1 if restart_path.exists() else 1
+    )
+    restart_path.write_text(f"{restart_count}\n")
+    events.emit("worker_start", restart_count=restart_count, exit_reason="process_start")
+    client.events = events
+    client.worker_id = worker_id
+    client.process_generation = generation
+    return events
+
+
+def claim_with_retry(
+    client: WorkerClient,
+    payload: dict[str, Any],
+    *,
+    sleep=time.sleep,
+    max_elapsed_seconds: float = 300,
+) -> tuple[int, dict[str, Any]]:
+    """Repeat one logical idle claim with bounded backoff and a stable identity."""
+    request = {**payload, "claim_request_id": uuid.uuid4().hex}
+    delay = 0.25
+    started = time.monotonic()
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            result = client.post("/api/runs/claim", request)
+            if getattr(client, "events", None) and attempts > 1:
+                client.events.emit(
+                    "transport_recovered", request_id=request["claim_request_id"],
+                    operation="claim", reconnect_attempts=attempts - 1,
+                    recovery_outcome="recovered",
+                )
+            return result
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            cause = type(exc).__name__
+        except WorkerRequestError as exc:
+            if not exc.retryable:
+                if getattr(client, "events", None):
+                    client.events.emit(
+                        "worker_exit", exit_reason="authentication_or_permanent_failure",
+                        cause="authentication" if exc.status in {401, 403} else "permanent_response",
+                        operator_action="verify worker enrollment and controller compatibility",
+                    )
+                raise
+            cause = f"http_{exc.status}"
+        elapsed = time.monotonic() - started
+        if elapsed >= max_elapsed_seconds:
+            if getattr(client, "events", None):
+                client.events.emit(
+                    "worker_exit", exit_reason="controller_unavailable", cause=cause,
+                    reconnect_attempts=attempts, recovery_outcome="retry_window_exhausted",
+                    operator_action="check controller and proxy health, then restart the worker",
+                )
+            raise RuntimeError(f"claim recovery window exhausted after {attempts} attempts")
+        jittered = delay * random.uniform(0.8, 1.2)
+        if getattr(client, "events", None):
+            client.events.emit(
+                "transport_retry", request_id=request["claim_request_id"], operation="claim",
+                reconnect_attempt=attempts, backoff_seconds=round(jittered, 3), cause=cause,
+            )
+        sleep(min(jittered, max_elapsed_seconds - elapsed))
+        delay = min(delay * 2, 5.0)
 
 
 def _run_id(path: str) -> str:
@@ -1105,11 +1186,22 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
 
 def run_worker(url: str, host: str, token: str, root: Path, harnesses: list[str], tiers: list[str],
                capacity: int = 1, once: bool = False, poll_seconds: float = 5,
-               setup_command: str = "") -> None:
+               setup_command: str = "", claim_recovery_seconds: float = 300,
+               result_recovery_attempts: int = 5,
+               result_recovery_seconds: float = 30) -> None:
     client = WorkerClient(url, token)
+    initialize_worker_lifecycle(root, client, requested_worker_id=host)
     while True:
-        status, claim = client.post("/api/runs/claim", {"host": host, "harnesses": harnesses,
-                                                        "tiers": tiers, "capacity": capacity})
+        recover_active_claims(root, client)
+        deliver_pending_results(
+            root, client, max_attempts=result_recovery_attempts,
+            max_elapsed_seconds=result_recovery_seconds,
+        )
+        status, claim = claim_with_retry(
+            client, {"host": host, "harnesses": harnesses,
+                     "tiers": tiers, "capacity": capacity},
+            max_elapsed_seconds=claim_recovery_seconds,
+        )
         if status == 204 or not claim:
             if once:
                 return
