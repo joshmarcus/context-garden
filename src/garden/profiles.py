@@ -21,6 +21,7 @@ PROFILE_FIELDS = ("workers", "reviews", "models", "review_difficulty", "retro_di
 PROFILE_KEYS: dict[str, str] = {
     "max_parallel": "workers",
     "review_parallel": "reviews",
+    "models": "models",
     "review.difficulty": "review_difficulty",
     "retro.difficulty": "retro_difficulty",
     "observe.profile": "observe",
