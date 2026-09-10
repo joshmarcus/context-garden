@@ -173,6 +173,11 @@ class LocalRunner(Runner):
         the in-process test runner to run the same job synchronously."""
         d = run.path
         env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        policy = SandboxPolicy.from_config(self.config)
+        if policy.required:
+            _, mechanism = policy.command_argv("true", worktree)
+            env.update(policy.report_env(mechanism))
+            (d / "sandbox.json").write_text(policy.summary(mechanism) + "\n")
         env["GARDEN_HEAVY_EXECUTION"] = "1"
         execution_timeout = bounded_validation_timeout_seconds(env.get("GARDEN_VALIDATION_TIMEOUT_SECONDS"))
         env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{execution_timeout:g}"
