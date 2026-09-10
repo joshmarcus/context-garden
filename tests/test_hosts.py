@@ -432,10 +432,13 @@ def test_sqs_event_source_journals_replays_and_acknowledges_after_recovery(tmp_p
 
     class SQS:
         deleted = []
+        calls = 0
 
         def receive_message(self, **kwargs):
             assert kwargs["VisibilityTimeout"] == 30
-            return {"Messages": [{"Body": json.dumps(event), "ReceiptHandle": "receipt-1"}]}
+            self.calls += 1
+            return {"Messages": [{"Body": json.dumps(event),
+                                  "ReceiptHandle": f"receipt-{self.calls}"}]}
 
         def delete_message(self, **kwargs):
             self.deleted.append(kwargs["ReceiptHandle"])
@@ -448,7 +451,7 @@ def test_sqs_event_source_journals_replays_and_acknowledges_after_recovery(tmp_p
     assert list(source.pending_events("team-a", "workers")) == [event]
     assert len(json.loads(journal.read_text())["events"]) == 1
     source.acknowledge("i-owned")
-    assert sqs.deleted == ["receipt-1"]
+    assert sqs.deleted == ["receipt-2"]
     assert json.loads(journal.read_text())["events"] == []
 
 

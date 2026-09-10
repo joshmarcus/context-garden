@@ -75,7 +75,7 @@ class SQSEC2EventSource:
 
     def pending_events(self, owner: str, pool: str) -> Iterable[dict[str, Any]]:
         rows = self._read()
-        known = {str(row.get("event", {}).get("id") or row.get("receipt")) for row in rows}
+        known = {str(row.get("event", {}).get("id") or row.get("receipt")): row for row in rows}
         response = self.client.receive_message(
             QueueUrl=self.queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=0,
             VisibilityTimeout=30,
@@ -87,8 +87,13 @@ class SQSEC2EventSource:
                 continue
             identity = str(event.get("id") or message.get("ReceiptHandle") or "")
             if identity and identity not in known:
-                rows.append({"event": event, "receipt": str(message.get("ReceiptHandle") or "")})
-                known.add(identity)
+                row = {"event": event, "receipt": str(message.get("ReceiptHandle") or "")}
+                rows.append(row)
+                known[identity] = row
+            elif identity:
+                # SQS supplies a fresh receipt handle after each visibility timeout.
+                # Retaining the newest one makes the eventual acknowledgment effective.
+                known[identity]["receipt"] = str(message.get("ReceiptHandle") or "")
         self._write(rows)
         return [row["event"] for row in rows]
 

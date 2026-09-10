@@ -86,6 +86,10 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
         **({"region_name": config["aws_region"]} if config.get("aws_region") else {}),
     )
     if config:
+        if declaration.purchase_policy == "spot" and not config.get("spot_event_queue_url"):
+            raise ValueError(
+                "production Spot pools require spot_event_queue_url for interruption recovery"
+            )
         identity = session.client("sts").get_caller_identity()
         expected_role = (f"arn:aws:sts::{config['aws_account_id']}:"
                          "assumed-role/ContextGardenProvisioner/")
