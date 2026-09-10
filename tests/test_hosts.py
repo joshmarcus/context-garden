@@ -257,7 +257,7 @@ def test_spot_policy_is_capability_checked_priced_and_explicit(tmp_path):
     )
     lifecycle = HostLifecycle({"ec2": EC2Provider(client)}, JsonStateStore(tmp_path / "state.json"))
 
-    assert lifecycle.plan(spec).estimated_hourly_usd == 0.06
+    assert lifecycle.plan(spec).estimated_hourly_usd == 0.08
     lifecycle.reconcile(spec)
     assert client.run_args["InstanceMarketOptions"]["MarketType"] == "spot"
     assert client.run_args["InstanceMarketOptions"]["SpotOptions"]["MaxPrice"] == "0.08"
@@ -268,6 +268,33 @@ def test_spot_policy_is_capability_checked_priced_and_explicit(tmp_path):
         lifecycle.plan(replace(spec, on_demand_fallback=True))
     with pytest.raises(ValueError, match="positive finite price"):
         lifecycle.plan(replace(spec, provider_options={**spec.provider_options, "spot_hourly_usd": float("nan")}))
+    for invalid in (0, -1, float("nan"), float("inf"), "invalid"):
+        rejected = replace(
+            spec,
+            provider_options={**spec.provider_options, "spot_max_price_usd": invalid},
+        )
+        with pytest.raises(ValueError, match="spot_max_price_usd.*positive finite price"):
+            lifecycle.plan(rejected)
+
+
+def test_spot_maximum_price_is_included_in_spend_admission(tmp_path):
+    client = StubEC2()
+    spec = replace(
+        pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
+             estimated_runtime_hours=2, spend_limit_usd=1,
+             profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
+        provider_options={
+            "instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
+            "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
+            "spot_hourly_usd": 0.06, "spot_max_price_usd": 10,
+        },
+    )
+    lifecycle = HostLifecycle({"ec2": EC2Provider(client)}, JsonStateStore(tmp_path / "state.json"))
+
+    assert lifecycle.plan(spec).estimated_hourly_usd == 10
+    with pytest.raises(ValueError, match="exceeds pool spend limit"):
+        lifecycle.reconcile(spec)
+    assert client.run_args is None
 
 
 def test_spot_shortage_fallback_is_opt_in_and_uses_bounded_plan_price(tmp_path):

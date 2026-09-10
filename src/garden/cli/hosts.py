@@ -29,10 +29,6 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
                      enrollment_config: Path | None = None) -> ScaleOperation:
     if pool.provider != "ec2":
         raise ValueError("the CLI currently supports the ec2 provider")
-    try:
-        import boto3
-    except ImportError as exc:
-        raise ValueError("EC2 scaling requires boto3 in the controller environment") from exc
     saved = json.loads(operation_path.read_text()) if operation_path.exists() else {}
     saved_dir = str(saved.get("enrollment_dir") or "")
     if saved_dir:
@@ -46,6 +42,17 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
             raise ValueError("continue with the operation's original enrollment configuration")
         enrollment_config = Path(saved_config)
     declaration = pool_from_dict(saved["admitted_declaration"]) if saved else pool
+    declared_options = {
+        **declaration.provider_options,
+        **declaration.profile.provider_options,
+    }
+    if declaration.purchase_policy == "spot" and declared_options.get("spot_max_price_usd") is not None:
+        # Reject an unsafe AWS request ceiling before credential or event-source setup.
+        EC2Provider.validate_purchase_prices(declaration)
+    try:
+        import boto3
+    except ImportError as exc:
+        raise ValueError("EC2 scaling requires boto3 in the controller environment") from exc
     resolver = DirectoryEnrollmentResolver(enrollment_dir)
     config = {}
     execution_context = {}
@@ -86,6 +93,7 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
             "Spot pools require --enrollment-config with spot_event_queue_url "
             "for interruption recovery"
         )
+    EC2Provider.validate_purchase_prices(declaration)
     session = boto3.Session(
         **({"profile_name": config["aws_profile"]} if config.get("aws_profile") else {}),
         **({"region_name": config["aws_region"]} if config.get("aws_region") else {}),

@@ -20,7 +20,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from .models import CONTRACT_VERSION, HostDeclaration, HostFacts, HostState, ProviderCapabilities
+from .models import (
+    CONTRACT_VERSION,
+    HostDeclaration,
+    HostFacts,
+    HostState,
+    PoolDeclaration,
+    ProviderCapabilities,
+)
 from .provider import ProviderError, ProvisioningUncertain, TransientProviderError
 
 OWNED_TAG = "context-garden:managed"
@@ -154,20 +161,33 @@ class EC2Provider:
         if unknown:
             raise ValueError(f"unsupported ec2 options: {sorted(unknown)}")
 
-    def estimate_hourly_usd(self, declaration: HostDeclaration) -> float:
-        options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
-        price_key = "spot_hourly_usd" if declaration.pool.purchase_policy == "spot" else "hourly_usd"
+    @staticmethod
+    def validate_purchase_prices(declaration: HostDeclaration | PoolDeclaration) -> float:
+        """Return the greatest hourly compute price this declaration authorizes."""
+        pool = declaration.pool if isinstance(declaration, HostDeclaration) else declaration
+        options = {**pool.provider_options, **pool.profile.provider_options}
+        price_key = "spot_hourly_usd" if pool.purchase_policy == "spot" else "hourly_usd"
         if price_key not in options:
             raise ValueError(f"ec2.{price_key} is required for a reviewable, current cost plan")
-        if declaration.pool.on_demand_fallback and "hourly_usd" not in options:
+        if pool.on_demand_fallback and "hourly_usd" not in options:
             raise ValueError("ec2.hourly_usd is required to price on-demand fallback")
-        # Admission uses the expensive path when fallback is allowed, so the spend
-        # envelope remains safe even if Spot has no capacity.
-        selected_price_key = "hourly_usd" if declaration.pool.on_demand_fallback else price_key
-        price = float(options[selected_price_key])
-        if not math.isfinite(price) or price <= 0:
-            raise ValueError(f"ec2.{selected_price_key} must be a positive finite price")
-        return price
+
+        price_keys = ["hourly_usd" if pool.on_demand_fallback else price_key]
+        if pool.purchase_policy == "spot" and options.get("spot_max_price_usd") is not None:
+            price_keys.append("spot_max_price_usd")
+        prices: list[float] = []
+        for key in price_keys:
+            try:
+                price = float(options[key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"ec2.{key} must be a positive finite price") from exc
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError(f"ec2.{key} must be a positive finite price")
+            prices.append(price)
+        return max(prices)
+
+    def estimate_hourly_usd(self, declaration: HostDeclaration) -> float:
+        return self.validate_purchase_prices(declaration)
 
     def discover(self, owner: str, pool: str) -> list[HostFacts]:
         response = self.client.describe_instances(
@@ -222,6 +242,7 @@ class EC2Provider:
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}
+        self.validate_purchase_prices(declaration)
         if not declaration.pool.profile.image.startswith("ami-"):
             raise ValueError("ec2 profile image must be a pinned AMI id")
         if any(char.isspace() for char in declaration.pool.profile.bootstrap_version):
