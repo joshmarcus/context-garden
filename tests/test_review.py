@@ -469,7 +469,7 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
     task.pr = "https://example.com/pull/101"
     sched.store.save(task)
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
-    sched.cfg.data["products"][task.product]["automerge_min_review_rounds"] = 2
+    sched.cfg.data["github"]["automerge_min_review_rounds"] = 2
     st = sched.state.get(task.id)
     st.update({"head_sha": "current", "review_rounds": 1, "last_review": {"verdict": "approve"}})
     prior = sched.runs.new_run(task.id, "local", mode="review")
@@ -478,7 +478,7 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
     prior.result = {"verdict": "approve"}
     prior.save()
     st["last_review_run"] = prior.run_id
-    assert sched.cfg.product(task.product)["automerge_min_review_rounds"] == 2
+    assert sched.cfg.data["github"]["automerge_min_review_rounds"] == 2
     assert sched._review_round_pending(st)
     assert sched.store.tasks()[task.id].status == Status.IN_REVIEW
 
@@ -488,6 +488,27 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
 
     assert st["pending_reviews"] == [{"kind": "review", "count_round": True}]
     assert rep.transitions == ["DM-001 missing review continuation restored"]
+
+
+def test_review_audit_does_not_restore_an_extra_round_for_a_hard_task(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.IN_REVIEW
+    task.pr = "https://example.com/pull/101"
+    task.difficulty = "hard"
+    sched.store.save(task)
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2}
+    st = sched.state.get(task.id)
+    st.update({"head_sha": "current", "review_rounds": 1, "last_review": {"verdict": "approve"}})
+    prior = sched.runs.new_run(task.id, "local", mode="review")
+    prior.status = "done"
+    prior.env_snapshot = {"review_head": "current"}
+    prior.result = {"verdict": "approve"}
+    prior.save()
+    st["last_review_run"] = prior.run_id
+
+    sched._audit_review_continuations(sched.store.tasks(), TickReport())
+
+    assert not st.get("pending_reviews")
 
 
 def test_review_audit_replaces_stale_head_recovery_with_a_fresh_counted_round(sched, fake_github):

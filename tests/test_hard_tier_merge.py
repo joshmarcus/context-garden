@@ -1,5 +1,5 @@
-"""Hard-tier automerge (CG-191): the queue merges a hard-tier PR after two approving review
-rounds and the garden's own scratch-merge check, as a config choice that defaults on."""
+"""Hard-tier automerge (CG-191): the queue merges a hard-tier PR after the configured
+review minimum and the garden's own scratch-merge check, as a config choice that defaults on."""
 
 from __future__ import annotations
 
@@ -62,15 +62,17 @@ def test_medium_tier_unaffected_by_hard_policy(sched, fake_github):
 
 
 # ---- each extra gate ---------------------------------------------------------
-def test_hard_tier_needs_two_rounds(sched, fake_github):
+def test_hard_tier_honours_a_configured_higher_review_minimum(sched, fake_github):
     t, st, pr = _hard_in_review(sched, fake_github, rounds=1)
+    sched.cfg.data["github"]["automerge_min_review_rounds"] = 2
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "need 2" in reason
 
 
 def test_hard_tier_held_until_scratch_check_passes(sched, fake_github):
     t, st, pr = _hard_in_review(sched, fake_github)
-    # Two rounds and every plain gate is green, but the scratch-merge check has not run yet.
+    # The configured one review round and every plain gate are green, but the scratch-merge
+    # check has not run yet.
     ok, reason = sched._automerge_gate(t, pr)
     assert not ok and "scratch-merge check" in reason
     # ...and the same gate without the scratch requirement is otherwise green.
@@ -80,7 +82,7 @@ def test_hard_tier_held_until_scratch_check_passes(sched, fake_github):
 
 # ---- end to end --------------------------------------------------------------
 def test_hard_tier_scratch_check_runs_then_merges(sched, fake_github):
-    t, st, pr = _hard_in_review(sched, fake_github)
+    t, st, pr = _hard_in_review(sched, fake_github, rounds=1)
 
     rep = sched.tick()  # poll: every other gate green -> dispatch the scratch-merge check
     assert "DM-001(check:scratch_merge)" in rep.dispatched
@@ -94,7 +96,7 @@ def test_hard_tier_scratch_check_runs_then_merges(sched, fake_github):
             break
     assert fake_github.prs[BRANCH].state == "MERGED"
     auto = sched.state.get("DM-001").get("automerged")
-    assert auto and auto["review_rounds"] == 2
+    assert auto and auto["review_rounds"] == 1
 
     evs = EventLog(sched.cfg.garden_dir / "events.jsonl").read(task_id="DM-001", kinds=["scratch_merge"])
     assert any(e.get("resolved") is True for e in evs)
@@ -121,9 +123,9 @@ def test_hard_tier_scratch_check_failure_holds_the_merge(sched, fake_github):
     assert len([r for r in sched.runs.runs_for("DM-001") if r.mode == "check"]) == 1
 
 
-def test_hard_tier_with_no_checks_merges_after_two_rounds(sched, fake_github):
+def test_hard_tier_with_no_checks_merges_after_the_configured_review_minimum(sched, fake_github):
     """A garden with no pre-PR checks has nothing for the scratch merge to run: the check is
-    vacuously satisfied and the hard-tier PR still merges after its two approving rounds."""
+    vacuously satisfied and the hard-tier PR still merges after its configured review minimum."""
     t, st, pr = _hard_in_review(sched, fake_github, checks=False)
 
     for _ in range(4):
@@ -133,9 +135,11 @@ def test_hard_tier_with_no_checks_merges_after_two_rounds(sched, fake_github):
     assert fake_github.prs[BRANCH].state == "MERGED"
 
 
-def test_hard_tier_one_round_never_dispatches_a_scratch_check(sched, fake_github):
+def test_hard_tier_one_round_dispatches_a_scratch_check_then_merges(sched, fake_github):
     t, st, pr = _hard_in_review(sched, fake_github, rounds=1)
-    for _ in range(3):
+    for _ in range(6):
         sched.tick()
-    assert not any(r.mode == "check" for r in sched.runs.runs_for("DM-001"))
-    assert fake_github.merged == []
+        if fake_github.prs[BRANCH].state == "MERGED":
+            break
+    assert any(r.mode == "check" for r in sched.runs.runs_for("DM-001"))
+    assert fake_github.prs[BRANCH].state == "MERGED"

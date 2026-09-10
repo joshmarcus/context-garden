@@ -448,10 +448,12 @@ class PollMixin:
         return bool(self._github_cfg("automerge", task.product, False))
 
     def _hard_tier_automerge(self, task: Task) -> bool:
-        """Whether this hard-tier PR may merge under the two-round + scratch-merge policy
-        (config `github.automerge_hard_tier`, default on). Only the hard tier is affected;
-        easy and medium keep following `automerge_tiers`. When on, a hard-tier PR merges after
-        two approving review rounds and the garden's own scratch-merge check (CG-191)."""
+        """Whether this hard-tier PR may merge under the scratch-merge policy.
+
+        Only the hard tier is affected; easy and medium keep following `automerge_tiers`.
+        Hard tasks use the configured review minimum and also require the garden's own
+        scratch-merge check.
+        """
         if task.difficulty != "hard":
             return False
         return bool(self._github_cfg("automerge_hard_tier", task.product, True))
@@ -463,6 +465,20 @@ class PollMixin:
         st = self.state.get(task.id)
         sm = st.get("scratch_merge") or {}
         return bool(sm.get("ok")) and str(sm.get("diff") or "") == str(st.get("last_diff_hash") or "")
+
+    def _automerge_min_review_rounds(self, task: Task) -> int:
+        """Return the automated-review minimum for a task's configured product policy."""
+        min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
+        self_product_default = (self.cfg.product_self(task.product)
+                                and "automerge_min_review_rounds" not in self.cfg.product(task.product))
+        if self_product_default:
+            # The second opinion is supplied by a current-head persona or a human, so only
+            # one automated review round is required by the default self-product policy.
+            return max(min_rounds, 1)
+        if (self._needs_second_review_round(task.product)
+                and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
+            return max(min_rounds, 2)
+        return min_rounds
 
     def _automerge_gate(self, task: Task, pr: PRInfo, require_scratch: bool = True) -> tuple[bool, str]:
         """Whether every gate the loop already has is green, and the first reason it is not.
@@ -499,18 +515,9 @@ class PollMixin:
             return False, "GitHub did not report the current PR head"
         if not require_current_base and reviewed_head != pr.head_sha:
             return False, "the approved review is not for the current PR head"
-        min_rounds = int(self._github_cfg("automerge_min_review_rounds", task.product, 1) or 0)
-        if hard_tier:
-            min_rounds = max(min_rounds, 2)  # a hard-tier PR merges only after two approving rounds
+        min_rounds = self._automerge_min_review_rounds(task)
         self_product_default = (self.cfg.product_self(task.product)
                                 and "automerge_min_review_rounds" not in self.cfg.product(task.product))
-        if self_product_default:
-            # The second opinion is supplied by a current-head persona or a human, so only
-            # one automated review round is required by the default self-product policy.
-            min_rounds = max(min_rounds, 1)
-        elif (self._needs_second_review_round(task.product)
-              and "automerge_min_review_rounds" not in self.cfg.product(task.product)):
-            min_rounds = max(min_rounds, 2)
         if int(st.get("review_rounds", 0)) < min_rounds:
             return False, f"only {int(st.get('review_rounds', 0))} review round(s) so far, need {min_rounds}"
         if (self_product_default and int(st.get("review_rounds", 0)) >= 1

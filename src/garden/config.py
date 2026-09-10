@@ -258,7 +258,7 @@ DEFAULTS: dict[str, Any] = {
         "automerge_require_current_base": True,  # rebase onto the latest base before merging
         "automerge_min_review_rounds": 1,        # require at least this many automated review rounds
         "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge under the plain policy
-        "automerge_hard_tier": True,             # also merge hard-tier PRs, after two approving review
+        "automerge_hard_tier": True,             # also merge hard-tier PRs after the configured review
                                                  # rounds and the garden's own scratch-merge check; off to
                                                  # keep hard-tier merges by hand
     },
