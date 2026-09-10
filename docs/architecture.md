@@ -62,6 +62,30 @@ flowchart LR
   commits and pushes its remote worktree so the scheduler can fetch it. The same transport
   carries reviewers, persona reviewers and trial comparisons; they are workers with a
  different brief.
+- **Execution sandboxes** are an optional fail-closed capability contract under `sandbox:`.
+  With `required: true`, planner and kickoff calls and local work/review runs must use the
+  selected harness's native filesystem sandbox inside the configured OS sandbox wrapper;
+  bypass permission modes and custom harnesses are refused before launch.
+  `network_destinations` is an explicit hostname/optional-port allowlist. Claude also receives
+  it in native sandbox settings. Planner, setup, model, and command-check execution all require
+  `sandbox.command`, an argv for an installed OS sandbox wrapper. Before use, Garden invokes
+  it with `--garden-sandbox-capabilities` and requires a versioned JSON attestation covering
+  readable, writable and protected roots, symlink resolution, descendant inheritance and
+  destination-level network filtering. Each launch receives the concrete JSON policy through
+  `--garden-sandbox-policy`, followed by `-- sh -c <command>`. Garden then challenges the
+  wrapper with real approved and prohibited operations before trusting that report: direct and
+  descendant reads and writes outside the allowlists, protected-root access, symlink traversal,
+  and an unapproved loopback connection must be denied while an authorized read and write
+  succeed. Sandboxed model results are written to a narrow per-run output root, then copied into
+  protected run state by the trusted supervisor. Legacy `{writable_root}` and
+  `{network_destinations}` argument placeholders remain available. This makes the wrapper
+  responsible for filesystem, symlink, child-process and network enforcement rather than
+  trusting branch code or a self-attested capability document. Writable cache/state and copied
+  harness credentials use separate roots; the latter is included only in readable roots. SSH is
+  rejected while isolation is required because that runner cannot attest to a
+  remote mechanism; Windows users receive the supported WSL diagnostic. Every protected
+  local model run records a host-detail-free `sandbox.json`, and children inherit
+  `GARDEN_SANDBOX_ENFORCED=1` plus the mechanism name.
 - The **remote runner** queues instead of launching. A bearer-authenticated `garden worker`
   claims a leased run over HTTPS, clones the product with host-owned git credentials, renews
   its lease from before clone through setup, execution and staging push, pushes work to a

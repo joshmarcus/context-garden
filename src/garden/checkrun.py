@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from .checks import run_checks
-from .runner.base import RunnerError, run_setup, scrubbed_env
+from .config import no_live_garden_root
+from .runner.base import RunnerError, run_setup, scrubbed_env, worker_credentials_dir
+from .sandbox import SandboxPolicy
 
 
 def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -44,7 +46,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
             setup_env = scrubbed_env(config, setup, worktree=cwd)
             setup_env.update(temp_env)
             run_setup(cwd, setup, log_path=cwd.parent / f".garden-setup-{cwd.name}.log",
-                      env=setup_env, cache_key=str(payload.get("setup_cache_key") or ""))
+                      env=setup_env, cache_key=str(payload.get("setup_cache_key") or ""), config=config)
         except RunnerError as e:
             result: dict[str, Any] = {
                 "name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e),
@@ -77,9 +79,21 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
             # cannot become a channel for a branch to run a privileged shell command.
             retry_env = scrubbed_env(config, worktree=cwd)
             retry_env.update(temp_env)
+            retry_env["GARDEN_ROOT"] = no_live_garden_root(cwd or Path.cwd())
+            policy = SandboxPolicy.from_config(config)
+            protected = [Path(path) for path in ((payload.get("ctx") or {}).get("fence_paths") or [])]
             for r in flaky_results:
                 if r.get("retry_command"):
-                    subprocess.run(str(r["retry_command"]), shell=True, check=False, capture_output=True,
+                    argv, mechanism = policy.command_argv(
+                        str(r["retry_command"]), cwd or Path.cwd(),
+                        additional_writable_roots=[Path(retry_env[name])
+                                                   for name in ("HOME", "TMPDIR", "TMP", "TEMP")
+                                                   if retry_env.get(name)],
+                        readable_roots=[cwd or Path.cwd(), Path(worker_credentials_dir(cwd))],
+                        protected_roots=protected,
+                    )
+                    retry_env.update(policy.report_env(mechanism))
+                    subprocess.run(argv, shell=False, check=False, capture_output=True,
                                    timeout=120, cwd=str(cwd) if cwd else None, env=retry_env)
                     r["reran"] = True
     return results

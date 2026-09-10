@@ -186,8 +186,10 @@ class Harness:
 
     def command(self, model: str = "", final_path: Path | None = None, difficulty: str = "",
                 deny_paths: list[str] | None = None, worktree: Path | str | None = None,
-                permission_override: str = "") -> list[str]:
+                permission_override: str = "", sandbox_policy: Any = None) -> list[str]:
         """Argv for one headless run. The brief arrives on stdin; cwd is the worktree."""
+        mode = permission_override or str(self.cfg.get("permission_mode") or "")
+        mechanism = sandbox_policy.native_harness(self.name, mode) if sandbox_policy else ""
         if self.cfg.get("command"):
             # fully custom: a list with {model} / {final} placeholders
             out = []
@@ -196,7 +198,6 @@ class Harness:
                 if a:
                     out.append(a)
             return out
-        mode = permission_override or str(self.cfg.get("permission_mode") or "")
         if self.output == "claude-json":
             fmt = str(self.cfg.get("output_format") or "json")
             cmd = [self.bin, "-p", "--output-format", fmt]
@@ -218,6 +219,10 @@ class Harness:
                 if tools:
                     cmd += ["--allowedTools", ",".join(tools)]
                 fence = self.fence_settings(deny_paths, worktree)
+                if mechanism.endswith("claude-native") and worktree:
+                    settings = json.loads(fence or "{}")
+                    settings["sandbox"] = sandbox_policy.claude_settings(worktree)
+                    fence = json.dumps(settings, separators=(",", ":"))
                 if fence:
                     cmd += ["--settings", fence]
             cmd += [str(a) for a in (self.cfg.get("extra_args") or [])]
@@ -234,6 +239,12 @@ class Harness:
                 if sandbox not in ("workspace-write", "read-only"):
                     raise ValueError(f"unsupported Codex permission_mode: {mode}")
                 cmd += ["-c", f'sandbox_mode="{sandbox}"', "-c", 'approval_policy="never"']
+                if mechanism.endswith("codex-native"):
+                    # The OS wrapper remains the destination-level authority. Codex's
+                    # native layer must permit networking when that outer allowlist is
+                    # non-empty, otherwise configured destinations are silently denied.
+                    network = "true" if sandbox_policy.network_destinations else "false"
+                    cmd += ["-c", f"sandbox_workspace_write.network_access={network}"]
             base_url = str(self.cfg.get("base_url") or "")
             if base_url:
                 # Codex owns the agent loop; garden only selects its OpenAI-compatible
@@ -316,17 +327,22 @@ class Harness:
         return bool(self.cfg.get("resume")) and (self.output in ("claude-json", "codex-jsonl") or bool(self.cfg.get("resume_command")))
 
     def resume_command(self, session_id: str, model: str = "", final_path: Path | None = None, difficulty: str = "",
-                       deny_paths: list[str] | None = None, worktree: Path | str | None = None) -> list[str]:
+                       deny_paths: list[str] | None = None, worktree: Path | str | None = None,
+                       sandbox_policy: Any = None) -> list[str]:
         """Argv that continues a previous session; the follow-up prompt arrives on stdin."""
         if self.cfg.get("resume_command"):
+            if sandbox_policy:
+                sandbox_policy.native_harness(self.name, str(self.cfg.get("permission_mode") or ""))
             return [str(a).replace("{session}", session_id).replace("{model}", model).replace("{final}", str(final_path or ""))
                     for a in self.cfg["resume_command"] if str(a)]
         if self.output == "claude-json":
-            cmd = self.command(model, final_path, difficulty, deny_paths=deny_paths, worktree=worktree)
+            cmd = self.command(model, final_path, difficulty, deny_paths=deny_paths, worktree=worktree,
+                               sandbox_policy=sandbox_policy)
             cmd = cmd[:-1] + ["--resume", session_id, "Continue the task with the answer that follows."]
             return cmd
         if self.output == "codex-jsonl":
-            cmd = self.command(model, final_path, difficulty, deny_paths=deny_paths, worktree=worktree)
+            cmd = self.command(model, final_path, difficulty, deny_paths=deny_paths, worktree=worktree,
+                               sandbox_policy=sandbox_policy)
             # codex exec resume <id> [PROMPT]; keep the flags, prompt from stdin
             i = cmd.index("exec") + 1
             cmd = cmd[:i] + ["resume", session_id] + cmd[i:]

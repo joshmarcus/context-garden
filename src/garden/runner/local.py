@@ -15,12 +15,34 @@ from typing import Any
 
 from ..config import no_live_garden_root
 from ..runs import Run
+from ..sandbox import SandboxPolicy
 from ..validation import bounded_validation_timeout_seconds
-from .base import Runner, RunnerError, run_temp_dir, scrubbed_env
+from .base import (
+    Runner,
+    RunnerError,
+    run_temp_dir,
+    scrubbed_env,
+    worker_credentials_dir,
+    worker_home,
+)
 
 
 class LocalRunner(Runner):
     name = "local"
+
+    def harness_output_path(self, run: Run, worktree: Path) -> Path:
+        """Return a model-writable result path outside protected scheduler state.
+
+        Required sandboxes cannot grant the harness access to ``run.path/final.md``.  Give
+        each run a narrow sibling output root instead; the trusted supervisor copies the
+        completed result into the run record after the sandboxed command exits.
+        """
+        policy = SandboxPolicy.from_config(self.config)
+        if not policy.required:
+            return run.path / "final.md"
+        output_dir = worktree.parent / f".garden-output-{worktree.name}-{run.run_id}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir / "final.md"
 
     def harness_argv(self, run: Run, worktree: Path, final_path: Path | None) -> list[str]:
         """The harness argv for this run, with the binary resolved to its absolute path.
@@ -30,19 +52,30 @@ class LocalRunner(Runner):
         clone (see Harness.fence_settings); the runner's fence, not the brief's."""
         assert self.harness is not None
         deny = list(run.fence_paths or [])
+        policy = SandboxPolicy.from_config(self.config)
+        if policy.required:
+            # Callers may still use the historical run-state path. Never turn that into a
+            # writable sandbox grant; required isolation owns the result location.
+            final_path = self.harness_output_path(run, worktree)
         if run.mode == "resume" and run.session_id:
-            cmd = self.harness.resume_command(
-                run.session_id, run.model, final_path, run.difficulty,
-                deny_paths=deny, worktree=worktree,
-            )
+            cmd = self.harness.resume_command(run.session_id, run.model, final_path,
+                                              difficulty=run.difficulty, deny_paths=deny,
+                                              worktree=worktree, sandbox_policy=policy)
         else:
-            cmd = self.harness.command(
-                run.model, final_path, run.difficulty,
-                deny_paths=deny, worktree=worktree,
-            )
+            cmd = self.harness.command(run.model, final_path, difficulty=run.difficulty,
+                                       deny_paths=deny, worktree=worktree,
+                                       sandbox_policy=policy)
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
             cmd = [resolved] + cmd[1:]
+        if policy.required:
+            output_roots = [final_path.parent] if final_path is not None else []
+            cmd, _ = policy.command_argv(
+                shlex.join(cmd), worktree,
+                additional_writable_roots=[Path(worker_home(worktree)), *output_roots],
+                readable_roots=[worktree, Path(worker_home(worktree)), Path(worker_credentials_dir(worktree))],
+                protected_roots=[Path(path) for path in run.fence_paths or []],
+            )
         return cmd
 
     def harness_shell(self, run: Run, worktree: Path, final_path: Path | None) -> str:
@@ -103,11 +136,16 @@ class LocalRunner(Runner):
         # The scrubbed environment (see worker_env): what the setup command and the worker
         # get, and nothing else of the scheduler's.
         env = self.worker_env(run, setup, worktree)
+        policy = SandboxPolicy.from_config(self.config)
+        mechanism = policy.native_harness(self.harness.name, str(self.harness.cfg.get("permission_mode") or ""))
+        env.update(policy.report_env(mechanism))
+        if mechanism:
+            (d / "sandbox.json").write_text(policy.summary(mechanism) + "\n")
         # The supervisor runs setup only after it owns the heavy-execution lease and has
         # entered the execution cgroup.  Persisting the small payload also keeps the
         # detached launch recoverable/auditable.
         if str(setup.get("command") or "").strip():
-            (d / "setup_input.json").write_text(json.dumps(setup))
+            (d / "setup_input.json").write_text(json.dumps({"setup": setup, "config": self.config}))
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
         self.launch(run, worktree, brief_path, env)
@@ -119,7 +157,8 @@ class LocalRunner(Runner):
         overrides only this step."""
         assert self.harness is not None
         d = run.path
-        inner = self.harness_shell(run, worktree, d / "final.md")
+        model_output = self.harness_output_path(run, worktree)
+        inner = self.harness_shell(run, worktree, model_output)
         timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
         env = dict(env)
         if timeout_min:
@@ -128,10 +167,17 @@ class LocalRunner(Runner):
             # process tree rather than only the shell leader.
             env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{timeout_min * 60:g}"
             env["GARDEN_EXECUTION_TIMEOUT_KIND"] = "worker"
+        publish_result = ""
+        if model_output != d / "final.md":
+            publish_result = (
+                f"; result=$?; if [ -f {shlex.quote(str(model_output))} ]; then "
+                f"cp {shlex.quote(str(model_output))} {shlex.quote(str(d / 'final.md'))} || exit $?; "
+                "fi; exit $result"
+            )
         script = (
             f"cd {shlex.quote(str(worktree))} && {inner} "
             f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "
-            f"2> {shlex.quote(str(d / 'stderr.log'))}"
+            f"2> {shlex.quote(str(d / 'stderr.log'))}{publish_result}"
         )
         credential_fds: tuple[int, ...] = ()
         credential_read_fd = -1
@@ -168,6 +214,11 @@ class LocalRunner(Runner):
         the in-process test runner to run the same job synchronously."""
         d = run.path
         env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        policy = SandboxPolicy.from_config(self.config)
+        if policy.required:
+            _, mechanism = policy.command_argv("true", worktree)
+            env.update(policy.report_env(mechanism))
+            (d / "sandbox.json").write_text(policy.summary(mechanism) + "\n")
         env["GARDEN_HEAVY_EXECUTION"] = "1"
         execution_timeout = bounded_validation_timeout_seconds(env.get("GARDEN_VALIDATION_TIMEOUT_SECONDS"))
         env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{execution_timeout:g}"

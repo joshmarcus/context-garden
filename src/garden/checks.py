@@ -72,7 +72,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import no_live_garden_root
-from .runner.base import scrubbed_env
+from .runner.base import scrubbed_env, worker_credentials_dir
+from .sandbox import SandboxPolicy
 
 # Check output is persisted as recovery evidence.  Keep a generous documented ceiling for
 # pathological command output while retaining ordinary full stack traces, including signals.
@@ -132,14 +133,25 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
             out.setdefault("status", "pass")
             return _trim(out)
         if spec.get("command"):
+            policy = SandboxPolicy.from_config(config)
             env = scrubbed_env(config, worktree=cwd)
             env.update({f"GARDEN_{k.upper()}": (json.dumps(v) if not isinstance(v, str) else v) for k, v in ctx.items()})
             for k, v in (spec.get("env") or {}).items():  # the product's prepared environment
                 env[str(k)] = str(v)
             # The sentinel wins over any product env: a check must never act on the live garden.
             env["GARDEN_ROOT"] = no_live_garden_root(Path(cwd) if cwd else Path.cwd())
+            command = str(spec["command"])
+            protected = [Path(path) for path in (ctx.get("fence_paths") or [])]
+            argv, mechanism = policy.command_argv(
+                command, cwd or Path.cwd(),
+                additional_writable_roots=[Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP")
+                                           if env.get(name)],
+                readable_roots=[cwd or Path.cwd(), Path(worker_credentials_dir(cwd))],
+                protected_roots=protected,
+            )
+            env.update(policy.report_env(mechanism))
             proc = subprocess.run(
-                str(spec["command"]), shell=True, cwd=str(cwd) if cwd else None, env=env,
+                argv, shell=False, cwd=str(cwd) if cwd else None, env=env,
                 capture_output=True, text=True, timeout=timeout, check=False,
             )
             text = (proc.stdout or "").strip()

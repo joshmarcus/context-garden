@@ -102,6 +102,17 @@ def worker_home(worktree: Path | str | None) -> str:
     return str(home)
 
 
+def worker_credentials_dir(worktree: Path | str | None) -> str:
+    """Credential-only storage beside, never below, the writable worker HOME."""
+    home = Path(worker_home(worktree))
+    credentials = home.parent / f"{home.name}-credentials"
+    try:
+        credentials.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(credentials)
+
+
 # The config-dir variable each built-in harness reads, and where it points by default (relative
 # to the *operator's* real home, not the worker's isolated one): CLAUDE_CONFIG_DIR is where
 # claude keeps `.credentials.json`; CODEX_HOME is codex's whole state directory. Neither is on
@@ -138,25 +149,33 @@ def config_dir_env(config: dict[str, Any] | None) -> dict[str, str]:
     return env
 
 
-def private_config_dir_env(config: dict[str, Any] | None, scratch_home: Path | str) -> dict[str, str]:
-    """Build fresh harness homes below ``scratch_home`` and copy only each login file.
+def private_config_dir_env(config: dict[str, Any] | None, credentials_root: Path | str) -> dict[str, str]:
+    """Build fresh read-only harness homes below ``credentials_root`` and copy login files.
 
-    ``config_dir_env`` identifies the operator-side source.  The returned paths are always
-    private destinations, including when a caller explicitly passes HOME through.  Rebuilding
-    them for every dispatch prevents settings written by one worker from reaching the next.
+    ``config_dir_env`` identifies the operator-side source. The returned paths are always
+    private destinations outside the writable worker HOME, including when a caller explicitly
+    passes HOME through. Rebuilding and permission-locking them for every dispatch prevents
+    settings written by one worker from reaching the next; the OS policy mounts this root
+    readable but never writable.
     """
     sources = config_dir_env(config)
-    home = Path(scratch_home)
+    home = Path(credentials_root)
     destinations: dict[str, str] = {}
     for variable, credential in CONFIG_CREDENTIAL_FILES.items():
         destination = home / DEFAULT_CONFIG_DIRS[variable]
         try:
             if destination.exists():
+                destination.chmod(0o700)
+                for child in destination.iterdir():
+                    child.chmod(0o600)
                 shutil.rmtree(destination)
             destination.mkdir(parents=True, exist_ok=True)
             source = Path(sources[variable]) / credential
             if source.is_file():
                 shutil.copyfile(source, destination / credential)
+            for child in destination.iterdir():
+                child.chmod(0o400)
+            destination.chmod(0o500)
         except OSError:
             # The harness will report a normal authentication failure if its credential cannot
             # be read; a scrubbed environment must still be available for runners and checks.
@@ -271,7 +290,7 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     # Do not let the CLAUDE_* / CODEX_* allowlist turn into a whole-home capability: replace
     # those source paths with fresh, credential-only directories for this dispatch.
     scratch_home = worker_home(worktree)
-    env.update(private_config_dir_env(config, scratch_home))
+    env.update(private_config_dir_env(config, worker_credentials_dir(worktree)))
     install_config_files(config, scratch_home)
     env.update(_no_fsmonitor_env())
     for k, v in ((setup or {}).get("env") or {}).items():
@@ -295,7 +314,8 @@ def setup_marker(worktree: Path) -> Path:
 
 
 def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | None = None,
-              env: dict[str, str] | None = None, cache_key: str = "") -> None:
+              env: dict[str, str] | None = None, cache_key: str = "",
+              config: dict[str, Any] | None = None) -> None:
     """Prepare a fresh worktree's environment: run `setup['command']` once (again only when the
     command changes, tracked by a marker file) in `env` (default: `scrubbed_env`)
     with `setup['env']` added. A non-zero exit raises RunnerError with the log tail — a run
@@ -319,11 +339,17 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         # observes completion instead of launching the command twice.
         if marker.exists() and marker.read_text().strip() == stamp:
             return
-        temp_marker = marker.with_suffix(marker.suffix + ".tmp")
-        wrapped = (f"({command}) && printf %s {shlex.quote(stamp)} > {shlex.quote(str(temp_marker))} "
-                   f"&& mv {shlex.quote(str(temp_marker))} {shlex.quote(str(marker))}")
+        from ..sandbox import SandboxPolicy
+
+        policy = SandboxPolicy.from_config(config)
+        scratch_writes = [Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP") if env.get(name)]
+        argv, mechanism = policy.command_argv(
+            command, worktree, additional_writable_roots=scratch_writes,
+            readable_roots=[worktree, *[Path(env[name]) for name in CONFIG_CREDENTIAL_FILES if env.get(name)]],
+        )
+        env.update(policy.report_env(mechanism))
         proc = subprocess.Popen(
-            wrapped, shell=True, cwd=str(worktree), env=env,
+            argv, shell=False, cwd=str(worktree), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             pass_fds=(setup_lock.fileno(),), start_new_session=True,
         )
@@ -342,6 +368,12 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
                 # so reuse the pre-termination ownership snapshot for the hard stop.
                 _signal_process_tree(proc.pid, signal.SIGKILL, owned_pids=owned_pids)
             raise RunnerError(f"setup command timed out after {timeout:g}s: {command}") from exc
+        if proc.returncode == 0:
+            # Keep the lock through trusted bookkeeping so a concurrent controller observes
+            # the completed stamp instead of launching the setup command a second time.
+            temp_marker = marker.with_suffix(marker.suffix + ".tmp")
+            temp_marker.write_text(stamp)
+            temp_marker.replace(marker)
     out = ((stdout or "") + "\n" + (stderr or "")).strip()
     if log_path is not None:
         try:
