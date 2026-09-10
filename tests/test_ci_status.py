@@ -27,11 +27,13 @@ def receipt(source_sha="new", command="pytest -q", exit_code=0):
             "source_dirty": "", "source_changed": False}
 
 
-def write_receipt(path, row):
+def write_receipt(path, row, execution=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {**row, "log_location": str(path.parent)}
     path.write_text(json.dumps(row))
-    (path.parent / "execution.json").write_text('{"state": "done"}')
+    (path.parent / "execution.json").write_text(json.dumps(
+        {"state": "finished"} if execution is None else execution
+    ))
     (path.parent / "exit_code").write_text(str(row["exit_code"]))
     (path.parent / "stderr.log").write_text("")
 
@@ -127,6 +129,24 @@ def test_worker_check_rejects_incomplete_or_inconsistent_remote_receipt(tmp_path
     stored["log_location"] = str(result.parent.parent)
     result.write_text(json.dumps(stored))
     assert worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"}).state == "malformed"
+
+
+def test_worker_check_requires_consistent_finished_supervisor_execution(tmp_path):
+    result = tmp_path / "runs" / "CG-1" / "run" / "validations" / "remote-0" / "result.json"
+    invalid_executions = [
+        {},
+        {"state": "running"},
+        {"state": "timeout", "exit_code": 124},
+        {"state": "done"},
+        {"state": "finished", "exit_code": 1},
+    ]
+
+    for execution in invalid_executions:
+        write_receipt(result, receipt(), execution)
+
+        status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+        assert status.state == "malformed" and status.exists_for_sha and not status.green
 
 
 def test_worker_check_accepts_old_branch_authorized_stress_opt_in_receipt(tmp_path):

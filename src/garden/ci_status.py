@@ -93,6 +93,8 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
                 or not all(isinstance(item, str) and item for item in selection)
                 or str(Path(log).resolve()) != str(path.parent.resolve())
                 or not isinstance(execution, dict)
+                or execution.get("state") != "finished"
+                or ("exit_code" in execution and execution.get("exit_code") != exit_code)
                 or durable_exit_code != exit_code):
             return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         failures = [] if exit_code == 0 else [f"validation exited {exit_code}"]
