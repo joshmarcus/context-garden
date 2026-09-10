@@ -265,6 +265,23 @@ bounded exponential backoff through the claim's total recovery window (the lease
 recovery grace, 420 seconds with the defaults). Each successful heartbeat starts a fresh total
 window matching the controller's renewed durable deadlines. Authentication failures and other
 4xx rejections are terminal.
+
+Managed workers also keep a bounded, secret-free `worker-events.jsonl` in their work directory.
+It survives daemon restarts and records UTC timestamps, a stable logical worker id, a new process
+generation and increasing restart count, request/claim correlation, operation and endpoint class,
+work state, HTTP status or exception class, retries/backoff, recovery outcome, and terminal reason.
+The controller records the corresponding accepted operations in `.garden/worker-events.jsonl` and
+serves a bounded local-only view at `GET /api/worker-diagnostics`; inventory pages can consume that
+API without contacting hosts. Request bodies, authorization values, private transcripts, and
+physical provider identities are not recorded. A missing controller-side correlation means the
+request did not reach this controller, not proof of which network component dropped it.
+
+An idle claim uses a configurable finite `claim_recovery_seconds` window (300 seconds by default),
+then exits with an operator action instead of retrying silently forever. The service supervisor may
+restart it, producing a new process generation. A permanent authentication response exits without
+retry. Completed finish payloads are written mode 0600 under `pending-results/` before transmission;
+on restart they are delivered before another claim and removed only after the controller's
+idempotent acknowledgement. A replaced lease rejects the saved generation and never re-executes it.
 When the durable recovery deadline passes, the old token is rejected and the run becomes
 claimable with a new token and staging ref. Thus a stale generation can neither renew itself
 nor publish after confirmed replacement.
