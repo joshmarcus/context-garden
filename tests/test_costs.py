@@ -12,7 +12,7 @@ from garden.charts import cost_stack_svg
 from garden.costs import cost_series
 from garden.events import metrics
 from garden.model import Status, Task
-from garden.outcomes import attributed_phase_key, delegated_effort
+from garden.outcomes import acceptance_cohort, attributed_phase_key, cohort_subset, delegated_effort
 from garden.store import Store
 
 
@@ -293,6 +293,74 @@ def test_accepted_cohort_uses_completion_window_and_full_history_with_missing_pr
     canonical_phase = cost_series(events, _tasks(), since="2026-09-03T00:00:00+00:00",
                                   phase="demo/p1")["accepted"]
     assert short_phase == canonical_phase == accepted
+
+
+def test_accepted_cohort_prepares_realistic_history_once(monkeypatch):
+    """Current-scale history must not become a full scan for every accepted task."""
+    tasks = {
+        f"DM-{index:03d}": Task(path=None, id=f"DM-{index:03d}", title="Task",
+                                status=Status.DONE, product="demo", phase="p1",
+                                difficulty=("easy", "medium", "hard")[index % 3])
+        for index in range(596)
+    }
+    events = []
+    for index, tid in enumerate(tasks):
+        minute = index % 60
+        events.append({"at": f"2026-09-{1 + index % 8:02d}T00:{minute:02d}:00+00:00",
+                       "kind": "dispatch", "task": tid, "mode": "work",
+                       "model": f"model-{index % 4}", "harness": f"harness-{index % 2}"})
+        for run in range(6):
+            events.append({"at": f"2026-09-{1 + index % 8:02d}T{run + 1:02d}:{minute:02d}:00+00:00",
+                           "kind": "run_finished", "task": tid, "mode": "work",
+                           "model": f"model-{index % 4}", "harness": f"harness-{index % 2}",
+                           "cost_usd": 0.25})
+        events.append({"at": f"2026-09-{1 + index % 8:02d}T10:{minute:02d}:00+00:00",
+                       "kind": "transition", "task": tid, "to": "done", "base_merged": True})
+    events.extend({"at": f"2026-08-31T00:{index % 60:02d}:00+00:00", "kind": "tick"}
+                  for index in range(131))
+
+    from garden import outcomes
+
+    calls = 0
+    real_timestamp = outcomes.timestamp
+
+    def counted_timestamp(value):
+        nonlocal calls
+        calls += 1
+        return real_timestamp(value)
+
+    monkeypatch.setattr(outcomes, "timestamp", counted_timestamp)
+    report = metrics(events, tasks)
+
+    assert len(events) == 4899
+    assert sum(row["accepted"] for row in report["by_difficulty"].values()) == 596
+    assert sum(row["priced_runs"] for row in report["by_difficulty"].values()) == 3576
+    # Several independent metric families consume timestamps, but dimension rows and
+    # accepted tasks no longer multiply full-history preparation or scans.
+    assert calls <= len(events) * 15
+
+
+def test_prepared_cohort_subgroups_preserve_filters_prices_and_first_reviews():
+    tasks = _tasks()
+    events = [
+        {"at": "2026-09-01T00:00:00+00:00", "kind": "run_finished", "task": "DM-001",
+         "mode": "work", "model": "sonnet", "harness": "codex", "cost_usd": 2.0},
+        {"at": "2026-09-01T00:01:00+00:00", "kind": "review", "task": "DM-001",
+         "verdict": "approve"},
+        {"at": "2026-09-02T00:00:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+        {"at": "2026-09-01T00:00:00+00:00", "kind": "run_finished", "task": "DM-002",
+         "mode": "work", "model": "opus", "harness": "claude", "cost_usd": None},
+        {"at": "2026-09-02T00:00:00+00:00", "kind": "transition", "task": "DM-002",
+         "to": "done", "base_merged": True},
+    ]
+    whole = acceptance_cohort(events, tasks)
+
+    assert cohort_subset(whole, difficulty="easy") == acceptance_cohort(
+        events, tasks, difficulty="easy")
+    assert cohort_subset(whole, model="opus") == acceptance_cohort(events, tasks, model="opus")
+    assert cohort_subset(whole, harness="codex") == acceptance_cohort(
+        events, tasks, harness="codex")
 
 
 def test_phase_filter_excludes_other_spend_and_separates_unattributed_operator_cost():

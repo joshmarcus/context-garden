@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from .model import now_iso
-from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance, delegated_effort
+from .outcomes import (
+    acceptance_cohort,
+    attributed_phase_key,
+    base_acceptance,
+    cohort_subset,
+    delegated_effort,
+)
 
 # Keep the established table API for existing callers. The Now page's acceptance cohorts
 # have different attribution, units and cell shapes, so expose them separately.
@@ -476,9 +482,23 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
     # Replace the legacy window-local numerator with the shared completion cohort. A task
     # accepted in the window owns its complete run history through acceptance, and missing
     # prices remain visible instead of becoming zero.
+    whole_cohort = acceptance_cohort(events, tasks, since=since, until=until)
     cohort_filters = {"difficulty": "difficulty", "model": "model", "harness": "harness"}
+    window_runs_by_dimension: dict[str, dict[str, list[dict[str, Any]]]] = {
+        dimension: defaultdict(list) for dimension in cohort_filters
+    }
+    for event in events:
+        tid = event.get("task")
+        at = str(event.get("at") or "")
+        if (event.get("kind") != "run_finished" or tid not in tasks
+                or (since and at < since) or (until and at >= until)):
+            continue
+        window_runs_by_dimension["difficulty"][
+            getattr(tasks[tid], "difficulty", "") or "medium"].append(event)
+        window_runs_by_dimension["model"][str(event.get("model") or "unknown")].append(event)
+        window_runs_by_dimension["harness"][str(event.get("harness") or "unknown")].append(event)
     for dimension, argument in cohort_filters.items():
-        whole = acceptance_cohort(events, tasks, since=since, until=until)
+        whole = whole_cohort
         member_key = {"model": "models", "harness": "harnesses"}.get(dimension, dimension)
         cohort_values = ({member["difficulty"] for member in whole["tasks"]} if dimension == "difficulty"
                          else {value for member in whole["tasks"] for value in member[member_key]})
@@ -490,15 +510,9 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                 "first_pass_approve": 0, "first_pass_rate": None,
             })
         for value, row in outcomes[dimension].items():
-            cohort = acceptance_cohort(events, tasks, since=since, until=until, **{argument: value})
+            cohort = cohort_subset(whole, **{argument: value})
             reviewed_cohort = [member for member in cohort["tasks"] if member["first_review"]]
-            dimension_runs = [ev for ev in events if ev.get("kind") == "run_finished"
-                              and ev.get("task") in tasks
-                              and (not since or str(ev.get("at") or "") >= since)
-                              and (not until or str(ev.get("at") or "") < until)
-                              and (getattr(tasks[ev["task"]], "difficulty", "") == value
-                                   if dimension == "difficulty"
-                                   else str(ev.get(dimension) or "unknown") == value)]
+            dimension_runs = window_runs_by_dimension[dimension][value]
             priced_runs = [ev for ev in dimension_runs
                            if isinstance(ev.get("cost_usd"), (int, float))
                            and not isinstance(ev.get("cost_usd"), bool)]
@@ -555,7 +569,9 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                           "unattributed_priced_records": unattributed_operator_priced,
                           "unattributed_unpriced_records": unattributed_operator_unpriced,
                           "unattributed_cost_complete": unattributed_operator_unpriced == 0},
-            "ci_status": ci_status, "delegated_effort": delegated_effort(events, tasks, since=since, until=until),
+            "ci_status": ci_status,
+            "delegated_effort": delegated_effort(events, tasks, since=since, until=until,
+                                                 cohort=whole_cohort),
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
 
