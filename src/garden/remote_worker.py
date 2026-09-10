@@ -20,8 +20,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -29,13 +29,13 @@ from .brief import parse_result
 from .harness import Harness
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
-from .workload_identity import AuthorityRedactor
 from .worker_diagnostics import (
     WorkerEventLog,
     durable_worker_identity,
     endpoint_class,
     safe_correlation_id,
 )
+from .workload_identity import AuthorityRedactor
 
 
 class WorkerRequestError(RuntimeError):
@@ -436,6 +436,29 @@ def _retire_recovered_publication(root: Path, active_path: Path, run_id: str,
 
 def _active_claim_path(root: Path, run_id: str) -> Path:
     return root / "active-claims" / f"{run_id}.json"
+
+
+def _persist_supervisor_input(execution_dir: Path, brief: str) -> Path:
+    """Durably stage complete harness input before its supervisor can launch work."""
+    path = execution_dir / "brief.md"
+    temporary = path.with_suffix(".md.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w") as staged:
+            staged.write(brief)
+            staged.flush()
+            os.fsync(staged.fileno())
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    temporary.replace(path)
+    directory = os.open(execution_dir, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return path
 
 
 def _persist_active_claim(root: Path, run: dict[str, Any], execution_dir: Path,
@@ -1104,7 +1127,6 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             return
         setup = dict(run.get("setup") or {})
         identity_target = "check" if run.get("mode") == "check" else "worker"
-        authority_redactor = AuthorityRedactor(())
         if run.get("mode") == "check":
             check_data = _host_check_data(run, repo)
             # A managed consumer passes the product command above so admission covers it.
@@ -1171,21 +1193,24 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             if str(raw_final) in argv:
                 execution_env["GARDEN_RAW_FINAL_PATH"] = str(raw_final)
                 execution_env["GARDEN_FINAL_PATH"] = str(final_path)
+            brief_path = _persist_supervisor_input(
+                execution_dir, str(run.get("brief") or ""),
+            )
+            supervised_script = (
+                f"{shlex.join(argv)} < {shlex.quote(str(brief_path))}"
+            )
             supervised = [sys.executable, "-m", "garden.run_supervisor",
-                          str(execution_dir), shlex.join(argv)]
+                          str(execution_dir), supervised_script]
             stdout_path = execution_dir / "stdout.log"
             stderr_path = execution_dir / "stderr.log"
             with stdout_path.open("w+") as stdout_file, stderr_path.open("w+") as stderr_file:
                 proc, active_claim = _launch_claim_supervisor(
                     supervised, root=root, run=run, execution_dir=execution_dir,
                     repo=repo, final_path=final_path, env=execution_env,
-                    pass_fds=(repo_lock.fileno(),), stdin=subprocess.PIPE,
+                    pass_fds=(repo_lock.fileno(),), stdin=subprocess.DEVNULL,
                     stdout=stdout_file, stderr=stderr_file, text=True, cwd=repo,
                     start_new_session=True,
                 )
-                assert proc.stdin is not None
-                proc.stdin.write(str(run.get("brief") or ""))
-                proc.stdin.close()
                 transcript_read_offset = 0
                 transcript_upload_offset = 0
                 timeout_minutes = float(run.get("execution_timeout_minutes") or 0)

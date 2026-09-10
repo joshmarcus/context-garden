@@ -135,6 +135,53 @@ def test_durable_handoff_releases_supervisor_workload_once(tmp_path, monkeypatch
     assert marker.read_text() == "run"
 
 
+def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monkeypatch):
+    """A detached supervisor never depends on its daemon surviving to stream input."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "work"
+    execution_dir.mkdir(parents=True)
+    received = execution_dir / "received.md"
+    brief = "begin\n" + ("complete-input-\N{SNOWMAN}\n" * 16_384) + "end\n"
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "from garden.remote_worker import _launch_claim_supervisor, _persist_supervisor_input\n"
+        "root, repo, execution_dir, received, brief_source = map(Path, sys.argv[1:])\n"
+        "brief_path = _persist_supervisor_input(execution_dir, brief_source.read_text())\n"
+        "run = {'id': 'run-work', 'task_id': 'DM-001', 'mode': 'work'}\n"
+        "_launch_claim_supervisor(\n"
+        "    [sys.executable, '-m', 'garden.run_supervisor', str(execution_dir),\n"
+        "     f'cat < {brief_path} > {received}'],\n"
+        "    root=root, run=run, execution_dir=execution_dir, repo=repo,\n"
+        "    final_path=execution_dir / 'final.md', env=dict(os.environ), pass_fds=(),\n"
+        "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL, start_new_session=True,\n"
+        ")\n"
+        "os._exit(73)\n"
+    )
+    brief_source = tmp_path / "source-brief.md"
+    brief_source.write_text(brief)
+
+    daemon = subprocess.run(
+        [sys.executable, str(launcher), str(root), str(repo), str(execution_dir),
+         str(received), str(brief_source)],
+        env=dict(os.environ), check=False,
+    )
+
+    assert daemon.returncode == 73
+    deadline = time.monotonic() + 5
+    while not received.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert received.read_text() == brief
+    staged = execution_dir / "brief.md"
+    assert staged.stat().st_mode & 0o777 == 0o600
+    assert json.loads((root / "active-claims" / "run-work.json").read_text())["supervisor_pid"]
+
+
 @pytest.mark.parametrize("mode", ["work", "check"])
 def test_replacement_recovers_crash_immediately_after_durable_handoff(
     tmp_path, monkeypatch, mode,
