@@ -296,6 +296,30 @@ def test_ec2_policy_tags_and_standard_credits(tmp_path):
         EC2Provider(client, required_tags={OWNER_TAG: "someone-else"})
 
 
+def test_ec2_deadline_enforcement_is_verified_before_launch():
+    from garden.hosts.models import HostDeclaration
+
+    client = StubEC2()
+    spec = pool(provider="ec2", profile=replace(profile(), endpoint=""), provider_options={
+        "instance_type": "t3.xlarge", "subnet_id": "subnet-test", "security_group_ids": ["sg-test"],
+        "instance_profile_arn": "arn:role", "hourly_usd": 0.18})
+    declaration = HostDeclaration("worker-0", "op-deadline", spec, "2030-01-01T00:00:00Z")
+    with pytest.raises(ValueError, match="external termination enforcer"):
+        EC2Provider(client).provision(declaration)
+    assert client.run_args is None
+
+    events = []
+
+    class Enforcer:
+        def arm_and_verify(self, value):
+            assert client.run_args is None
+            events.append(value)
+
+    EC2Provider(client, deadline_enforcer=Enforcer()).provision(declaration)
+    assert events == [declaration]
+    assert client.run_args["InstanceInitiatedShutdownBehavior"] == "terminate"
+
+
 def test_ec2_does_not_claim_termination_before_aws_confirms():
     client = StubEC2()
     client.instances = [{"InstanceId": "i-owned", "State": {"Name": "running"}, "Tags": [
@@ -490,19 +514,50 @@ def test_scale_deadline_and_aggregate_budget_survive_restart(tmp_path):
 
 def test_production_readiness_requires_matching_pinned_durable_task_result(tmp_path):
     check = durable_worker_readiness(tmp_path / ".garden")
+    requested = pool(profile=replace(profile(), source_head="a" * 40),
+                     provider_options={"bootstrap_sha256": "b" * 64})
     host = __import__("garden.hosts", fromlist=["HostFacts"]).HostFacts(
         "workers-0", "i-123", "op", HostState.BOOTSTRAPPING, "ami-pinned123", "0.1.0+abcdef")
-    assert check(host, pool())[0] is None
+    assert check(host, requested)[0] is None
     run = tmp_path / ".garden/runs/CG-1/run-1"
     run.mkdir(parents=True)
+    digest = "b" * 64
     (run / "host_facts.json").write_text(json.dumps({
+        "schema_version": 1,
         "provider_id": "i-123", "profile_version": "1.0.0",
-        "bootstrap_version": "0.1.0+abcdef", "source_head": "1.0.0",
-        "readiness_attestations": {"bootstrap_manifest": True,
-                                   "authenticated_registration": True,
-                                   "repository_ci": True}}))
+        "bootstrap_version": "0.1.0+abcdef", "source_head": "a" * 40,
+        "operation_id": "op",
+        "source_bootstrap": {"source_head": "a" * 40, "bootstrap_sha256": digest,
+                             "operation_id": "op"},
+        "readiness_attestations": {
+            "bootstrap_manifest": {"ok": True, "source_head": "a" * 40,
+                                   "profile_version": "1.0.0",
+                                   "bootstrap_version": "0.1.0+abcdef",
+                                   "bootstrap_sha256": digest,
+                                   "installed_distribution": "context-garden",
+                                   "direct_url_commit": "a" * 40},
+            "authenticated_registration": {"ok": True, "method": "scoped-worker-token"},
+            "repository_access": {"ok": True, "repository": "example/project"},
+            "ci_provider_read": {"ok": True, "source_head": "a" * 40}}}))
     (run / "run.json").write_text(json.dumps({
-        "run_id": "run-1", "status": "done", "finished_at": "2026-09-08T12:00:00Z"}))
+        "run_id": "run-1", "host": "workers-0", "mode": "work", "status": "done",
+        "finished_at": "2026-09-08T12:00:00Z",
+        "final_received_at": "2026-09-08T11:59:59Z"}))
     (run / "remote_result.json").write_text(json.dumps({"result": {"status": "done"}}))
-    healthy, detail = check(host, pool())
+    (run / "exit_code").write_text("0")
+    healthy, detail = check(host, requested)
     assert healthy is True and "run-1" in detail
+    saved_run = json.loads((run / "run.json").read_text())
+    saved_run["mode"] = "revise"
+    (run / "run.json").write_text(json.dumps(saved_run))
+    assert check(host, requested)[0] is True
+
+    facts = json.loads((run / "host_facts.json").read_text())
+    facts["source_head"] = requested.profile.version
+    (run / "host_facts.json").write_text(json.dumps(facts))
+    assert check(host, requested)[0] is None
+
+    facts["source_head"] = "a" * 40
+    facts["readiness_attestations"] = {"bootstrap_manifest": True}
+    (run / "host_facts.json").write_text(json.dumps(facts))
+    assert check(host, requested)[0] is None

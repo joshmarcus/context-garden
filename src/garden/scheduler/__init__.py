@@ -187,6 +187,10 @@ class Scheduler(
         harness = self.cfg.harness(harness_name or task.harness or self.cfg.product_harness(task.product))
         if name in {"ssh", "remote"}:
             cfg = dict(self.cfg.get("ssh" if name == "ssh" else "workers", {}) or {})
+            if name == "remote":
+                from ..hosts.registry import worker_configuration
+
+                cfg = worker_configuration(self.cfg)
             cfg["_product"] = task.product
         else:
             cfg = {}

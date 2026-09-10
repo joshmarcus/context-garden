@@ -22,7 +22,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlsplit
@@ -210,16 +210,24 @@ def origin_problem(headers: Headers, allowed: Iterable[str] = ()) -> str:
 class OriginCheck:
     """ASGI middleware: refuse a POST (or any unsafe method) whose Origin/Referer is not an allowed origin."""
 
-    def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = (), worker_tokens: Iterable[str] = ()):
+    def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = (), worker_tokens: Iterable[str] = (),
+                 worker_authenticator: Callable[[str], bool] | None = None):
         self.app = app
         self.allowed = [str(o) for o in allowed_origins]
         self.worker_tokens = {str(t) for t in worker_tokens if t}
+        self.worker_authenticator = worker_authenticator
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and str(scope.get("method", "GET")).upper() not in SAFE_METHODS:
             headers = Headers(scope=scope)
             auth = headers.get("authorization") or ""
             token_ok = auth.startswith("Bearer ") and auth[7:] in self.worker_tokens
+            if (not token_ok and auth.startswith("Bearer ") and self.worker_authenticator
+                    and str(scope.get("path", "")).startswith("/api/runs/")):
+                try:
+                    token_ok = self.worker_authenticator(auth[7:])
+                except (OSError, TypeError, ValueError):
+                    token_ok = False
             if str(scope.get("path", "")).startswith("/api/runs/") and token_ok:
                 await self.app(scope, receive, send)
                 return

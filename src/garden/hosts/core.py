@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
 import json
 import math
 import os
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -14,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from .locking import file_lock
 from .models import (
     CONTRACT_VERSION,
     HostAdmission,
@@ -24,6 +24,7 @@ from .models import (
     HostRequirements,
     HostState,
     PoolDeclaration,
+    host_operation_id,
 )
 from .provider import (
     AllowPolicy,
@@ -60,23 +61,15 @@ class JsonStateStore:
     def locked(self):
         """Serialize a read-modify-write transaction across controller processes."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.with_suffix(f"{self.path.suffix}.lock").open("a+") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+        with file_lock(self.path.with_suffix(f"{self.path.suffix}.lock")):
+            yield
 
     @contextmanager
     def acquisition_locked(self):
         """Serialize provider acquisition through the durable lease reservation."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.with_suffix(f"{self.path.suffix}.acquire.lock").open("a+") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+        with file_lock(self.path.with_suffix(f"{self.path.suffix}.acquire.lock")):
+            yield
 
 
 class HostLifecycle:
@@ -89,6 +82,8 @@ class HostLifecycle:
         retry_attempts: int = 3,
         retry_delay: Callable[[float], None] = time.sleep,
         reservation_seconds: float = 300,
+        absolute_deadline: str = "",
+        operation_seed: str = "",
     ):
         self.providers = providers
         self.state = state
@@ -99,6 +94,8 @@ class HostLifecycle:
         if reservation_seconds <= 0:
             raise ValueError("reservation_seconds must be positive")
         self.reservation_seconds = reservation_seconds
+        self.absolute_deadline = absolute_deadline
+        self.operation_seed = operation_seed
 
     def _provider(self, pool: PoolDeclaration) -> HostProvider:
         try:
@@ -120,13 +117,23 @@ class HostLifecycle:
     def validate(pool: PoolDeclaration) -> None:
         if not pool.name or not pool.owner or not pool.purpose:
             raise ValueError("pool name, owner and purpose are required")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", pool.name):
+            raise ValueError("pool name must be a safe identifier of at most 64 characters")
+        for name in ("minimum", "maximum", "desired"):
+            value = getattr(pool, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"pool.{name} must be a nonnegative integer")
         if pool.minimum < 0 or pool.maximum < 0 or not pool.minimum <= pool.desired <= pool.maximum:
             raise ValueError("capacity must satisfy 0 <= minimum <= desired <= maximum")
-        if pool.spend_limit_usd <= 0:
+        if not math.isfinite(pool.spend_limit_usd) or pool.spend_limit_usd <= 0:
             raise ValueError("spend_limit_usd must be positive")
-        if pool.estimated_runtime_hours <= 0:
+        if not math.isfinite(pool.estimated_runtime_hours) or pool.estimated_runtime_hours <= 0:
             raise ValueError("estimated_runtime_hours must be positive")
         profile = pool.profile
+        for name in ("cpu", "memory_mib", "disk_gib"):
+            value = getattr(profile, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"profile.{name} must be a positive integer")
         if not profile.image or not profile.version or not profile.bootstrap_version:
             raise ValueError("profile image, version and bootstrap_version must be pinned")
         if profile.endpoint and not profile.endpoint.startswith("https://"):
@@ -135,8 +142,7 @@ class HostLifecycle:
             raise ValueError("an HTTPS enrollment endpoint requires a scoped secret reference")
 
     def _operation_id(self, pool: PoolDeclaration, slot: int) -> str:
-        raw = f"{CONTRACT_VERSION}\0{pool.owner}\0{pool.name}\0{slot}"
-        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+        return host_operation_id(pool, slot, self.operation_seed)
 
     def _declaration(self, pool: PoolDeclaration, slot: int) -> HostDeclaration:
         operation = self._operation_id(pool, slot)
@@ -147,15 +153,18 @@ class HostLifecycle:
         declaration_pool = replace(
             pool, profile=replace(pool.profile, enrollment_secret_ref=secret_ref)
         )
-        return HostDeclaration(host_id=host_id, operation_id=operation, pool=declaration_pool)
+        return HostDeclaration(host_id=host_id, operation_id=operation, pool=declaration_pool,
+                               deadline_utc=self.absolute_deadline)
 
     def _available_slots(self, pool: PoolDeclaration, hosts: list[HostFacts]) -> list[int]:
         """Return the lowest stable slots not occupied by discovered hosts."""
         occupied_operations = {host.operation_id for host in hosts}
+        occupied_hosts = {host.host_id for host in hosts}
         available: list[int] = []
         slot = 0
         while len(available) < pool.desired:
-            if self._operation_id(pool, slot) not in occupied_operations:
+            if (self._operation_id(pool, slot) not in occupied_operations
+                    and f"{pool.name}-{slot}" not in occupied_hosts):
                 available.append(slot)
             slot += 1
         return available
@@ -185,7 +194,7 @@ class HostLifecycle:
             ),
         )
 
-    def reconcile(self, pool: PoolDeclaration) -> list[HostFacts]:
+    def reconcile(self, pool: PoolDeclaration, *, eligible_slots: set[int] | None = None) -> list[HostFacts]:
         """Converge an enabled pool. Loading or planning a disabled pool never mutates it."""
         plan = self.plan(pool)
         if not pool.enabled:
@@ -202,6 +211,8 @@ class HostLifecycle:
         failures: list[HostFacts] = []
         retirements: list[HostFacts] = []
         slots = self._available_slots(pool, active)[: max(0, pool.desired - len(active))]
+        if eligible_slots is not None:
+            slots = [slot for slot in slots if slot in eligible_slots]
         for slot in slots:
             declaration = self._declaration(pool, slot)
             self.policy.authorize("provision", declaration)

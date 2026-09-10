@@ -7,7 +7,6 @@ never launch parameters or resource evidence.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import shutil
@@ -19,6 +18,12 @@ from pathlib import Path
 
 from .remote_worker import WorkerClient, WorkerRequestError, execute_claim
 from .system_resources import memory_bytes
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on Windows
+    fcntl = None
+    import msvcrt
 
 
 def claim_with_retry(client: WorkerClient, payload: dict, *, sleep=time.sleep) -> tuple[int, dict]:
@@ -51,8 +56,20 @@ def resources(root: Path) -> dict:
 def host_slot(root: Path):
     root.mkdir(parents=True, exist_ok=True)
     with (root / "host.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
+        else:  # pragma: no cover - exercised on Windows
+            lock.seek(0)
+            lock.write("0")
+            lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 class AttributedClient(WorkerClient):
@@ -62,17 +79,35 @@ class AttributedClient(WorkerClient):
         self.authenticated_registration = False
 
     def post(self, path: str, payload: dict):
-        result = super().post(path, {**payload, "host_facts": {
+        attestations = dict(self.config.get("readiness_attestations", {}))
+        versioned = "operation_id" in self.config or "source_bootstrap" in self.config
+        if versioned and not all(self.config.get(name)
+                                 for name in ("operation_id", "source_bootstrap")):
+            raise ValueError("versioned worker config requires operation_id and source_bootstrap")
+        if versioned:
+            attestations["authenticated_registration"] = {
+                "ok": self.authenticated_registration,
+                "method": "scoped-worker-token",
+            }
+        else:
+            # Compatibility for already deployed workers. These legacy booleans remain
+            # useful attribution but cannot satisfy durable production readiness.
+            attestations["authenticated_registration"] = self.authenticated_registration
+        facts = {
             "profile_version": self.config["profile_version"],
             "bootstrap_version": self.config["bootstrap_version"],
             "source_head": self.config["source_head"],
             "provider_id": self.config["provider_id"],
-            "readiness_attestations": {
-                **self.config.get("readiness_attestations", {}),
-                "authenticated_registration": self.authenticated_registration,
-            },
+            "readiness_attestations": attestations,
             **resources(self.root),
-        }})
+        }
+        if versioned:
+            facts.update({
+                "schema_version": 1,
+                "operation_id": self.config["operation_id"],
+                "source_bootstrap": self.config["source_bootstrap"],
+            })
+        result = super().post(path, {**payload, "host_facts": facts})
         if path == "/api/runs/claim" and result[0] in {200, 204}:
             # The controller accepted this host's scoped bearer token. Subsequent
             # heartbeat/finish facts bind that authenticated registration to the run.

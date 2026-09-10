@@ -145,6 +145,7 @@ def test_wrong_package_manifest_is_rejected_before_install(bootstrap, monkeypatc
 
 def test_clean_image_bootstrap_includes_full_test_environment():
     source = (Path(__file__).resolve().parents[1] / "scripts/managed-worker-bootstrap").read_text()
+    assert source.index("verify_absolute_deadline(declaration)") < source.index('command("apt-get", "update"')
 
     for package in ("python3-pip", "gh", "make", "libnss3", "libgbm1", "libasound2"):
         assert f'"{package}"' in source
@@ -152,5 +153,104 @@ def test_clean_image_bootstrap_includes_full_test_environment():
     assert '"runuser", "-u", "garden-worker"' in source
     assert "p.chromium.launch(headless=True)" in source
     assert '"git", "ls-remote"' in source
-    assert '"repository_ci": True' in source
+    assert '"repository_access": {"ok": True' in source
+    assert '"ci_provider_read": ci_read' in source
     assert "Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/garden-worker/browsers" in source
+
+
+def test_installed_source_attestation_requires_exact_direct_url_commit(bootstrap):
+    head = "a" * 40
+    def output(command, **kwargs):
+        assert command[:2] == ["/venv/python", "-c"]
+        assert kwargs == {"text": True, "timeout": 30}
+        return json.dumps({"distribution": "context-garden", "version": "1.2.3",
+                           "commit": head, "vcs": "git"})
+
+    assert bootstrap.installed_source_attestation("/venv/python", head, check_output=output) == {
+        "ok": True, "distribution": "context-garden", "version": "1.2.3",
+        "direct_url_commit": head,
+    }
+    with pytest.raises(ValueError, match="source provenance"):
+        bootstrap.installed_source_attestation("/venv/python", "b" * 40, check_output=output)
+
+
+def test_bootstrap_requires_matching_independently_armed_absolute_deadline(bootstrap, tmp_path):
+    unit = tmp_path / "garden-host-deadline.timer"
+    unit.write_text("[Timer]\nOnCalendar=2026-09-10 23:36:42 UTC\nPersistent=true\n")
+    calls = []
+    def output(command, **kwargs):
+        calls.append((command, kwargs))
+        return "enabled\n" if command[1] == "is-enabled" else "active\n"
+    declaration = {"deadline_utc": "2026-09-10T23:36:42Z"}
+    assert bootstrap.verify_absolute_deadline(
+        declaration, unit=unit, check_output=output) == declaration["deadline_utc"]
+    assert [call[0][1] for call in calls] == ["is-enabled", "is-active"]
+    with pytest.raises(ValueError, match="does not match"):
+        bootstrap.verify_absolute_deadline(
+            {"deadline_utc": "2026-09-10T23:36:43Z"}, unit=unit, check_output=output)
+    assert bootstrap.verify_absolute_deadline(
+        {"deadline_utc": "2026-09-10T23:36:42+00:00"}, unit=unit,
+        check_output=output) == "2026-09-10T23:36:42+00:00"
+
+
+def test_bootstrap_service_caps_come_from_immutable_profile_declaration(bootstrap):
+    assert bootstrap.declared_resource_caps(
+        {"cpu": 3, "memory_mib": 12288, "disk_gib": 40}) == {
+            "cpu": 3, "memory_mib": 12288, "disk_gib": 40}
+    for invalid in (0, True, 1.5):
+        with pytest.raises(ValueError, match="immutable positive integer"):
+            bootstrap.declared_resource_caps(
+                {"cpu": invalid, "memory_mib": 12288, "disk_gib": 40})
+    source = (Path(__file__).resolve().parents[1] / "scripts/managed-worker-bootstrap").read_text()
+    assert "MemoryMax={capacity['memory_mib']}M" in source
+    assert "CPUQuota={capacity['cpu'] * 100}%" in source
+    assert "MemoryMax=12G" not in source and "CPUQuota=300%" not in source
+
+
+def test_bootstrap_manifest_binds_executed_bytes_and_source_identity(bootstrap, tmp_path):
+    script = tmp_path / "bootstrap"
+    script.write_bytes(b"pinned bootstrap bytes")
+    digest = hashlib.sha256(script.read_bytes()).hexdigest()
+    declaration = {"bootstrap_sha256": digest, "profile_version": "profile-v3",
+                   "bootstrap_version": "bootstrap-v5"}
+    installed = {"distribution": "context-garden", "direct_url_commit": "c" * 40}
+    result = bootstrap.bootstrap_manifest_attestation(
+        declaration, "c" * 40, installed, script=script)
+    assert result == {"ok": True, "source_head": "c" * 40,
+                      "profile_version": "profile-v3", "bootstrap_version": "bootstrap-v5",
+                      "bootstrap_sha256": digest, "installed_distribution": "context-garden",
+                      "direct_url_commit": "c" * 40}
+    declaration["bootstrap_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="artifact digest"):
+        bootstrap.bootstrap_manifest_attestation(declaration, "c" * 40, installed, script=script)
+
+
+def test_ci_read_probe_is_bounded_and_never_returns_token(bootstrap):
+    token = "private-scoped-ci-token"
+    captured = {}
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def read(self): return b'{"total_count": 0, "check_runs": []}'
+    def open_request(request, timeout):
+        captured.update(url=request.full_url, headers=dict(request.header_items()), timeout=timeout)
+        return Response()
+
+    result = bootstrap.github_ci_read_attestation(
+        "example/project", "d" * 40, token, opener=open_request)
+    assert result == {"ok": True, "provider": "github", "repository": "example/project",
+                      "source_head": "d" * 40, "authenticated": True}
+    assert captured["timeout"] == 30
+    assert captured["url"].endswith("/commits/" + "d" * 40 + "/check-runs?per_page=1")
+    assert captured["headers"]["Authorization"] == "Bearer " + token
+    assert token not in json.dumps(result)
+
+
+def test_ci_read_probe_rejects_non_provider_payload(bootstrap):
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def read(self): return b'{"message": "rate limited"}'
+    with pytest.raises(ValueError, match="invalid response"):
+        bootstrap.github_ci_read_attestation(
+            "example/project", "e" * 40, opener=lambda request, timeout: Response())
