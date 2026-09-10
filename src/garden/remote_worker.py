@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+import uuid
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -26,6 +27,8 @@ from .harness import Harness
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 from .workload_identity import AuthorityRedactor
+from .worker_diagnostics import WorkerEventLog, endpoint_class
+from .worker_diagnostics import WorkerEventLog, endpoint_class
 
 
 class WorkerRequestError(RuntimeError):
@@ -179,20 +182,87 @@ def doctor_worker(token: str, repo: str, harnesses: list[str],
 
 
 class WorkerClient:
-    def __init__(self, url: str, token: str):
+    def __init__(self, url: str, token: str, events: WorkerEventLog | None = None):
         self.url = url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        self.events = events
+        self.worker_id = events.worker_id if events else ""
+        self.process_generation = events.generation if events else ""
 
     def post(self, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        request_id = str(payload.get("request_id") or payload.get("claim_request_id") or uuid.uuid4().hex)
+        payload = {**payload, "request_id": request_id,
+                   "worker_id": self.worker_id, "process_generation": self.process_generation}
+        operation = endpoint_class(path)
+        if self.events:
+            self.events.emit("transport_attempt", request_id=request_id, operation=operation,
+                             endpoint_class=operation, run_id=_run_id(path), work_state=_work_state(operation))
         req = urllib.request.Request(self.url + path, json.dumps(payload).encode(), self.headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=60) as response:  # noqa: S310 - operator supplied garden URL
                 raw = response.read()
+                if self.events:
+                    self.events.emit("transport_response", request_id=request_id, operation=operation,
+                                     endpoint_class=operation, run_id=_run_id(path), http_status=response.status,
+                                     outcome="success")
                 return response.status, json.loads(raw) if raw else {}
         except urllib.error.HTTPError as exc:
             if exc.code == 204:
+                if self.events:
+                    self.events.emit("transport_response", request_id=request_id, operation=operation,
+                                     endpoint_class=operation, http_status=204, outcome="idle")
                 return 204, {}
+            if self.events:
+                self.events.emit("transport_response", request_id=request_id, operation=operation,
+                                 endpoint_class=operation, run_id=_run_id(path), http_status=exc.code,
+                                 cause="authentication" if exc.code in {401, 403} else "controller_or_proxy",
+                                 outcome="failed")
             raise WorkerRequestError(exc.code, exc.read().decode(errors="replace")) from exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+            if self.events:
+                self.events.emit("transport_exception", request_id=request_id, operation=operation,
+                                 endpoint_class=operation, run_id=_run_id(path),
+                                 exception=type(exc).__name__, cause="network", outcome="failed")
+            raise
+
+
+def _run_id(path: str) -> str:
+    parts = path.strip("/").split("/")
+    return parts[2] if len(parts) > 3 and parts[:2] == ["api", "runs"] else ""
+
+
+def _work_state(operation: str) -> str:
+    return {"claim": "idle_or_queued", "heartbeat": "executing", "result": "returning_result"}.get(
+        operation, "unknown")
+
+
+def deliver_pending_results(root: Path, client: WorkerClient) -> int:
+    """Replay durable accepted-or-ambiguous finishes before claiming new work."""
+    pending = root / "pending-results"
+    delivered = 0
+    if not pending.exists():
+        return delivered
+    for path in sorted(pending.glob("*.json")):
+        value = json.loads(path.read_text())
+        status, _ = client.post(f"/api/runs/{value['run_id']}/finish", dict(value["payload"]))
+        if status == 200:
+            path.unlink()
+            delivered += 1
+            if client.events:
+                client.events.emit("result_recovered", run_id=value["run_id"],
+                                   recovery_outcome="delivered_after_restart")
+    return delivered
+
+
+def _persist_pending_result(root: Path, run_id: str, payload: dict[str, Any]) -> Path:
+    directory = root / "pending-results"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{run_id}.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"run_id": run_id, "payload": payload}))
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+    return path
 
 
 class _LeaseHeartbeat:
@@ -664,7 +734,10 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                           "final_text": final, "result": parsed, "usage": usage,
                           "cost_usd": cost, "error": error, "pushed_head": head,
                           "validation_receipts": receipts}
-        heartbeat.finish(authority_redactor.redact_data(finish_payload))
+        safe_finish_payload = authority_redactor.redact_data(finish_payload)
+        pending_result = _persist_pending_result(root, str(run["id"]), safe_finish_payload)
+        heartbeat.finish(safe_finish_payload)
+        pending_result.unlink(missing_ok=True)
     finally:
         if repo_lock is not None:
             repo_lock.close()
