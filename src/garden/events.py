@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import now_iso
-from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance
+from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance, delegated_effort
 
 # Keep the established table API for existing callers. The Now page's acceptance cohorts
 # have different attribution, units and cell shapes, so expose them separately.
@@ -555,7 +555,7 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
                           "unattributed_priced_records": unattributed_operator_priced,
                           "unattributed_unpriced_records": unattributed_operator_unpriced,
                           "unattributed_cost_complete": unattributed_operator_unpriced == 0},
-            "ci_status": ci_status,
+            "ci_status": ci_status, "delegated_effort": delegated_effort(events, tasks, since=since, until=until),
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
 

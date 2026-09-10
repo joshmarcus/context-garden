@@ -18,6 +18,13 @@ METRICS = {
     "lead_time": ("Median lead time", "seconds", "lower"),
 }
 IMPLEMENTATION = {"work", "revise", "resume"}
+EFFORT_ACTION_KINDS = {
+    "operator_repair", "requeue", "retry", "set_status", "redispatch", "mark_done",
+    "answer", "triaged", "decision_accepted", "decision_resolved", "dispatch_paused",
+    "dispatch_resumed", "resumed", "moved", "budget_set", "config_override", "suggestion",
+    "automerged",
+}
+EFFORT_ACTORS = ("human_owner", "delegated_operator", "automated_scheduler", "unknown")
 
 
 def canonical_phase_key(product: str, phase: str) -> str:
@@ -113,6 +120,90 @@ def acceptance_cohort(
                                        if members and priced_tasks == len(members) else None),
             "tasks": members,
             "contract": "acceptance completion in [since, until); all task runs through acceptance"}
+
+
+def delegated_effort(
+    events: list[dict[str, Any]], tasks: dict[str, Any], *, since: str = "", until: str = "",
+) -> dict[str, Any]:
+    """Operating effort for the accepted cohort, without manufacturing human hours.
+
+    Task actions and runs are included through each member's acceptance. Taskless operator
+    ledger rows must name the cohort's product and phase and fall inside its first-dispatch
+    to last-acceptance envelope. That is the narrowest attribution available for historical
+    session records; rows without both labels remain visible as unattributed coverage.
+    """
+    cohort = acceptance_cohort(events, tasks, since=since, until=until)
+    members = {row["id"]: timestamp(row["accepted_at"]) for row in cohort["tasks"]}
+    histories: dict[str, list[dict[str, Any]]] = {}
+    starts: list[dt.datetime] = []
+    leads: list[float] = []
+    for tid, accepted in members.items():
+        life = [event for event in events if str(event.get("task") or "") == tid
+                and (at := timestamp(event.get("at"))) is not None and at <= accepted]
+        histories[tid] = life
+        dispatched = [timestamp(event.get("at")) for event in life if event.get("kind") == "dispatch"]
+        dispatched = [at for at in dispatched if at is not None]
+        if dispatched:
+            start = min(dispatched)
+            starts.append(start)
+            leads.append((accepted - start).total_seconds())
+
+    actions = [event for life in histories.values() for event in life
+               if event.get("kind") in EFFORT_ACTION_KINDS]
+    action_rows: dict[str, dict[str, Any]] = {}
+    for actor in EFFORT_ACTORS:
+        selected = [event for event in actions
+                    if str(event.get("actor") or
+                           ("automated_scheduler" if event.get("kind") == "automerged" else "unknown")) == actor]
+        causes = defaultdict(int)
+        for event in selected:
+            causes[str(event.get("reason") or event.get("kind") or "unknown")] += 1
+        action_rows[actor] = {"actions": len(selected), "hours": None,
+                              "hours_status": "unavailable", "causes": dict(sorted(causes.items()))}
+
+    end = max((at for at in members.values() if at is not None), default=None)
+    start = min(starts, default=None)
+    products = {str(getattr(tasks[tid], "product", "")) for tid in members}
+    phases = {str(getattr(tasks[tid], "key", "")) for tid in members}
+    operator_rows: list[dict[str, Any]] = []
+    unattributed_rows: list[dict[str, Any]] = []
+    if start is not None and end is not None:
+        for event in events:
+            at = timestamp(event.get("at"))
+            if (event.get("kind") != "run_finished" or event.get("mode") != "operator"
+                    or at is None or not start <= at <= end):
+                continue
+            if not event.get("product") or not event.get("phase"):
+                unattributed_rows.append(event)
+            elif (str(event.get("product")) in products
+                  and attributed_phase_key(event) in phases):
+                operator_rows.append(event)
+
+    task_runs = [event for life in histories.values() for event in life
+                 if event.get("kind") == "run_finished"]
+    priced = [event for event in task_runs + operator_rows
+              if isinstance(event.get("cost_usd"), (int, float))
+              and not isinstance(event.get("cost_usd"), bool)]
+    all_cost_rows = task_runs + operator_rows
+    known_cost = round(sum(float(event["cost_usd"]) for event in priced), 4)
+    return {
+        "accepted": len(members), "task_ids": sorted(members),
+        "elapsed": {"tasks_with_lead_time": len(leads),
+                    "median_lead_hours": round(median(leads) / 3600, 2) if leads else None,
+                    "total_lead_hours": round(sum(leads) / 3600, 2) if leads else None},
+        "actions": action_rows,
+        "cost": {"known_usd": known_cost, "priced_records": len(priced),
+                 "unpriced_records": len(all_cost_rows) - len(priced),
+                 "complete": len(priced) == len(all_cost_rows),
+                 "per_accepted_change": (round(known_cost / len(members), 4)
+                                         if members and len(priced) == len(all_cost_rows) else None)},
+        "operator": {"priced_records": sum(event in priced for event in operator_rows),
+                     "unpriced_records": sum(event not in priced for event in operator_rows),
+                     "unattributed_records": len(unattributed_rows)},
+        "savings": None,
+        "savings_status": "not_estimated_without_a_human_effort_baseline",
+        "contract": cohort["contract"] + "; attributed operator rows in cohort effort envelope",
+    }
 
 
 def timestamp(value: Any) -> dt.datetime | None:
