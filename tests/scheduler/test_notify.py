@@ -44,6 +44,34 @@ def test_notification_timeout_and_delivery_failure_are_nonfatal(caplog):
     assert "notify.command failed for DM-001 (status=failed): exited 1" in caplog.text
 
 
+def test_typed_notification_kinds_follow_scheduler_lifecycle():
+    assert notification.notification_kind("failed") == "failure"
+    assert notification.notification_kind("harness_resumed") == "recovery"
+    assert notification.notification_kind("needs_human") == "required_action"
+
+
+def test_typed_notify_constructs_lifecycle_events(monkeypatch, tmp_path):
+    events = []
+
+    class Recorder:
+        def __init__(self, path):
+            assert path == tmp_path / "notifications.json"
+
+        def deliver(self, cfg, event):
+            events.append(event)
+            return []
+
+    monkeypatch.setattr(notification, "NotificationDelivery", Recorder)
+    cfg = {
+        "_notification_delivery_path": str(tmp_path / "notifications.json"),
+        "notify": {"destinations": {"operator": {"adapter": "synthetic"}}},
+    }
+    for status in ("failed", "harness_resumed", "needs_human"):
+        notification.notify(cfg, "DM-001", status, "test")
+
+    assert [event.kind for event in events] == ["failure", "recovery", "required_action"]
+
+
 def test_notify_on_waiting_human_transition(sched, fake_github, tmp_path):
     notify_file = tmp_path / "notify.txt"
     # Use env vars in a script to test the notification hook

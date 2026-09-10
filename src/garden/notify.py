@@ -54,6 +54,15 @@ def should_notify(status: str | None, needs_human: bool = False) -> bool:
     return False
 
 
+def notification_kind(status: str) -> str:
+    """Classify scheduler lifecycle notifications without deriving it from worker text."""
+    if status == "failed":
+        return "failure"
+    if status in {"harness_resumed", "recovered"}:
+        return "recovery"
+    return "required_action"
+
+
 def _run_command(command: str, env: dict[str, str], timeout: float) -> tuple[bool, str]:
     """Run `command` and report what happened. Never raises."""
     try:
@@ -99,6 +108,7 @@ def notify(
     status: str,
     message: str,
     pr_url: str = "",
+    kind: str | None = None,
 ) -> None:
     """Run the notify.command with task details in environment variables.
 
@@ -111,7 +121,7 @@ def notify(
     delivery_path = cfg.get("_notification_delivery_path")
     if delivery_path and isinstance(cmd_config.get("destinations"), dict) and cmd_config["destinations"]:
         results = NotificationDelivery(Path(str(delivery_path))).deliver(
-            cfg, NotificationEvent(task_id, status, message, pr_url),
+            cfg, NotificationEvent(task_id, status, message, pr_url, kind or notification_kind(status)),
         )
         for result in results:
             if result.endswith(("failed", "permanent failure", "revoked")):
@@ -123,7 +133,9 @@ def notify(
 
     timeout = float(cmd_config.get("timeout_seconds", 30))
 
-    env = _notification_env(cfg, task_id, status, scrub_shared_text(message, cfg), pr_url)
+    env = _notification_env(
+        cfg, task_id, status, scrub_shared_text(message, cfg), scrub_shared_text(pr_url, cfg),
+    )
 
     ok, detail = _run_command(command, env, timeout)
     if not ok:

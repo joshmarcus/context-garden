@@ -110,7 +110,10 @@ class NotificationDelivery:
         for name, raw in destinations.items():
             if not isinstance(name, str) or not isinstance(raw, dict):
                 continue
-            key = _identity(name, event)
+            # The ledger is durable and can be read by an operator later.  Its retry
+            # payload must cross the same disclosure boundary as an external adapter.
+            safe_event = self._safe_event(cfg, event)
+            key = _identity(name, safe_event)
             record = records.get(key, {})
             if (record.get("outcome") in ("delivered", "permanent")
                     or record.get("retryable") is False
@@ -119,30 +122,30 @@ class NotificationDelivery:
             attempts = int(record.get("attempts", 0)) + 1
             timeout = min(max(float(raw.get("timeout_seconds", 10)), 0.1), 60.0)
             try:
-                fields = self._fields(cfg, raw, event)
+                fields = self._fields(raw, safe_event)
                 if fields is None:
                     records[key] = {"destination": name, "outcome": "permanent", "reason": "destination revoked",
-                                    "event": asdict(event), "updated_at": now}
+                                    "event": asdict(safe_event), "updated_at": now}
                     results.append(f"{name}: revoked")
                     continue
                 adapter = self.adapters.get(str(raw.get("adapter") or ""))
                 if adapter is None or adapter.version != VERSION:
                     raise PermanentDeliveryError("unapproved adapter")
                 adapter.deliver(raw, fields, timeout)
-            except PermanentDeliveryError as exc:
-                records[key] = {"destination": name, "outcome": "permanent", "reason": str(exc), "attempts": attempts,
-                                "event": asdict(event), "updated_at": now}
+            except PermanentDeliveryError:
+                records[key] = {"destination": name, "outcome": "permanent", "reason": "adapter rejected", "attempts": attempts,
+                                "event": asdict(safe_event), "updated_at": now}
                 results.append(f"{name}: permanent failure")
-            except Exception as exc:  # adapters must not corrupt a task transition
+            except Exception:  # adapters must not corrupt a task transition
                 maximum = min(max(int(raw.get("max_attempts", 3)), 1), 10)
                 backoff = min(max(float(raw.get("backoff_seconds", 5)), 0), 3600.0)
-                records[key] = {"destination": name, "outcome": "failed", "reason": str(exc), "attempts": attempts,
+                records[key] = {"destination": name, "outcome": "failed", "reason": "delivery failed", "attempts": attempts,
                                 "next_attempt": now + (backoff * attempts if attempts < maximum else 0),
-                                "event": asdict(event), "updated_at": now, "retryable": attempts < maximum}
+                                "event": asdict(safe_event), "updated_at": now, "retryable": attempts < maximum}
                 results.append(f"{name}: failed")
             else:
                 records[key] = {"destination": name, "outcome": "delivered", "attempts": attempts,
-                                "event": asdict(event), "updated_at": now}
+                                "event": asdict(safe_event), "updated_at": now}
                 results.append(f"{name}: delivered")
         self.store.write(records)
         return results
@@ -164,12 +167,20 @@ class NotificationDelivery:
         return results
 
     @staticmethod
-    def _fields(cfg: dict[str, Any], destination: dict[str, Any], event: NotificationEvent) -> dict[str, Any] | None:
+    def _safe_event(cfg: dict[str, Any], event: NotificationEvent) -> NotificationEvent:
+        """Return the only event representation allowed beyond this trust boundary."""
+        fields = asdict(event)
+        return NotificationEvent(**{
+            name: scrub_shared_text(value, cfg) if isinstance(value, str) else value
+            for name, value in fields.items()
+        })
+
+    @staticmethod
+    def _fields(destination: dict[str, Any], event: NotificationEvent) -> dict[str, Any] | None:
         if destination.get("revoked") is True:
             return None
         allowed = destination.get("fields", ["task_id", "status", "message", "pr_url", "kind"])
         if not isinstance(allowed, list):
             raise PermanentDeliveryError("destination fields must be a list")
         safe = asdict(event)
-        safe["message"] = scrub_shared_text(event.message, cfg)
         return {name: safe[name] for name in allowed if name in safe}

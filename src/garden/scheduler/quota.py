@@ -86,6 +86,7 @@ class QuotaMixin:
             self.state.save()
         self.events.emit("dispatch_resumed", "", harness=name, by=by)
         self.log(f"harness {name} resumed by {by}")
+        notify(self.cfg.data, name, "harness_resumed", f"{name}: dispatch resumed", "")
 
     def _raise_if_harness_paused(self, name: str) -> None:
         """The gate every non-queue dispatch (a fresh trial contender, a review round, a
