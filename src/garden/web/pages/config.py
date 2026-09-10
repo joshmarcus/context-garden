@@ -65,6 +65,7 @@ def register(app: FastAPI, site: Site) -> None:
             observe_profile_override=sched.overrides().get("observe.profile"),
             observe_profile_source=sched.effective_source("observe.profile"),
             observe_profile_effective=sched.effective("observe.profile"),
+            tool_build=sched.upgrade_status(),
             operating_profile_file=str(cfg.get("operating_profile") or ""),
             maintenance=maintenance,
             operating_profile_override=sched.overrides().get("operating_profile"),

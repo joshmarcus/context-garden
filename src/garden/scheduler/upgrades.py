@@ -88,9 +88,12 @@ class UpgradeMixin:
 
     def upgrade_status(self) -> dict[str, Any]:
         """One operator-facing account of the active and pending/last build."""
-        installed = self.upgrader.installed_commit() or ""
+        from ..release import installed_identity
+
+        identity = installed_identity(self.cfg.upgrade_package())
+        installed = self.upgrader.installed_commit() or identity.source or ""
         info = self.upgrade_available() or {}
-        return {"active": installed, **info}
+        return {"installed_version": identity.version, "active": installed, **info}
 
     def confirm_restarted_upgrade(self) -> None:
         """The replacement controller confirms that the requested build is now active."""

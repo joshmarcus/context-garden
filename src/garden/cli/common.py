@@ -33,13 +33,12 @@ PANEL_DIAG = "Diagnostics"
 
 
 def version_string() -> str:
-    """The tool version, with the installed commit for a pinned git install. One place so
-    `garden version` and `garden --version` agree."""
-    from .. import __version__
-    from ..upgrade import installed_commit
+    """The installed package version and its recorded source, if known."""
+    from ..release import installed_identity
 
-    sha = installed_commit()
-    return f"{__version__} ({sha[:12]})" if sha else __version__
+    identity = installed_identity()
+    source = identity.source[:12] if identity.source else "unknown source"
+    return f"{identity.version} ({source})"
 
 
 def _version_callback(value: bool) -> None:
