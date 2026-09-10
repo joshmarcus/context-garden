@@ -27,7 +27,6 @@ from typing import Any, TextIO
 
 from .brief import parse_result
 from .harness import Harness
-from .proctree import pid_alive
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
 from .workload_identity import AuthorityRedactor
@@ -368,10 +367,12 @@ def _persist_active_claim(root: Path, run: dict[str, Any], execution_dir: Path,
     path = _active_claim_path(root, str(run["id"]))
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     saved_run = {key: value for key, value in run.items() if key not in {"brief", "repo"}}
+    supervisor_birth = _process_birth_identity(supervisor_pid)
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps({
         "run": saved_run, "execution_dir": str(execution_dir), "repo": str(repo),
         "final_path": str(final_path), "supervisor_pid": supervisor_pid,
+        "supervisor_birth": supervisor_birth,
     }))
     os.chmod(temporary, 0o600)
     temporary.replace(path)
@@ -412,13 +413,41 @@ def _collect_supervised_result(
     )
 
 
-def _process_alive(pid: int) -> bool:
-    return pid_alive(pid)
+def _process_birth_identity(pid: int) -> str | None:
+    """Return a process incarnation identity, or fail closed when unavailable.
+
+    Linux start ticks are unique for a PID within one boot; including the boot id also
+    prevents a persisted handoff from matching after a host reboot.  ``ps`` provides the
+    portable fallback used by macOS.  Recovery never treats mere PID liveness as identity.
+    """
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        start_ticks = stat_fields[19]
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if boot_id and start_ticks:
+            return f"linux:{boot_id}:{start_ticks}"
+    except (OSError, IndexError):
+        pass
+    try:
+        observed = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+            check=False, timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    started = observed.stdout.strip()
+    return f"ps:{started}" if observed.returncode == 0 and started else None
 
 
-def _stop_recovered_supervisor(supervisor_pid: int, *, sleep=time.sleep) -> None:
+def _supervisor_identity_matches(pid: int, expected_birth: object) -> bool:
+    return isinstance(expected_birth, str) and bool(expected_birth) and (
+        _process_birth_identity(pid) == expected_birth
+    )
+
+
+def _stop_recovered_supervisor(supervisor_pid: int, supervisor_birth: object, *, sleep=time.sleep) -> None:
     """Stop a detached supervisor after its recovered claim loses authority."""
-    if not _process_alive(supervisor_pid):
+    if not _supervisor_identity_matches(supervisor_pid, supervisor_birth):
         return
     try:
         os.kill(supervisor_pid, signal.SIGTERM)
@@ -427,9 +456,10 @@ def _stop_recovered_supervisor(supervisor_pid: int, *, sleep=time.sleep) -> None
     except PermissionError as exc:
         raise RuntimeError("cannot terminate recovered claim supervisor") from exc
     deadline = time.monotonic() + 5
-    while _process_alive(supervisor_pid) and time.monotonic() < deadline:
+    while (_supervisor_identity_matches(supervisor_pid, supervisor_birth)
+           and time.monotonic() < deadline):
         sleep(0.05)
-    if _process_alive(supervisor_pid):
+    if _supervisor_identity_matches(supervisor_pid, supervisor_birth):
         try:
             os.kill(supervisor_pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -794,6 +824,7 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
             repo = Path(state["repo"])
             final_path = Path(state["final_path"])
             supervisor_pid = int(state["supervisor_pid"])
+            supervisor_birth = state.get("supervisor_birth")
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             _quarantine_pending(path, client, "invalid_active_claim", type(exc).__name__)
             continue
@@ -806,11 +837,30 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
                     recovery_outcome="waiting_for_surviving_supervisor",
                 )
             exit_path = execution_dir / "exit_code"
-            while not exit_path.exists() and _process_alive(supervisor_pid):
+            if not exit_path.exists() and not _supervisor_identity_matches(
+                supervisor_pid, supervisor_birth,
+            ):
+                quarantine = path.parent / "quarantine"
+                quarantine.mkdir(exist_ok=True)
+                path.replace(quarantine / path.name)
+                if client.events:
+                    client.events.emit(
+                        "execution_recovery_quarantined", run_id=str(run["id"]),
+                        work_state="recovering", cause="supervisor_identity_mismatch",
+                        exit_reason="stale_active_claim",
+                        recovery_outcome="quarantined_without_process_signal",
+                        operator_action="inspect preserved active claim and supervisor logs",
+                    )
+                continue
+            while (not exit_path.exists()
+                   and _supervisor_identity_matches(supervisor_pid, supervisor_birth)):
                 try:
                     heartbeat.ensure_not_failed()
                 except BaseException as exc:
-                    _stop_recovered_supervisor(supervisor_pid, sleep=sleep)
+                    if _supervisor_identity_matches(supervisor_pid, supervisor_birth):
+                        _stop_recovered_supervisor(
+                            supervisor_pid, supervisor_birth, sleep=sleep,
+                        )
                     quarantine = path.parent / "quarantine"
                     quarantine.mkdir(exist_ok=True)
                     path.replace(quarantine / path.name)
@@ -837,10 +887,13 @@ def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep)
             if not path.exists():
                 continue
             if not exit_path.exists():
+                quarantine = path.parent / "quarantine"
+                quarantine.mkdir(exist_ok=True)
+                path.replace(quarantine / path.name)
                 if client.events:
                     client.events.emit(
                         "worker_exit", run_id=str(run["id"]), exit_reason="process_crash",
-                        cause="supervisor_ended_without_exit_record",
+                        cause="supervisor_identity_lost_without_exit_record",
                         operator_action="inspect preserved active claim and supervisor logs",
                     )
                 continue
