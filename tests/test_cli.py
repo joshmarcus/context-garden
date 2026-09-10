@@ -27,6 +27,7 @@ def run(garden, *args):
 def test_status_ls_graph_validate(garden):
     r = run(garden, "status")
     assert r.exit_code == 0, r.output
+    assert "runs: 0  cost: $0.00  in: 0  out: 0  cache-read: 0" in r.output
     r = run(garden, "ls", "--json")
     data = json.loads(r.output)
     assert {d["id"] for d in data} == {"DM-001", "DM-002"}

@@ -458,11 +458,8 @@ def register(app: FastAPI, site: Site) -> None:
             # before admission so every 204 path keeps an idle worker visible.
             record_worker_contact(host_cfg, body, outcome="polling")
 
-            all_runs = RunStore(hub.store.config.garden_dir).all_runs()
-            replay = next((r for r in all_runs if r.runner == "remote" and (
-                r.claim_request_id == request_id
-                or any(item.get("claim_request_id") == request_id for item in r.claim_history)
-            )), None)
+            runs_store = RunStore(hub.store.config.garden_dir)
+            replay = runs_store.claim_request(request_id)
             if replay is not None:
                 response_token = str(replay.claim_response.get("lease_token") or "")
                 if replay.claim_request_id != request_id or replay.host != body["host"] \
@@ -479,7 +476,7 @@ def register(app: FastAPI, site: Site) -> None:
             # result upload can reach the controller before lifecycle retirement.
             if host_is_draining(facts):
                 return Response(status_code=204)
-            runs = RunStore(hub.store.config.garden_dir).active()
+            runs = runs_store.active()
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))
                      and not r.process_finished() and not r.final_received_at]

@@ -84,6 +84,119 @@ def test_run_save_invalidates_index_and_results_are_isolated(tmp_path: Path):
     assert rs.totals()["cost_usd"] == 2.5
 
 
+def test_empty_store_totals_keep_complete_zero_shape_across_refreshes(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    expected = {
+        "runs": 0,
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
+    assert rs.totals() == expected
+
+    rs.invalidate()
+    assert rs.totals() == expected
+
+    monkeypatch.setattr(RunStore, "MAX_INDEX_AGE_SECONDS", -1)
+    assert RunStore(tmp_path).totals() == expected
+
+
+def test_claim_request_index_tracks_history_and_refreshes_changed_bucket(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = rs.new_run("CG-001", "remote", run_id="claim-generation")
+    run.claim_request_id = "current-request-identity"
+    run.claim_history = [{"claim_request_id": "prior-request-identity"}]
+    run.save()
+
+    assert rs.claim_request("current-request-identity").run_id == run.run_id
+    assert rs.claim_request("prior-request-identity").run_id == run.run_id
+    assert rs.claim_request("unknown-request-identity") is None
+
+    current = Run.load(run.path)
+    current.claim_history.append({"claim_request_id": "newly-persisted-identity"})
+    current.save()
+
+    refreshed = rs.claim_request("newly-persisted-identity")
+    assert refreshed is not None and refreshed.run_id == run.run_id
+
+
+def test_claim_request_index_preserves_archived_identity_and_oldest_collision(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    oldest = rs.new_run("CG-001", "remote", run_id="oldest-claim")
+    oldest.claim_request_id = "colliding-request-identity"
+    oldest.started_at = "2026-01-01T00:00:00+00:00"
+    oldest.status = "done"
+    oldest.finished_at = "2026-01-01T00:00:00+00:00"
+    oldest.save()
+    newer = rs.new_run("CG-002", "remote", run_id="newer-claim")
+    newer.claim_request_id = oldest.claim_request_id
+    newer.started_at = "2026-01-02T00:00:00+00:00"
+    newer.save()
+
+    assert rs.claim_request(oldest.claim_request_id).run_id == oldest.run_id
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 1
+    replay = RunStore(tmp_path).claim_request(oldest.claim_request_id)
+
+    assert replay is not None and replay.run_id == oldest.run_id
+    assert replay.path.is_relative_to(rs.archive_dir)
+
+
+def test_claim_request_lookup_copies_only_matching_run(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    for number in range(200):
+        _finished(rs, "CG-001", f"terminal-{number:04d}")
+    claimed = rs.new_run("CG-002", "remote", run_id="claimed")
+    claimed.claim_request_id = "durable-request-identity"
+    claimed.save()
+    assert rs.claim_request("unknown-request-identity") is None
+
+    copied: list[str] = []
+    from copy import deepcopy as copy_value
+
+    def observe_copy(value):
+        if isinstance(value, Run):
+            copied.append(value.run_id)
+        return copy_value(value)
+
+    monkeypatch.setattr("garden.runs.deepcopy", observe_copy)
+    monkeypatch.setattr("garden.runs._totals", lambda _runs: pytest.fail("rebuilt cached history"))
+    clock = [100.0]
+    monkeypatch.setattr("garden.runs.time.monotonic", lambda: clock[0])
+    rs._index.built_at = clock[0]
+    clock[0] += rs.MAX_INDEX_AGE_SECONDS + 0.05
+    replay = rs.claim_request("durable-request-identity")
+
+    assert replay is not None and replay.run_id == claimed.run_id
+    assert copied == [claimed.run_id]
+
+
+def test_claim_request_changed_bucket_does_not_revisit_unrelated_history(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    for number in range(200):
+        _finished(rs, "CG-HISTORY", f"terminal-{number:04d}")
+    claimed = rs.new_run("CG-ACTIVE", "remote", run_id="claimed")
+    claimed.claim_request_id = "durable-request-identity"
+    claimed.save()
+    assert rs.claim_request(claimed.claim_request_id) is not None
+
+    original_load = Run.load
+
+    def bounded_load(_cls, path: Path):
+        assert path.parent.name != "CG-HISTORY", "refreshed unrelated terminal history"
+        return original_load(path)
+
+    monkeypatch.setattr(Run, "load", classmethod(bounded_load))
+    current = original_load(claimed.path)
+    current.lease_updated_at = "2026-01-02T00:00:00+00:00"
+    current.save()
+
+    replay = rs.claim_request("durable-request-identity")
+
+    assert replay is not None and replay.run_id == claimed.run_id
+
+
 def test_stale_scheduler_save_preserves_authenticated_worker_completion(tmp_path: Path):
     rs = RunStore(tmp_path)
     run = rs.new_run("CG-001", "remote", run_id="20260101T000000Z-work")
@@ -211,6 +324,24 @@ def test_archive_health_reports_missing_or_corrupt_index(tmp_path: Path):
         rs.totals()
 
 
+def test_legacy_archive_ledger_remains_readable(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "legacy", 3.25)
+    row = run.__dict__.copy()
+    row.pop("_loaded_fields")
+    (rs.archive_dir / run.task_id).mkdir(parents=True)
+    run.path.rename(rs.archive_dir / run.task_id / run.run_id)
+    (rs.archive_dir / "index.json").write_text(json.dumps({"version": 1, "runs": [row]}))
+
+    fresh = RunStore(tmp_path / "fresh")
+    fresh.dir = rs.dir
+    fresh.archive_dir = rs.archive_dir
+    fresh._index = type(rs._index)()
+
+    assert fresh.totals()["cost_usd"] == 3.25
+    assert fresh.all_runs()[0].run_id == run.run_id
+
+
 def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):
     rs = RunStore(tmp_path)
     bad = rs.archive_dir / "CG-001" / "bad" / "run.json"
@@ -242,9 +373,48 @@ def test_archived_cost_backfill_updates_manifest_and_fresh_store(tmp_path: Path)
             return Harness()
 
     assert rs.backfill_codex_costs(Config()) == 1
-    manifest = json.loads((rs.archive_dir / "index.json").read_text())
+    manifest = json.loads((rs.archive_dir / "CG-001" / "index.json").read_text())
     assert manifest["runs"][0]["cost_usd"] == 4.5
     assert RunStore(tmp_path).totals()["cost_usd"] == 4.5
+
+
+def test_external_archive_update_refreshes_only_changed_archive_bucket(tmp_path, monkeypatch):
+    rs = RunStore(tmp_path)
+    first = _finished(rs, "CG-001", "first", 1.0)
+    second = _finished(rs, "CG-002", "second", 2.0)
+    first.runner = second.runner = "remote"
+    first.claim_request_id = "first-request"
+    second.claim_request_id = "second-request"
+    first.save()
+    second.save()
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 2
+    assert rs.claim_request("second-request") is not None
+
+    subprocess.run([sys.executable, "-c", """
+import sys
+from pathlib import Path
+from garden.runs import RunStore
+store = RunStore(Path(sys.argv[1]))
+run = store.runs_for("CG-001")[0]
+run.cost_usd = 3.0
+store.update_archived(run)
+""", str(tmp_path)], check=True, timeout=10)
+
+    read_tasks: list[str] = []
+    original_read = rs._archived_task_runs
+
+    def bounded_read(task: str):
+        read_tasks.append(task)
+        assert task != "CG-002", "refreshed unrelated archived bucket"
+        return original_read(task)
+
+    monkeypatch.setattr(rs, "_archived_task_runs", bounded_read)
+    monkeypatch.setattr(rs, "MAX_INDEX_AGE_SECONDS", -1)
+    replay = rs.claim_request("second-request")
+
+    assert replay is not None and replay.run_id == second.run_id
+    assert read_tasks == ["CG-001"]
+    assert rs.totals()["cost_usd"] == 5.0
 
 
 @pytest.mark.parametrize("expire", [False, True])

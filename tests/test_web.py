@@ -55,6 +55,9 @@ def test_pages_render(garden):
     for url in ["/", "/board", "/trellis", "/runs", "/phases/demo/p1", "/tasks/DM-001", "/tasks/DM-001/brief", "/partials/board", "/api/tasks", "/events", "/trials", "/costs"]:
         r = c.get(url)
         assert r.status_code == 200, url
+    runs_page = c.get("/runs").text
+    assert '<div class="v">0</div><div class="l">runs</div>' in runs_page
+    assert '<div class="v">$0.00</div><div class="l">total cost</div>' in runs_page
 
 
 def test_rail_truthfully_reports_missing_standalone_and_disabled_embedded_watch(garden):

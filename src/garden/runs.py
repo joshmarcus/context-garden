@@ -39,6 +39,16 @@ _INDEXES_LOCK = threading.Lock()
 _MAX_SHARED_INDEXES = 32
 
 
+def _empty_totals() -> dict[str, Any]:
+    return {
+        "runs": 0,
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
+
 @dataclass
 class _RunIndex:
     """One process-wide, short-lived view of run metadata for a garden.
@@ -53,12 +63,18 @@ class _RunIndex:
     generation: int = 0
     built_generation: int = -1
     built_at: float = 0.0
-    runs: tuple[Run, ...] = ()
     by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
+    by_claim_request: dict[str, Run] = field(default_factory=dict)
+    claim_candidates: dict[str, dict[tuple[str, str], Run]] = field(default_factory=dict)
+    active_by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
+    totals_by_task: dict[str, dict[str, Any]] = field(default_factory=dict)
+    archived: tuple[Run, ...] = ()
+    archived_by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
     active: tuple[Run, ...] = ()
-    totals: dict[str, Any] = field(default_factory=dict)
+    totals: dict[str, Any] = field(default_factory=_empty_totals)
     task_fingerprints: dict[str, tuple[int, int]] = field(default_factory=dict)
     archive_fingerprint: tuple[int, int, int] | None = None
+    archive_task_fingerprints: dict[str, tuple[int, int, int]] | None = None
     archive_dirty: bool = False
     dirty_tasks: set[str] = field(default_factory=set)
     scans: int = 0
@@ -703,7 +719,9 @@ class RunStore:
     def _snapshot(self) -> list[Run]:
         idx = self._ensure_index()
         with idx.lock:
-            return deepcopy(list(idx.runs))
+            found = [run for runs in idx.by_task.values() for run in runs]
+            found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
+            return deepcopy(found)
 
     def _ensure_index(self) -> _RunIndex:
         idx = self._index
@@ -721,41 +739,96 @@ class RunStore:
         idx = self._index
         task_fingerprints = self._task_fingerprints()
         archive_fingerprint = self._archive_fingerprint()
+        archive_task_fingerprints = self._archive_task_fingerprints()
         initial = idx.built_generation < 0
         changed = (set(task_fingerprints) if initial else {
             task for task in set(task_fingerprints) | set(idx.task_fingerprints)
             if task_fingerprints.get(task) != idx.task_fingerprints.get(task)
         }) | idx.dirty_tasks
-        previous_archived = [r for r in idx.runs if r.path.is_relative_to(self.archive_dir)]
-        if initial or idx.archive_dirty or archive_fingerprint != idx.archive_fingerprint:
-            archived = self._archived_runs()
-            # A changed ledger also tells an existing reader in another process which
-            # live buckets moved, even if their directory timestamps/size did not change.
-            before = {(r.task_id, r.run_id) for r in previous_archived}
-            after = {(r.task_id, r.run_id) for r in archived}
-            changed |= {task for task, _run_id in before ^ after}
+        archive_changed = initial or idx.archive_dirty or archive_fingerprint != idx.archive_fingerprint
+        if not changed and not archive_changed:
+            # The age boundary checks only the cheap bucket/ledger fingerprints. Avoid
+            # traversing, sorting, or rebuilding indexes from terminal history when no
+            # durable source changed.
+            idx.built_generation = idx.generation
+            idx.built_at = time.monotonic()
+            idx.scans += 1
+            return
+        previous_archived = idx.archived
+        if archive_changed:
+            if archive_task_fingerprints is None or idx.archive_task_fingerprints is None:
+                archived = self._archived_runs()
+                before = {(r.task_id, r.run_id) for r in previous_archived}
+                after = {(r.task_id, r.run_id) for r in archived}
+                changed |= {task for task, _run_id in before | after}
+                archived_by_task_lists: dict[str, list[Run]] = {}
+                for run in archived:
+                    archived_by_task_lists.setdefault(run.task_id, []).append(run)
+                archived_by_task = {
+                    task: tuple(runs) for task, runs in archived_by_task_lists.items()
+                }
+            else:
+                archive_changed_tasks = {
+                    task
+                    for task in set(archive_task_fingerprints) | set(idx.archive_task_fingerprints)
+                    if archive_task_fingerprints.get(task) != idx.archive_task_fingerprints.get(task)
+                }
+                changed |= archive_changed_tasks
+                archived_by_task = dict(idx.archived_by_task)
+                for task in archive_changed_tasks:
+                    runs = self._archived_task_runs(task) if task in archive_task_fingerprints else []
+                    if runs:
+                        archived_by_task[task] = tuple(runs)
+                    else:
+                        archived_by_task.pop(task, None)
+                archived = [run for runs in archived_by_task.values() for run in runs]
         else:
-            archived = previous_archived
-        active_by_task: dict[str, list[Run]] = {}
-        for run in idx.runs:
-            if not run.path.is_relative_to(self.archive_dir):
-                active_by_task.setdefault(run.task_id, []).append(run)
+            archived = list(previous_archived)
+            archived_by_task = idx.archived_by_task
         for task in changed:
-            active_by_task[task] = self._read_task_runs(task) if task in task_fingerprints else []
-        found = [run for runs in active_by_task.values() for run in runs]
-        found.extend(archived)
-        found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
-        idx.runs = tuple(found)
-        grouped: dict[str, list[Run]] = {}
-        for run in found:
-            grouped.setdefault(run.task_id, []).append(run)
-        idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
-        idx.active = tuple(
-            run for run in found if run.status in ("requested", "preparing", "running")
-        )
-        idx.totals = _totals(found)
+            old_runs = idx.by_task.get(task, ())
+            old_totals = idx.totals_by_task.get(task, _empty_totals())
+            affected_ids = _claim_request_ids(old_runs)
+            for request_id in affected_ids:
+                candidates = idx.claim_candidates[request_id]
+                for key in [key for key in candidates if key[0] == task]:
+                    del candidates[key]
+                if not candidates:
+                    del idx.claim_candidates[request_id]
+            live = self._read_task_runs(task) if task in task_fingerprints else []
+            task_runs = sorted([*live, *archived_by_task.get(task, ())], key=_run_sort_key)
+            if task_runs:
+                idx.by_task[task] = tuple(task_runs)
+                idx.active_by_task[task] = tuple(
+                    run for run in task_runs if run.status in ("requested", "preparing", "running")
+                )
+                idx.totals_by_task[task] = _totals(task_runs)
+            else:
+                idx.by_task.pop(task, None)
+                idx.active_by_task.pop(task, None)
+                idx.totals_by_task.pop(task, None)
+            idx.totals = _adjust_totals(
+                idx.totals, old_totals, idx.totals_by_task.get(task, _empty_totals())
+            )
+            affected_ids |= _claim_request_ids(task_runs)
+            for run in task_runs:
+                if run.runner == "remote":
+                    for request_id in _run_claim_request_ids(run):
+                        idx.claim_candidates.setdefault(request_id, {})[(task, run.run_id)] = run
+            for request_id in affected_ids:
+                candidates = idx.claim_candidates.get(request_id, {})
+                if candidates:
+                    idx.by_claim_request[request_id] = min(candidates.values(), key=_run_sort_key)
+                else:
+                    idx.by_claim_request.pop(request_id, None)
+        idx.archived = tuple(archived)
+        idx.archived_by_task = archived_by_task
+        idx.active = tuple(sorted(
+            (run for runs in idx.active_by_task.values() for run in runs), key=_run_sort_key
+        ))
         idx.task_fingerprints = task_fingerprints
         idx.archive_fingerprint = archive_fingerprint
+        idx.archive_task_fingerprints = archive_task_fingerprints
         idx.dirty_tasks.clear()
         idx.archive_dirty = False
         idx.built_generation = idx.generation
@@ -805,6 +878,37 @@ class RunStore:
         except FileNotFoundError:
             return None
 
+    def _archive_task_fingerprints(self) -> dict[str, tuple[int, int, int]] | None:
+        """Return version-2 bucket identities, or None for a legacy archive ledger."""
+        manifest = self.archive_dir / "index.json"
+        if not manifest.exists():
+            return {}
+        try:
+            data = json.loads(manifest.read_text())
+            tasks = data.get("tasks") if data.get("version") == 2 else None
+            if not isinstance(tasks, dict):
+                return None
+            if any(not isinstance(value, list) or len(value) != 3 for value in tasks.values()):
+                raise TypeError
+            return {
+                str(task): tuple(int(value) for value in fingerprint)
+                for task, fingerprint in tasks.items()
+            }
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, AttributeError) as exc:
+            raise HistoryUnavailable(
+                "archive index is unreadable; historical totals are unavailable"
+            ) from exc
+
+    def _archived_task_runs(self, task: str) -> list[Run]:
+        manifest = self.archive_dir / task / "index.json"
+        try:
+            rows = json.loads(manifest.read_text()).get("runs", [])
+            for row in rows:
+                row["dir"] = str(self.archive_dir / task / row["run_id"])
+            return [Run(**row) for row in rows]
+        except (OSError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+            raise HistoryUnavailable("archive index is unreadable; historical totals are unavailable") from exc
+
     def _archived_runs(self) -> list[Run]:
         """Read the compact archive index, never the archived directory tree."""
         manifest = self.archive_dir / "index.json"
@@ -813,7 +917,14 @@ class RunStore:
                 raise HistoryUnavailable("archive index is missing; historical totals are unavailable")
             return []
         try:
-            rows = json.loads(manifest.read_text()).get("runs", [])
+            data = json.loads(manifest.read_text())
+            if data.get("version") == 2 and isinstance(data.get("tasks"), dict):
+                return [
+                    run
+                    for task in data["tasks"]
+                    for run in self._archived_task_runs(str(task))
+                ]
+            rows = data.get("runs", [])
             for row in rows:
                 row["dir"] = str(self.archive_dir / row["task_id"] / row["run_id"])
             return [Run(**row) for row in rows]
@@ -828,8 +939,11 @@ class RunStore:
         if not manifest.exists():
             return "archive index is missing; run garden archive-runs to verify and rebuild it"
         try:
-            rows = json.loads(manifest.read_text()).get("runs")
-            if not isinstance(rows, list):
+            data = json.loads(manifest.read_text())
+            valid = isinstance(data.get("runs"), list) or (
+                data.get("version") == 2 and isinstance(data.get("tasks"), dict)
+            )
+            if not valid:
                 raise TypeError
         except (OSError, json.JSONDecodeError, TypeError, AttributeError):
             return "archive index is unreadable; run garden archive-runs to verify and rebuild it"
@@ -926,6 +1040,17 @@ class RunStore:
         idx = self._ensure_index()
         with idx.lock:
             return deepcopy(list(idx.by_task.get(task_id, ())))
+
+    def claim_request(self, request_id: str) -> Run | None:
+        """Return the durable run that has ever recorded one remote claim request.
+
+        The identity map is rebuilt at the same freshness boundaries as the run index.
+        Copying just the match keeps idle polling independent of terminal-history size.
+        """
+        idx = self._ensure_index()
+        with idx.lock:
+            run = idx.by_claim_request.get(request_id)
+            return deepcopy(run) if run is not None else None
 
     def latest(self, task_id: str) -> Run | None:
         runs = self.runs_for(task_id)
@@ -1045,8 +1170,21 @@ class RunStore:
             raise ValueError(f"archive contains {len(invalid)} unreadable run record(s): {invalid[0]}")
         rows.sort(key=lambda row: (row.get("started_at", ""), row.get("task_id", ""), row.get("run_id", "")))
         self.archive_dir.mkdir(parents=True, exist_ok=True)
+        rows_by_task: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            rows_by_task.setdefault(str(row["task_id"]), []).append(row)
+        task_fingerprints: dict[str, tuple[int, int, int]] = {}
+        for task, task_rows in rows_by_task.items():
+            bucket = self.archive_dir / task / "index.json"
+            payload = json.dumps({"version": 1, "runs": task_rows}, indent=2)
+            if not bucket.exists() or bucket.read_text() != payload:
+                bucket_tmp = bucket.with_suffix(".json.tmp")
+                bucket_tmp.write_text(payload)
+                os.replace(bucket_tmp, bucket)
+            stat = bucket.stat()
+            task_fingerprints[task] = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
         tmp = self.archive_dir / "index.json.tmp"
-        tmp.write_text(json.dumps({"version": 1, "runs": rows}, indent=2))
+        tmp.write_text(json.dumps({"version": 2, "tasks": task_fingerprints}, indent=2))
         os.replace(tmp, self.archive_dir / "index.json")
         return len(rows)
 
@@ -1058,6 +1196,7 @@ class RunStore:
             if not (run.path / "run.json").exists():
                 raise FileNotFoundError("archived run moved; reload it before updating metadata")
             run.save()
+            self._index.dirty_tasks.add(run.task_id)
             self._write_archive_index()
 
     def _active_disk_runs(self) -> list[Run]:
@@ -1138,3 +1277,38 @@ def _totals(runs: list[Run]) -> dict[str, Any]:
     return {key: rollup[key] for key in (
         "runs", "cost_usd", "input_tokens", "output_tokens", "cache_read_input_tokens"
     )}
+
+
+def _adjust_totals(
+    current: dict[str, Any], old: dict[str, Any], new: dict[str, Any]
+) -> dict[str, Any]:
+    """Replace one task contribution in the aggregate in constant work."""
+    combined = current.copy() if current else _empty_totals()
+    for key in combined:
+        combined[key] += new[key] - old[key]
+    combined["cost_usd"] = round(combined["cost_usd"], 4)
+    return combined
+
+
+def _run_sort_key(run: Run) -> tuple[str, str, str]:
+    return run.started_at, run.task_id, run.run_id
+
+
+def _run_claim_request_ids(run: Run) -> set[str]:
+    return {
+        request_id
+        for request_id in [
+            run.claim_request_id,
+            *(str(item.get("claim_request_id") or "") for item in run.claim_history),
+        ]
+        if request_id
+    }
+
+
+def _claim_request_ids(runs: tuple[Run, ...] | list[Run]) -> set[str]:
+    return {
+        request_id
+        for run in runs
+        if run.runner == "remote"
+        for request_id in _run_claim_request_ids(run)
+    }
