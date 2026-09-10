@@ -295,7 +295,8 @@ def setup_marker(worktree: Path) -> Path:
 
 
 def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | None = None,
-              env: dict[str, str] | None = None, cache_key: str = "") -> None:
+              env: dict[str, str] | None = None, cache_key: str = "",
+              config: dict[str, Any] | None = None) -> None:
     """Prepare a fresh worktree's environment: run `setup['command']` once (again only when the
     command changes, tracked by a marker file) in `env` (default: `scrubbed_env`)
     with `setup['env']` added. A non-zero exit raises RunnerError with the log tail — a run
@@ -322,8 +323,13 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         temp_marker = marker.with_suffix(marker.suffix + ".tmp")
         wrapped = (f"({command}) && printf %s {shlex.quote(stamp)} > {shlex.quote(str(temp_marker))} "
                    f"&& mv {shlex.quote(str(temp_marker))} {shlex.quote(str(marker))}")
+        from ..sandbox import SandboxPolicy
+
+        policy = SandboxPolicy.from_config(config)
+        argv, mechanism = policy.command_argv(wrapped, worktree)
+        env.update(policy.report_env(mechanism))
         proc = subprocess.Popen(
-            wrapped, shell=True, cwd=str(worktree), env=env,
+            argv, shell=False, cwd=str(worktree), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             pass_fds=(setup_lock.fileno(),), start_new_session=True,
         )

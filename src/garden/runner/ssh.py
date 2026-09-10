@@ -265,6 +265,13 @@ class SSHRunner(Runner):
         return setup
 
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
+        from ..sandbox import SandboxPolicy
+
+        if SandboxPolicy.from_config(self.config).required:
+            raise RunnerError(
+                "sandbox.required is not supported by the SSH runner; use a remote executor "
+                "that declares sandbox enforcement"
+            )
         if self.harness is None:
             raise RunnerError("ssh runner needs a harness")
         host = self._host(run.host)

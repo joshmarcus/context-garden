@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runs import Run
-from .base import Runner
+from .base import Runner, RunnerError
 
 
 class ManualRunner(Runner):
@@ -17,6 +17,8 @@ class ManualRunner(Runner):
     detached = False
 
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
+        if bool((self.config.get("sandbox") or {}).get("required")):
+            raise RunnerError("sandbox.required is incompatible with the manual runner")
         (run.path / "brief.md").write_text(brief_text)
         run.pid = None
         run.status = "running"

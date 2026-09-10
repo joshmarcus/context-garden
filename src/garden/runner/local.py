@@ -15,6 +15,7 @@ from typing import Any
 
 from ..config import no_live_garden_root
 from ..runs import Run
+from ..sandbox import SandboxPolicy
 from ..validation import bounded_validation_timeout_seconds
 from .base import Runner, RunnerError, run_temp_dir, scrubbed_env
 
@@ -30,16 +31,13 @@ class LocalRunner(Runner):
         clone (see Harness.fence_settings); the runner's fence, not the brief's."""
         assert self.harness is not None
         deny = list(run.fence_paths or [])
+        policy = SandboxPolicy.from_config(self.config)
         if run.mode == "resume" and run.session_id:
-            cmd = self.harness.resume_command(
-                run.session_id, run.model, final_path, run.difficulty,
-                deny_paths=deny, worktree=worktree,
-            )
+            cmd = self.harness.resume_command(run.session_id, run.model, final_path, deny_paths=deny,
+                                              worktree=worktree, sandbox_policy=policy)
         else:
-            cmd = self.harness.command(
-                run.model, final_path, run.difficulty,
-                deny_paths=deny, worktree=worktree,
-            )
+            cmd = self.harness.command(run.model, final_path, deny_paths=deny, worktree=worktree,
+                                       sandbox_policy=policy)
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if cmd and cmd[0] == self.harness.bin and resolved != self.harness.bin:
             cmd = [resolved] + cmd[1:]
@@ -103,11 +101,16 @@ class LocalRunner(Runner):
         # The scrubbed environment (see worker_env): what the setup command and the worker
         # get, and nothing else of the scheduler's.
         env = self.worker_env(run, setup, worktree)
+        policy = SandboxPolicy.from_config(self.config)
+        mechanism = policy.native_harness(self.harness.name, str(self.harness.cfg.get("permission_mode") or ""))
+        env.update(policy.report_env(mechanism))
+        if mechanism:
+            (d / "sandbox.json").write_text(policy.summary(mechanism) + "\n")
         # The supervisor runs setup only after it owns the heavy-execution lease and has
         # entered the execution cgroup.  Persisting the small payload also keeps the
         # detached launch recoverable/auditable.
         if str(setup.get("command") or "").strip():
-            (d / "setup_input.json").write_text(json.dumps(setup))
+            (d / "setup_input.json").write_text(json.dumps({"setup": setup, "config": self.config}))
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
         self.launch(run, worktree, brief_path, env)
