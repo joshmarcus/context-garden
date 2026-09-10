@@ -208,6 +208,19 @@ class Harness:
                 if sandbox not in ("workspace-write", "read-only"):
                     raise ValueError(f"unsupported Codex permission_mode: {mode}")
                 cmd += ["-c", f'sandbox_mode="{sandbox}"', "-c", 'approval_policy="never"']
+            base_url = str(self.cfg.get("base_url") or "")
+            if base_url:
+                # Codex owns the agent loop; garden only selects its OpenAI-compatible
+                # provider. Keep the provider name stable so command lines and resumed
+                # sessions have one concrete configuration shape.
+                env_key = str(self.cfg.get("api_key_env") or "OPENROUTER_API_KEY")
+                cmd += [
+                    "-c", 'model_provider="openrouter"',
+                    "-c", 'model_providers.openrouter.name="OpenRouter"',
+                    "-c", f"model_providers.openrouter.base_url={json.dumps(base_url)}",
+                    "-c", f"model_providers.openrouter.env_key={json.dumps(env_key)}",
+                    "-c", 'model_providers.openrouter.wire_api="responses"',
+                ]
             if model:
                 cmd += ["-m", model]
             if final_path is not None:

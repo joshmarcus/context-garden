@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,27 @@ def test_codex_command():
         "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"
     ]
     assert Harness("codex", {"models": {}}).model_for("medium") == ""  # explicit CLI default
+
+
+def test_fake_openrouter_smoke():
+    fake = Path(__file__).with_name("fake_openrouter.py")
+    harness = Harness("codex", {"bin": str(fake), "base_url": "http://openrouter.test/api/v1"})
+    command = harness.command("openai/gpt-5.2-codex")
+
+    completed = subprocess.run(
+        command,
+        input="# Smoke brief\nReturn the required result marker.",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    parsed = harness.parse(completed.stdout, completed.stderr)
+
+    assert completed.returncode == 0
+    assert parsed["session_id"] == "openrouter-smoke"
+    assert parsed["result"] == {
+        "status": "done", "summary": "OpenRouter adapter smoke passed",
+    }
 
 
 def test_claude_spend_limit_is_a_quota_env_error():
