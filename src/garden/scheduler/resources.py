@@ -264,7 +264,20 @@ class ResourceMixin:
         value = (run.env_snapshot or {}).get("resource_weight", 1)
         return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 1
 
-    def resource_status(self, *, include_next_disk: bool = True) -> ResourceStatus:
+    def _storage_status(self, *, fresh: bool) -> tuple[StorageVolume, ...]:
+        """Keep passive status rendering cheap while admission always requests fresh data."""
+        cached = getattr(self, "_storage_status_cache", None)
+        if not fresh and cached and time.monotonic() - cached[0] < 5:
+            return cached[1]
+        volumes = measure_storage(
+            (self.cfg.garden_dir, self.cfg.work_dir, self.cfg.work_dir / "tmp"),
+            windows_backing_path=str(self.effective("resources.windows_backing_path", "") or ""),
+        )
+        self._storage_status_cache = (time.monotonic(), volumes)
+        return volumes
+
+    def resource_status(self, *, include_next_disk: bool = True,
+                        fresh_storage: bool = False) -> ResourceStatus:
         active = sum(self.run_resource_weight(run) for run in self.local_runs_active())
         limit = self.resource_parallel_limit()
         memory_min = int(self.effective("resources.min_memory_available_mb", 0) or 0)
@@ -293,10 +306,7 @@ class ResourceMixin:
                             for run in self.local_runs_active())
         next_required = (max(0, int(self.effective("resources.operation_required_bytes", 0) or 0))
                          if include_next_disk else 0)
-        volumes = measure_storage(
-            (self.cfg.garden_dir, self.cfg.work_dir, self.cfg.work_dir / "tmp"),
-            windows_backing_path=str(self.effective("resources.windows_backing_path", "") or ""),
-        )
+        volumes = self._storage_status(fresh=fresh_storage)
         isolation = "not configured"
         if execution_cgroup:
             target = Path(execution_cgroup)
@@ -435,7 +445,7 @@ class ResourceMixin:
             self.state.save()
 
     def refresh_resource_pressure(self) -> ResourceStatus:
-        status = self.resource_status()
+        status = self.resource_status(fresh_storage=True)
         self._record_resource_status(status)
         return status
 
@@ -474,7 +484,7 @@ class ResourceMixin:
     def _recheck_local_materialization(self, run: Any, operation: str) -> None:
         """Freshly recheck an admitted reservation immediately before disk materialization."""
         with self._local_admission_lock():
-            status = self.resource_status(include_next_disk=False)
+            status = self.resource_status(include_next_disk=False, fresh_storage=True)
             self._record_resource_status(status)
             if status.pressured:
                 raise ResourcePressureError(
