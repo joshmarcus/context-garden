@@ -340,7 +340,7 @@ def test_missing_setup_command_in_real_base_probe_uses_bounded_check_recovery(sc
         assert probe.result["checks"] == [{
             "name": "setup", "status": "fail", "summary": "setup command failed",
             "details": probe.result["checks"][0]["details"],
-            "exit_code": 127, "unavailable": True,
+            "origin": "infrastructure", "exit_code": 127, "unavailable": True,
         }]
 
 

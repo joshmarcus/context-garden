@@ -71,6 +71,7 @@ def register(app: FastAPI, site: Site) -> None:
         # page says what it is and what git did, and finds the pre-PR check run that followed it
         # (the check runs as its own record; the nearest later `check` run is that result).
         mechanical = run.mode == "rebase" and not run.harness
+        check_view = run.check_view()
         check_result = None
         if mechanical:
             later = sorted((r for r in rs.runs_for(task_id)
@@ -119,7 +120,7 @@ def register(app: FastAPI, site: Site) -> None:
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
             stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
-            captures=captures, recovery=recovery))
+            check_view=check_view, captures=captures, recovery=recovery))
 
     @app.get("/runs/{task_id}/{run_id}/ui/{name}")
     def run_capture(task_id: str, run_id: str, name: str):

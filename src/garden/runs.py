@@ -317,6 +317,121 @@ class Run:
                 return -1
         return None
 
+    def check_view(self) -> dict[str, Any] | None:
+        """Return the durable check evidence needed by the run-page presentation.
+
+        Check process completion and a check's own verdict are separate facts: a detached
+        runner can finish before its results are collected, and an exited command can report
+        a failure or an execution error.  Older records may lack either input or output, so
+        retain that uncertainty instead of inferring a successful check from ``status``.
+        """
+        if self.mode != "check":
+            return None
+        payload: dict[str, Any] = {}
+        try:
+            stored = json.loads((self.path / "checks_input.json").read_text())
+            if isinstance(stored, dict):
+                payload = stored
+        except (OSError, ValueError):
+            pass
+        specs = [spec for spec in payload.get("specs", []) if isinstance(spec, dict)]
+        results = [result for result in self.result.get("checks", []) if isinstance(result, dict)]
+
+        def spec_name(spec: dict[str, Any]) -> str:
+            return str(spec.get("name") or spec.get("command") or spec.get("python") or "check")
+
+        def command(spec: dict[str, Any]) -> str:
+            if spec.get("command"):
+                return str(spec["command"])
+            if spec.get("python"):
+                return f"python check: {spec['python']}"
+            return ""
+
+        def infrastructure_result(result: dict[str, Any]) -> bool:
+            """Recognize outcomes emitted before or outside configured check execution.
+
+            These legacy records have no persisted spec identity.  Match the exact shapes
+            written by ``checkrun`` so a configured check named ``setup`` or ``checks`` is
+            not credited with an infrastructure failure that prevented it from running.
+            """
+            name = str(result.get("name") or "")
+            status = str(result.get("status") or "")
+            summary = str(result.get("summary") or "")
+            return result.get("origin") == "infrastructure" or (
+                name == "setup" and status == "fail" and summary == "setup command failed"
+            ) or (
+                name == "checks" and status == "error" and summary.startswith("check runner crashed:")
+            )
+
+        # Results normally preserve a spec's name, but setup and runner failures are emitted
+        # outside the spec list.  Positional pairing turns those failures into false claims
+        # about a configured command.  A name is sufficient only when it is unique on both
+        # sides; duplicate or unknown names remain visible as unassociated evidence.
+        spec_names = [spec_name(spec) for spec in specs]
+        result_names = [str(result.get("name") or "") for result in results]
+        associated: dict[int, dict[str, Any]] = {}
+        matched_results: set[int] = set()
+        for spec_index, name in enumerate(spec_names):
+            if spec_names.count(name) != 1 or result_names.count(name) != 1:
+                continue
+            result_index = result_names.index(name)
+            if infrastructure_result(results[result_index]):
+                continue
+            associated[spec_index] = results[result_index]
+            matched_results.add(result_index)
+
+        configured_checks = []
+        for index, spec in enumerate(specs):
+            result = associated.get(index)
+            configured_checks.append({
+                "name": spec_names[index],
+                "command": command(spec),
+                "status": str(result.get("status") or "incomplete") if result else "pending",
+                "summary": str(result.get("summary") or "") if result else "No result recorded.",
+                "details": str(result.get("details") or "") if result else "",
+            })
+        unmatched_results = [
+            {
+                "name": str(result.get("name") or f"result {index + 1}"),
+                "status": str(result.get("status") or "incomplete"),
+                "summary": str(result.get("summary") or ""),
+                "details": str(result.get("details") or ""),
+            }
+            for index, result in enumerate(results) if index not in matched_results
+        ]
+        context = payload.get("ctx") if isinstance(payload.get("ctx"), dict) else {}
+        source = str(self.source_head or context.get("head_sha") or self.start_head or "")
+        active = self.status in {"requested", "preparing", "running"}
+        completed = self.status == "done"
+        statuses = {check["status"] for check in configured_checks + unmatched_results}
+        passing = {"pass", "passed", "done", "ok"}
+        if active:
+            conclusion, next_action = "in progress", "Wait for the check runner to finish."
+        elif not completed:
+            conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
+        elif statuses & {"fail", "failed", "error", "flaky"}:
+            conclusion, next_action = "needs attention", "Inspect the failing diagnostics, then fix or retry the check."
+        elif not configured_checks or unmatched_results or any(
+            check["status"] == "pending" for check in configured_checks
+        ):
+            conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
+        elif statuses <= passing:
+            conclusion, next_action = "passed", "No action required."
+        else:
+            conclusion, next_action = "incomplete", "Inspect the run diagnostics and retry the check."
+        exit_code = self.exit_code if self.exit_code is not None else self.read_exit_code()
+        return {
+            "process": "running" if active else ("completed" if completed else f"ended ({self.status})"),
+            "exit_code": exit_code,
+            "source": source,
+            "branch": self.branch,
+            "base": self.base,
+            "configured_checks": configured_checks,
+            "unmatched_results": unmatched_results,
+            "conclusion": conclusion,
+            "next_action": next_action,
+        }
+
     def elapsed_minutes(self) -> float:
         if not self.started_at:
             return 0.0

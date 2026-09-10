@@ -2562,6 +2562,112 @@ def test_run_page_mechanical_rebase(garden):
     assert 'data-tab="transcript"' not in body     # no transcript tabs for a git-only run
 
 
+def test_check_run_page_shows_command_source_and_passed_outcome(garden):
+    """A completed process is only successful when its collected checks passed."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status, run.source_head, run.exit_code = "done", "abc123def", 0
+    run.branch, run.base = "garden/dm-001", "main"
+    run.result = {"checks": [{"name": "unit", "status": "pass", "summary": "3 passed"}]}
+    run.save()
+    (run.path / "checks_input.json").write_text('{"specs":[{"name":"unit","command":"pytest tests/test_web.py -q"}]}')
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "Check outcome" in body and "passed" in body
+    assert "Process completed" in body and "exit 0" in body
+    assert "abc123def" in body and "garden/dm-001" in body
+    assert "pytest tests/test_web.py -q" in body and "No action required." in body
+
+
+def test_check_run_page_keeps_failure_and_missing_results_distinct(garden):
+    """Failed commands and an ended runner with no accepted result suggest different recovery."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    runs = RunStore(Store(garden).config.garden_dir)
+    failed = runs.new_run("DM-001", "local", "check")
+    failed.status, failed.exit_code = "done", 1
+    failed.result = {"checks": [{"name": "unit", "status": "fail", "summary": "exit 1", "details": "AssertionError: expected green"}]}
+    failed.save()
+    (failed.path / "checks_input.json").write_text('{"specs":[{"name":"unit","command":"pytest -q"}]}')
+    incomplete = runs.new_run("DM-001", "local", "check")
+    incomplete.status, incomplete.exit_code = "done", 0
+    incomplete.save()
+
+    c = client(garden)
+    failed_body = c.get(f"/runs/DM-001/{failed.run_id}").text
+    assert "needs attention" in failed_body and "AssertionError: expected green" in failed_body
+    assert "fix or retry the check" in failed_body
+    incomplete_body = c.get(f"/runs/DM-001/{incomplete.run_id}").text
+    assert "incomplete" in incomplete_body and "No accepted check outcome has been recorded yet." in incomplete_body
+    assert "Inspect the run diagnostics and retry the check." in incomplete_body
+
+
+def test_check_run_page_keeps_pending_commands_and_setup_failure_unmatched(garden):
+    """Setup failures do not claim that a configured command ran."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status, run.exit_code = "done", 1
+    run.result = {"checks": [{
+        "name": "setup", "status": "fail", "summary": "setup command failed", "details": "missing compiler",
+    }]}
+    run.save()
+    (run.path / "checks_input.json").write_text(
+        '{"specs":[{"name":"unit","command":"pytest -q"},{"name":"lint","command":"ruff check src"}]}'
+    )
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "Configured checks" in body and "Unmatched outcomes" in body
+    assert "pytest -q" in body and "ruff check src" in body
+    assert body.count("No result recorded.") == 2
+    assert "setup command failed" in body and "missing compiler" in body
+    assert "These results are not associated with a configured command." in body
+
+
+def test_check_run_page_does_not_associate_setup_failure_with_named_check(garden):
+    """An infrastructure setup failure is not the result of a check also named setup."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status, run.exit_code = "done", 1
+    run.result = {"checks": [{
+        "name": "setup", "status": "fail", "summary": "setup command failed",
+        "details": "missing compiler",
+    }]}
+    run.save()
+    (run.path / "checks_input.json").write_text(
+        '{"specs":[{"name":"setup","command":"scripts/check-setup.sh"}]}'
+    )
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "scripts/check-setup.sh" in body
+    assert "pending" in body and "No result recorded." in body
+    assert "Unmatched outcomes" in body
+    assert "setup command failed" in body and "missing compiler" in body
+
+
+def test_check_run_page_shows_configured_commands_while_running(garden):
+    """Configured commands remain visible before the runner reports any result."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status = "running"
+    run.save()
+    (run.path / "checks_input.json").write_text(
+        '{"specs":[{"name":"unit","command":"pytest -q"}]}'
+    )
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "in progress" in body and "Configured checks" in body
+    assert "pytest -q" in body and "pending" in body and "No result recorded." in body
+
+
 def test_inbox_shows_the_merge_queue(garden):
     from garden.events import EventLog
     from garden.scheduler import Scheduler
