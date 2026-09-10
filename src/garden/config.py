@@ -229,6 +229,7 @@ DEFAULTS: dict[str, Any] = {
     "workload_identity": {"providers": {}, "references": {}, "boundaries": {}},
     "harness": "claude",
     "max_parallel": 10,
+    "phase_execution": "concurrent",  # concurrent (legacy behavior) or earliest open phase per product
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
     "resources": {               # host-wide local admission; thresholds of 0 disable sensing
         "max_parallel": None,     # capacity units shared by workers + reviews + checks

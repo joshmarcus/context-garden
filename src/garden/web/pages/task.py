@@ -186,8 +186,9 @@ def register(app: FastAPI, site: Site) -> None:
         review_history = _review_history(runs) if completion else []
         manual_runner = (t.runner or s.config.product_runner(t.product)) == "manual"
         phase = s.phase(t.product, t.phase)
-        phase_hold = phase_refusal(phase, t)
-        phase_hold_kind = "closed" if phase.closed else "frozen"
+        phase_hold = sched.phase_admission_refusal(t)
+        phase_hold_kind = ("closed phase" if phase.closed else "frozen phase" if phase.frozen
+                           else "sequential phase order")
         manual_take_reason = ""
         if manual_runner and t.status.value in ("ready", "changes_requested"):
             if any(run.task_id == t.id for run in rs.active()):

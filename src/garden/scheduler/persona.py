@@ -52,6 +52,7 @@ class PersonaMixin:
         valid_name(name)
         product = phase.product
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
+        self._refuse_if_phase_not_admitted(probe)
         repo = self.repo_for(probe)
         base = self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_phase-{product}-{phase.name}")
@@ -73,7 +74,7 @@ class PersonaMixin:
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         ensure_open(task)
-        self._refuse_if_closed_or_frozen(task)
+        self._refuse_if_phase_not_admitted(task)
         valid_name(name)
         if not task.pr and not task.branch:
             raise RuntimeError(f"{task.id} has no branch to review")
