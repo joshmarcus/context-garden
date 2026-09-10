@@ -88,21 +88,28 @@ def identity_config(provider_module: str, *, delivery: str = "environment", prov
             "scopes": ["packages:read"],
             "max_lifetime_seconds": 60,
             "delivery": delivery,
+            "target": "worker",
             "bindings": binding,
+        }},
+        "boundaries": {"worker": {
+            "reference": "packages/read", "operation": "package.download",
+            "audience": "packages.example", "scopes": ["packages:read"],
+            "lifetime_seconds": 30,
         }},
     }}
 
 
 def resolve(resolver: WorkloadIdentityResolver, **kwargs):
     return resolver.resolve("packages/read", "package.download", "packages.example",
-                            "automation:run-123", 30, {"packages:read"}, **kwargs)
+                            "automation:run-123", 30, {"packages:read"}, target="worker", **kwargs)
 
 
 def test_resolves_bounded_authority_and_redacts_values(provider_module):
     resolver = WorkloadIdentityResolver(identity_config(provider_module))
     with resolver.operation("packages/read", "package.download", "packages.example",
-                            "automation:run-123", 30, {"packages:read"}) as authority:
-        environment = authority.subprocess_env({"PATH": "/bin"})
+                            "automation:run-123", 30, {"packages:read"},
+                            target="worker") as authority:
+        environment = authority.subprocess_env({"PATH": "/bin"}, "worker")
         assert environment["SERVICE_TOKEN"].startswith("synthetic-secret-")
         assert authority.metadata.automation_identity == "automation:run-123"
         assert authority.metadata.principal_kind == "automation"
@@ -110,7 +117,7 @@ def test_resolves_bounded_authority_and_redacts_values(provider_module):
         assert "synthetic-secret" not in repr(authority)
         assert "synthetic-secret" not in repr(authority._authority)
     with pytest.raises(WorkloadIdentityError, match="closed"):
-        authority.subprocess_env({})
+        authority.subprocess_env({}, "worker")
 
 
 @pytest.mark.parametrize("change, message", [
@@ -129,13 +136,13 @@ def test_request_cannot_broaden_reference_or_register_provider(provider_module):
     resolver = WorkloadIdentityResolver(identity_config(provider_module))
     with pytest.raises(WorkloadIdentityError, match="scope is not allowed"):
         resolver.resolve("packages/read", "package.download", "packages.example",
-                         "automation:run-123", 30, {"packages:write"})
+                         "automation:run-123", 30, {"packages:write"}, target="worker")
     with pytest.raises(WorkloadIdentityError, match="operation or audience"):
         resolver.resolve("packages/read", "package.publish", "packages.example",
-                         "automation:run-123", 30, set())
+                         "automation:run-123", 30, set(), target="worker")
     with pytest.raises(WorkloadIdentityError, match="unknown workload identity"):
         resolver.resolve("task-output-provider", "package.download", "packages.example",
-                         "automation:run-123", 30, set())
+                         "automation:run-123", 30, set(), target="worker")
     assert executable_diff({}, identity_config(provider_module)) == ["workload_identity"]
 
 
@@ -146,10 +153,10 @@ def test_renews_then_detects_revocation(provider_module):
         authority._authority.values, "synthetic://issuer", time.time() - 1,
         frozenset({"packages:read"}), "packages.example", "automation:run-123",
     )
-    assert authority.subprocess_env({})["SERVICE_TOKEN"].endswith("-renewed")
+    assert authority.subprocess_env({}, "worker")["SERVICE_TOKEN"].endswith("-renewed")
     authority._provider.revoked = True
     with pytest.raises(WorkloadIdentityError, match="unavailable: RuntimeError"):
-        authority.subprocess_env({})
+        authority.subprocess_env({}, "worker")
 
 
 def test_concurrent_runs_get_distinct_authority(provider_module):
@@ -160,8 +167,9 @@ def test_concurrent_runs_get_distinct_authority(provider_module):
     def worker(number: int) -> None:
         barrier.wait()
         authority = resolver.resolve("packages/read", "package.download", "packages.example",
-                                     f"automation:run-{number}", 30, {"packages:read"})
-        values.append(authority.subprocess_env({})["SERVICE_TOKEN"])
+                                     f"automation:run-{number}", 30, {"packages:read"},
+                                     target="worker")
+        values.append(authority.subprocess_env({}, "worker")["SERVICE_TOKEN"])
 
     threads = [threading.Thread(target=worker, args=(number,)) for number in range(4)]
     for thread in threads:
@@ -174,12 +182,63 @@ def test_concurrent_runs_get_distinct_authority(provider_module):
 def test_local_environment_and_remote_protocol_delivery_share_policy(provider_module):
     local = resolve(WorkloadIdentityResolver(identity_config(provider_module)))
     remote = resolve(WorkloadIdentityResolver(identity_config(provider_module, delivery="headers")))
-    assert set(local.subprocess_env({})) == {"SERVICE_TOKEN"}
-    assert set(remote.request_headers({})) == {"Authorization"}
+    assert set(local.subprocess_env({}, "worker")) == {"SERVICE_TOKEN"}
+    assert set(remote.request_headers({}, "worker")) == {"Authorization"}
     with pytest.raises(WorkloadIdentityError, match="not configured for protocol"):
-        local.request_headers({})
+        local.request_headers({}, "worker")
     with pytest.raises(WorkloadIdentityError, match="not configured for subprocess"):
-        remote.subprocess_env({})
+        remote.subprocess_env({}, "worker")
+
+
+def test_authority_cannot_be_delivered_to_another_named_target(provider_module):
+    authority = resolve(WorkloadIdentityResolver(identity_config(provider_module)))
+    with pytest.raises(WorkloadIdentityError, match="not configured for this subprocess"):
+        authority.subprocess_env({}, "setup")
+
+
+def test_local_runner_delivers_only_to_worker_process(sched, provider_module, monkeypatch):
+    from tests.inprocess import InProcessRunner
+
+    config = identity_config(provider_module)
+    sched.cfg.data.update(config)
+    captured = {}
+    original = InProcessRunner.launch
+
+    def launch(self, run, worktree, brief_path, env):
+        captured.update(env)
+        return original(self, run, worktree, brief_path, env)
+
+    monkeypatch.setattr(InProcessRunner, "launch", launch)
+    assert sched.tick().dispatched == ["DM-001(work)"]
+    assert captured["SERVICE_TOKEN"].startswith("synthetic-secret-")
+    run = sched.runs.latest("DM-001")
+    audit = (run.path / "workload_identity.json").read_text()
+    assert "synthetic://issuer" in audit
+    assert captured["SERVICE_TOKEN"] not in audit
+    assert captured["SERVICE_TOKEN"] not in (run.path / "command.txt").read_text()
+
+
+def test_local_identity_failure_uses_environment_error_recovery(sched, provider_module):
+    config = identity_config(provider_module, provider={"membership": "human:operator"})
+    sched.cfg.data.update(config)
+    assert sched.tick().dispatched == ["DM-001(work)"]
+    run = sched.runs.latest("DM-001")
+    assert not (run.path / "stdout.json").exists()
+    report = sched.tick()
+    assert "DM-001 -> ready (env_error: workload_identity)" in report.transitions
+    assert sched.store.tasks()["DM-001"].attempts == 0
+
+
+def test_setup_environment_excludes_worker_authority(monkeypatch):
+    from garden.run_supervisor import setup_environment
+
+    monkeypatch.setenv("SERVICE_TOKEN", "synthetic-secret")
+    monkeypatch.setenv("GARDEN_WORKLOAD_IDENTITY_BINDINGS", "SERVICE_TOKEN")
+    monkeypatch.setenv("ORDINARY_VALUE", "kept")
+    env = setup_environment()
+    assert "SERVICE_TOKEN" not in env
+    assert "GARDEN_WORKLOAD_IDENTITY_BINDINGS" not in env
+    assert env["ORDINARY_VALUE"] == "kept"
 
 
 def test_unavailable_or_misdeclared_provider_is_actionable(provider_module):

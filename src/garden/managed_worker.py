@@ -145,7 +145,8 @@ def run(config: dict, *, once: bool = False):
             # These are explicitly host-owned credential/configuration paths, not controller values.
             claim["env_allowlist"] = [*claim.get("env_allowlist", []), *config.get("env_pass", [])]
             setup = dict(claim.get("setup") or {})
-            execute_claim(claim, root, client, setup_command=str(setup.get("command") or ""))
+            execute_claim(claim, root, client, setup_command=str(setup.get("command") or ""),
+                          host_config=config)
             if once:
                 return
 
