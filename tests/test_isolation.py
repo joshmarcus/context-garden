@@ -271,11 +271,13 @@ def test_scrubbed_env_builds_fresh_credential_only_harness_dirs(tmp_path, monkey
     worktree = tmp_path / "worktrees" / "T-1"
     env = scrubbed_env({}, worktree=worktree)
     assert env["HOME"] != os.environ["HOME"]  # the isolated scratch home, not the operator's
-    assert Path(env["CLAUDE_CONFIG_DIR"]).parent == Path(env["HOME"])
-    assert Path(env["CODEX_HOME"]).parent == Path(env["HOME"])
+    assert Path(env["CLAUDE_CONFIG_DIR"]).parent != Path(env["HOME"])
+    assert Path(env["CODEX_HOME"]).parent != Path(env["HOME"])
+    assert Path(env["CLAUDE_CONFIG_DIR"]).parent == Path(env["CODEX_HOME"]).parent
     assert {p.name for p in Path(env["CLAUDE_CONFIG_DIR"]).iterdir()} == {".credentials.json"}
     assert {p.name for p in Path(env["CODEX_HOME"]).iterdir()} == {"auth.json"}
-    (Path(env["CLAUDE_CONFIG_DIR"]) / "worker-settings.json").write_text("do not retain")
+    with pytest.raises(PermissionError):
+        (Path(env["CLAUDE_CONFIG_DIR"]) / "worker-settings.json").write_text("must be denied")
     refreshed = scrubbed_env({}, worktree=worktree)
     assert {p.name for p in Path(refreshed["CLAUDE_CONFIG_DIR"]).iterdir()} == {".credentials.json"}
 
@@ -289,8 +291,8 @@ def test_scrubbed_env_builds_fresh_credential_only_harness_dirs(tmp_path, monkey
     env = scrubbed_env({"worker_env": {"config_dirs": {"CLAUDE_CONFIG_DIR": "/opt/claude-creds",
                                                         "MY_HARNESS_HOME": "/opt/my-harness"}}},
                        worktree=worktree)
-    assert Path(env["CLAUDE_CONFIG_DIR"]).parent == Path(env["HOME"])
-    assert Path(env["CODEX_HOME"]).parent == Path(env["HOME"])
+    assert Path(env["CLAUDE_CONFIG_DIR"]).parent != Path(env["HOME"])
+    assert Path(env["CODEX_HOME"]).parent != Path(env["HOME"])
     assert env["MY_HARNESS_HOME"] == "/opt/my-harness"  # a custom harness's own documented key
 
 

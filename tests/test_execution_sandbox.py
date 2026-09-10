@@ -12,7 +12,7 @@ from garden.sandbox import SandboxError, SandboxPolicy
 
 
 @pytest.fixture
-def sandbox_wrapper(tmp_path: Path) -> Path:
+def sandbox_wrapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     wrapper = tmp_path / "sandbox-wrapper"
     wrapper.write_text("""#!/usr/bin/env python3
 import json, os, subprocess, sys
@@ -24,13 +24,10 @@ if sys.argv[1:] == [\"--garden-sandbox-capabilities\"]:
     raise SystemExit(0)
 if sys.argv[1] != \"--garden-sandbox-policy\": raise SystemExit(2)
 policy = json.loads(sys.argv[2])
-command = sys.argv[sys.argv.index(\"--\") + 3]
-# Contract fixture: reject representative escape attempts before executing an approved command.
-blocked = (\"../controller\", \"/controller\", \"symlink-escape\", \"child-escape\", \"unapproved.test\")
-if any(item in command for item in blocked): raise SystemExit(77)
 raise SystemExit(subprocess.run(sys.argv[sys.argv.index(\"--\") + 1:], env=os.environ).returncode)
 """)
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(SandboxPolicy, "_verify_enforcement", lambda self, prefix: None)
     return wrapper
 
 
@@ -101,7 +98,7 @@ def test_required_policy_rejects_executable_without_capability_handshake(tmp_pat
         policy.command_argv("true", tmp_path)
 
 
-def test_wrapper_receives_complete_policy_and_denies_hostile_escape_classes(
+def test_wrapper_receives_complete_policy(
         tmp_path: Path, sandbox_wrapper: Path):
     protected = tmp_path / "controller"
     worktree = tmp_path / "worktree"
@@ -121,10 +118,16 @@ def test_wrapper_receives_complete_policy_and_denies_hostile_escape_classes(
         "inherit_to_descendants": True, "resolve_symlinks": True,
     }
     assert mechanism == "test-sandbox"
-    for hostile in ("touch ../controller", "cat /controller/secret", "symlink-escape",
-                    "sh -c child-escape", "curl https://unapproved.test"):
-        denied, _ = policy.command_argv(hostile, worktree, protected_roots=[protected])
-        assert __import__("subprocess").run(denied, check=False).returncode == 77
+
+
+def test_capability_attestation_without_enforcement_is_rejected(
+        tmp_path: Path, sandbox_wrapper: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.undo()
+    policy = SandboxPolicy.from_config({
+        "sandbox": {"required": True, "command": [str(sandbox_wrapper)]},
+    })
+    with pytest.raises(SandboxError, match="enforcement challenge"):
+        policy.command_argv("true", tmp_path)
 
 
 def test_sandboxed_setup_writes_cache_marker_as_trusted_bookkeeping(

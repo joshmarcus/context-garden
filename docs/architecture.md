@@ -71,10 +71,15 @@ flowchart LR
   it with `--garden-sandbox-capabilities` and requires a versioned JSON attestation covering
   readable, writable and protected roots, symlink resolution, descendant inheritance and
   destination-level network filtering. Each launch receives the concrete JSON policy through
-  `--garden-sandbox-policy`, followed by `-- sh -c <command>`; legacy `{writable_root}` and
+  `--garden-sandbox-policy`, followed by `-- sh -c <command>`. Garden then challenges the
+  wrapper with real approved and prohibited operations before trusting that report: protected
+  reads and writes, symlink traversal, descendant writes, and an unapproved loopback connection
+  must be denied while an authorized read and write succeed. Legacy `{writable_root}` and
   `{network_destinations}` argument placeholders remain available. This makes the wrapper
   responsible for filesystem, symlink, child-process and network enforcement rather than
-  trusting branch code. SSH is rejected while isolation is required because that runner cannot attest to a
+  trusting branch code or a self-attested capability document. Writable cache/state and copied
+  harness credentials use separate roots; the latter is included only in readable roots. SSH is
+  rejected while isolation is required because that runner cannot attest to a
   remote mechanism; Windows users receive the supported WSL diagnostic. Every protected
   local model run records a host-detail-free `sandbox.json`, and children inherit
   `GARDEN_SANDBOX_ENFORCED=1` plus the mechanism name.
