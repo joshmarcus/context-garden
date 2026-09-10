@@ -555,7 +555,7 @@ class RetroMixin:
             and attributed_phase_key(record) == phase.key)
         unattributed = operator_attributed_summary(
             operator_records, since=summary["first_dispatch"],
-            include=lambda record: not record.get("product") and not record.get("phase"))
+            include=lambda record: not record.get("product") or not record.get("phase"))
         numbers = numbers_section(summary["cost_usd"], operator["known_cost_usd"], summary["metrics"],
                                   operator_turns=operator["turns"],
                                   operator_priced_records=operator["priced_records"],

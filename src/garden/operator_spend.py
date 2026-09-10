@@ -298,9 +298,14 @@ def attributed_summary(records: list[dict[str, Any]], *, since: str = "",
 
 
 def total_cost(records: list[dict[str, Any]], since: str = "") -> float:
-    """The operator's total spend, windowed the same way `cost_series` windows a run:
-    delta events at or after `since` (empty = all time)."""
-    return round(sum(e["cost_usd"] for e in to_cost_events(records) if not since or e["at"] >= since), 4)
+    """The operator's known spend in the window (empty ``since`` = all time).
+
+    This compatibility helper returns only the priced portion. Callers that present the
+    result must use :func:`attributed_summary` so they can also expose completeness.
+    """
+    events = [event for event in to_cost_events(records)
+              if (not since or event["at"] >= since) and event["cost_usd"] is not None]
+    return round(sum(float(event["cost_usd"]) for event in events), 4)
 
 
 def total_turns(records: list[dict[str, Any]], since: str = "") -> int:

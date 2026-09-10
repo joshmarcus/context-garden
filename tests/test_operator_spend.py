@@ -221,6 +221,19 @@ def test_total_cost_windows_by_since():
     assert ops.total_cost(records, since="2026-09-05T00:00:00+00:00") == 2.0  # only the second heartbeat's delta
 
 
+def test_total_cost_returns_known_portion_when_a_price_is_unavailable():
+    records = [
+        {"at": "2026-09-04T10:00:00+00:00", "session": "priced", "list_price_usd": 1.0},
+        {"at": "2026-09-05T10:00:00+00:00", "session": "unknown", "list_price_usd": None},
+    ]
+
+    assert ops.total_cost(records) == 1.0
+    assert ops.attributed_summary(records, include=lambda _record: True) == {
+        "known_cost_usd": 1.0, "turns": 0, "priced_records": 1,
+        "unpriced_records": 1, "cost_complete": False,
+    }
+
+
 def test_session_rows_uses_latest_heartbeat_and_counts_compactions():
     records = [
         {"at": "2026-09-05T10:00:00+00:00", "session": "a", "turns": 5, "avg_context": 1000, "list_price_usd": 1.0},

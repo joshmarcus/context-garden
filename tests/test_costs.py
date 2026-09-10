@@ -250,6 +250,8 @@ def test_operator_phase_attribution_agrees_across_costs_metrics_now_and_retro():
          "product": "other", "phase": "phase-05", "at": "2026-09-06T01:02:00+00:00"},
         {"list_price_usd": 8.0, "turns": 4, "session": "unknown",
          "product": "", "phase": "", "at": "2026-09-06T01:03:00+00:00"},
+        {"list_price_usd": 5.0, "turns": 1, "session": "product-only",
+         "product": "context-garden", "phase": "", "at": "2026-09-06T01:04:00+00:00"},
     ]
     operator_events = ops.to_cost_events(operator_records)
 
@@ -261,22 +263,27 @@ def test_operator_phase_attribution_agrees_across_costs_metrics_now_and_retro():
         include=lambda record: record["product"] == "context-garden"
         and attributed_phase_key(record) == "context-garden/phase-05",
     )
+    retro_unattributed = ops.attributed_summary(
+        operator_records, include=lambda record: not record.get("product") or not record.get("phase"))
 
     assert costs["grand_total"]["cost_usd"] == 3.0
     assert costs["unattributed_operator"] == {
-        "runs": 1, "priced_runs": 1, "unpriced_runs": 0, "cost_usd": 8.0}
+        "runs": 2, "priced_runs": 2, "unpriced_runs": 0, "cost_usd": 13.0}
     assert cli_metrics["operator"] == {
         "spend": 3.0, "share": 1.0, "priced_records": 2, "unpriced_records": 0,
-        "cost_complete": True, "unattributed_spend": 8.0,
-        "unattributed_priced_records": 1, "unattributed_unpriced_records": 0,
+        "cost_complete": True, "unattributed_spend": 13.0,
+        "unattributed_priced_records": 2, "unattributed_unpriced_records": 0,
         "unattributed_cost_complete": True}
     assert now["cost"] == 3.0
     assert now["operator"] == {"spend": 3.0, "share": 1.0, "sessions": 2,
                                "priced_records": 2, "unpriced_records": 0, "cost_complete": True}
-    assert now["unattributed_operator"] == {"spend": 8.0, "share": None, "sessions": 1,
-                                            "priced_records": 1, "unpriced_records": 0,
+    assert now["unattributed_operator"] == {"spend": 13.0, "share": None, "sessions": 2,
+                                            "priced_records": 2, "unpriced_records": 0,
                                             "cost_complete": True}
     assert (retro_cost, retro_turns) == (3.0, 3)
+    assert retro_unattributed == {"known_cost_usd": 13.0, "turns": 5,
+                                  "priced_records": 2, "unpriced_records": 0,
+                                  "cost_complete": True}
 
 
 def test_outcomes_count_only_base_branch_merges_as_accepted():

@@ -177,8 +177,8 @@ def cost_series(
         for row in row_set["groups"].values():
             _finish_row(row)
     unattributed_operator = [ev for ev in events if ev.get("kind") == "run_finished"
-                             and ev.get("mode") == "operator" and not ev.get("product")
-                             and not ev.get("phase")
+                             and ev.get("mode") == "operator"
+                             and (not ev.get("product") or not ev.get("phase"))
                              and (not since or str(ev.get("at") or "") >= since)
                              and (not until or str(ev.get("at") or "") < until)]
     return {

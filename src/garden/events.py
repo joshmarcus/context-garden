@@ -304,13 +304,16 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
             priced = isinstance(price, (int, float)) and not isinstance(price, bool)
             amount = float(price) if priced else 0.0
             if ev.get("mode") == "operator" or ev.get("activity") == "operator":
-                if not ev.get("product") and not ev.get("phase"):
+                # Phase reports require complete attribution. A product-only or
+                # phase-only ledger row is visible as unattributed instead of being
+                # charged to every selected phase it could plausibly describe.
+                if not ev.get("product") or not ev.get("phase"):
                     unattributed_operator_spend += amount
                     unattributed_operator_priced += int(priced)
                     unattributed_operator_unpriced += int(not priced)
                     continue
-                if ((ev.get("product") and str(ev.get("product")) not in selected_products)
-                        or (ev.get("phase") and attributed_phase_key(ev) not in selected_phases)):
+                if (str(ev.get("product")) not in selected_products
+                        or attributed_phase_key(ev) not in selected_phases):
                     continue
                 operator_spend += amount
                 operator_priced += int(priced)
@@ -775,11 +778,17 @@ def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
     leads = [r["lead_hours"] for r in m["tasks"] if r["lead_hours"] is not None]
     reviewed = [member for member in cohort["tasks"] if member["first_review"]]
 
+    def status_of(task: Any) -> str:
+        status = getattr(task, "status", "")
+        return str(getattr(status, "value", status))
+
     return {
         "metrics": m,
         "first_dispatch": min(dispatches)[:10] if dispatches else "",
         "done_at": done_at,
-        "tasks_done": cohort["accepted"],
+        # "Tasks done" is lifecycle state retained for old phases with no event log.
+        # Accepted-task outcomes remain the stricter, provenance-backed cohort above.
+        "tasks_done": sum(status_of(task) == "done" for task in tasks.values()),
         "tasks_total": len(tasks),
         "prs_merged": sum(bool(getattr(tasks[tid], "pr", "")) for tid in done_at),
         "revisions": sum(r["revisions"] for r in m["tasks"]),

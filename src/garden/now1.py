@@ -572,7 +572,7 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     finished = [e for e in window if e.get("kind") == "run_finished" and e.get("task") in tasks]
     op_window = [e for e in op_events if str(e.get("at") or "") >= since and selected_operator(e)]
     unattributed_op_window = [e for e in op_events if str(e.get("at") or "") >= since
-                              and not e.get("product") and not e.get("phase")]
+                              and (not e.get("product") or not e.get("phase"))]
     cost_events = finished + op_window
     priced_cost_events = [e for e in cost_events if isinstance(e.get("cost_usd"), (int, float))
                           and not isinstance(e.get("cost_usd"), bool)]
