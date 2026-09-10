@@ -226,6 +226,20 @@ def test_corrupt_archive_blob_fails_closed_without_hiding_accounting(tmp_path: P
         RunStore(tmp_path).all_runs()[0].stdout_text()
 
 
+def test_new_run_id_does_not_collide_with_archived_history(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    _finished(rs, "CG-001", "20260101T000000Z-work")
+    rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC))
+
+    class FixedDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 1, tzinfo=dt.UTC)
+
+    monkeypatch.setattr("garden.runs.dt.datetime", FixedDateTime)
+    assert rs.next_run_id("CG-002", "work") == "20260101T000000Z-work-2"
+
+
 def test_archive_retains_active_and_recovery_referenced_runs(tmp_path: Path):
     rs = RunStore(tmp_path)
     protected = _finished(rs, "CG-001", "20260101T000000Z-work")
