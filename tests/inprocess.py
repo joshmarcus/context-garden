@@ -27,6 +27,7 @@ import shlex
 import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from unittest.mock import patch
 
 from garden.runner.base import RunnerError
 from garden.runner.local import LocalRunner
@@ -50,6 +51,7 @@ class InProcessRunner(LocalRunner):
     name = "local"
 
     def launch(self, run: Run, worktree: Path, brief_path: Path, env: dict[str, str]) -> None:
+        from garden.run_supervisor import setup_environment
         from garden.runner.base import run_setup
 
         assert self.harness is not None
@@ -57,7 +59,9 @@ class InProcessRunner(LocalRunner):
         setup_input = d / "setup_input.json"
         if setup_input.exists():
             data = json.loads(setup_input.read_text())
-            run_setup(worktree, data.get("setup", data), log_path=d / "setup.log", env=env,
+            with patch.dict(os.environ, env, clear=True):
+                setup_env = setup_environment()
+            run_setup(worktree, data.get("setup", data), log_path=d / "setup.log", env=setup_env,
                       config=data.get("config", {}) if "setup" in data else {})
         model_output = self.harness_output_path(run, worktree)
         argv = self.harness_argv(run, worktree, model_output)
@@ -90,6 +94,15 @@ class InProcessRunner(LocalRunner):
         (d / "stdout.json").write_text(stdout)
         (d / "stderr.log").write_text(stderr)
         if code is not None:
+            with patch.dict(os.environ, env, clear=True):
+                from garden.run_supervisor import redact_authority_outputs
+
+                raw_final = Path(env.get("GARDEN_RAW_FINAL_PATH", ""))
+                final_path = Path(env.get("GARDEN_FINAL_PATH", ""))
+                if raw_final.is_file() and str(final_path):
+                    final_path.write_text(raw_final.read_text())
+                    raw_final.unlink()
+                redact_authority_outputs(d)
             (d / "exit_code").write_text(f"{code}\n")  # the completion signal reap waits for
 
     def start_checks(self, run: Run, worktree: Path, payload: dict) -> None:

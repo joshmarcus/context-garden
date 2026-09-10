@@ -1518,6 +1518,8 @@ def test_terminal_lease_loss_stops_supervised_process_tree(tmp_path):
 
 
 def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_path, fake_github):
+    from tests.test_workload_identity import identity_config
+
     isolated_execution_runtime(tmp_path, monkeypatch)
     client, store = remote_client(garden, monkeypatch, validation_timeout=731)
     scheduler = Scheduler(store, github=fake_github)
@@ -1559,7 +1561,17 @@ run.save()
             return response.status_code, response.json()
 
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "done")
-    execute_claim(payload, tmp_path / "independent-host", PostingClient())
+    monkeypatch.setenv("FAKE_CLAUDE_ECHO_ENV", "SERVICE_TOKEN")
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[1]))
+    env_dump = tmp_path / "remote-worker.env"
+    monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(env_dump))
+    payload["env_allowlist"] = [*payload.get("env_allowlist", []), "FAKE_CLAUDE_*", "PYTHONPATH"]
+    execute_claim(
+        payload, tmp_path / "independent-host", PostingClient(),
+        host_config=identity_config("tests.test_workload_identity"),
+    )
+    dumped_env = env_dump.read_text()
+    assert "SERVICE_TOKEN=synthetic-secret-" in dumped_env
     stale_release.write_text("save")
     assert stale_writer.wait(timeout=5) == 0
     saved = RunStore(store.config.garden_dir).latest("DM-001")
@@ -1568,6 +1580,14 @@ run.save()
     assert (tmp_path / "independent-host" / "repos" / "DM-001" / ".git").exists()
     assert (saved.path / "remote_result.json").exists()
     assert saved.stdout_text(), "the completed harness transcript is uploaded"
+    remote_payload = json.loads((saved.path / "remote_result.json").read_text())
+    serialized_output = saved.stdout_text() + json.dumps(remote_payload)
+    assert "synthetic-secret-" not in serialized_output
+    assert "<redacted>" in serialized_output
+    host_artifacts = tmp_path / "independent-host"
+    for path in host_artifacts.rglob("*"):
+        if path.is_file() and ".git" not in path.parts:
+            assert b"synthetic-secret-" not in path.read_bytes(), path
     report = scheduler.tick()  # reap work and dispatch the remote pre-PR check
     assert not report.errors, report
     assert any("check" in x for x in report.dispatched), (report, scheduler.state.get("DM-001"))
@@ -2375,9 +2395,16 @@ def test_managed_worker_holds_host_lock_and_forwards_setup_once(tmp_path, monkey
             calls.append(payload)
             return 200, claim
 
-    def execute_while_locked(received, root, _client, *, setup_command):
+    config = {
+        "work_dir": str(tmp_path / "managed-host"), "endpoint": "https://garden.example",
+        "worker_token": "test-token", "host": "build-1", "harnesses": ["claude"],
+        "memory_reserve_mib": 1, "disk_reserve_mib": 1,
+    }
+
+    def execute_while_locked(received, root, _client, *, setup_command, host_config):
         assert received is claim
         assert setup_command == "prepare-host"
+        assert host_config is config
         with (root / "host.lock").open("a") as lock:
             with pytest.raises(BlockingIOError):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2388,10 +2415,6 @@ def test_managed_worker_holds_host_lock_and_forwards_setup_once(tmp_path, monkey
     })
     monkeypatch.setattr(managed_worker, "execute_claim", execute_while_locked)
 
-    managed_worker.run({
-        "work_dir": str(tmp_path / "managed-host"), "endpoint": "https://garden.example",
-        "worker_token": "test-token", "host": "build-1", "harnesses": ["claude"],
-        "memory_reserve_mib": 1, "disk_reserve_mib": 1,
-    }, once=True)
+    managed_worker.run(config, once=True)
 
     assert len(calls) == 1

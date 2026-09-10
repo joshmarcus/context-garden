@@ -106,7 +106,7 @@ def _normalize_review_count_policy(data: dict[str, Any]) -> None:
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
     "notify.command", "notify.recipient", "notify.destinations", "checks", "worker_env.pass",
-    "worker_env.config_files", "sandbox", "runner_adapters",
+    "worker_env.config_files", "sandbox", "runner_adapters", "workload_identity",
 )
 
 
@@ -224,6 +224,9 @@ DEFAULTS: dict[str, Any] = {
     # deliberately not imported while config is being read; resolution happens at runner
     # construction, after normal scheduler admission and fencing have already applied.
     "runner_adapters": {},
+    # Host-trusted provider adapters and logical, least-privilege delivery policies.
+    # Authority values are resolved only by operation-boundary code and never enter Config.
+    "workload_identity": {"providers": {}, "references": {}, "boundaries": {}},
     "harness": "claude",
     "max_parallel": 10,
     "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel

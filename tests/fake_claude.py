@@ -658,6 +658,11 @@ def run_worker(call: Call, worker: Worker) -> None:
         if worker.tweak:
             worker.tweak(call, result)
         final = "All done.\n" + "GARDEN_RESULT: " + json.dumps(result)
+    echo_name = call.env.get("FAKE_CLAUDE_ECHO_ENV", "")
+    if echo_name:
+        value = call.env.get(echo_name, "")
+        final = f"{value}\n{final}"
+        print(value, file=sys.stderr)
     result_obj = {
         "type": "result", "subtype": "success", "is_error": False, "result": final,
         "usage": {"input_tokens": 1234, "output_tokens": 321, "cache_read_input_tokens": 100},
@@ -671,6 +676,8 @@ def run_worker(call: Call, worker: Worker) -> None:
     if call.stream:
         print(json.dumps({"type": "system", "subtype": "init", "session_id": "fake", "tools": []}))
         print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on the task..."}]}}))
+        if echo_name:
+            print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": call.env.get(echo_name, "")}]}}))
         print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo working"}}]}}))
         print(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "working"}]}]}}))
         print(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "git log --oneline -1"}}]}}))

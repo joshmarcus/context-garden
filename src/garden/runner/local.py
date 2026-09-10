@@ -25,6 +25,7 @@ from .base import (
     worker_credentials_dir,
     worker_home,
 )
+from ..workload_identity import WorkloadIdentityError, subprocess_authority
 
 
 class LocalRunner(Runner):
@@ -148,7 +149,35 @@ class LocalRunner(Runner):
             (d / "setup_input.json").write_text(json.dumps({"setup": setup, "config": self.config}))
         brief_path = d / "brief.md"
         brief_path.write_text(brief_text)
-        self.launch(run, worktree, brief_path, env)
+        try:
+            with subprocess_authority(
+                self.config, "worker", f"automation:{run.run_id}", env,
+            ) as (execution_env, metadata, _redactor, _authority):
+                if metadata is not None:
+                    (d / "workload_identity.json").write_text(json.dumps(metadata.__dict__))
+                    boundary = self.config["workload_identity"]["references"][
+                        self.config["workload_identity"]["boundaries"]["worker"]["reference"]
+                    ]
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_BINDINGS"] = ",".join(
+                        str(name) for name in boundary["bindings"]
+                    )
+                    # The detached supervisor owns the operation after this scheduler tick
+                    # exits. It resolves again from the same trusted, fenced local policy,
+                    # removes this control input before launch, and enforces the authority
+                    # for the complete lifetime of the child.
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_CONFIG"] = json.dumps({
+                        "workload_identity": self.config["workload_identity"],
+                    })
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_TARGET"] = "worker"
+                    execution_env["GARDEN_WORKLOAD_IDENTITY_RUN"] = f"automation:{run.run_id}"
+                self.launch(run, worktree, brief_path, execution_env)
+        except WorkloadIdentityError as exc:
+            # Complete through the ordinary reap path. It will restore the attempt/revision
+            # snapshot and classify this as host environment trouble, not author failure.
+            (d / "identity_error.json").write_text(json.dumps({"error": str(exc)}))
+            (d / "exit_code").write_text("1\n")
+            run.status = "running"
+            run.save()
 
     def launch(self, run: Run, worktree: Path, brief_path: Path, env: dict[str, str]) -> None:
         """Start the harness detached: a shell runs it in the worktree with the brief on
@@ -157,8 +186,8 @@ class LocalRunner(Runner):
         overrides only this step."""
         assert self.harness is not None
         d = run.path
-        model_output = self.harness_output_path(run, worktree)
-        inner = self.harness_shell(run, worktree, model_output)
+        raw_final = self.harness_output_path(run, worktree)
+        inner = self.harness_shell(run, worktree, raw_final)
         timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
         env = dict(env)
         if timeout_min:
@@ -167,18 +196,16 @@ class LocalRunner(Runner):
             # process tree rather than only the shell leader.
             env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{timeout_min * 60:g}"
             env["GARDEN_EXECUTION_TIMEOUT_KIND"] = "worker"
-        publish_result = ""
-        if model_output != d / "final.md":
-            publish_result = (
-                f"; result=$?; if [ -f {shlex.quote(str(model_output))} ]; then "
-                f"cp {shlex.quote(str(model_output))} {shlex.quote(str(d / 'final.md'))} || exit $?; "
-                "fi; exit $result"
-            )
         script = (
             f"cd {shlex.quote(str(worktree))} && {inner} "
-            f"< {shlex.quote(str(brief_path))} > {shlex.quote(str(d / 'stdout.json'))} "
-            f"2> {shlex.quote(str(d / 'stderr.log'))}{publish_result}"
+            f"< {shlex.quote(str(brief_path))}"
         )
+        # Custom harness commands are allowed to ignore the optional final-output path.
+        # Do not make their supervisors own a FIFO reader which can never have a writer.
+        # When the harness does consume it, the supervisor installs the FIFO before launch.
+        if str(raw_final) in inner:
+            env["GARDEN_RAW_FINAL_PATH"] = str(raw_final)
+            env["GARDEN_FINAL_PATH"] = str(d / "final.md")
         credential_fds: tuple[int, ...] = ()
         credential_read_fd = -1
         key_name = self.harness.api_key_env
@@ -242,6 +269,12 @@ class LocalRunner(Runner):
 
     def collect(self, run: Run) -> dict[str, Any]:
         assert self.harness is not None
+        identity_error = run.path / "identity_error.json"
+        if identity_error.exists():
+            detail = json.loads(identity_error.read_text())
+            return {"final_text": "", "usage": {}, "cost_usd": None, "session_id": "",
+                    "result": {}, "error": detail["error"], "env_error": True,
+                    "env_kind": "workload_identity"}
         return self.harness.parse(run.stdout_text(), run.stderr_text(), run.path / "final.md", model=run.model)
 
     def probe(self, cwd: Path) -> dict[str, Any]:
