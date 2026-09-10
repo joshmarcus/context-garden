@@ -445,6 +445,71 @@ def test_revision_policy_escalates_each_substantive_threshold_once(sched):
     assert task.difficulty == "hard"
 
 
+def test_revision_policy_decision_threshold_is_independent_of_escalation_interval(sched):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 5}
+    task = sched.store.task("DM-001")
+    task.difficulty = "hard"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["substantive_revisions"] = 5
+
+    with pytest.raises(RuntimeError, match="reached the decision threshold"):
+        sched._apply_revision_policy(task, st)
+
+    assert st["revision_decision_thresholds"] == [5]
+    sched._apply_revision_policy(task, st)
+    assert st["revision_decision_thresholds"] == [5]
+
+
+def test_revision_policy_decision_handles_same_dispatch_escalation_rung(sched):
+    sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 5}
+    task = sched.store.task("DM-001")
+    task.difficulty = "easy"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["substantive_revisions"] = 6
+
+    with pytest.raises(RuntimeError, match="reached the decision threshold"):
+        sched._apply_revision_policy(task, st)
+
+    st.pop("needs_human")
+    sched._apply_revision_policy(task, st)
+    assert task.difficulty == "easy"
+    assert st["revision_thresholds"] == [6]
+
+
+def test_difficulty_control_enforces_floor_and_records_deliberate_override(sched):
+    task = sched.store.task("DM-001")
+    task.difficulty = "medium"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["difficulty_floor"] = "medium"
+    sched.state.save()
+
+    with pytest.raises(RuntimeError, match="below the durable medium escalation floor"):
+        sched.set_difficulty(task, "easy", actor="test")
+    assert task.difficulty == "medium"
+    assert not st.get("difficulty_overrides")
+
+    sched.set_difficulty(task, "medium", actor="test")
+    sched.set_difficulty(task, "hard", actor="test")
+    assert task.difficulty == "hard"
+    assert st["difficulty_floor"] == "medium"
+
+    sched.set_difficulty(task, "easy", reason="isolated documentation fix", actor="test")
+    assert task.difficulty == "easy"
+    assert st["difficulty_floor"] == "medium"
+    assert st["difficulty_overrides"][-1] == {
+        "at": st["difficulty_overrides"][-1]["at"],
+        "from": "hard",
+        "to": "easy",
+        "floor": "medium",
+        "reason": "isolated documentation fix",
+        "actor": "test",
+    }
+    assert "deliberate override below medium floor: isolated documentation fix" in task.body
+
+
 def test_revision_policy_protects_explicit_model_and_stops(sched):
     sched.cfg.data["revision_policy"] = {"enabled": True, "every": 2, "decision_after": 6}
     task = sched.store.task("DM-001")
@@ -484,6 +549,16 @@ def test_investigation_is_idempotent_preserves_work_and_report_waits_for_decisio
     assert task.status == Status.CHANGES_REQUESTED
 
 
+def test_investigation_rejects_unsupported_owner_without_mutating_state(sched):
+    task = sched.store.task("DM-001")
+
+    with pytest.raises(RuntimeError, match="owner must be operator or agent"):
+        sched.pause_for_investigation(task, "diagnose", owner="other")
+
+    assert not sched.state.get(task.id).get("investigation")
+    assert not sched.state.get(task.id).get("needs_human")
+
+
 def test_operator_investigation_report_rejects_partial_prose_and_unsupported_recommendation(sched):
     task = sched.store.task("DM-001")
     sched.pause_for_investigation(task, "diagnose", owner="operator")
@@ -514,6 +589,10 @@ def test_troubled_continue_preserves_lifetime_counter_and_rejects_double_action(
     assert st["substantive_revisions"] == 7
     assert st["pending_feedback"] == "- retain me"
     assert st["revision_allowance"] == 1
+    assert st["difficulty_floor"] == "hard"
+    with pytest.raises(RuntimeError, match="below the durable hard escalation floor"):
+        sched.set_difficulty(task, "medium", actor="test")
+    assert task.difficulty == "hard"
     with pytest.raises(RuntimeError, match="no troubled-task decision"):
         sched.continue_troubled(task)
 
@@ -656,6 +735,42 @@ def test_investigation_report_is_separate_from_revision_cost_and_waits_for_follo
     sched.continue_troubled(task)
     assert "stale verification fixture" in st["investigation_handoff"]["diagnosis"]
     assert "base comparison" in st["investigation_handoff"]["diagnosis"]
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("likely_cause", "", "likely_cause is required"),
+    ("confidence", None, "confidence is required"),
+    ("evidence", [], "requires evidence"),
+    ("attempted_checks", "focused test", "must be a list"),
+    ("alternatives", [], "requires evidence"),
+    ("retain_work", "yes", "must be true or false"),
+])
+def test_agent_investigation_rejects_malformed_report(sched, field, value, error):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["investigation"] = {
+        "status": "active", "owner": "agent",
+        "task_status": Status.CHANGES_REQUESTED.value,
+    }
+    report = {
+        "likely_cause": "stale fixture", "confidence": "high", "unknowns": [],
+        "evidence": ["base comparison"], "attempted_checks": ["focused test"],
+        "retain_work": True, "alternatives": ["repair fixture"],
+        "recommendation": "repair environment/verification",
+    }
+    report[field] = value
+    run = sched.runs.new_run(task.id, "local", mode="investigation")
+    run.result = {"status": "done", "investigation_report": report}
+
+    sched._finalize_investigation(task, run, TickReport(), {})
+
+    assert st["investigation"]["status"] == "failed"
+    assert error in st["investigation"]["error"]
+    assert "report" not in st["investigation"]
+    assert st["needs_human"]["kind"] == "investigation"
+    assert task.status == Status.CHANGES_REQUESTED
 
 
 def test_corrective_worker_refreshes_origin_pr_feedback_at_dispatch(sched, monkeypatch):

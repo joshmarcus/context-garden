@@ -63,10 +63,7 @@ def difficulty(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) 
     tier = note.strip()
     if tier not in DIFFICULTIES:
         raise HTTPException(400, f"difficulty must be one of {', '.join(DIFFICULTIES)}")
-    old = t.difficulty
-    t.difficulty = tier
-    t.log(f"difficulty {old} -> {tier} (web)")
-    s.save(t)
+    sched.set_difficulty(t, tier, actor="web")
 
 
 @action("owner")

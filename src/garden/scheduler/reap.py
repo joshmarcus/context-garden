@@ -18,7 +18,7 @@ from ..notify import notify
 from ..preflight import missing_preflight
 from ..runner.base import Runner, run_temp_dir
 from ..runs import Run
-from .human import INVESTIGATION_RECOMMENDATIONS
+from .human import validate_investigation_report
 from .report import TickReport
 
 
@@ -267,16 +267,16 @@ class ReapMixin:
         """Persist a read-only diagnosis independently of implementation revisions."""
         result = run.result or {}
         report = result.get("investigation_report")
-        required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
-                    "retain_work", "alternatives", "recommendation"}
         if collected.get("env_error"):
             self._fail_investigation(task, run, rep, str(collected.get("error") or "investigation environment unavailable"))
             return
-        if result.get("status") != "done" or not isinstance(report, dict) or not required.issubset(report):
+        if result.get("status") != "done":
             self._fail_investigation(task, run, rep, "agent returned no complete investigation report")
             return
-        if report.get("recommendation") not in INVESTIGATION_RECOMMENDATIONS:
-            self._fail_investigation(task, run, rep, "agent returned an unsupported recommendation")
+        try:
+            report = validate_investigation_report(report)
+        except RuntimeError as exc:
+            self._fail_investigation(task, run, rep, f"agent returned an invalid investigation report: {exc}")
             return
         report.setdefault("source_identities", [run.run_id, task.branch or task.default_branch()])
         report.setdefault("observed_behavior", report["likely_cause"])

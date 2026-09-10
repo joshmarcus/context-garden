@@ -275,6 +275,25 @@ def test_troubled_cli_actions_match_web_lifecycle(garden):
     assert final.branch == "garden/preserved" and final.pr.endswith("/7")
 
 
+def test_cli_request_more_investigation_replaces_completed_report(garden):
+    from garden.scheduler import State
+
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001")["investigation"] = {
+        "status": "report_ready", "request_id": "completed",
+        "report": {"recommendation": "repair environment/verification"},
+    }
+    state.save()
+
+    result = run(garden, "investigate", "DM-001", "verify the repair", "--owner", "agent")
+
+    assert result.exit_code == 0, result.output
+    persisted = State(state.path).get("DM-001")
+    assert persisted["investigation_history"][-1]["request_id"] == "completed"
+    assert persisted["investigation"]["status"] == "requested"
+    assert persisted["investigation"]["reason"] == "verify the repair"
+
+
 def test_trellis_open_filter(garden):
     assert run(garden, "set-status", "DM-001", "done", "--force").exit_code == 0
     r = run(garden, "trellis")
@@ -896,6 +915,31 @@ def test_priority_and_difficulty_commands(garden):
     t = Store(garden).task("DM-001")
     assert t.priority == 0 and t.difficulty == "hard"
     assert "difficulty medium -> hard" in t.body
+
+
+def test_difficulty_command_requires_reason_below_escalation_floor(garden):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.difficulty = "hard"
+    store.save(task)
+    sched = Scheduler(store, log=print)
+    sched.state.get(task.id)["difficulty_floor"] = "medium"
+    sched.state.save()
+
+    refused = run(garden, "difficulty", task.id, "easy")
+    assert refused.exit_code == 1
+    assert "below the durable medium escalation floor" in refused.output
+    assert Store(garden).task(task.id).difficulty == "hard"
+
+    changed = run(garden, "difficulty", task.id, "easy", "--reason", "isolated docs fix")
+    assert changed.exit_code == 0, changed.output
+    assert Store(garden).task(task.id).difficulty == "easy"
+    persisted = Scheduler(Store(garden), log=print).state.get(task.id)
+    assert persisted["difficulty_floor"] == "medium"
+    assert persisted["difficulty_overrides"][-1]["reason"] == "isolated docs fix"
 
 
 def test_trial_cli_prints_a_contenders_table(garden, monkeypatch):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -114,8 +115,16 @@ def test_delegated_revision_cap_card_is_operator_owned(garden):
 def test_troubled_card_is_distinct_and_offers_bounded_decisions(garden):
     store = Store(garden)
     _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    runs = RunStore(garden / ".garden")
+    run = runs.new_run("DM-001", "local", mode="revise")
+    run.status = "done"
+    run.pushed_head = "abcdef1234567890"
+    run.diff_stat = " 3 files changed, 12 insertions(+), 2 deletions(-)"
+    run.save()
     _set_state(garden, "DM-001", needs_human={"kind": "troubled_task", "reason": "6 substantive revisions did not converge"},
                substantive_revisions=6, revisions=6, review_rounds=4,
+               review_feedback_history=["parser still drops rows", "parser still drops rows"],
+               troubled={"recommendation": "investigate the parser boundary"},
                difficulty_escalations=[{"from": "easy", "to": "medium", "counter": 2, "model": "terra"}])
     it = _attention(garden, "DM-001")
     assert it["kind_title"] == "Troubled task"
@@ -125,6 +134,54 @@ def test_troubled_card_is_distinct_and_offers_bounded_decisions(garden):
     evidence = "\n".join(it["evidence"])
     assert "6 revision" in evidence and "4 automated review" in evidence
     assert "easy → medium" in evidence and "current owner" in evidence
+    assert "head abcdef123456" in evidence and "3 files changed" in evidence
+    assert "repeated finding (2 reviews): parser still drops rows" in evidence
+    assert "recommended next action: investigate the parser boundary" in evidence
+
+
+def test_inbox_can_request_an_agent_investigation(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "repeated reviews did not converge"},
+               substantive_revisions=4)
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    page = client.get("/inbox")
+    form = re.search(r'<form[^>]+action="/tasks/DM-001/investigate".*?</form>',
+                     page.text, re.S)
+    assert form is not None
+    assert re.findall(r'<option value="([^"]+)">', form.group()) == ["operator", "agent"]
+    assert "Request investigation agent" in form.group()
+
+    response = client.post("/tasks/DM-001/investigate", data={
+        "note": "diagnose the repeated review finding",
+        "applies_to": "agent",
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    investigation = State(garden / ".garden" / "state.json").get("DM-001")["investigation"]
+    assert investigation["owner"] == "agent"
+    assert investigation["status"] == "requested"
+    assert investigation["reason"] == "diagnose the repeated review finding"
+
+
+def test_inbox_rejects_unsupported_investigation_owner_without_persisting_it(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED)
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "repeated reviews"})
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    response = client.post("/tasks/DM-001/investigate", data={
+        "note": "diagnose the repeated review finding",
+        "applies_to": "other",
+    }, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert "owner+must+be+operator+or+agent" in response.headers["location"]
+    persisted = State(garden / ".garden" / "state.json").get("DM-001")
+    assert not persisted.get("investigation")
+    assert persisted["needs_human"]["kind"] == "troubled_task"
 
 
 def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
@@ -133,7 +190,8 @@ def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
     report = {"likely_cause": "stale verifier", "confidence": "high", "unknowns": ["remote image"],
               "evidence": ["base passes"], "attempted_checks": ["focused comparison"],
               "retain_work": True, "alternatives": ["repair verifier"],
-              "recommendation": "repair environment/verification"}
+              "recommendation": "repair environment/verification",
+              "links": ["https://example.com/evidence/7"]}
     _set_state(garden, "DM-001",
                needs_human={"kind": "investigation_report", "reason": "report ready"},
                investigation={"status": "report_ready", "owner": "agent", "report": report})
@@ -141,9 +199,68 @@ def test_investigation_report_card_is_readable_and_actions_are_explicit(garden):
     evidence = "\n".join(it["evidence"])
     assert "likely cause (high confidence): stale verifier" in evidence
     assert "investigation recommendation: repair environment/verification" in evidence
+    assert "unknowns: remote image" in evidence
+    assert "evidence: base passes" in evidence
+    assert "attempted checks: focused comparison" in evidence
+    assert "retain earlier work: yes" in evidence
+    assert "alternatives and tradeoffs: repair verifier" in evidence
+    assert "evidence links: https://example.com/evidence/7" in evidence
     assert {a["kind"] for a in it["actions"]} >= {
         "troubled-continue", "change-approach", "investigate", "defer", "troubled-cancel",
     }
+    client = TestClient(create_app(Store(garden), watch=False))
+    response = client.post("/tasks/DM-001/investigate",
+                           data={"note": "check the replacement verifier", "applies_to": "agent"},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    persisted = State(garden / ".garden" / "state.json").get("DM-001")
+    assert persisted["investigation_history"][-1]["status"] == "report_ready"
+    assert persisted["investigation"]["status"] == "requested"
+    assert persisted["investigation"]["reason"] == "check the replacement verifier"
+
+
+@pytest.mark.parametrize("current,selected,options", [
+    ("easy", "medium", ["easy", "medium", "hard"]),
+    ("medium", "hard", ["medium", "hard"]),
+    ("hard", "hard", ["hard"]),
+])
+def test_web_troubled_continue_selects_same_or_higher_difficulty(garden, current, selected, options):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    task = store.task("DM-001")
+    task.difficulty = current
+    store.save(task)
+    _set_state(garden, "DM-001", needs_human={"kind": "troubled_task", "reason": "choose next step"},
+               substantive_revisions=6, pending_feedback="preserve the existing finding")
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    for page in ("/inbox", "/tasks/DM-001"):
+        response = client.get(page)
+        assert response.status_code == 200
+        form = re.search(r'<form[^>]+action="/tasks/DM-001/troubled-continue".*?</form>',
+                         response.text, re.S)
+        assert form is not None
+        assert re.findall(r'<option value="([^"]+)"', form.group()) == options
+        assert f"Continue at {current}" in form.group()
+        if selected != current:
+            assert f"Escalate to {selected}" in form.group()
+
+    if current != "easy":
+        refused = client.post("/tasks/DM-001/troubled-continue", data={"applies_to": "easy"},
+                              follow_redirects=False)
+        assert refused.status_code == 303 and "preserve+or+raise" in refused.headers["location"]
+        assert Store(garden).task("DM-001").difficulty == current
+        assert State(garden / ".garden" / "state.json").get("DM-001")["needs_human"]
+
+    response = client.post("/tasks/DM-001/troubled-continue", data={"applies_to": selected},
+                           follow_redirects=False)
+    assert response.status_code == 303
+    assert Store(garden).task("DM-001").difficulty == selected
+    persisted = State(garden / ".garden" / "state.json").get("DM-001")
+    assert persisted["revision_allowance"] == 1
+    assert not persisted.get("needs_human")
+    assert persisted["troubled_decisions"][-1]["difficulty"] == selected
+    assert persisted["pending_feedback"] == "preserve the existing finding"
 
 
 def test_served_operator_report_failure_recovery_and_explicit_followup(garden):
@@ -213,6 +330,30 @@ def test_web_troubled_actions_preserve_work_and_reject_stale_clicks(garden):
                    follow_redirects=False)
     assert stale.status_code == 303 and "no+troubled-task+decision" in stale.headers["location"]
     assert Store(garden).task("DM-001").status == Status.CHANGES_REQUESTED
+
+
+def test_inbox_defer_requires_reason_and_uses_troubled_defer_action(garden):
+    store = Store(garden)
+    _set_task(store, "DM-001", Status.CHANGES_REQUESTED, pr="https://example.com/pull/7")
+    _set_state(garden, "DM-001",
+               needs_human={"kind": "troubled_task", "reason": "not converging"},
+               substantive_revisions=6)
+    client = TestClient(create_app(Store(garden), watch=False))
+
+    page = client.get("/inbox").text
+    form = re.search(r'<form[^>]+action="/tasks/DM-001/troubled-defer".*?</form>', page, re.S)
+    assert form is not None
+    assert 'name="note"' in form.group() and "required" in form.group()
+
+    response = client.post(
+        "/tasks/DM-001/troubled-defer",
+        data={"note": "wait for the upstream parser release"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    state = State(garden / ".garden" / "state.json").get("DM-001")
+    assert state["troubled_deferred"]["reason"] == "wait for the upstream parser release"
+    assert not state.get("investigation")
 
 
 def test_parent_closed_card(garden):

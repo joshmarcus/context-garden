@@ -35,7 +35,73 @@ INVESTIGATION_RECOMMENDATIONS = frozenset({
 })
 
 
+def validate_investigation_report(report: Any) -> dict[str, Any]:
+    """Return a complete structured investigation report or raise a useful error."""
+    required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
+                "retain_work", "alternatives", "recommendation"}
+    missing = sorted(required - report.keys()) if isinstance(report, dict) else sorted(required)
+    if missing:
+        raise RuntimeError(f"investigation report is missing: {', '.join(missing)}")
+    for field in ("likely_cause", "confidence"):
+        if not isinstance(report[field], str) or not report[field].strip():
+            raise RuntimeError(f"investigation report {field} is required")
+    for field in ("unknowns", "evidence", "attempted_checks", "alternatives"):
+        if not isinstance(report[field], list) or not all(isinstance(item, str) for item in report[field]):
+            raise RuntimeError(f"investigation report {field} must be a list of text values")
+    if not report["evidence"] or not report["attempted_checks"] or not report["alternatives"]:
+        raise RuntimeError("investigation report requires evidence, attempted checks, and alternatives")
+    if not isinstance(report["retain_work"], bool):
+        raise RuntimeError("investigation report retain_work must be true or false")
+    if report["recommendation"] not in INVESTIGATION_RECOMMENDATIONS:
+        raise RuntimeError("investigation report has an unsupported recommendation")
+    links = report.get("links", [])
+    if not isinstance(links, list) or not all(isinstance(item, str) for item in links):
+        raise RuntimeError("investigation report links must be a list of text values")
+    return report
+
+
 class HumanMixin:
+    def set_difficulty(self, task: Task, difficulty: str, *, reason: str = "", actor: str = "") -> None:
+        """Set an implementation tier without accidentally lowering an escalation floor.
+
+        A lower tier is reserved for a deliberately simpler follow-up. Its reason is
+        retained in scheduler state and the task log so a later dispatch or restart
+        cannot mistake the change for an accidental downgrade.
+        """
+        levels = ("easy", "medium", "hard")
+        if difficulty not in levels:
+            raise RuntimeError(f"difficulty must be one of {', '.join(levels)}")
+        st = self.state.get(task.id)
+        floor = str(st.get("difficulty_floor") or "")
+        below_floor = floor in levels and levels.index(difficulty) < levels.index(floor)
+        if below_floor and not reason.strip():
+            raise RuntimeError(
+                f"difficulty {difficulty} is below the durable {floor} escalation floor; "
+                "give an explicit reason for a deliberately simpler fix"
+            )
+        old = task.difficulty
+        task.difficulty = difficulty
+        source = actor.strip() or "operator"
+        if below_floor:
+            override = {
+                "at": now_iso(),
+                "from": old,
+                "to": difficulty,
+                "floor": floor,
+                "reason": reason.strip(),
+                "actor": source,
+            }
+            st.setdefault("difficulty_overrides", []).append(override)
+            task.log(
+                f"difficulty {old} -> {difficulty} ({source}; deliberate override below "
+                f"{floor} floor: {reason.strip()})"
+            )
+            self.events.emit("difficulty_floor_overridden", task.id, **override)
+            self.state.save()
+        else:
+            task.log(f"difficulty {old} -> {difficulty}" + (f" ({source})" if actor else ""))
+        self.store.save(task)
+
     @staticmethod
     def _validate_action_actor(actor: str) -> str:
         """Return a recorded action actor, rejecting ambiguous live provenance."""
@@ -284,6 +350,7 @@ class HumanMixin:
         count = int(st.get("substantive_revisions", st.get("revisions", 0)))
         every, decision_after = int(policy["every"]), int(policy["decision_after"])
         thresholds = list(st.get("revision_thresholds") or [])
+        decision_thresholds = list(st.get("revision_decision_thresholds") or [])
         if st.get("troubled_decisions") and int(st.get("revision_allowance", 0)) <= 0:
             reason = f"the granted revision allowance is exhausted after {count} substantive revisions"
             self._set_needs_human(task, "troubled_task", reason)
@@ -293,12 +360,26 @@ class HumanMixin:
                              difficulty=task.difficulty, model=task.model or "")
             self.state.save()
             raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
-        if count < every or count % every or count in thresholds:
-            return
         levels = ("easy", "medium", "hard")
         current = task.difficulty if task.difficulty in levels else "medium"
-        if count >= decision_after or current == "hard" or task.model:
-            reason = (f"{count} substantive revision rounds reached the decision threshold"
+        if count >= decision_after and decision_after not in decision_thresholds:
+            reason = f"{count} substantive revision rounds reached the decision threshold"
+            self._set_needs_human(task, "troubled_task", reason)
+            st["troubled"] = {"reason": reason, "counter": count, "at": now_iso(),
+                               "owner": "product owner", "recommendation": "pause and investigate the repeated findings"}
+            decision_thresholds.append(decision_after)
+            st["revision_decision_thresholds"] = decision_thresholds
+            if count % every == 0 and count not in thresholds:
+                thresholds.append(count)
+                st["revision_thresholds"] = thresholds
+            self.events.emit("troubled_task", task.id, counter=count, reason=reason,
+                             difficulty=current, model=task.model or "")
+            self.state.save()
+            raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
+        if count < every or count % every or count in thresholds:
+            return
+        if current == "hard" or task.model:
+            reason = (f"{count} substantive revision rounds reached the top difficulty"
                       if not task.model else
                       f"{count} substantive revision rounds reached an escalation threshold, but explicit model {task.model} is protected")
             self._set_needs_human(task, "troubled_task", reason)
@@ -333,9 +414,11 @@ class HumanMixin:
                                 origins: dict[str, str] | None = None) -> None:
         """Request an idempotent safe-boundary investigation without touching live work."""
         ensure_open(task)
+        if owner not in ("operator", "agent"):
+            raise RuntimeError("investigation owner must be operator or agent")
         st = self.state.get(task.id)
         existing = st.get("investigation")
-        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active", "report_ready"):
+        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active"):
             return
         if isinstance(existing, dict):
             st.setdefault("investigation_history", []).append(dict(existing))
@@ -419,26 +502,7 @@ class HumanMixin:
         inv = st.get("investigation")
         if not isinstance(inv, dict) or inv.get("status") not in ("requested", "active"):
             raise RuntimeError(f"{task.id} has no active investigation")
-        required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
-                    "retain_work", "alternatives", "recommendation"}
-        missing = sorted(required - report.keys()) if isinstance(report, dict) else sorted(required)
-        if missing:
-            raise RuntimeError(f"investigation report is missing: {', '.join(missing)}")
-        for field in ("likely_cause", "confidence"):
-            if not isinstance(report[field], str) or not report[field].strip():
-                raise RuntimeError(f"investigation report {field} is required")
-        for field in ("unknowns", "evidence", "attempted_checks", "alternatives"):
-            if not isinstance(report[field], list) or not all(isinstance(item, str) for item in report[field]):
-                raise RuntimeError(f"investigation report {field} must be a list of text values")
-        if not report["evidence"] or not report["attempted_checks"] or not report["alternatives"]:
-            raise RuntimeError("investigation report requires evidence, attempted checks, and alternatives")
-        if not isinstance(report["retain_work"], bool):
-            raise RuntimeError("investigation report retain_work must be true or false")
-        if report["recommendation"] not in INVESTIGATION_RECOMMENDATIONS:
-            raise RuntimeError("investigation report has an unsupported recommendation")
-        links = report.get("links", [])
-        if not isinstance(links, list) or not all(isinstance(item, str) for item in links):
-            raise RuntimeError("investigation report links must be a list of text values")
+        validate_investigation_report(report)
         inv.update({"status": "report_ready", "report": report, "completed_at": now_iso()})
         self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
         self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))
@@ -516,9 +580,15 @@ class HumanMixin:
             raise RuntimeError(f"{task.id} has no troubled-task decision to continue")
         if difficulty:
             levels = ("easy", "medium", "hard")
-            if difficulty not in levels or levels.index(difficulty) < levels.index(task.difficulty):
-                raise RuntimeError("difficulty must preserve or raise the current floor")
+            floor = str(st.get("difficulty_floor") or task.difficulty)
+            if floor not in levels:
+                floor = task.difficulty
+            if (difficulty not in levels
+                    or task.difficulty not in levels
+                    or levels.index(difficulty) < max(levels.index(task.difficulty), levels.index(floor))):
+                raise RuntimeError("difficulty must preserve or raise the durable floor")
             task.difficulty = difficulty
+            st["difficulty_floor"] = difficulty
         decision = {"at": now_iso(), "allowance": allowance, "difficulty": task.difficulty,
                     "counter": int(st.get("substantive_revisions", st.get("revisions", 0)))}
         st.setdefault("troubled_decisions", []).append(decision)
