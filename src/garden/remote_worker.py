@@ -72,12 +72,16 @@ def _validation_receipts(execution_dir: Path) -> list[dict[str, Any]]:
             receipts.append({
                 "malformed_validation_receipt": True,
                 "recoverable_source_shas": sources[:_MAX_MALFORMED_RECEIPT_SOURCES],
+                "recoverable_source_shas_overflow": (
+                    len(sources) > _MAX_MALFORMED_RECEIPT_SOURCES
+                ),
             })
             continue
         if not isinstance(receipt, dict):
             receipts.append({
                 "malformed_validation_receipt": True,
                 "recoverable_source_shas": [],
+                "recoverable_source_shas_overflow": False,
             })
             continue
         try:
