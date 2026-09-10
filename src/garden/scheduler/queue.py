@@ -39,6 +39,10 @@ class QueueMixin:
         marker was set."""
         return self.state.get(task.id).pop("merge_head", None) is not None
 
+    def _queue_clear_block(self, task: Task) -> bool:
+        """Clear a stale queue hold without changing candidacy, ordering or head state."""
+        return self.state.get(task.id).pop("automerge_blocked", None) is not None
+
     def _queue_leave(self, task: Task) -> bool:
         """Take the task off the queue cleanly (merged, no longer a candidate, PR replaced): drop
         the candidate, its order key, the head marker and any block. Returns True if anything was

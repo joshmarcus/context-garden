@@ -504,7 +504,7 @@ class ReviewMixin:
             if (approval_is_current
                     and (re.search(r"review round\(s\).*need [2-9]\d*", blocked)
                          or "second review" in blocked)):
-                st.pop("automerge_blocked", None)
+                self._queue_clear_block(task)
                 self.state.save()
             if task.status not in (Status.AWAITING_TRIAGE, Status.IN_REVIEW):
                 continue
