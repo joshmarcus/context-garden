@@ -28,6 +28,27 @@ from .base import (
 )
 
 
+def _trusted_module_root() -> Path:
+    """Return the controller-owned directory containing the loaded ``garden`` package.
+
+    Controller-owned checks retain scheduler credentials for trusted Python analysers.  They
+    must therefore never use a task worktree as an import root: a branch could add a
+    ``garden`` package which shadows the supervisor or check runner before either can
+    establish the scrubbed child-command boundary.
+    """
+    root = Path(__file__).resolve().parents[2]
+    if not (root / "garden" / "run_supervisor.py").is_file():
+        raise RunnerError(f"trusted garden package is unavailable under {root}")
+    return root
+
+
+def _trusted_module_environment(env: dict[str, str]) -> dict[str, str]:
+    """Pin module imports for a privileged controller subprocess to loaded code."""
+    result = dict(env)
+    result["PYTHONPATH"] = str(_trusted_module_root())
+    return result
+
+
 class LocalRunner(Runner):
     name = "local"
 
@@ -240,7 +261,23 @@ class LocalRunner(Runner):
         them later instead of running the product's suite in-process (CG-182). Overridden by
         the in-process test runner to run the same job synchronously."""
         d = run.path
-        env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        # Controller-owned Python analysers may use controller credentials. Their output is
+        # redacted before revision dispatch; command checks and setup still create scrubbed
+        # child environments in checkrun/checks.py.
+        if payload.get("execution_owner") == "controller":
+            env = dict(os.environ)
+            env["GARDEN_TASK_ID"] = run.task_id
+            env["GARDEN_RUN_ID"] = run.run_id
+            env["GARDEN_ROOT"] = no_live_garden_root(run.path)
+            # Both modules below execute with controller credentials.  Start from the
+            # loaded package's parent rather than the untrusted worktree, and replace any
+            # inherited PYTHONPATH which could also put branch code ahead of it.
+            module_root = _trusted_module_root()
+            env = _trusted_module_environment(env)
+            launch_cwd = module_root
+        else:
+            env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+            launch_cwd = worktree
         policy = SandboxPolicy.from_config(self.config)
         if policy.required:
             _, mechanism = policy.command_argv("true", worktree)
@@ -258,7 +295,7 @@ class LocalRunner(Runner):
             f"> {shlex.quote(str(d / 'stdout.json'))} 2> {shlex.quote(str(d / 'stderr.log'))}"
         )
         proc = subprocess.Popen(
-            [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(worktree), env=env,
+            [sys.executable, "-m", "garden.run_supervisor", str(d), script], cwd=str(launch_cwd), env=env,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )

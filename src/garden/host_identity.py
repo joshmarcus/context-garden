@@ -11,7 +11,10 @@ from typing import Any
 import yaml
 
 _SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)(\b(?:api[_ -]?key|token|secret|password|authorization|credential)\b\s*[:=]\s*)([^\s,;]+)"
+    r"(?i)(\b(?:api[_ -]?key|token|secret|password|credential)\b\s*[:=]\s*)([^\s,;]+)"
+)
+_AUTHORIZATION_ASSIGNMENT = re.compile(
+    r"(?im)(\bauthorization\b\s*[:=]\s*)[^\r\n,;]+"
 )
 _CREDENTIAL_URL = re.compile(r"(\w+://)[^\s/@:]+:[^\s/@]+@")
 
@@ -38,6 +41,7 @@ def scrub_shared_text(value: str, config: dict[str, Any]) -> str:
     for target, alias in sorted(connection_aliases(config).items(), key=lambda item: len(item[0]), reverse=True):
         value = value.replace(target, alias)
     value = _CREDENTIAL_URL.sub(r"\1<redacted>@", value)
+    value = _AUTHORIZATION_ASSIGNMENT.sub(r"\1<redacted>", value)
     return _SENSITIVE_ASSIGNMENT.sub(r"\1<redacted>", value)
 
 

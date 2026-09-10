@@ -1,5 +1,7 @@
 """Review and asynchronous CI feedback reach one complete, head-bound revise brief."""
 
+import json
+
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler import Scheduler
@@ -311,6 +313,67 @@ def test_ci_dispatch_freezes_the_pr_head_in_the_run_and_continuation(sched, fake
     run = sched._run_by_id(task, check["run_id"])
     assert check["cont"]["head"] == pr.head_sha
     assert run.env_snapshot["ci_head"] == pr.head_sha
+
+
+def test_controller_owned_ci_diagnostic_is_head_bound_and_redacted_for_revision(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    task.runner = "remote"
+    sched.store.save(task)
+    sched.cfg.data["checks"] = {**sched.cfg.data["checks"], "ci": [{
+        "name": "controller actions", "python": "garden.checks:github_actions_failures",
+        "execution_owner": "controller",
+    }]}
+    pr.checks = "FAILURE"
+    pr.failed_checks = ["actions"]
+    pr.updated_at = "controller-ci-failure"
+
+    sched.poll(task, TickReport())
+
+    check = sched.state.get(task.id)["check_run"]
+    run = sched._run_by_id(task, check["run_id"])
+    payload = json.loads((run.path / "checks_input.json").read_text())
+    assert run.runner == "local"
+    assert payload["execution_owner"] == "controller"
+
+    run.status = "done"
+    run.env_snapshot["ci_head"] = pr.head_sha
+    run.save()
+    sched._after_ci_check(task, run, [{
+        "name": "actions", "status": "fail", "summary": "token=controller-secret test failure",
+        "details": "token=controller-secret\\nfailed test_example",
+    }], check["cont"], TickReport())
+    assert "test_example" in sched.state.get(task.id)["pending_feedback"]
+    revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+
+    brief = (revise.path / "brief.md").read_text()
+    assert pr.head_sha in brief
+    assert "test_example" in brief
+    assert "controller-secret" not in brief and "token=<redacted>" in brief
+
+
+def test_controller_ci_handoff_redacts_complete_authorization_headers(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    task.runner = "remote"
+    sched.store.save(task)
+    secret_values = ("bearer-controller-secret", "basic-controller-secret")
+    check = _ci_run(sched, task, pr.head_sha)
+
+    sched._after_ci_check(task, check, [{
+        "name": "actions",
+        "status": "fail",
+        "summary": f"Authorization: Bearer {secret_values[0]}",
+        "details": (
+            f"authorization=Basic {secret_values[1]}; request rejected\n"
+            "failed test_authorization"
+        ),
+    }], {"head": pr.head_sha, "ci_note": "CI failed"}, TickReport())
+    revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+
+    brief = (revise.path / "brief.md").read_text()
+    assert "Authorization: <redacted>" in brief
+    assert "authorization=<redacted>; request rejected" in brief
+    assert "failed test_authorization" in brief
+    assert all(secret not in brief for secret in secret_values)
 
 
 def test_distinct_same_second_comments_survive_and_edits_replace_the_same_id(sched, fake_github):

@@ -12,7 +12,7 @@ from typing import Any
 
 from .. import gitops
 from ..checks import failures as check_failures
-from ..checks import to_feedback
+from ..checks import to_feedback, worker_diagnostic_excerpt
 from ..ci_status import CIStatus, resolve_status, status_reason
 from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
 from ..model import Status, Task, now_iso, phase_refusal
@@ -450,7 +450,18 @@ class PollMixin:
         elif pr.checks == "SUCCESS":
             ci_note = ""
         elif check_failures(results):
-            ci_note += "\n\n" + to_feedback(results, "CI check")
+            safe_results = [
+                {
+                    **result,
+                    **{
+                        field: worker_diagnostic_excerpt(result.get(field), self.cfg.data)
+                        for field in ("name", "status", "summary", "details")
+                    },
+                }
+                for result in results
+            ]
+            ci_note += (f"\n\n- **CI diagnostic source** `{head}`.\n"
+                        + to_feedback(safe_results, "CI check"))
         repository = self.state.get(self._PR_OBSERVATIONS).get(task.product) or {}
         record = next((row for row in repository.get("prs", [])
                        if int(row.get("number") or 0) == number), {})

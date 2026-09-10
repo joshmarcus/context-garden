@@ -413,6 +413,41 @@ def test_local_runner_preserves_fractional_timeout_minutes(tmp_path):
     assert "timeout 30 " not in (run.path / "command.txt").read_text()
 
 
+def test_controller_owned_checks_do_not_import_a_worktree_garden_package(tmp_path, monkeypatch):
+    """A controller secret cannot reach a package a PR adds to its worktree."""
+    worktree = tmp_path / "worktree"
+    shadow = worktree / "garden"
+    shadow.mkdir(parents=True)
+    marker = tmp_path / "shadow-ran"
+    for module in ("run_supervisor", "checkrun"):
+        (shadow / f"{module}.py").write_text(
+            "import os\nfrom pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text(os.environ.get('CONTROLLER_SECRET', ''))\n"
+        )
+    (shadow / "__init__.py").write_text("")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    monkeypatch.setenv("CONTROLLER_SECRET", "controller-only-secret")
+    (run_dir / "checks_input.json").write_text(json.dumps({
+        "execution_owner": "controller",
+        "specs": [{"name": "trusted check", "python": "garden.checks:local_command_check", "command": "true"}],
+        "cwd": str(worktree), "ctx": {"worktree": str(worktree)},
+    }))
+
+    from garden.runner.local import _trusted_module_environment, _trusted_module_root
+
+    script = f"{shlex.quote(sys.executable)} -m garden.checkrun {shlex.quote(str(run_dir))}"
+    completed = subprocess.run(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), script],
+        cwd=_trusted_module_root(), env=_trusted_module_environment(_synthetic_child_env()),
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+
+    assert completed.returncode == 0
+    assert not marker.exists()
+    assert json.loads((run_dir / "checks.json").read_text())[0]["status"] == "pass"
+
+
 def test_local_runner_enforces_timeout_without_a_shell_timeout_utility(tmp_path):
     """The Python supervisor, not an optional GNU command, owns the worker deadline."""
     from garden.harness import Harness
