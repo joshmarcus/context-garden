@@ -56,7 +56,9 @@ class InProcessRunner(LocalRunner):
         d = run.path
         setup_input = d / "setup_input.json"
         if setup_input.exists():
-            run_setup(worktree, json.loads(setup_input.read_text()), log_path=d / "setup.log", env=env)
+            data = json.loads(setup_input.read_text())
+            run_setup(worktree, data.get("setup", data), log_path=d / "setup.log", env=env,
+                      config=data.get("config", {}) if "setup" in data else {})
         argv = self.harness_argv(run, worktree, d / "final.md")
         if argv[1:3] == ["-m", "garden.openrouter_adapter"]:
             argv = argv[argv.index("--") + 1:]
