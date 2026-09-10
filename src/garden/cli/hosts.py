@@ -13,11 +13,12 @@ from ..hosts import (
     HostLifecycle,
     JsonStateStore,
     ScaleOperation,
+    WorkerDrainStore,
     durable_worker_readiness,
     pool_from_dict,
     status_dict,
 )
-from ..hosts.ec2 import EC2Provider
+from ..hosts.ec2 import EC2Provider, SQSEC2EventSource
 from .common import PANEL_LOOP, app, console, err
 
 hosts_app = typer.Typer(help="Plan, resume, inspect, and clean up managed worker capacity.")
@@ -58,7 +59,8 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
         if not isinstance(config, dict):
             raise ValueError("enrollment configuration must be a JSON object of credential references")
         execution_context = {key: config.get(key) for key in (
-            "aws_profile", "aws_region", "aws_account_id", "github_repo", "instance_tags")}
+            "aws_profile", "aws_region", "aws_account_id", "github_repo", "instance_tags",
+            "spot_event_queue_url")}
         if saved.get("execution_context") and saved["execution_context"] != execution_context:
             raise ValueError("provider enrollment context changed; use the admitted account, "
                              "region and repository")
@@ -91,15 +93,24 @@ def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
                 or not str(identity.get("Arn", "")).startswith(expected_role)):
             raise ValueError("provisioning profile must assume the scoped ContextGardenProvisioner "
                              "role in the configured account")
+    event_source = None
+    queue_url = str(config.get("spot_event_queue_url") or "")
+    if queue_url:
+        event_source = SQSEC2EventSource(
+            session.client("sqs"), queue_url,
+            operation_path.with_name(operation_path.stem + "-spot-events.json"),
+        )
     provider = EC2Provider(
         session.client("ec2"), deadline_enforcer=enforcer,
         required_tags=dict(config.get("instance_tags") or {}),
+        event_source=event_source,
     )
     lifecycle_path = operation_path.with_name(operation_path.stem + "-lifecycle.json")
     garden_dir = Path(config.get("garden_dir") or operation_path.parent.parent).resolve()
     lifecycle = HostLifecycle(
         {"ec2": provider}, JsonStateStore(lifecycle_path),
         health_check=durable_worker_readiness(garden_dir),
+        interruption_drain=WorkerDrainStore(garden_dir) if event_source is not None else None,
     )
     return ScaleOperation(
         lifecycle, operation_path, resolver,

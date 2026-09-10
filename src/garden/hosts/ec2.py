@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shlex
 import time
@@ -48,6 +49,61 @@ class EC2EventSource(Protocol):
     """Durable, non-consuming view of AWS events delivered outside the EC2 query API."""
 
     def pending_events(self, owner: str, pool: str) -> Iterable[dict[str, Any]]: ...
+
+
+class SQSEC2EventSource:
+    """Durably journal EventBridge events delivered through an SQS queue."""
+
+    def __init__(self, client: Any, queue_url: str, journal_path: Path):
+        if not queue_url:
+            raise ValueError("spot_event_queue_url must be nonempty")
+        self.client, self.queue_url, self.journal_path = client, queue_url, journal_path
+
+    def _read(self) -> list[dict[str, Any]]:
+        try:
+            value = json.loads(self.journal_path.read_text())
+        except (OSError, ValueError, TypeError):
+            return []
+        rows = value.get("events") if isinstance(value, dict) else None
+        return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    def _write(self, rows: list[dict[str, Any]]) -> None:
+        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.journal_path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(json.dumps({"events": rows}, indent=2, sort_keys=True) + "\n")
+        temporary.replace(self.journal_path)
+
+    def pending_events(self, owner: str, pool: str) -> Iterable[dict[str, Any]]:
+        rows = self._read()
+        known = {str(row.get("event", {}).get("id") or row.get("receipt")) for row in rows}
+        response = self.client.receive_message(
+            QueueUrl=self.queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=0,
+            VisibilityTimeout=30,
+        )
+        for message in response.get("Messages", []):
+            try:
+                event = json.loads(message["Body"])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            identity = str(event.get("id") or message.get("ReceiptHandle") or "")
+            if identity and identity not in known:
+                rows.append({"event": event, "receipt": str(message.get("ReceiptHandle") or "")})
+                known.add(identity)
+        self._write(rows)
+        return [row["event"] for row in rows]
+
+    def acknowledge(self, provider_id: str) -> None:
+        rows = self._read()
+        remaining = []
+        for row in rows:
+            detail = row.get("event", {}).get("detail", {})
+            if isinstance(detail, dict) and detail.get("instance-id") == provider_id:
+                receipt = str(row.get("receipt") or "")
+                if receipt:
+                    self.client.delete_message(QueueUrl=self.queue_url, ReceiptHandle=receipt)
+            else:
+                remaining.append(row)
+        self._write(remaining)
 
 
 class EC2Provider:
@@ -153,6 +209,11 @@ class EC2Provider:
             if isinstance(instance_id, str) and instance_id:
                 events[instance_id] = event
         return events
+
+    def acknowledge_interruption(self, provider_id: str) -> None:
+        acknowledge = getattr(self.event_source, "acknowledge", None)
+        if acknowledge is not None:
+            acknowledge(provider_id)
 
     def provision(self, declaration: HostDeclaration) -> HostFacts:
         options = {**declaration.pool.provider_options, **declaration.pool.profile.provider_options}

@@ -20,6 +20,8 @@ from fastapi.testclient import TestClient
 from garden import gitops, managed_worker
 from garden.ci_status import worker_check_status
 from garden.harness import Harness
+from garden.hosts.drain import WorkerDrainStore
+from garden.hosts.models import HostFacts, HostState
 from garden.remote_worker import (
     WorkerRequestError,
     _claim_suffix,
@@ -659,6 +661,46 @@ def test_remote_api_auth_claim_heartbeat_finish_and_origin(garden, monkeypatch):
     saved.lease_expires_at = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).isoformat()
     saved.save()
     assert client.post("/api/runs/claim", json={"host": "build-1"}, headers=auth).status_code == 204
+
+
+def test_spot_drain_fences_new_claims_but_allows_transcript_and_result_upload(garden, monkeypatch):
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["workers"]["hosts"][0]["operation_id"] = "operation-1"
+    config_path.write_text(yaml.safe_dump(config))
+    facts = {"operation_id": "operation-1"}
+
+    offer = {"host": "build-1", "harnesses": ["claude"], "host_facts": facts,
+             "claim_request_id": "stable-claim-request-1"}
+    claim = client.post("/api/runs/claim", json=offer, headers=auth).json()
+    drain = WorkerDrainStore(store.config.garden_dir)
+    host = HostFacts("build-1", "i-spot", "operation-1", HostState.INTERRUPTED,
+                     "ami", "bootstrap")
+    assert not drain.request(host, deadline="2099-01-01T00:00:00+00:00", detail="notice")
+    replay = client.post("/api/runs/claim", json=offer, headers=auth)
+    assert replay.status_code == 200 and replay.json()["lease_token"] == claim["lease_token"]
+
+    beat = client.post(f"/api/runs/{run.run_id}/heartbeat",
+                       json={"lease_token": claim["lease_token"], "transcript": "checkpoint\n",
+                             "host_facts": facts}, headers=auth)
+    assert beat.status_code == 200
+    done = client.post(f"/api/runs/{run.run_id}/finish",
+                       json={"lease_token": claim["lease_token"], "exit_code": 0,
+                             "final_text": "done", "result": {"status": "done"},
+                             "pushed_head": "abc", "host_facts": facts}, headers=auth)
+    assert done.status_code == 200
+    assert RunStore(store.config.garden_dir).latest("DM-001").stdout_text() == "checkpoint\n"
+
+    check = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="check")
+    check.status = "running"
+    check.save()
+    refused = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": [],
+                          "host_facts": facts}, headers=auth)
+    assert refused.status_code == 204
+    assert not RunStore(store.config.garden_dir).latest("DM-001").host
 
 
 def write_remote_validation_receipt(path: Path, source_sha: str) -> None:

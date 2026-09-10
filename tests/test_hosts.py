@@ -18,7 +18,7 @@ from garden.hosts import (
     durable_worker_readiness,
     pool_from_dict,
 )
-from garden.hosts.ec2 import OPERATION_TAG, OWNER_TAG, POOL_TAG, EC2Provider
+from garden.hosts.ec2 import OPERATION_TAG, OWNER_TAG, POOL_TAG, EC2Provider, SQSEC2EventSource
 from garden.hosts.fake import FakeProvider
 
 
@@ -421,6 +421,73 @@ def test_eventbridge_rebalance_event_drains_host_and_ignores_other_events(tmp_pa
 
     assert client.instances[0]["State"]["Name"] == "terminated"
     assert "EC2 Instance Rebalance Recommendation" in (tmp_path / "state.json").read_text()
+
+
+def test_sqs_event_source_journals_replays_and_acknowledges_after_recovery(tmp_path):
+    event = {
+        "id": "event-1", "source": "aws.ec2",
+        "detail-type": "EC2 Spot Instance Interruption Warning",
+        "detail": {"instance-id": "i-owned"},
+    }
+
+    class SQS:
+        deleted = []
+
+        def receive_message(self, **kwargs):
+            assert kwargs["VisibilityTimeout"] == 30
+            return {"Messages": [{"Body": json.dumps(event), "ReceiptHandle": "receipt-1"}]}
+
+        def delete_message(self, **kwargs):
+            self.deleted.append(kwargs["ReceiptHandle"])
+
+    sqs = SQS()
+    journal = tmp_path / "events.json"
+    source = SQSEC2EventSource(sqs, "https://sqs.example.test/queue", journal)
+
+    assert list(source.pending_events("team-a", "workers")) == [event]
+    assert list(source.pending_events("team-a", "workers")) == [event]
+    assert len(json.loads(journal.read_text())["events"]) == 1
+    source.acknowledge("i-owned")
+    assert sqs.deleted == ["receipt-1"]
+    assert json.loads(journal.read_text())["events"] == []
+
+
+def test_interruption_waits_for_consumer_drain_before_destroying(tmp_path):
+    client = StubEC2()
+
+    class Events:
+        def pending_events(self, owner, pool):
+            return [{"source": "aws.ec2",
+                     "detail-type": "EC2 Spot Instance Interruption Warning",
+                     "time": "2099-01-01T00:00:00Z",
+                     "detail": {"instance-id": "i-owned"}}]
+
+    drain_ready = False
+    requests = []
+
+    def drain(host, deadline, detail):
+        requests.append((host.provider_id, deadline, detail))
+        return drain_ready
+
+    spec = replace(
+        pool(provider="ec2", enabled=True, desired=1, purchase_policy="spot",
+             profile=replace(profile(), endpoint="", enrollment_secret_ref="")),
+        provider_options={"instance_type": "m6i.xlarge", "subnet_id": "subnet-test",
+                          "security_group_ids": ["sg-test"], "instance_profile_arn": "arn:role",
+                          "spot_hourly_usd": 0.06},
+    )
+    lifecycle = HostLifecycle({"ec2": EC2Provider(client, event_source=Events())},
+                              JsonStateStore(tmp_path / "state.json"),
+                              interruption_drain=drain)
+    lifecycle.reconcile(spec)
+    waiting = lifecycle.reconcile(spec)
+    assert client.instances[0]["State"]["Name"] == "running"
+    assert waiting[0].state == HostState.DRAINING
+    assert requests and requests[-1][1] == "2099-01-01T00:01:50+00:00"
+
+    drain_ready = True
+    lifecycle.reconcile(spec)
+    assert client.instances[0]["State"]["Name"] == "terminated"
 
 
 def test_stale_host_return_does_not_displace_or_rotate_replacement(tmp_path):

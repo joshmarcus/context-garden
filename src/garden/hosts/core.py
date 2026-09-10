@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import math
 import os
@@ -84,6 +85,7 @@ class HostLifecycle:
         reservation_seconds: float = 300,
         absolute_deadline: str = "",
         operation_seed: str = "",
+        interruption_drain: Callable[[HostFacts, str, str], bool] | None = None,
     ):
         self.providers = providers
         self.state = state
@@ -96,6 +98,7 @@ class HostLifecycle:
         self.reservation_seconds = reservation_seconds
         self.absolute_deadline = absolute_deadline
         self.operation_seed = operation_seed
+        self.interruption_drain = interruption_drain
 
     def _provider(self, pool: PoolDeclaration) -> HostProvider:
         try:
@@ -295,6 +298,7 @@ class HostLifecycle:
         events: list[HostEvent] = loss_events
         failures: list[HostFacts] = []
         retirements: list[HostFacts] = []
+        draining_hosts: dict[str, HostFacts] = {}
         for host in stale:
             self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
             retired = provider.destroy(
@@ -311,13 +315,29 @@ class HostLifecycle:
             )
         for host in interrupted:
             events.append(HostEvent("interruption", host.host_id, host.state, host.detail))
+            deadline = self._interruption_deadline(host)
+            if self.interruption_drain is not None \
+                    and not self.interruption_drain(host, deadline, host.detail):
+                draining = replace(host, state=HostState.DRAINING,
+                                   detail=f"interruption drain pending until {deadline}")
+                active.append(draining)
+                draining_hosts[host.operation_id] = draining
+                events.append(HostEvent("interruption_draining", host.host_id,
+                                        HostState.DRAINING, draining.detail))
+                continue
             self.policy.authorize("destroy", self._declaration(pool, self._host_slot(pool, host)))
             retired = provider.destroy(
                 host.provider_id, delete_storage=not pool.profile.persistent_workspace
             )
+            acknowledge = getattr(provider, "acknowledge_interruption", None)
+            if acknowledge is not None:
+                acknowledge(host.provider_id)
             retirements.append(retired)
             self._advance_replacement(pool, host)
             events.append(HostEvent("replacement_pending", host.host_id, HostState.PROVISIONING))
+            clearer = getattr(self.interruption_drain, "clear", None)
+            if clearer is not None:
+                clearer(host.operation_id)
         slots = self._available_slots(pool, active)[: max(0, pool.desired - len(active))]
         if eligible_slots is not None:
             slots = [slot for slot in slots if slot in eligible_slots]
@@ -390,6 +410,7 @@ class HostLifecycle:
                 )
             )
         refreshed = sorted(provider.discover(pool.owner, pool.name), key=lambda h: h.host_id)
+        refreshed = [draining_hosts.get(host.operation_id, host) for host in refreshed]
         discovered_operations = {host.operation_id for host in refreshed}
         failures = [host for host in failures if host.operation_id not in discovered_operations]
         retired_ids = {host.provider_id for host in retirements}
@@ -418,6 +439,19 @@ class HostLifecycle:
             checked.append(host)
         self._record(pool, checked, events, plan)
         return checked
+
+    @staticmethod
+    def _interruption_deadline(host: HostFacts) -> str:
+        """Use the provider notice time when present, with a conservative two-minute bound."""
+        try:
+            event = json.loads(host.detail).get("provider_event", {})
+            value = event.get("time")
+            noticed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if noticed.tzinfo is not None:
+                return (noticed + dt.timedelta(seconds=110)).isoformat()
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+        return (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=110)).isoformat()
 
     def inspect(self, pool: PoolDeclaration) -> list[HostFacts]:
         self.validate(pool)
