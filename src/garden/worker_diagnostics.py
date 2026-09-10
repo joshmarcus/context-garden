@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_EVENTS = 2000
+MAX_BYTES = 2 * 1024 * 1024
 
 
 def utc_now() -> str:
@@ -49,6 +50,11 @@ class WorkerEventLog:
         return record
 
     def _trim(self) -> None:
+        try:
+            if self.path.stat().st_size <= MAX_BYTES:
+                return
+        except OSError:
+            return
         try:
             lines = self.path.read_text(encoding="utf-8").splitlines()
         except OSError:
