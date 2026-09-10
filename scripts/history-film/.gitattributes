@@ -1,0 +1,2 @@
+# Snapshot checksums cover bytes; Windows checkouts must preserve the LF bytes.
+snapshot/*.json text eol=lf

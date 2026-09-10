@@ -1,0 +1,13 @@
+{
+  "name": "context-garden-history-film",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline reproduction of the evolving dependency graph film, without retrospective excerpts",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "stills": "node render.cjs stills",
+    "video": "node render.cjs video",
+    "test": "node --test test-data.cjs"
+  },
+  "dependencies": { "@napi-rs/canvas": "0.1.100" }
+}
