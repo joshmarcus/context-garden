@@ -14,9 +14,11 @@ import datetime as dt
 import fcntl
 import json
 import os
+import re
 import signal
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -95,6 +97,10 @@ class Run:
     execution_started_at: str = ""  # first claim; execution timeout never includes queue age
     lease_updated_at: str = ""  # latest claim/heartbeat accepted by the controller
     final_received_at: str = ""  # authenticated remote result receipt
+    transcript_status: str = ""  # missing | partial | complete | failed
+    transcript_attempt_id: str = ""  # accepted lease generation, never a bearer token
+    transcript_bytes: int = 0
+    transcript_sha256: str = ""
     claim_history: list[dict[str, Any]] = field(default_factory=list)
     # One idle-poll identity and its exact response. Retransmission is valid only while
     # this claim generation remains recoverable; the web boundary enforces that fence.
@@ -403,6 +409,33 @@ class Run:
     def stderr_text(self) -> str:
         p = self.path / "stderr.log"
         return p.read_text() if p.exists() else ""
+
+    def transcript_events(self, attempt_id: str | None = None) -> list[dict[str, Any]]:
+        """Return canonical observable events as inert data for authorized analysis."""
+        return list(self.iter_transcript_events(attempt_id))
+
+    def iter_transcript_events(self, attempt_id: str | None = None) -> Iterator[dict[str, Any]]:
+        """Incrementally read canonical events without trusting or executing their content."""
+        selected = attempt_id or self.transcript_attempt_id
+        if not selected or not re.fullmatch(r"[0-9a-f]{24}", selected):
+            return
+        path = self.path / "transcripts" / selected / "events.jsonl"
+        if not path.exists():
+            return
+        with path.open(errors="replace") as source:
+            for line in source:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    yield value
+
+    def transcript_attempts(self) -> list[dict[str, Any]]:
+        """List current and superseded transcript attempts with durable status metadata."""
+        from .transcripts import transcript_attempts
+
+        return transcript_attempts(self.path)
 
 
 def _newest_mtime(root: Path) -> float:

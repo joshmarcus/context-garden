@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import datetime as dt
 import fcntl
 import fnmatch
 import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -17,6 +20,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -278,6 +283,46 @@ class _LeaseHeartbeat:
                 time.sleep(delay)
                 delay = min(delay * 2, 5.0)
 
+    def upload_transcript(self, offset: int, payload: bytes) -> int:
+        """Upload one bounded canonical chunk and return its durable byte offset."""
+        self.ensure_not_failed()
+        response = self._transcript_post(
+            f"/api/runs/{self.run['id']}/transcript", {
+                "lease_token": self.run["lease_token"], "offset": offset,
+                "data": base64.b64encode(payload).decode(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            },
+        )
+        return int(response["offset"])
+
+    def finish_transcript(self, *, byte_count: int, sha256: str, event_count: int,
+                          redactions: int, capture_limits: list[str]) -> None:
+        self._transcript_post(
+            f"/api/runs/{self.run['id']}/transcript/finish", {
+                "lease_token": self.run["lease_token"], "byte_count": byte_count,
+                "sha256": sha256, "event_count": event_count, "redactions": redactions,
+                "capture_limits": capture_limits, "harness_schema": "observable-events-v1",
+            },
+        )
+
+    def _transcript_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        delay = 0.1
+        while True:
+            try:
+                with self.post_lock:
+                    status, response = self.client.post(path, payload)
+                if status != 200:
+                    raise WorkerRequestError(status, "transcript request rejected")
+                self.recovery_deadline = time.monotonic() + self.recovery_window_seconds
+                return response
+            except BaseException as exc:
+                if isinstance(exc, WorkerRequestError) and not exc.retryable:
+                    raise
+                if time.monotonic() >= self.recovery_deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 5.0)
+
     def stop(self) -> None:
         self.stop_event.set()
         self.thread.join(timeout=5)
@@ -306,6 +351,199 @@ def _wait_for_process(proc: subprocess.Popen[Any], heartbeat: _LeaseHeartbeat,
             raise
         time.sleep(interval)
     return returncode
+
+
+class _TranscriptCapture:
+    """Capture both process streams in observed order while retaining parser inputs."""
+
+    def __init__(self, root: Path, environment: dict[str, str]):
+        root.mkdir(parents=True, exist_ok=True)
+        self.root = root
+        self.path = root / "transcript.jsonl"
+        self.path.touch()
+        self.stdout_path = root / "stdout.log"
+        self.stderr_path = root / "stderr.log"
+        self.checkpoint_path = root / "upload.json"
+        self.lock = threading.Lock()
+        self.sequence = 0
+        self.redactions = 0
+        with self.path.open(errors="replace") as existing:
+            for line in existing:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    self.sequence = max(self.sequence, int(event.get("sequence", -1)) + 1)
+                    self.redactions += int(event.get("redactions", 0))
+        secret_names = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "ACCESS_KEY")
+        self.secrets = sorted({value for key, value in environment.items()
+                               if len(value) >= 4
+                               and any(marker in key.upper() for marker in secret_names)},
+                              key=len, reverse=True)
+
+    def _redacted_parts(self, stream: TextIO) -> Iterator[tuple[str, int]]:
+        """Yield bounded text while retaining enough overlap to match split secrets."""
+        pending = ""
+        overlap = max((len(secret) for secret in self.secrets), default=1) - 1
+        while data := stream.read(64 * 1024):
+            pending += data
+            safe = max(0, len(pending) - overlap)
+            position = 0
+            while position < safe:
+                matches = [(pending.find(secret, position), secret) for secret in self.secrets]
+                matches = [(start, secret) for start, secret in matches if start >= 0]
+                if not matches:
+                    yield pending[position:safe], 0
+                    position = safe
+                    break
+                start, secret = min(matches, key=lambda item: item[0])
+                if start >= safe:
+                    yield pending[position:safe], 0
+                    position = safe
+                    break
+                if start > position:
+                    yield pending[position:start], 0
+                yield "<redacted>", 1
+                position = start + len(secret)
+            pending = pending[position:]
+        position = 0
+        while position < len(pending):
+            matches = [(pending.find(secret, position), secret) for secret in self.secrets]
+            matches = [(start, secret) for start, secret in matches if start >= 0]
+            if not matches:
+                yield pending[position:], 0
+                break
+            start, secret = min(matches, key=lambda item: item[0])
+            if start > position:
+                yield pending[position:start], 0
+            yield "<redacted>", 1
+            position = start + len(secret)
+
+    def reader(self, stream: TextIO, channel: str) -> None:
+        raw_path = self.stdout_path if channel == "stdout" else self.stderr_path
+        with raw_path.open("a") as raw, self.path.open("a") as transcript:
+            # Fixed reads keep a harness that emits one enormous line from becoming an
+            # unbounded worker-side allocation. Concatenating channel data is lossless.
+            for data, redacted in self._redacted_parts(stream):
+                raw.write(data)
+                raw.flush()
+                self._write_event(transcript, channel, data, redacted=redacted)
+
+    def _write_event(self, transcript: TextIO, channel: str, data: str, *, redacted: int = 0,
+                     payload: Any = None) -> None:
+        with self.lock:
+            event = {"schema_version": 1, "sequence": self.sequence,
+                     "timestamp": dt.datetime.now(dt.UTC).isoformat(),
+                     "channel": channel, "data": data}
+            if payload is not None:
+                event["payload"] = payload
+            if redacted:
+                event["redactions"] = redacted
+            transcript.write(json.dumps(event, separators=(",", ":")) + "\n")
+            transcript.flush()
+            self.sequence += 1
+            self.redactions += redacted
+
+    def record(self, channel: str, data: str, *, payload: Any = None) -> None:
+        clean_data, data_redactions = self._redact_value(data)
+        clean_payload, payload_redactions = self._redact_value(payload)
+        with self.path.open("a") as transcript:
+            self._write_event(
+                transcript, channel, clean_data, payload=clean_payload,
+                redacted=data_redactions + payload_redactions,
+            )
+
+    def _redact_value(self, value: Any) -> tuple[Any, int]:
+        if isinstance(value, str):
+            count = 0
+            for secret in self.secrets:
+                occurrences = value.count(secret)
+                value = value.replace(secret, "<redacted>")
+                count += occurrences
+            return value, count
+        if isinstance(value, list):
+            values, count = [], 0
+            for item in value:
+                clean, redactions = self._redact_value(item)
+                values.append(clean)
+                count += redactions
+            return values, count
+        if isinstance(value, dict):
+            values, count = {}, 0
+            for key, item in value.items():
+                clean, redactions = self._redact_value(item)
+                values[key] = clean
+                count += redactions
+            return values, count
+        return value, 0
+
+    def acknowledged_offset(self) -> int:
+        try:
+            value = json.loads(self.checkpoint_path.read_text()).get("offset", 0)
+            return value if isinstance(value, int) and value >= 0 else 0
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return 0
+
+    def _checkpoint(self, offset: int) -> None:
+        temporary = self.checkpoint_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"offset": offset}))
+        with temporary.open("rb") as source:
+            os.fsync(source.fileno())
+        temporary.replace(self.checkpoint_path)
+
+    def upload_available(self, heartbeat: _LeaseHeartbeat, offset: int | None = None) -> int:
+        if offset is None:
+            offset = self.acknowledged_offset()
+        if not self.path.exists():
+            return offset
+        with self.path.open("rb") as source:
+            source.seek(offset)
+            while chunk := source.read(1024 * 1024):
+                offset = heartbeat.upload_transcript(offset, chunk)
+                self._checkpoint(offset)
+        return offset
+
+    def capture_file(self, path: Path, channel: str) -> None:
+        if path.exists():
+            with path.open(errors="replace") as source:
+                self.reader(source, channel)
+
+    def parser_texts(self, max_bytes: int = 16 * 1024 * 1024) -> tuple[str, str, bool]:
+        """Return bounded tail views for parsers; canonical capture remains complete."""
+        values = []
+        truncated = False
+        for path in (self.stdout_path, self.stderr_path):
+            if not path.exists():
+                values.append("")
+                continue
+            size = path.stat().st_size
+            with path.open("rb") as source:
+                if size > max_bytes:
+                    source.seek(size - max_bytes)
+                    truncated = True
+                values.append(source.read(max_bytes).decode(errors="replace"))
+        return values[0], values[1], truncated
+
+    def digest(self) -> str:
+        digest = hashlib.sha256()
+        with self.path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def upload_legacy_stdout(self, heartbeat: _LeaseHeartbeat) -> None:
+        offset = 0
+        if not self.stdout_path.exists():
+            return
+        with self.stdout_path.open() as source:
+            while chunk := source.read(256 * 1024):
+                offset = heartbeat.upload(offset, chunk)
+
+
+def _transcript_spool(root: Path, run: dict[str, Any]) -> Path:
+    """Stable, lease-scoped capture path used again after a worker process restart."""
+    return root / "transcript-spool" / _claim_suffix(run)
 
 
 def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str]:
@@ -544,6 +782,22 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         "summary": "check execution did not complete", "details": error,
                     }]
             final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
+            with nullcontext(str(_transcript_spool(root, run))) as capture_dir:
+                capture = _TranscriptCapture(Path(capture_dir), execution_env)
+                capture.capture_file(execution_dir / "stdout.json", "stdout")
+                capture.capture_file(execution_dir / "stderr.log", "stderr")
+                capture.record("worker", "check result", payload=parsed)
+                transcript_upload_offset = capture.upload_available(heartbeat)
+                heartbeat.finish_transcript(
+                    byte_count=transcript_upload_offset, sha256=capture.digest(),
+                    event_count=capture.sequence, redactions=capture.redactions,
+                    capture_limits=[
+                        "check stdout/stderr file ordering unavailable after redirected execution",
+                        "private model reasoning and unexposed harness events unavailable",
+                    ],
+                )
+                capture.upload_legacy_stdout(heartbeat)
+                shutil.rmtree(capture.root)
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             final_path = repo.parent / f"{run['id']}-final.md"
@@ -563,15 +817,20 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             execution_env["GARDEN_PRESERVE_FDS"] = str(repo_lock.fileno())
             supervised = [sys.executable, "-m", "garden.run_supervisor",
                           str(execution_dir), shlex.join(argv)]
-            with tempfile.NamedTemporaryFile(mode="w+") as stdout_file, tempfile.TemporaryFile(mode="w+") as stderr_file:
-                proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
-                                        text=True, cwd=repo, env=execution_env,
-                                        pass_fds=(repo_lock.fileno(),))
+            with nullcontext(str(_transcript_spool(root, run))) as capture_dir:
+                capture = _TranscriptCapture(Path(capture_dir), execution_env)
+                proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True, cwd=repo,
+                                        env=execution_env, pass_fds=(repo_lock.fileno(),))
                 assert proc.stdin is not None
+                assert proc.stdout is not None and proc.stderr is not None
+                readers = [threading.Thread(target=capture.reader, args=(proc.stdout, "stdout")),
+                           threading.Thread(target=capture.reader, args=(proc.stderr, "stderr"))]
+                for reader in readers:
+                    reader.start()
                 proc.stdin.write(str(run.get("brief") or ""))
                 proc.stdin.close()
-                transcript_read_offset = 0
-                transcript_upload_offset = 0
+                transcript_upload_offset = capture.acknowledged_offset()
                 timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
                 deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
                 while proc.poll() is None:
@@ -587,24 +846,29 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         except subprocess.TimeoutExpired:
                             proc.kill()
                             proc.wait()
-                        stderr_file.write(f"\nworker timed out after {timeout_minutes:g} minutes\n")
                         break
                     time.sleep(0.1)
-                    stdout_file.flush()
-                    with open(stdout_file.name) as transcript_file:
-                        transcript_file.seek(transcript_read_offset)
-                        chunk = transcript_file.read()
-                        transcript_read_offset = transcript_file.tell()
-                    if chunk:
-                        transcript_upload_offset = heartbeat.upload(transcript_upload_offset, chunk)
-                stdout_file.flush()
-                stdout_file.seek(0)
-                stderr_file.seek(0)
-                stdout, stderr = stdout_file.read(), stderr_file.read()
-                stdout_file.seek(transcript_read_offset)
-                tail = stdout_file.read()
-                if tail:
-                    transcript_upload_offset = heartbeat.upload(transcript_upload_offset, tail)
+                    transcript_upload_offset = capture.upload_available(
+                        heartbeat, transcript_upload_offset
+                    )
+                for reader in readers:
+                    reader.join()
+                transcript_upload_offset = capture.upload_available(heartbeat, transcript_upload_offset)
+                stdout, stderr, parser_truncated = capture.parser_texts()
+                capture_limits = ["private model reasoning and unexposed harness events unavailable"]
+                if parser_truncated:
+                    capture_limits.append(
+                        "legacy harness parser inputs truncated to the final 16 MiB per channel"
+                    )
+                heartbeat.finish_transcript(
+                    byte_count=transcript_upload_offset, sha256=capture.digest(),
+                    event_count=capture.sequence, redactions=capture.redactions,
+                    capture_limits=capture_limits,
+                )
+                # Keep the legacy stdout renderer populated while canonical delivery is
+                # independently finalized and acknowledged.
+                capture.upload_legacy_stdout(heartbeat)
+                shutil.rmtree(capture.root)
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
@@ -636,14 +900,34 @@ def run_worker(url: str, host: str, token: str, root: Path, harnesses: list[str]
                capacity: int = 1, once: bool = False, poll_seconds: float = 5,
                setup_command: str = "") -> None:
     client = WorkerClient(url, token)
+    claim_state = root / "claim-requests" / f"{hashlib.sha256(host.encode()).hexdigest()[:16]}.json"
     while True:
-        status, claim = client.post("/api/runs/claim", {"host": host, "harnesses": harnesses,
-                                                        "tiers": tiers, "capacity": capacity})
+        claim_state.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            claim_request_id = str(json.loads(claim_state.read_text())["claim_request_id"])
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            claim_request_id = secrets.token_urlsafe(24)
+            temporary = claim_state.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"claim_request_id": claim_request_id}))
+            with temporary.open("rb") as source:
+                os.fsync(source.fileno())
+            temporary.replace(claim_state)
+        try:
+            status, claim = client.post("/api/runs/claim", {
+                "host": host, "harnesses": harnesses, "tiers": tiers,
+                "capacity": capacity, "claim_request_id": claim_request_id,
+            })
+        except WorkerRequestError as exc:
+            if exc.status != 409:
+                raise
+            claim_state.unlink(missing_ok=True)
+            continue
         if status == 204 or not claim:
             if once:
                 return
             time.sleep(poll_seconds)
             continue
         execute_claim(claim, root, client, setup_command=setup_command)
+        claim_state.unlink(missing_ok=True)
         if once:
             return

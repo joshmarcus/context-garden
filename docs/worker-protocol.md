@@ -47,7 +47,8 @@ with the bearer token named by `workers.hosts[].token_env`.
   five seconds, while authentication, validation, and other permanent responses remain
   visible failures. Older workers without an identity remain accepted but cannot replay an
   ambiguously lost response.
-- `POST /api/runs/<id>/heartbeat` renews the lease and appends transcript chunks. Claim
+- `POST /api/runs/<id>/heartbeat` renews the lease and, for older workers, appends stdout
+  chunks. Claim
   returns a unique `lease_token`; every heartbeat and finish must echo it, so a worker from
   an expired claim cannot affect a run after it has been reclaimed, even on the same host.
 - The worker pushes its commit to the claim's lease-specific staging ref, never directly to
@@ -55,6 +56,53 @@ with the bearer token named by `workers.hosts[].token_env`.
   usage, cost, and pushed commit. The scheduler verifies that staged head and promotes it to
   the task branch with a git lease, then uses its ordinary
   result, PR, review, check, and accounting paths.
+
+### Complete transcript delivery
+
+Current remote workers separately return an inert, newline-delimited JSON event stream.
+Every record has schema version, monotonic sequence, UTC observation timestamp, channel
+(`stdout` or `stderr`), and emitted data. Harness JSON remains unchanged inside `data`, so
+analysis can parse the available structured payload without the controller executing it.
+Known secret environment values are replaced in individual records and each replacement is
+counted, including values split across capture read boundaries. Private model reasoning and
+events not exposed by the harness are explicitly listed as capture limits; they are never
+inferred or fabricated.
+
+`POST /api/runs/<id>/transcript` accepts at most 1 MiB per request with lease token, byte
+offset, base64 data, and SHA-256. The controller fsyncs each append before acknowledging its
+new offset. Exact replays are idempotent; gaps, conflicting replays, bad checksums, configured
+`workers.transcripts.max_bytes` overflow, and storage errors are rejected. Data is stored at
+`runs/<task>/<run>/transcripts/<lease-generation>/events.jsonl`, so a replacement generation
+cannot overwrite useful partial evidence from an earlier attempt.
+
+`POST /api/runs/<id>/transcript/finish` verifies total bytes and stream SHA-256, then atomically
+writes identity, revision, harness/schema, sequence and redaction counts, capture limits and
+completion time. Only this durable receipt changes transcript delivery from `partial` to
+`complete`; worker execution completion remains independent. Workers retry chunks and
+finalization through the claim recovery window and post `/finish` only after transcript
+receipt, so cleanup cannot follow an unacknowledged transcript. The worker keeps a
+lease-generation-scoped spool and atomic durable-offset checkpoint under its configured root.
+A restarted worker replaying the same claim resumes from that checkpoint; an ambiguously
+acknowledged chunk is safely replayed. The spool is removed only after durable receipt. Run pages show delivery state
+and provide an authenticated same-origin, incrementally served `transcript.jsonl` download for
+server-side analysis. The `transcripts` endpoint lists every stored attempt and
+`transcript.jsonl` accepts an `attempt_id`, so superseded partial evidence remains reachable.
+Check runs use the same contract and add their structured check result;
+because their supervisor redirects the two channels to separate files, their metadata records
+that cross-channel emission order is unavailable rather than inventing an order.
+Local/SSH records retain their stdout/stderr files and existing run links; records without the
+canonical stream truthfully report it as missing rather than substituting the final answer.
+
+Canonical capture, checksums, upload, and export are incremental. Legacy harness parsing is
+bounded to the final 16 MiB of each channel; when a larger stream requires that bounded view,
+the canonical transcript remains complete and its metadata records the parser truncation.
+Server-side consumers can use `Run.iter_transcript_events()` to process that inert JSONL
+stream without materializing the complete transcript.
+
+The controller default per-attempt limit is 256 MiB. Operators can lower it with
+`workers.transcripts.max_bytes`; ordinary run retention applies to the attempt directories.
+Transcript files are private run data, are not public evidence exports, and must be supplied
+to analysis tools as untrusted input rather than prompts or commands.
 
 Expired leases are claimable again and do not fail the task. Each reclaim gets a different
 staging ref, so an expired worker that finishes cloning, setup, checks, or execution late can

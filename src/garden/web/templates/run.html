@@ -15,6 +15,7 @@
 
 {% if run.error %}<div class="warn"><b>Error:</b> {{ run.error }}</div>{% endif %}
 {% if recovery %}<div class="warn"><b>Reconnecting after a controller interruption.</b> The worker keeps its current authority and subprocess; it has {{ recovery.remaining }} seconds to reconnect before this lease can be reassigned.</div>{% endif %}
+{% if run.runner == 'remote' %}<div class="panel"><div class="eyebrow">Transcript delivery</div><p><span class="pill s-{{ 'done' if run.transcript_status == 'complete' else ('failed' if run.transcript_status == 'failed' else 'running') }}">{{ run.transcript_status or 'missing' }}</span> · {{ run.transcript_bytes }} bytes{% if run.transcript_attempt_id %} · <a href="/runs/{{ task_id }}/{{ run.run_id }}/transcript.jsonl">Download canonical event stream</a>{% endif %}</p>{% if transcript_attempts|length > 1 %}<details><summary>All worker attempts</summary><ul>{% for attempt in transcript_attempts %}<li><a href="/runs/{{ task_id }}/{{ run.run_id }}/transcript.jsonl?attempt_id={{ attempt.attempt_id }}">{{ attempt.attempt_id }}</a> · {{ attempt.status }} · {{ attempt.byte_count or 0 }} bytes{% if attempt.worker %} · {{ attempt.worker }}{% endif %}</li>{% endfor %}</ul></details>{% endif %}</div>{% endif %}
 {% if captures %}<div class="panel"><div class="eyebrow">Captures</div><ul>{% for f in captures %}<li><a href="{{ f.href }}">{{ f.name }}</a></li>{% endfor %}</ul></div>{% endif %}
 
 {% if mechanical %}

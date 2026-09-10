@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import fcntl
+import io
 import json
 import os
 import signal
@@ -17,7 +18,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from garden import gitops, managed_worker
+from garden import gitops, managed_worker, remote_worker
 from garden.ci_status import worker_check_status
 from garden.harness import Harness
 from garden.remote_worker import (
@@ -25,6 +26,7 @@ from garden.remote_worker import (
     _claim_suffix,
     _host_check_data,
     _LeaseHeartbeat,
+    _TranscriptCapture,
     _validation_receipts,
     _wait_for_process,
     doctor_worker,
@@ -34,6 +36,7 @@ from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
 from garden.store import Store
+from garden.transcripts import TranscriptStore
 from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 from garden.web.app import create_app
 from tests.conftest import git, write
@@ -1350,6 +1353,129 @@ def test_transcript_replay_is_ordered_and_idempotent(garden, monkeypatch):
     assert RunStore(store.config.garden_dir).latest("DM-001").stdout_text() == "héllo\n"
 
 
+def test_canonical_transcript_upload_finalizes_with_integrity_metadata(garden, monkeypatch):
+    import base64
+    import hashlib
+
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    auth = {"Authorization": "Bearer secret-token"}
+    claim = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers=auth).json()
+    content = b'{"schema_version":1,"sequence":0,"channel":"stderr","data":"oops\\n"}\n'
+    chunk = client.post(f"/api/runs/{run.run_id}/transcript", json={
+        "lease_token": claim["lease_token"], "offset": 0,
+        "data": base64.b64encode(content).decode(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }, headers=auth)
+    assert chunk.status_code == 200
+    replay = client.post(f"/api/runs/{run.run_id}/transcript", json={
+        "lease_token": claim["lease_token"], "offset": 0,
+        "data": base64.b64encode(content).decode(),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }, headers=auth)
+    assert replay.json()["offset"] == len(content)
+
+    finished = client.post(f"/api/runs/{run.run_id}/transcript/finish", json={
+        "lease_token": claim["lease_token"], "byte_count": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(), "event_count": 1,
+        "redactions": 0, "capture_limits": ["unexposed events unavailable"],
+        "harness_schema": "test-v1",
+    }, headers=auth)
+    assert finished.status_code == 200
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved.transcript_status == "complete"
+    assert saved.transcript_events()[0]["channel"] == "stderr"
+    export = client.get(f"/runs/DM-001/{run.run_id}/transcript.jsonl")
+    assert export.status_code == 200 and export.content == content
+    superseded = TranscriptStore(saved.path, "superseded-generation")
+    partial = b'{"sequence":0,"channel":"stdout","data":"old partial"}\n'
+    superseded.append(0, partial, hashlib.sha256(partial).hexdigest())
+    superseded.record_partial({
+        "task_id": saved.task_id, "run_id": saved.run_id, "worker": "old-worker",
+        "source_revision": "old-head", "harness": "claude",
+    })
+    attempts = client.get(f"/runs/DM-001/{run.run_id}/transcripts").json()
+    assert {item["attempt_id"] for item in attempts["attempts"]} == {
+        saved.transcript_attempt_id, superseded.attempt,
+    }
+    old_export = client.get(
+        f"/runs/DM-001/{run.run_id}/transcript.jsonl?attempt_id={superseded.attempt}"
+    )
+    assert old_export.status_code == 200 and old_export.content == partial
+
+
+def test_transcript_redacts_secret_across_capture_read_boundary(tmp_path):
+    secret = "boundary-secret-value"
+    capture = _TranscriptCapture(tmp_path, {"SERVICE_TOKEN": secret})
+    prefix = "x" * (64 * 1024 - 7)
+
+    capture.reader(io.StringIO(prefix + secret + " suffix"), "stdout")
+    capture.record("worker", "result", payload={"details": f"found {secret}"})
+
+    content = capture.path.read_text()
+    events = [json.loads(line) for line in content.splitlines()]
+    assert secret not in content
+    assert "".join(event["data"] for event in events[:-1]) == prefix + "<redacted> suffix"
+    assert events[-1]["payload"] == {"details": "found <redacted>"}
+    assert capture.redactions == 2
+
+
+def test_transcript_spool_resumes_from_durable_acknowledged_offset(tmp_path):
+    class Upload:
+        def __init__(self):
+            self.content = bytearray()
+
+        def upload_transcript(self, offset, chunk):
+            if offset < len(self.content):
+                assert self.content[offset:offset + len(chunk)] == chunk
+            else:
+                assert offset == len(self.content)
+                self.content.extend(chunk)
+            return offset + len(chunk)
+
+    spool = tmp_path / "transcript-spool" / "run-generation"
+    first = _TranscriptCapture(spool, {})
+    first.record("stdout", "before restart")
+    upload = Upload()
+    acknowledged = first.upload_available(upload)
+    assert acknowledged == len(upload.content)
+
+    recovered = _TranscriptCapture(spool, {})
+    assert recovered.acknowledged_offset() == acknowledged
+    recovered.record("stderr", "after restart")
+    assert recovered.upload_available(upload) == recovered.path.stat().st_size
+    events = [json.loads(line) for line in bytes(upload.content).decode().splitlines()]
+    assert [event["sequence"] for event in events] == [0, 1]
+    assert [event["data"] for event in events] == ["before restart", "after restart"]
+
+
+def test_worker_restart_replays_persisted_claim_request_identity(tmp_path, monkeypatch):
+    requests = []
+
+    class Client:
+        def __init__(self, url, token):
+            pass
+
+        def post(self, path, payload):
+            requests.append(payload)
+            return 200, {"id": "run-1", "lease_token": "same-generation"}
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("worker process interrupted")
+
+    monkeypatch.setattr(remote_worker, "WorkerClient", Client)
+    monkeypatch.setattr(remote_worker, "execute_claim", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        remote_worker.run_worker("https://garden", "worker-1", "token", tmp_path, [], [], once=True)
+
+    monkeypatch.setattr(remote_worker, "execute_claim", lambda *args, **kwargs: None)
+    remote_worker.run_worker("https://garden", "worker-1", "token", tmp_path, [], [], once=True)
+
+    assert requests[0]["claim_request_id"] == requests[1]["claim_request_id"]
+    assert not list((tmp_path / "claim-requests").glob("*.json"))
+
+
 def test_finish_acknowledgement_replay_collects_one_result(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = queued_run(store)
@@ -1506,6 +1632,9 @@ def test_worker_executes_pushes_and_scheduler_opens_pr(garden, monkeypatch, tmp_
     assert "exec_root" not in check_claim["checks"]["ctx"]
     assert set(check_claim["checks"]["config"]) == {"worker_env"}
     execute_claim(check_claim, tmp_path / "independent-host", PostingClient())
+    saved_check = RunStore(store.config.garden_dir).latest("DM-001")
+    assert saved_check.transcript_status == "complete"
+    assert saved_check.transcript_events()
     check_execution = next(
         path for path in (tmp_path / "independent-host/runs").iterdir()
         if (path / "checks_input.json").exists()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -20,6 +21,7 @@ from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
 from ...model import effective_owner
 from ...runs import Run
+from ...transcripts import DEFAULT_MAX_BYTES, TranscriptError, TranscriptStore
 from ...workers import WorkerContactStore
 from ...workers import snapshot as worker_snapshot
 from ..common import Site
@@ -577,6 +579,92 @@ def register(app: FastAPI, site: Site) -> None:
         return {"ok": True, "lease_expires_at": run.lease_expires_at,
                 "transcript_offset": transcript.stat().st_size if transcript.exists() else 0}
 
+    @app.post("/api/runs/{run_id}/transcript")
+    async def transcript_chunk(run_id: str, request: Request,
+                               authorization: str = Header(default="")):
+        host = worker_host(authorization)
+        body = await worker_request(request)
+        offset = body.get("offset")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise HTTPException(422, "offset must be a non-negative integer")
+        encoded_payload = body.get("data", "")
+        if not isinstance(encoded_payload, str) or len(encoded_payload) > 1_398_104:
+            raise HTTPException(422, "data must encode at most 1 MiB")
+        try:
+            payload = base64.b64decode(encoded_payload, validate=True)
+        except ValueError:
+            raise HTTPException(422, "data must be base64") from None
+        with hub.action_lock:
+            run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+            limit = int(hub.store.config.get("workers.transcripts.max_bytes", DEFAULT_MAX_BYTES)
+                        or DEFAULT_MAX_BYTES)
+            store = TranscriptStore(run.path, run.lease_token, max_bytes=limit)
+            identity = {
+                "task_id": run.task_id, "run_id": run.run_id, "worker": run.host,
+                "source_revision": run.source_head or run.start_head, "harness": run.harness,
+            }
+            try:
+                receipt = store.append(offset, payload, str(body.get("sha256") or ""))
+            except TranscriptError as exc:
+                run.transcript_status = "failed" if "storage" in str(exc) else "partial"
+                run.transcript_attempt_id = store.attempt
+                try:
+                    store.record_partial(identity, status=run.transcript_status)
+                except OSError:
+                    pass
+                run.save()
+                raise HTTPException(409 if "offset" in str(exc) or "conflicts" in str(exc) else 422,
+                                    str(exc)) from exc
+            run.transcript_status = "partial"
+            run.transcript_attempt_id = store.attempt
+            run.transcript_bytes = receipt.offset
+            run.transcript_sha256 = receipt.sha256
+            store.record_partial(identity)
+            renew(run)
+            run.save()
+        return {"ok": True, "offset": receipt.offset, "sha256": receipt.sha256}
+
+    @app.post("/api/runs/{run_id}/transcript/finish")
+    async def transcript_finish(run_id: str, request: Request,
+                                authorization: str = Header(default="")):
+        host = worker_host(authorization)
+        body = await worker_request(request)
+        expected_bytes = body.get("byte_count")
+        if isinstance(expected_bytes, bool) or not isinstance(expected_bytes, int) or expected_bytes < 0:
+            raise HTTPException(422, "byte_count must be a non-negative integer")
+        counts = (body.get("event_count", 0), body.get("redactions", 0))
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in counts):
+            raise HTTPException(422, "event_count and redactions must be non-negative integers")
+        capture_limits = body.get("capture_limits", [])
+        if (not isinstance(capture_limits, list) or len(capture_limits) > 20
+                or any(not isinstance(value, str) or len(value) > 500
+                       for value in capture_limits)):
+            raise HTTPException(422, "capture_limits must be a bounded list of strings")
+        with hub.action_lock:
+            run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+            store = TranscriptStore(run.path, run.lease_token)
+            try:
+                record = store.finalize(expected_bytes, str(body.get("sha256") or ""), {
+                    "task_id": run.task_id, "run_id": run.run_id, "worker": run.host,
+                    "source_revision": run.source_head or run.start_head,
+                    "harness": run.harness, "harness_schema": str(body.get("harness_schema") or ""),
+                    "event_count": counts[0], "redactions": counts[1],
+                    "capture_limits": capture_limits,
+                    "completed_at": dt.datetime.now(dt.UTC).isoformat(),
+                })
+            except (TranscriptError, ValueError, TypeError) as exc:
+                run.transcript_status = "partial"
+                run.transcript_attempt_id = store.attempt
+                run.save()
+                raise HTTPException(409, str(exc)) from exc
+            run.transcript_status = "complete"
+            run.transcript_attempt_id = store.attempt
+            run.transcript_bytes = record["byte_count"]
+            run.transcript_sha256 = record["sha256"]
+            run.save()
+        return {"ok": True, "transcript": record}
+
     @app.post("/api/runs/{run_id}/finish")
     async def finish(run_id: str, request: Request, authorization: str = Header(default="")):
         host = worker_host(authorization)
@@ -625,6 +713,10 @@ def register(app: FastAPI, site: Site) -> None:
             persist_host_facts(run, body.get("host_facts"), host)
             run.pushed_head = str(body.get("pushed_head") or "")
             run.final_received_at = dt.datetime.now(dt.UTC).isoformat()
+            if not run.transcript_status:
+                # Older workers and modes without canonical capture remain truthful: the
+                # final result is not promoted into a pretend transcript.
+                run.transcript_status = "missing"
             (run.path / "final.md").write_text(final)
             (run.path / "remote_result.json").write_text(json.dumps(posted))
             for index, receipt in enumerate(body.get("validation_receipts") or []):
