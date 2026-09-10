@@ -48,7 +48,7 @@ class WorkerContactStore:
         return {str(k): dict(v) for k, v in workers.items() if isinstance(v, dict)} \
             if isinstance(workers, dict) else {}
 
-    def record(self, name: str, *, capacity: int, harnesses: list[str], tiers: list[str],
+    def record(self, name: str, *, capacity: int | None, harnesses: list[str], tiers: list[str],
                facts: dict[str, Any] | None = None, outcome: str = "contact") -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = self.path.with_suffix(".lock")
@@ -63,7 +63,8 @@ class WorkerContactStore:
                 identities.append(old_provider)
             workers[name] = {
                 "last_contact": _now().isoformat(),
-                "capacity": max(1, int(capacity)),
+                "capacity": (max(1, int(capacity)) if capacity is not None
+                             else max(1, int(previous.get("capacity") or 1))),
                 "harnesses": sorted(set(harnesses)) if harnesses else list(previous.get("harnesses") or []),
                 "tiers": sorted(set(tiers)) if tiers else list(previous.get("tiers") or []),
                 "outcome": outcome,
@@ -116,7 +117,12 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
         explicit = str(cfg.get("state") or cfg.get("status") or "").lower()
         last_contact = str((contact or {}).get("last_contact") or "")
         contact_at = _parse(last_contact)
-        stale_after = max(1, int(config.get("workers.poll_seconds", 5) or 5) * 4)
+        poll_stale_after = max(1, int(config.get("workers.poll_seconds", 5) or 5) * 4)
+        # Busy pull workers contact the controller on the lease heartbeat cadence rather
+        # than the idle poll cadence. A lease remains current only while those heartbeats
+        # arrive, so its duration is the natural upper bound for current worker contact.
+        lease_stale_after = max(1, int(config.get("workers.lease_seconds", 120) or 120))
+        stale_after = lease_stale_after if placement == "remote" and jobs else poll_stale_after
         stale = bool(contact_at and (now - contact_at).total_seconds() > stale_after)
         job_rows = [_job(run, now) for run in jobs]
         reconnecting = any(job["lease_state"] == "recovering" for job in job_rows)
@@ -131,16 +137,16 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
             status = "reconnecting"
         elif explicit == "failed":
             status = "unreachable"
-        elif reconnecting:
-            status = "reconnecting"
-        elif jobs:
-            status = "executing"
         elif placement == "remote" and not contact_at:
             status = "unknown"
         elif placement == "remote" and stale:
             status = "unreachable"
         elif placement == "ssh" and not contact_at:
             status = "unknown"
+        elif reconnecting:
+            status = "reconnecting"
+        elif jobs:
+            status = "executing"
         else:
             status = "available"
         available = (max(0, capacity - used)

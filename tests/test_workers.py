@@ -141,6 +141,71 @@ def test_mixed_local_remote_jobs_and_explicit_worker_states(garden):
     assert fleet["totals"]["jobs"] == 2
 
 
+def test_busy_worker_freshness_uses_heartbeat_cadence_and_stale_contact_blocks_capacity(garden):
+    store = configure(garden, ssh=False)
+    now = dt.datetime(2026, 9, 10, 3, tzinfo=dt.UTC)
+    contacts = WorkerContactStore(store.config.garden_dir)
+    contacts.record("pull-a", capacity=2, harnesses=["claude"], tiers=[], facts={})
+    saved = contacts.read()
+    saved["pull-a"]["last_contact"] = (now - dt.timedelta(seconds=40)).isoformat()
+    contacts.path.write_text(json.dumps({"workers": saved}))
+    runs = RunStore(store.config.garden_dir)
+    remote = runs.new_run("DM-001", "remote")
+    remote.host = "pull-a"
+    remote.lease_expires_at = (now + dt.timedelta(seconds=20)).isoformat()
+    remote.save()
+
+    fresh = snapshot(store.config, runs, now=now)["workers"][0]
+    assert fresh["status"] == "executing"
+    assert fresh["evidence_stale"] is False
+    assert fresh["available_capacity"] == 1
+
+    saved["pull-a"]["last_contact"] = (now - dt.timedelta(seconds=61)).isoformat()
+    contacts.path.write_text(json.dumps({"workers": saved}))
+    remote.lease_expires_at = (now - dt.timedelta(seconds=1)).isoformat()
+    remote.recovery_expires_at = (now + dt.timedelta(seconds=90)).isoformat()
+    remote.save()
+    stale = snapshot(store.config, runs, now=now)["workers"][0]
+    assert stale["status"] == "unreachable"
+    assert stale["evidence_stale"] is True
+    assert stale["available_capacity"] == 0
+    assert [job["run_id"] for job in stale["current_jobs"]] == [remote.run_id]
+    assert stale["current_jobs"][0]["lease_state"] == "recovering"
+
+
+def test_heartbeat_contact_preserves_claimed_capacity(garden):
+    store = configure(garden, ssh=False)
+    contacts = WorkerContactStore(store.config.garden_dir)
+    contacts.record("pull-a", capacity=2, harnesses=["claude"], tiers=[], facts={})
+    contacts.record("pull-a", capacity=None, harnesses=[], tiers=[], facts={}, outcome="heartbeat")
+
+    assert contacts.read()["pull-a"]["capacity"] == 2
+
+
+def test_stale_busy_worker_agrees_in_api_and_workers_tab(garden):
+    store = configure(garden, ssh=False)
+    now = dt.datetime.now(dt.UTC)
+    contacts = WorkerContactStore(store.config.garden_dir)
+    contacts.record("pull-a", capacity=2, harnesses=["claude"], tiers=[], facts={})
+    saved = contacts.read()
+    saved["pull-a"]["last_contact"] = (now - dt.timedelta(minutes=2)).isoformat()
+    contacts.path.write_text(json.dumps({"workers": saved}))
+    remote = RunStore(store.config.garden_dir).new_run("DM-001", "remote")
+    remote.host = "pull-a"
+    remote.lease_expires_at = (now - dt.timedelta(seconds=60)).isoformat()
+    remote.save()
+    client = TestClient(create_app(store, watch=False, host="testserver"))
+
+    worker = client.get("/api/workers").json()["workers"][0]
+    assert worker["status"] == "unreachable"
+    assert worker["available_capacity"] == 0
+    assert [job["run_id"] for job in worker["current_jobs"]] == [remote.run_id]
+    page = client.get("/now/workers").text
+    assert '<span class="worker-state unreachable">unreachable</span>' in page
+    assert "0/2 capacity available" in page
+    assert f'href="/runs/DM-001/{remote.run_id}"' in page
+
+
 def test_workers_page_has_responsive_layout_and_drill_down_links(garden):
     store = configure(garden, remote=False)
     run = RunStore(store.config.garden_dir).new_run("DM-001", "ssh")

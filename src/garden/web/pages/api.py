@@ -146,7 +146,8 @@ def register(app: FastAPI, site: Site) -> None:
         facts = host_facts(body.get("host_facts"))
         WorkerContactStore(hub.store.config.garden_dir).record(
             str(host.get("name") or ""),
-            capacity=min(max(1, int(body.get("capacity") or 1)), int(host.get("max_parallel") or 1)),
+            capacity=(min(max(1, int(body["capacity"])), int(host.get("max_parallel") or 1))
+                      if body.get("capacity") is not None else None),
             harnesses=[str(value) for value in (body.get("harnesses") or [])],
             tiers=[str(value) for value in (body.get("tiers") or [])],
             facts=facts,
