@@ -173,11 +173,15 @@ def _ensure_not_blocked(cwd: Path | None) -> None:
         raise GitError(f"refusing to run git in {cwd}: blocked ({reason})")
 
 
-def git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
+def git(*args: str, cwd: Path | None = None, check: bool = True,
+        timeout: float | None = None) -> str:
     _ensure_not_blocked(cwd)
     with _git_env() as env:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
-                              errors="replace", env=env)
+        try:
+            proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                                  errors="replace", env=env, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise GitError(f"git {' '.join(args)} (in {cwd}): timed out after {timeout:g}s") from exc
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} (in {cwd}): {proc.stderr.strip() or proc.stdout.strip()}")
     return proc.stdout
@@ -241,14 +245,14 @@ def set_identity(repo: Path, name: str, email: str) -> None:
         git("config", "user.email", email, cwd=repo)
 
 
-def fetch(repo: Path, remote: str = "origin") -> bool:
+def fetch(repo: Path, remote: str = "origin", *, timeout: float | None = None) -> bool:
     cache = _READ_CACHE.get()
     key = _read_cache_key("fetch", repo, remote)
     if cache is not None and cache.get(key) is True:
         return True
     _invalidate_cached_refs(repo)
     try:
-        git("fetch", "--prune", remote, cwd=repo)
+        git("fetch", "--prune", remote, cwd=repo, timeout=timeout)
         if cache is not None:
             cache[key] = True
         return True
@@ -485,6 +489,29 @@ def local_head(repo: Path, branch: str) -> str:
         return ""
 
 
+def remote_branch_heads(repo: Path, remote: str = "origin", *, timeout: float = 5) -> dict[str, str]:
+    """Return one authoritative, time-bounded snapshot of all remote branch heads."""
+    cache = _READ_CACHE.get()
+    key = _read_cache_key("remote_branch_heads", repo, remote, timeout)
+    if cache is not None and key in cache:
+        return dict(cache[key])
+    if not remote_url(repo, remote):
+        raise GitError(f"remote {remote!r} is not configured")
+    out = git("ls-remote", "--heads", remote, cwd=repo, timeout=timeout)
+    prefix = "refs/heads/"
+    result: dict[str, str] = {}
+    try:
+        for line in out.splitlines():
+            sha, ref = line.split(None, 1)
+            if ref.startswith(prefix):
+                result[ref.removeprefix(prefix)] = sha
+    except ValueError as exc:
+        raise GitError("remote branch inventory was malformed") from exc
+    if cache is not None:
+        cache[key] = result
+    return result
+
+
 def worktree_branches(repo: Path) -> set[str]:
     """Branches currently checked out by any linked or main worktree."""
     out = git("worktree", "list", "--porcelain", cwd=repo)
@@ -507,7 +534,8 @@ def delete_local_branch(repo: Path, branch: str, expected_head: str) -> bool:
     return True
 
 
-def delete_remote_branch(repo: Path, remote: str, branch: str, expected_head: str) -> bool:
+def delete_remote_branch(repo: Path, remote: str, branch: str, expected_head: str, *,
+                         timeout: float | None = None) -> bool:
     """Delete a remote branch with an expected-head lease.
 
     This uses the configured Git remote directly, so it works for non-``origin`` remotes
@@ -517,13 +545,14 @@ def delete_remote_branch(repo: Path, remote: str, branch: str, expected_head: st
     if not remote_url(repo, remote):
         raise GitError(f"remote {remote!r} is not configured")
     ref = f"refs/heads/{branch}"
-    line = git("ls-remote", "--heads", remote, ref, cwd=repo).strip()
+    line = git("ls-remote", "--heads", remote, ref, cwd=repo, timeout=timeout).strip()
     actual = line.split()[0] if line else ""
     if not actual:
         return False
     if not expected_head or actual != expected_head:
         raise LeaseRejected(branch, expected_head, actual)
-    git("push", f"--force-with-lease={ref}:{expected_head}", remote, f":{ref}", cwd=repo)
+    git("push", f"--force-with-lease={ref}:{expected_head}", remote, f":{ref}", cwd=repo,
+        timeout=timeout)
     return True
 
 

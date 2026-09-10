@@ -33,6 +33,9 @@ def classify_branches(
     protected_branches: set[tuple[str, str]] | None = None,
     preserved_heads: set[tuple[str, str, str]] | None = None,
     base_branches: dict[str, str] | None = None,
+    remote_heads: dict[str, dict[str, str]] | None = None,
+    remote_errors: dict[str, str] | None = None,
+    branch_filter: set[str] | None = None,
     state_text: str = "",
 ) -> list[BranchDisposition]:
     """Classify only branches whose Garden ownership is established by a managed run."""
@@ -41,11 +44,13 @@ def classify_branches(
     protected_branches = protected_branches or set()
     preserved_heads = preserved_heads or set()
     base_branches = base_branches or {}
+    remote_errors = remote_errors or {}
     provenance: dict[tuple[str, str], set[str]] = {}
     task_product = {task.id: task.product for task in tasks.values()}
     for run in runs:
         product = task_product.get(run.task_id)
-        if product and run.branch and run.completion_mode in {"managed", "pushed"}:
+        if (product and run.branch and run.completion_mode in {"managed", "pushed"}
+                and (branch_filter is None or run.branch in branch_filter)):
             provenance.setdefault((product, run.branch), set()).add(run.task_id)
 
     active = {(task_product.get(run.task_id, ""), run.branch) for run in runs
@@ -64,11 +69,19 @@ def classify_branches(
             continue
         local = gitops.local_head(repo, branch)
         remote_head = ""
-        if gitops.remote_url(repo, remote):
+        if product in remote_errors:
+            result.append(BranchDisposition(
+                product, branch, "uncertain",
+                f"remote could not be inspected: {remote_errors[product]}",
+                local_head=local, task_ids=tuple(sorted(ids)),
+            ))
+            continue
+        if remote_heads is not None:
+            remote_head = remote_heads.get(product, {}).get(branch, "")
+        elif gitops.remote_url(repo, remote):
             try:
                 gitops.fetch(repo, remote)
-                remote_sha = gitops.git("ls-remote", "--heads", remote, f"refs/heads/{branch}", cwd=repo).strip()
-                remote_head = remote_sha.split()[0] if remote_sha else ""
+                remote_head = gitops.remote_branch_heads(repo, remote).get(branch, "")
             except gitops.GitError as exc:
                 result.append(BranchDisposition(product, branch, "uncertain", f"remote could not be inspected: {exc}", local_head=local, task_ids=tuple(sorted(ids))))
                 continue
@@ -122,6 +135,7 @@ def classify_branches(
 def delete_disposition(
     item: BranchDisposition, repo: Path, *, remote: str = "origin",
     recheck: Callable[[BranchDisposition], str] | None = None,
+    remote_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Recheck claims, then independently compare-and-delete remote and local refs."""
     refusal = recheck(item) if recheck else ""
@@ -131,7 +145,9 @@ def delete_disposition(
     errors: list[str] = []
     if item.remote_head:
         try:
-            if gitops.delete_remote_branch(repo, remote, item.branch, item.remote_head):
+            if gitops.delete_remote_branch(
+                repo, remote, item.branch, item.remote_head, timeout=remote_timeout,
+            ):
                 removed.append("remote")
         except gitops.GitError as exc:
             errors.append(f"remote: {exc}")

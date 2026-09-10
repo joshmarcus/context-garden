@@ -28,7 +28,9 @@ from .report import TickReport
 
 
 class CleanupMixin:
-    def storage_inventory(self, *, measure: bool = True) -> dict[str, Any]:
+    def storage_inventory(self, *, measure: bool = True,
+                          branch_rows: dict[tuple[str, str], BranchDisposition] | None = None,
+                          ) -> dict[str, Any]:
         """Account for bounded Garden-owned worktrees, isolated homes and run temp data."""
         self.runs.invalidate()
         tasks = self.store.tasks()
@@ -39,7 +41,10 @@ class CleanupMixin:
             if run.worktree:
                 key = str(Path(run.worktree).absolute())
                 runs_by_worktree.setdefault(key, []).append(run)
-        branch_rows = {(row.product, row.branch): row for row in self.branch_cleanup_inventory()}
+        if branch_rows is None:
+            branch_rows = {
+                (row.product, row.branch): row for row in self.branch_cleanup_inventory()
+            }
         keep_days = float(self.cfg.get("worktrees.keep_days", 2) or 0)
         home_keep_days = float(self.cfg.get("storage_cleanup.home_keep_days", keep_days) or 0)
         now = time.time()
@@ -193,6 +198,9 @@ class CleanupMixin:
                       limit: int | None = None, measure: bool = True) -> dict[str, Any]:
         """Preview or incrementally reclaim eligible storage, with immediate rechecks."""
         limit = int(self.cfg.get("storage_cleanup.limit", 20) or 0) if limit is None else max(0, limit)
+        if apply and limit <= 0:
+            return {"at": now_iso(), "status": "disabled", "preview": False, "limit": 0,
+                    "inventory": None, "results": [], "bytes_reclaimed": 0}
         before = self.storage_inventory(measure=measure)
         self._reconcile_storage_audits()
         results: list[dict[str, Any]] = []
@@ -232,7 +240,22 @@ class CleanupMixin:
                 # The preview may be older than an operator edit made during this sweep.
                 # Refresh task ownership immediately before the destructive recheck.
                 self.store.invalidate_tasks()
-                current = next((row for row in self.storage_inventory(measure=False)["items"]
+                current_branch_rows: dict[tuple[str, str], BranchDisposition] = {}
+                if item["category"] == "worktree":
+                    task = self.store.task(str(item["owner"]))
+                    matching = [
+                        run for run in self.runs.all_runs()
+                        if run.worktree and str(Path(run.worktree).absolute()) == str(path.absolute())
+                    ]
+                    branch = matching[-1].branch if matching else task.branch
+                    if branch:
+                        current_branch_rows = {
+                            (row.product, row.branch): row
+                            for row in self.branch_cleanup_inventory(only_remote_branch=branch)
+                        }
+                current = next((row for row in self.storage_inventory(
+                                    measure=False, branch_rows=current_branch_rows,
+                                )["items"]
                                 if row["path"] == str(path)), None)
                 if not current or not current["eligible"]:
                     record({"path": str(path), "outcome": "retained",
@@ -335,7 +358,7 @@ class CleanupMixin:
     def _branch_cleanup_remote(self) -> str:
         return str(self.cfg.get("branches.remote", "origin") or "origin")
 
-    def branch_cleanup_inventory(self) -> list[BranchDisposition]:
+    def branch_cleanup_inventory(self, *, only_remote_branch: str = "") -> list[BranchDisposition]:
         tasks = self.store.tasks()
         repos = {}
         for product in {task.product for task in tasks.values()}:
@@ -373,12 +396,40 @@ class CleanupMixin:
             if task.branch and self.state.get(task.id).get("pr_state") == "MERGED"
             and self.state.get(task.id).get("head_sha")
         }
+        remote_heads: dict[str, dict[str, str]] = {}
+        remote_errors: dict[str, str] = {}
+        snapshots: dict[Path, dict[str, str]] = {}
+        snapshot_errors: dict[Path, str] = {}
+        timeout = float(self.cfg.get("branches.remote_timeout_seconds", 5) or 0)
+        for product, repo in repos.items():
+            if repo not in snapshots and repo not in snapshot_errors:
+                try:
+                    if not gitops.fetch(
+                        repo, self._branch_cleanup_remote(), timeout=timeout,
+                    ):
+                        raise gitops.GitError("remote fetch failed")
+                    heads = gitops.remote_branch_heads(
+                        repo, self._branch_cleanup_remote(), timeout=timeout,
+                    )
+                    snapshots[repo] = (
+                        {only_remote_branch: heads[only_remote_branch]}
+                        if only_remote_branch and only_remote_branch in heads else
+                        {} if only_remote_branch else heads
+                    )
+                except gitops.GitError as exc:
+                    snapshot_errors[repo] = str(exc)
+            if repo in snapshot_errors:
+                remote_errors[product] = snapshot_errors[repo]
+            else:
+                remote_heads[product] = snapshots[repo]
         return classify_branches(tasks, self.runs.all_runs(), repos,
                                  remote=self._branch_cleanup_remote(),
                                  open_pr_heads=open_heads, claimed_bases=claimed_bases,
                                  protected_branches=protected, preserved_heads=preserved_heads,
                                  base_branches={product: self.cfg.product_base_branch(product)
                                                 for product in repos},
+                                 remote_heads=remote_heads, remote_errors=remote_errors,
+                                 branch_filter={only_remote_branch} if only_remote_branch else None,
                                  state_text=state_text)
 
     def _branch_delete_recheck(self, item: BranchDisposition) -> str:
@@ -416,7 +467,7 @@ class CleanupMixin:
                     return f"PR #{number} is open"
             except GitHubError as exc:
                 return f"PR state could not be rechecked: {exc}"
-        current = next((row for row in self.branch_cleanup_inventory()
+        current = next((row for row in self.branch_cleanup_inventory(only_remote_branch=item.branch)
                         if row.product == item.product and row.branch == item.branch), None)
         if current is None:
             return "recorded provenance changed"
@@ -428,6 +479,8 @@ class CleanupMixin:
 
     def sweep_worker_branches(self, rep: TickReport, *, limit: int | None = None) -> list[dict[str, Any]]:
         limit = limit if limit is not None else int(self.cfg.get("branches.cleanup_limit", 20) or 0)
+        if limit <= 0:
+            return []
         inventory = self.branch_cleanup_inventory()
         candidates = [row for row in inventory
                       if row.classification == "removable" and (row.local_head or row.remote_head)][:max(0, limit)]
@@ -439,7 +492,10 @@ class CleanupMixin:
                 continue
             result = delete_disposition(item, self.repo_for(representative),
                                         remote=self._branch_cleanup_remote(),
-                                        recheck=self._branch_delete_recheck)
+                                        recheck=self._branch_delete_recheck,
+                                        remote_timeout=float(self.cfg.get(
+                                            "branches.remote_timeout_seconds", 5,
+                                        )))
             results.append(result)
             self.events.emit("branch_cleanup", ",".join(item.task_ids), product=item.product,
                              branch=item.branch, head=item.remote_head or item.local_head,
