@@ -12,10 +12,9 @@ from ..brief import brief_gaps
 from ..events import phase_summary
 from ..github import GitHubError
 from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal, slugify
+from ..operator_spend import attributed_totals as operator_attributed_totals
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
-from ..operator_spend import total_cost as operator_total_cost
-from ..operator_spend import total_turns as operator_total_turns
 from ..personas import (
     SEVERITY_PRIORITY,
     finding_body,
@@ -549,19 +548,18 @@ class RetroMixin:
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
         ledger_path = operator_spend_path(self.store.root, self.cfg, phase.path.parent)
         operator_records = read_operator_records(ledger_path)
-        attributed_records = [record for record in operator_records
-                              if record.get("product") == phase.product
-                              and record.get("phase") in (phase.name, phase.key)]
-        unattributed_records = [record for record in operator_records
-                                if not record.get("product") and not record.get("phase")]
-        operator_cost = operator_total_cost(attributed_records, since=summary["first_dispatch"])
+        operator_cost, operator_turns = operator_attributed_totals(
+            operator_records, since=summary["first_dispatch"],
+            include=lambda record: record.get("product") == phase.product
+            and record.get("phase") in (phase.name, phase.key))
+        unattributed_cost, unattributed_turns = operator_attributed_totals(
+            operator_records, since=summary["first_dispatch"],
+            include=lambda record: not record.get("product") and not record.get("phase"))
         numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"],
-                                  operator_turns=operator_total_turns(attributed_records, since=summary["first_dispatch"]),
+                                  operator_turns=operator_turns,
                                   operator_ledger_path=ledger_path,
-                                  unattributed_operator_cost_usd=operator_total_cost(
-                                      unattributed_records, since=summary["first_dispatch"]),
-                                  unattributed_operator_turns=operator_total_turns(
-                                      unattributed_records, since=summary["first_dispatch"]))
+                                  unattributed_operator_cost_usd=unattributed_cost,
+                                  unattributed_operator_turns=unattributed_turns)
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, filed_questions=questions, followups=followups,
                                                blocking=blocking, next_phase=next_phase,

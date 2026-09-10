@@ -156,6 +156,34 @@ def test_to_cost_events_turns_cumulative_heartbeats_into_deltas():
     assert b["cost_usd"] == 0.5
 
 
+def test_attributed_totals_preserve_baseline_across_phase_and_window_changes():
+    records = [
+        {"at": "2026-09-04T10:00:00+00:00", "session": "a", "turns": 5,
+         "list_price_usd": 10.0, "product": "other", "phase": "phase-01"},
+        {"at": "2026-09-05T10:00:00+00:00", "session": "a", "turns": 7,
+         "list_price_usd": 12.0, "product": "context-garden", "phase": "phase-05"},
+        {"at": "2026-09-05T11:00:00+00:00", "session": "a", "turns": 10,
+         "list_price_usd": 15.0},
+        {"at": "2026-09-05T12:00:00+00:00", "session": "b", "turns": 4,
+         "list_price_usd": 8.0, "product": "other", "phase": "phase-02"},
+    ]
+    since = "2026-09-05T00:00:00+00:00"
+    def selected(row):
+        return (row.get("product"), row.get("phase")) == ("context-garden", "phase-05")
+
+    def unattributed(row):
+        return not row.get("product") and not row.get("phase")
+
+    assert ops.attributed_totals(records, since=since, include=selected) == (2.0, 2)
+    assert ops.attributed_totals(records, since=since, include=unattributed) == (3.0, 3)
+
+    # Independent later spend cannot change either selected total.
+    records.append({"at": "2026-09-05T13:00:00+00:00", "session": "b", "turns": 6,
+                    "list_price_usd": 11.0, "product": "other", "phase": "phase-02"})
+    assert ops.attributed_totals(records, since=since, include=selected) == (2.0, 2)
+    assert ops.attributed_totals(records, since=since, include=unattributed) == (3.0, 3)
+
+
 def test_to_cost_events_never_produces_a_negative_delta_if_a_heartbeat_regresses():
     records = [
         {"at": "2026-09-05T10:00:00+00:00", "session": "a", "list_price_usd": 5.0},
