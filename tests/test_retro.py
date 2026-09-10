@@ -710,8 +710,8 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
 
     ph = store.phase("gdn", "p1")
     names = sorted(DEFAULT_PERSONAS)
-    assert len(names) == 7
-    # a retro entry naming all six personas, none dispatched yet (the mid-race snapshot);
+    assert len(names) == 8
+    # a retro entry naming every built-in persona, none dispatched yet (the mid-race snapshot);
     # only "designer" has a report on disk (pre-seeded by _live_garden)
     entry = {"phase": ph.key, "product": ph.product, "phase_name": ph.name, "personas": names,
              "skip_personas": False, "next_phase": "p2", "self_product": "gdn",
