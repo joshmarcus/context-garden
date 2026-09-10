@@ -378,6 +378,7 @@ def test_saved_troubled_deferral_is_a_notice_until_deliberately_reconsidered(gar
     page = client.get("/inbox").text
     assert 'action="/tasks/DM-001/troubled-reconsider"' in page
     assert 'action="/tasks/DM-001/troubled-continue"' not in page
+    assert '/tasks/DM-001/move' not in page
     response = client.post("/tasks/DM-001/troubled-reconsider", follow_redirects=False)
     assert response.status_code == 303
 

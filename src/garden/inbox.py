@@ -862,7 +862,8 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                              "command": f"garden move {t.id} {move_to}"}] if move_to else [])
             add(group, t, why, actions, attempts=t.attempts, last_log=last, move_to=move_to,
                 move_label=move_to.split("/", 1)[1] if move_to else "",
-                phase_name=t.phase, approve_phases=approve_phase_options(store, t), gaps=gaps)
+                phase_name=t.phase, approve_phases=approve_phase_options(store, t), gaps=gaps,
+                **({"kind": "frozen"} if group == "deferred" else {}))
         if t.attempts > 0 and not st.get("needs_human") and not t.status.terminal and t.status in (Status.READY, Status.RUNNING) and not (t.status == Status.RUNNING and t.attempts <= 1):
             last = _last_log_line(t)
             why = last or f"{t.attempts} attempt{'s' if t.attempts != 1 else ''} failed"
