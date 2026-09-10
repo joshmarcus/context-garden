@@ -437,6 +437,7 @@ def test_rest_open_pr_list_propagates_pr_detail_failure(monkeypatch):
 
 def test_gh_open_pr_list_queries_only_current_and_project_users(monkeypatch):
     github = GitHub(use_gh=True)
+    github.gh = "gh"  # Exercise the mocked CLI backend even when gh is not on the test PATH.
     calls: list[tuple[str, ...]] = []
 
     def gh(*args, **kwargs):
