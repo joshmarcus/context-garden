@@ -98,11 +98,15 @@ class CleanupMixin:
                              outcome=result["outcome"], reason=result.get("reason", item.reason),
                              errors=result.get("errors", []))
             rep.transitions.append(f"{item.branch}: branch cleanup {result['outcome']}")
-        self.state.get("__branch_cleanup__")["last_sweep"] = {
-            "at": now_iso(),
+        audit = {
             "counts": {kind: sum(row.classification == kind for row in inventory)
                        for kind in ("needed", "removable", "uncertain")},
             "inventory": [row.to_dict() for row in inventory[:500]],
             "results": results,
         }
+        cleanup_state = self.state.get("__branch_cleanup__")
+        prior = dict(cleanup_state.get("last_sweep") or {})
+        prior.pop("at", None)
+        if audit != prior:
+            cleanup_state["last_sweep"] = {"at": now_iso(), **audit}
         return results
