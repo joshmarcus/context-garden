@@ -223,6 +223,8 @@ class DispatchMixin:
             if any(run.status in ("requested", "preparing", "running") for run in self.runs.runs_for(task.id)):
                 inv["status"] = "draining"
                 continue
+            if self.sequential_phase_refusal(task):
+                continue
             if self.slots_free() <= 0:
                 continue
             runner = self.runner_for(task, "local")
@@ -546,9 +548,13 @@ class DispatchMixin:
                   pool_member: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
-        # A read-only local diagnosis may explain work in a held phase. The hold still
-        # applies to every corrective work/revise dispatch that can change product source.
-        if mode != "investigation":
+        # A read-only local diagnosis may explain work in a closed or frozen phase, but it
+        # is still new phase-owned model work and therefore obeys sequential phase order.
+        if mode == "investigation":
+            refusal = self.sequential_phase_refusal(task)
+            if refusal:
+                raise RuntimeError(refusal)
+        else:
             self._refuse_if_phase_not_admitted(task)
         if not self.operator_scope_ready(task):
             raise RuntimeError("operator evidence is required before checkout work can dispatch")

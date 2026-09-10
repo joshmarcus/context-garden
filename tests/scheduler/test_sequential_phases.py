@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from garden.configuration import apply_changes, validate_configuration
 from garden.model import Status
+from garden.scheduler.report import TickReport
 
 
 def _add_second_phase(garden, write, *, depends_on: list[str] | None = None):
@@ -130,6 +132,64 @@ def test_sequential_gate_covers_direct_model_routes_and_keeps_active_runs(garden
     sched.cfg.data["phase_execution"] = "concurrent"
     assert sched.phase_admission_refusal(later) == ""
     assert sched.runs.latest(later.id).status == "running"
+
+
+def test_pending_investigation_waits_across_enable_and_phase_reopen(garden, sched, monkeypatch):
+    from tests.conftest import write
+
+    _add_second_phase(garden, write)
+    sched.store.invalidate()
+    first = sched.store.phase("demo", "p1")
+    later = sched.store.task("DM-010")
+    investigation = {
+        "owner": "agent",
+        "status": "requested",
+        "reason": "diagnose the later phase",
+    }
+    sched.state.get(later.id)["investigation"] = investigation
+    sched.state.save()
+    monkeypatch.setattr(sched, "slots_free", lambda: 1)
+    monkeypatch.setattr(sched, "local_slots_free", lambda: 1)
+    calls = []
+    monkeypatch.setattr(
+        sched, "dispatch_investigation", lambda task, runner=None: calls.append(task.id)
+    )
+
+    # Enabling sequential mode before the pending request launches defers it without
+    # converting the retryable request into a failed investigation.
+    _sequential(sched)
+    sched._dispatch_pending_investigations({later.id: later}, TickReport())
+    assert calls == []
+    assert investigation["status"] == "requested"
+
+    sched.store.set_phase_closed(first, "2026-09-10")
+    sched.store.invalidate()
+    sched._dispatch_pending_investigations({later.id: later}, TickReport())
+    assert calls == [later.id]
+
+    # Reopening the earlier phase updates admission immediately and preserves the pending
+    # request until that phase closes again.
+    calls.clear()
+    sched.store.set_phase_closed(sched.store.phase("demo", "p1"), "")
+    sched.store.invalidate()
+    sched._dispatch_pending_investigations({later.id: later}, TickReport())
+    assert calls == []
+    assert investigation["status"] == "requested"
+    sched.store.set_phase_closed(sched.store.phase("demo", "p1"), "2026-09-10")
+    sched.store.invalidate()
+    sched._dispatch_pending_investigations({later.id: later}, TickReport())
+    assert calls == [later.id]
+
+
+def test_direct_investigation_obeys_sequential_order(garden, sched):
+    from tests.conftest import write
+
+    _add_second_phase(garden, write)
+    sched.store.invalidate()
+    later = sched.store.task("DM-010")
+    _sequential(sched)
+    with pytest.raises(RuntimeError, match="waits for sequential phase demo/p1 to close"):
+        sched.dispatch(later, mode="investigation")
 
 
 def test_trial_comparison_waits_when_an_earlier_phase_reopens(garden, sched, fake_github):
