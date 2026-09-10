@@ -20,4 +20,3 @@ Product specifications express durable intended behavior. Phase goals authorize 
 task status records implementation progress and does not silently change a requirement. The
 newest explicit owner decision governs a contradiction until the canonical spec is reconciled.
 “Implemented” does not mean released, installed, deployed, or environment-verified.
-
