@@ -97,6 +97,15 @@ def test_fresh_materialization_recheck_detects_growing_usage(sched, monkeypatch)
         sched._recheck_local_materialization(run, "checkout materialization")
 
 
+def test_reserved_materialization_recheck_does_not_count_estimate_twice(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    _set_resource_limit(sched, "operation_required_bytes", 6 << 30)
+    _storage(monkeypatch, 26 << 30)
+    run = sched._new_local_run("DM-001", "review", "review")
+
+    sched._recheck_local_materialization(run, "review checkout materialization")
+
+
 def test_disk_growth_during_dispatch_closes_reservation_and_leaves_task_queued(sched, monkeypatch):
     _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
     readings = iter((30 << 30, 19 << 30))
