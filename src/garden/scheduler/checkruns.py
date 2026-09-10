@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -105,7 +106,8 @@ class CheckRunMixin:
     def _dispatch_check_run(self, task: Task, *, worktree: Path, branch: str, base: str,
                             specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport,
                             extra: dict[str, Any] | None = None, retries: int = 0,
-                            backend: str = "", provenance: str = "", source_head: str = "") -> Run:
+                            backend: str = "", provenance: str = "", source_head: str = "",
+                            prepared_run: Run | None = None) -> Run:
         """Start a detached check run for `specs` in `worktree` and record the continuation the
         reap resumes. The task shows it on its page, but it does not consume a worker slot.
         `extra` adds
@@ -121,8 +123,9 @@ class CheckRunMixin:
             self._drain_pending_reviews(self.store.tasks(), rep)
         runner_name, provenance = self._check_execution(task, stage, specs, backend, provenance)
         runner = self.runner_for(task, runner_name)
-        run = (self.runs.new_run(task.id, runner_name, mode="check")
-               if runner_name == "remote" else self._new_local_run(task.id, "check", f"{stage} check"))
+        run = prepared_run or (self.runs.new_run(task.id, runner_name, mode="check")
+                               if runner_name == "remote"
+                               else self._new_local_run(task.id, "check", f"{stage} check"))
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
         if stage == "ci":
             run.env_snapshot["ci_head"] = str(cont.get("head") or "")
@@ -682,30 +685,57 @@ class CheckRunMixin:
         the failure is not this branch's. The git scaffolding (fetch, merge base, the probe
         worktree) is cheap and runs here; only the check commands go to the probe run."""
         cost = cont["cost"]
-        repo = self.repo_for(task)
+        names = {str(f.get("name")) for f in failed}
+        specs = [s for s in self._pre_pr_specs(task) if str(s.get("name")) in names]
+        runner_name, provenance = self._check_execution(task, "base_probe", specs)
+        prepared_run = None
+        if runner_name == "local":
+            prepared_run = self._new_local_run(task.id, "check", "base_probe check")
+            staging = nullcontext()
+        else:
+            staging = self._local_staging_admission("base probe checkout materialization")
         try:
-            gitops.fetch(worktree)
-            ref = gitops.base_ref(worktree, base)
-            base_sha = gitops.merge_base(worktree, ref)
-            moved = bool(base_sha) and gitops.rev_parse(worktree, ref) != base_sha
-            names = {str(f.get("name")) for f in failed}
-            specs = [s for s in self._pre_pr_specs(task) if str(s.get("name")) in names]
-            probe = worktree.parent / f"{worktree.name}.base-probe"
-            gitops.remove_worktree(repo, probe)
-            gitops.add_detached_worktree(repo, probe, base_sha)
+            if prepared_run is not None:
+                self._recheck_local_materialization(
+                    prepared_run, "base probe checkout materialization", required_paths=(worktree,)
+                )
+            with staging:
+                repo = self.repo_for(task)
+                gitops.fetch(worktree)
+                ref = gitops.base_ref(worktree, base)
+                base_sha = gitops.merge_base(worktree, ref)
+                moved = bool(base_sha) and gitops.rev_parse(worktree, ref) != base_sha
+                probe = worktree.parent / f"{worktree.name}.base-probe"
+                gitops.remove_worktree(repo, probe)
+                gitops.add_detached_worktree(repo, probe, base_sha)
         except gitops.GitError as e:
+            if prepared_run is not None:
+                prepared_run.status = "failed"
+                prepared_run.save()
             self.log(f"{task.id}: base probe failed ({e}); treating the failure as this branch's")
             self._start_check_revise(task, failed, rep, cost)
             return
-        self._dispatch_check_run(
-            task, worktree=probe, branch=branch, base=base, specs=specs, stage="base_probe", rep=rep,
-            cont={**self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
-                  "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed,
-                  # The sibling setup marker outlives this throwaway path. Bind it to this
-                  # materialisation so a later probe at the same path cannot reuse it. Check
-                  # retries retain the continuation and therefore reuse this exact generation.
-                  "setup_cache_key": uuid.uuid4().hex},
-            source_head=base_sha)
+        except Exception:
+            if prepared_run is not None:
+                prepared_run.status = "failed"
+                prepared_run.save()
+            raise
+        try:
+            self._dispatch_check_run(
+                task, worktree=probe, branch=branch, base=base, specs=specs, stage="base_probe", rep=rep,
+                cont={**self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
+                      "probe": str(probe), "base_sha": base_sha, "moved": moved, "failed": failed,
+                      # The sibling setup marker outlives this throwaway path. Bind it to this
+                      # materialisation so a later probe at the same path cannot reuse it. Check
+                      # retries retain the continuation and therefore reuse this exact generation.
+                      "setup_cache_key": uuid.uuid4().hex},
+                source_head=base_sha, backend=runner_name, provenance=provenance,
+                prepared_run=prepared_run)
+        except Exception:
+            if prepared_run is not None and prepared_run.status == "running":
+                prepared_run.status = "failed"
+                prepared_run.save()
+            raise
 
     def _after_base_probe_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
         base_sha = str(cont["base_sha"])
@@ -838,41 +868,69 @@ class CheckRunMixin:
             self.events.emit("scratch_merge", task.id, resolved=True, checks=0)
             self.store.save(task)
             return
-        repo = self.repo_for(task)
         wt = self.worktree_for(task)
         scratch = wt.parent / f"{wt.name}.scratch-merge"
+        repo: Path | None = None
+        runner_name, provenance = self._check_execution(task, "scratch_merge", specs)
+        prepared_run = None
+        if runner_name == "local":
+            prepared_run = self._new_local_run(task.id, "check", "scratch_merge check")
+            staging = nullcontext()
+        else:
+            staging = self._local_staging_admission("scratch merge checkout materialization")
         try:
-            gitops.fetch(repo)
-            # The branch is checked out in the task's own worktree, so the scratch worktree takes
-            # the branch tip detached (the pushed head under review) and rebases it onto the base.
-            head_ref = branch
-            if gitops.remote_url(repo):
-                try:
-                    gitops.rev_parse(repo, f"origin/{branch}")
-                    head_ref = f"origin/{branch}"
-                except gitops.GitError:
-                    pass
-            gitops.remove_worktree(repo, scratch)
-            gitops.add_detached_worktree(repo, scratch, head_ref)
-            ok, files, _ = gitops.rebase_onto_capture(scratch, gitops.base_ref(scratch, base))
+            if prepared_run is not None:
+                self._recheck_local_materialization(
+                    prepared_run, "scratch merge checkout materialization", required_paths=(wt,)
+                )
+            with staging:
+                repo = self.repo_for(task)
+                gitops.fetch(repo)
+                # The branch is checked out in the task's own worktree, so the scratch worktree takes
+                # the branch tip detached (the pushed head under review) and rebases it onto the base.
+                head_ref = branch
+                if gitops.remote_url(repo):
+                    try:
+                        gitops.rev_parse(repo, f"origin/{branch}")
+                        head_ref = f"origin/{branch}"
+                    except gitops.GitError:
+                        pass
+                gitops.remove_worktree(repo, scratch)
+                gitops.add_detached_worktree(repo, scratch, head_ref)
+                ok, files, _ = gitops.rebase_onto_capture(scratch, gitops.base_ref(scratch, base))
         except gitops.GitError as e:
             ok, files = False, [str(e)]
+        except Exception:
+            if prepared_run is not None:
+                prepared_run.status = "failed"
+                prepared_run.save()
+            raise
         if not ok:
-            gitops.remove_worktree(repo, scratch)
+            if prepared_run is not None:
+                prepared_run.status = "failed"
+                prepared_run.save()
+            if repo is not None:
+                gitops.remove_worktree(repo, scratch)
             st["scratch_merge"] = {"diff": diff_h, "ok": False, "checks": f"does not merge onto {base}"}
             self.events.emit("scratch_merge", task.id, resolved=False, base=base, files=files)
             self._queue_hold(task, f"the scratch merge onto `{base}` does not apply cleanly ({', '.join(files) or 'unknown'})")
             return
-        self._dispatch_check_run(
-            task, worktree=scratch, branch=branch, base=base, specs=specs, stage="scratch_merge", rep=rep,
-            cont={
-                "scratch": str(scratch),
-                "diff_h": diff_h,
-                # The sibling setup marker outlives this throwaway path. Bind it to this
-                # materialisation so a later scratch merge at the same path cannot reuse it.
-                # Check retries retain the continuation and safely reuse this generation.
-                "setup_cache_key": uuid.uuid4().hex,
-            })
+        try:
+            self._dispatch_check_run(
+                task, worktree=scratch, branch=branch, base=base, specs=specs, stage="scratch_merge", rep=rep,
+                cont={
+                    "scratch": str(scratch),
+                    "diff_h": diff_h,
+                    # The sibling setup marker outlives this throwaway path. Bind it to this
+                    # materialisation so a later scratch merge at the same path cannot reuse it.
+                    # Check retries retain the continuation and safely reuse this generation.
+                    "setup_cache_key": uuid.uuid4().hex,
+                }, backend=runner_name, provenance=provenance, prepared_run=prepared_run)
+        except Exception:
+            if prepared_run is not None and prepared_run.status == "running":
+                prepared_run.status = "failed"
+                prepared_run.save()
+            raise
 
     def _after_scratch_merge_check(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:
         """Reap the hard-tier scratch-merge check. Green: record this revision as verified (keyed
