@@ -18,6 +18,7 @@ from ..storage_cleanup import (
     cleanup_home_caches,
     owned_child,
     owned_directory,
+    path_identity,
     remove_owned_tree,
     space_status,
     tree_bytes,
@@ -204,11 +205,24 @@ class CleanupMixin:
         write_audit(self.cfg.garden_dir, report, keep=audit_keep, destination=audit_path)
 
         def record(result: dict[str, Any]) -> None:
-            results.append(result)
+            operation_id = result.get("operation_id")
+            pending = next((row for row in results
+                            if operation_id and row.get("operation_id") == operation_id), None)
+            if pending is None:
+                results.append(result)
+            else:
+                pending.update(result)
             report["bytes_reclaimed"] = sum(
                 int(row.get("bytes_reclaimed", 0)) for row in results
             )
             write_audit(self.cfg.garden_dir, report, keep=audit_keep, destination=audit_path)
+
+        def pending(path: Path, category: str, size: int) -> str:
+            operation_id = f"op-{len(results) + 1:04d}"
+            record({"operation_id": operation_id, "path": str(path), "category": category,
+                    "outcome": "pending", "bytes_before": size,
+                    "target_identity": path_identity(path), "bytes_reclaimed": 0})
+            return operation_id
 
         if apply:
             for item in before["items"]:
@@ -227,35 +241,47 @@ class CleanupMixin:
                 if item["category"] == "worktree":
                     task = self.store.task(str(item["owner"]))
                     size = tree_bytes(path)
-                    gitops.remove_worktree(self.repo_for(task), path)
-                    outcome = "removed" if not path.exists() else "failed"
-                    record({"path": str(path), "outcome": outcome,
-                            "bytes_reclaimed": size if outcome == "removed" else 0,
-                            **({"error": "worktree remained after Git removal"} if outcome == "failed" else {})})
+                    operation_id = pending(path, "worktree", size)
+                    try:
+                        gitops.remove_worktree(self.repo_for(task), path)
+                        outcome = "removed" if not path.exists() else "failed"
+                        record({"operation_id": operation_id, "path": str(path), "outcome": outcome,
+                                "bytes_reclaimed": size if outcome == "removed" else 0,
+                                **({"error": "worktree remained after Git removal"}
+                                   if outcome == "failed" else {})})
+                    except (OSError, gitops.GitError) as exc:
+                        record({"operation_id": operation_id, "path": str(path),
+                                "outcome": "failed", "bytes_reclaimed": 0, "error": str(exc)})
                 elif item["category"] == "worker_home":
                     remaining = limit - len(results)
-                    cleanup_home_caches(path, path.parent, limit=remaining, on_result=record)
+                    cleanup_home_caches(
+                        path, path.parent, limit=remaining,
+                        on_pending=lambda candidate, size: pending(candidate, "worker_home_cache", size),
+                        on_result=record,
+                    )
                 elif item["category"] == "run_temp":
                     size = tree_bytes(path)
+                    operation_id = pending(path, "run_temp", size)
                     try:
                         reclaimed = remove_owned_tree(path.parent, path)
-                        record({"path": str(path), "outcome": "removed",
+                        record({"operation_id": operation_id, "path": str(path), "outcome": "removed",
                                 "bytes_reclaimed": reclaimed})
                     except (OSError, ValueError) as exc:
-                        record({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
-                                "bytes_before": size, "error": str(exc)})
+                        record({"operation_id": operation_id, "path": str(path), "outcome": "failed",
+                                "bytes_reclaimed": 0, "error": str(exc)})
                 elif item["category"] == "worktree_cache":
                     size = tree_bytes(path)
+                    operation_id = pending(path, "worktree_cache", size)
                     try:
                         root = next(root for root in (self.cfg.worktrees_dir,
                                                      self.cfg.garden_dir / "worktrees")
                                     if owned_child(root, path))
                         reclaimed = remove_owned_tree(root, path)
-                        record({"path": str(path), "outcome": "removed",
+                        record({"operation_id": operation_id, "path": str(path), "outcome": "removed",
                                 "bytes_reclaimed": reclaimed})
                     except (OSError, ValueError) as exc:
-                        record({"path": str(path), "outcome": "failed", "bytes_reclaimed": 0,
-                                "bytes_before": size, "error": str(exc)})
+                        record({"operation_id": operation_id, "path": str(path), "outcome": "failed",
+                                "bytes_reclaimed": 0, "error": str(exc)})
         report["status"] = "complete"
         write_audit(self.cfg.garden_dir, report, keep=audit_keep, destination=audit_path)
         self.state.get("__storage_cleanup__")["last_sweep"] = report
@@ -275,6 +301,30 @@ class CleanupMixin:
                 continue
             if report.get("status") != "in_progress":
                 continue
+            for operation in report.get("results", []):
+                if operation.get("outcome") != "pending":
+                    continue
+                target = Path(str(operation.get("path") or ""))
+                before_identity = operation.get("target_identity")
+                current_identity = path_identity(target)
+                current_bytes = tree_bytes(target) if current_identity is not None else 0
+                if current_identity is None:
+                    outcome = "removed_after_interruption"
+                    reason = "target is absent; exact reclaimed bytes are unknown"
+                elif current_identity != before_identity:
+                    outcome = "unknown_after_interruption"
+                    reason = "target identity changed; removal outcome is unknown"
+                elif current_bytes < int(operation.get("bytes_before", 0)):
+                    outcome = "partial_after_interruption"
+                    reason = "target remains with fewer allocated bytes; exact reclaimed bytes are unknown"
+                else:
+                    outcome = "unknown_after_interruption"
+                    reason = "target remains; no completed deletion result was published"
+                operation.update({"outcome": outcome, "bytes_reclaimed": 0,
+                                  "bytes_after": current_bytes, "reconciliation_reason": reason})
+            report["bytes_reclaimed"] = sum(
+                int(row.get("bytes_reclaimed", 0)) for row in report.get("results", [])
+            )
             report["status"] = "interrupted"
             report["reconciled_at"] = now_iso()
             report["interruption_reason"] = "sweep did not publish a completion update"

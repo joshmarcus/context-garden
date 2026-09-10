@@ -97,7 +97,13 @@ def test_deletion_failure_is_recorded_and_links_never_followed(tmp_path):
     assert results[0]["outcome"] == "failed" and results[0]["bytes_reclaimed"] == 0
 
 
-def test_interrupted_sweep_receipt_is_durable_and_reconciled(sched, monkeypatch):
+@pytest.mark.parametrize(
+    ("interruption", "expected_outcome"),
+    [("rename", "removed_after_interruption"), ("partial", "partial_after_interruption")],
+)
+def test_interrupted_sweep_receipt_is_durable_and_reconciled(
+    sched, monkeypatch, interruption, expected_outcome
+):
     task = sched.store.task("DM-001")
     task.status = Status.DONE
     sched.store.save(task)
@@ -108,9 +114,15 @@ def test_interrupted_sweep_receipt_is_durable_and_reconciled(sched, monkeypatch)
     old = time.time() - 3 * 86400
     os.utime(home, (old, old))
 
-    def interrupted_cleanup(_home, _root, *, limit, on_result):
-        cache.rename(cache.with_name("pip-removed"))
-        on_result({"path": str(cache), "outcome": "removed", "bytes_reclaimed": 4096})
+    def interrupted_cleanup(_home, _root, *, limit, on_pending, on_result):
+        assert limit == 1
+        on_pending(cache, tree_bytes(cache))
+        if interruption == "rename":
+            cache.rename(cache.with_name("pip-removed"))
+        else:
+            (cache / "wheel").unlink()
+        # Simulate process death after the destructive operation and before its completion
+        # callback can replace the durable pending record.
         raise KeyboardInterrupt
 
     monkeypatch.setattr("garden.scheduler.cleanup.cleanup_home_caches", interrupted_cleanup)
@@ -121,9 +133,17 @@ def test_interrupted_sweep_receipt_is_durable_and_reconciled(sched, monkeypatch)
     interrupted = json.loads(receipt.read_text())
     assert interrupted["status"] == "in_progress"
     assert interrupted["results"][0]["path"] == str(cache)
-    assert interrupted["bytes_reclaimed"] == 4096
+    assert interrupted["results"][0]["outcome"] == "pending"
+    assert interrupted["results"][0]["operation_id"] == "op-0001"
+    assert interrupted["results"][0]["target_identity"]
+    assert interrupted["results"][0]["bytes_before"] >= 4096
+    assert interrupted["bytes_reclaimed"] == 0
     sched.sweep_storage(type("Report", (), {"transitions": []})(), apply=False, limit=0)
-    assert json.loads(receipt.read_text())["status"] == "interrupted"
+    reconciled = json.loads(receipt.read_text())
+    assert reconciled["status"] == "interrupted"
+    assert reconciled["results"][0]["outcome"] == expected_outcome
+    assert reconciled["results"][0]["bytes_reclaimed"] == 0
+    assert "exact reclaimed bytes are unknown" in reconciled["results"][0]["reconciliation_reason"]
 
 
 def test_storage_measurement_uses_allocated_bytes_and_reports_capabilities(tmp_path):

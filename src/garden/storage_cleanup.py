@@ -52,6 +52,15 @@ def tree_bytes(path: Path) -> int:
     return total
 
 
+def path_identity(path: Path) -> dict[str, int] | None:
+    """Return a stable, no-follow identity for restart reconciliation."""
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return None
+    return {"device": metadata.st_dev, "inode": metadata.st_ino, "mode": metadata.st_mode}
+
+
 def _is_link_or_reparse(path: Path) -> bool:
     """Inspect one component without following it, including Windows junctions."""
     try:
@@ -168,6 +177,7 @@ def write_audit(garden_dir: Path, report: dict[str, object], *, keep: int = 20,
 
 def cleanup_home_caches(home: Path, root: Path, *, limit: int,
                         remove: Callable[[Path, Path], int] = remove_owned_tree,
+                        on_pending: Callable[[Path, int], str] | None = None,
                         on_result: Callable[[dict[str, object]], None] | None = None,
                         ) -> list[dict[str, object]]:
     """Remove an allowlist of disposable caches, preserving credentials and model sessions."""
@@ -179,12 +189,15 @@ def cleanup_home_caches(home: Path, root: Path, *, limit: int,
         if not candidate.exists() and not candidate.is_symlink():
             continue
         before = tree_bytes(candidate) if owned_directory(root, candidate) else 0
+        operation_id = on_pending(candidate, before) if on_pending is not None else None
         try:
             reclaimed = remove(root, candidate)
             result = {"path": str(candidate), "outcome": "removed", "bytes_reclaimed": reclaimed}
         except (OSError, ValueError) as exc:
             result = {"path": str(candidate), "outcome": "failed", "bytes_reclaimed": 0,
                       "bytes_before": before, "error": str(exc)}
+        if operation_id is not None:
+            result["operation_id"] = operation_id
         results.append(result)
         if on_result is not None:
             on_result(result)
