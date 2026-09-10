@@ -179,7 +179,6 @@ def test_discovery_retries_when_task_changes_during_scan(garden, monkeypatch):
     assert next(t for p in products for ph in p.phases for t in ph.tasks if t.id == "DM-001").title == "Edited during scan"
 
 
-<<<<<<< HEAD
 def test_discovery_bounds_retries_during_persistent_external_churn(garden, monkeypatch):
     """A busy writer cannot trap a page request in repeated task parsing."""
     store = Store(garden)

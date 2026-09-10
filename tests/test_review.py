@@ -490,7 +490,6 @@ def test_review_audit_restores_a_lost_additional_round_once(sched):
     assert rep.transitions == ["DM-001 missing review continuation restored"]
 
 
-<<<<<<< HEAD
 def test_review_audit_does_not_restore_an_extra_round_for_a_hard_task(sched):
     task = sched.store.task("DM-001")
     task.status = Status.IN_REVIEW
