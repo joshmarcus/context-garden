@@ -367,7 +367,9 @@ class _TranscriptCapture:
     def reader(self, stream: TextIO, channel: str) -> None:
         raw_path = self.stdout_path if channel == "stdout" else self.stderr_path
         with raw_path.open("w") as raw, self.path.open("a") as transcript:
-            for data in iter(stream.readline, ""):
+            # Fixed reads keep a harness that emits one enormous line from becoming an
+            # unbounded worker-side allocation. Concatenating channel data is lossless.
+            for data in iter(lambda: stream.read(64 * 1024), ""):
                 raw.write(data)
                 raw.flush()
                 clean = data

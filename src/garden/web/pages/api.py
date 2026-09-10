@@ -587,8 +587,11 @@ def register(app: FastAPI, site: Site) -> None:
         offset = body.get("offset")
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise HTTPException(422, "offset must be a non-negative integer")
+        encoded_payload = body.get("data", "")
+        if not isinstance(encoded_payload, str) or len(encoded_payload) > 1_398_104:
+            raise HTTPException(422, "data must encode at most 1 MiB")
         try:
-            payload = base64.b64decode(str(body.get("data") or ""), validate=True)
+            payload = base64.b64decode(encoded_payload, validate=True)
         except ValueError:
             raise HTTPException(422, "data must be base64") from None
         with hub.action_lock:
