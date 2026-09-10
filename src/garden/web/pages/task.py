@@ -412,4 +412,5 @@ def _trial_view(trial: Any, runs: list[Any]) -> dict[str, Any] | None:
         row["elapsed"] = run.elapsed_minutes() if run else None
         contenders.append(row)
     return {"status": trial.get("status", ""), "winner": trial.get("winner"), "kept": trial.get("kept"),
+            "wait_reason": trial.get("compare_deferred", ""),
             "contenders": contenders}

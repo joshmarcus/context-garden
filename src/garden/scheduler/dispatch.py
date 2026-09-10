@@ -52,6 +52,10 @@ class DispatchMixin:
         refusal = phase_refusal(phase, task)
         if refusal:
             return refusal
+        return self.sequential_phase_refusal(task)
+
+    def sequential_phase_refusal(self, task: Task) -> str:
+        """Explain only a sequential-order hold, for routes allowed on frozen phases."""
         current = self.sequential_phase(task.product)
         if current is None or current.name == task.phase:
             return ""

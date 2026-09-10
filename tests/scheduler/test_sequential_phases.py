@@ -118,6 +118,45 @@ def test_sequential_gate_covers_direct_model_routes_and_keeps_active_runs(garden
     assert sched.runs.latest(later.id).status == "running"
 
 
+def test_trial_comparison_waits_when_an_earlier_phase_reopens(garden, sched, fake_github):
+    from fastapi.testclient import TestClient
+
+    from garden.store import Store
+    from garden.web.app import create_app
+    from tests.conftest import write
+
+    _add_second_phase(garden, write)
+    sched.store.invalidate()
+    sched.store.set_phase_closed(sched.store.phase("demo", "p1"), "2026-09-10")
+    _sequential(sched)
+    later = sched.store.task("DM-010")
+    sched.start_trial(later, ["claude:sonnet", "claude:opus"])
+
+    # Existing contender work finishes, but reopening the earlier phase prevents the new
+    # comparison model run from starting and leaves a visible, retryable trial state.
+    sched.store.set_phase_closed(sched.store.phase("demo", "p1"), "")
+    sched.store.invalidate()
+    rep = sched.tick()
+    trial = sched.state.get(later.id)["trial"]
+    assert trial["status"] == "comparison_deferred"
+    assert "waits for sequential phase demo/p1 to close" in trial["compare_deferred"]
+    assert f"{later.id}(compare)" not in rep.dispatched
+    assert not any(run.mode == "compare" for run in sched.runs.runs_for(later.id))
+    page = TestClient(create_app(Store(garden), watch=False, host="testserver")).get(
+        f"/tasks/{later.id}"
+    ).text
+    assert "comparison deferred" in page
+    assert "waits for sequential phase demo/p1 to close" in page
+
+    # Closing the selected phase again retries from the preserved contender PRs.
+    sched.store.set_phase_closed(sched.store.phase("demo", "p1"), "2026-09-10")
+    sched.store.invalidate()
+    rep = sched.tick()
+    assert sched.state.get(later.id)["trial"]["status"] == "comparing"
+    assert "compare_deferred" not in sched.state.get(later.id)["trial"]
+    assert f"{later.id}(compare)" in rep.dispatched
+
+
 def test_sequential_phase_does_not_skip_freeze_or_later_dependency(garden, sched):
     from tests.conftest import write
 
