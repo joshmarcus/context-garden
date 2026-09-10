@@ -28,7 +28,7 @@ from ..events import EventLog
 from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, repo_slug_from_remote
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, now_iso
-from ..notify import notify, should_notify
+from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
 from ..runs import Run, RunStore
@@ -125,6 +125,8 @@ class Scheduler(
     ):
         self.store = store
         self.cfg = store.config
+        # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
+        self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
@@ -807,6 +809,7 @@ class Scheduler(
             # change against an in-flight run's fence manifest until it's safe or an operator
             # confirms it (CG-242) — before anything else in this pass can act on it.
             self._reload_config_if_safe()
+            retry_pending(self.cfg.data)
             with gitops.tick_read_cache():
                 self._tick_body(rep, dispatch)
         finally:
