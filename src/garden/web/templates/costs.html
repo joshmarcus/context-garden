@@ -42,6 +42,11 @@
       <option value=""{% if not phase %} selected{% endif %}>any</option>
       {% for v in phase_keys %}<option value="{{ v }}"{% if phase == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
     </select>
+    <label class="muted" for="c-product">product</label>
+    <select id="c-product" name="product" onchange="this.form.submit()">
+      <option value=""{% if not product %} selected{% endif %}>any</option>
+      {% for v in product_names %}<option value="{{ v }}"{% if product == v %} selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select>
     <label class="muted" for="c-task">task</label>
     <select id="c-task" name="task" onchange="this.form.submit()">
       <option value=""{% if not task %} selected{% endif %}>any</option>
@@ -53,7 +58,7 @@
       {% for v in session_ids %}<option value="{{ v }}"{% if session == v %} selected{% endif %}>{{ v[:12] }}</option>{% endfor %}
     </select>
     <noscript><button class="quiet">Filter</button></noscript>
-    {% if since or bucket != 'day' or by != 'activity' or metric != 'total' or difficulty or model or harness or phase or task or session %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
+    {% if since or bucket != 'day' or by != 'activity' or metric != 'total' or difficulty or model or harness or phase or product or task or session %}<a class="btn quiet" href="/costs">Clear</a>{% endif %}
   </form>
 </div>
 <div class="panel" style="margin-top:14px">
@@ -81,7 +86,10 @@
 </div>
 <div class="panel" style="margin-top:14px">
   <div class="eyebrow">Accepted-task outcomes</div>
-  <p class="muted" style="margin:8px 0 0;font-size:12.5px">Only tasks observed merged to the base branch count as accepted. Per-run cost and cost per accepted task make a lower run price directly comparable with the bill per merged task.</p>
+  {% set accepted = series.accepted %}
+  <p style="margin:8px 0 0"><b>{{ accepted.accepted }}</b> accepted task{{ 's' if accepted.accepted != 1 else '' }} · {{ accepted.priced_tasks }} priced · {{ accepted.unpriced_tasks }} unpriced · cost/accepted: {% if accepted.cost_per_accepted_task is not none %}<b>${{ '%.2f' % accepted.cost_per_accepted_task }}</b>{% else %}<b>unavailable</b>{% endif %}</p>
+  <p class="muted" style="margin:6px 0 0;font-size:12.5px">Acceptance means a base-branch merge completed in the selected half-open time window. Its cost includes every task run through acceptance. A forced done status is not acceptance; one unpriced run makes the average unavailable.</p>
+  {% if series.unattributed_operator.runs %}<p class="muted" style="margin:6px 0 0;font-size:12.5px">Unattributed operator spend is shown separately: ${{ '%.2f' % series.unattributed_operator.cost_usd }} over {{ series.unattributed_operator.runs }} record{{ 's' if series.unattributed_operator.runs != 1 else '' }}.</p>{% endif %}
   {% for dimension, label in [('by_difficulty', 'tier'), ('by_model', 'model'), ('by_harness', 'harness'), ('by_pool_member', 'pool member')] %}
   {% set rows = outcomes[dimension] %}
   {% if rows %}

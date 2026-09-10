@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import now_iso
-from .outcomes import base_acceptance
+from .outcomes import acceptance_cohort, base_acceptance
 
 # Keep the established table API for existing callers. The Now page's acceptance cohorts
 # have different attribution, units and cell shapes, so expose them separately.
@@ -288,16 +288,27 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
             queued_history.add(str(ev["task"]))
 
     operator_spend = 0.0
+    unattributed_operator_spend = 0.0
     total_spend = 0.0
+    selected_products = {str(getattr(task, "product", "")) for task in tasks.values()}
+    selected_phases = {str(getattr(task, "key", "")) for task in tasks.values()}
     for ev in events:
         at = str(ev.get("at") or "")
         if (since and at < since) or (until and at >= until):
             continue
         if ev.get("kind") == "run_finished":
             amount = float(ev.get("cost_usd") or 0.0)
-            total_spend += amount
             if ev.get("mode") == "operator" or ev.get("activity") == "operator":
+                if not ev.get("product") and not ev.get("phase"):
+                    unattributed_operator_spend += amount
+                    continue
+                if ((ev.get("product") and str(ev.get("product")) not in selected_products)
+                        or (ev.get("phase") and str(ev.get("phase")) not in selected_phases)):
+                    continue
                 operator_spend += amount
+            elif ev.get("task") not in task_ids:
+                continue
+            total_spend += amount
 
     for ev in events:
         at = str(ev.get("at") or "")
@@ -448,6 +459,50 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
         return rows
 
     outcomes = {dimension: outcome_breakdown(dimension) for dimension in ("difficulty", "model", "harness", "pool_member")}
+    # Replace the legacy window-local numerator with the shared completion cohort. A task
+    # accepted in the window owns its complete run history through acceptance, and missing
+    # prices remain visible instead of becoming zero.
+    cohort_filters = {"difficulty": "difficulty", "model": "model", "harness": "harness"}
+    for dimension, argument in cohort_filters.items():
+        whole = acceptance_cohort(events, tasks, since=since, until=until)
+        member_key = {"model": "models", "harness": "harnesses"}.get(dimension, dimension)
+        cohort_values = ({member["difficulty"] for member in whole["tasks"]} if dimension == "difficulty"
+                         else {value for member in whole["tasks"] for value in member[member_key]})
+        for value in cohort_values:
+            outcomes[dimension].setdefault(value, {
+                "tasks": 0, "accepted": 0, "runs": 0, "cost_usd": 0.0,
+                "mean_cost_usd": None, "accepted_cost_usd": 0.0,
+                "cost_per_accepted_task": None, "reviewed": 0,
+                "first_pass_approve": 0, "first_pass_rate": None,
+            })
+        for value, row in outcomes[dimension].items():
+            cohort = acceptance_cohort(events, tasks, since=since, until=until, **{argument: value})
+            reviewed_cohort = [member for member in cohort["tasks"] if member["first_review"]]
+            dimension_runs = [ev for ev in events if ev.get("kind") == "run_finished"
+                              and ev.get("task") in tasks
+                              and (not since or str(ev.get("at") or "") >= since)
+                              and (not until or str(ev.get("at") or "") < until)
+                              and (getattr(tasks[ev["task"]], "difficulty", "") == value
+                                   if dimension == "difficulty"
+                                   else str(ev.get(dimension) or "unknown") == value)]
+            priced_runs = [ev for ev in dimension_runs
+                           if isinstance(ev.get("cost_usd"), (int, float))
+                           and not isinstance(ev.get("cost_usd"), bool)]
+            row.update(runs=len(dimension_runs), priced_runs=len(priced_runs),
+                       unpriced_runs=len(dimension_runs) - len(priced_runs),
+                       mean_cost_usd=(round(sum(float(ev["cost_usd"]) for ev in priced_runs)
+                                            / len(dimension_runs), 4)
+                                      if dimension_runs and len(priced_runs) == len(dimension_runs) else None))
+            row.update(accepted=cohort["accepted"], accepted_cost_usd=cohort["known_cost_usd"],
+                       cost_per_accepted_task=cohort["cost_per_accepted_task"],
+                       priced_accepted=cohort["priced_tasks"], unpriced_accepted=cohort["unpriced_tasks"])
+            if cohort["accepted"]:
+                row.update(reviewed=len(reviewed_cohort),
+                           first_pass_approve=sum(member["first_review"] == "approve"
+                                                  for member in reviewed_cohort),
+                           first_pass_rate=(round(sum(member["first_review"] == "approve"
+                                                      for member in reviewed_cohort) / len(reviewed_cohort), 2)
+                                            if reviewed_cohort else None))
     # Preserve the established tier metrics while adding the common outcome measures used
     # for model-routing comparisons.
     for tier, row in outcomes["difficulty"].items():
@@ -478,7 +533,8 @@ def metrics(events: list[dict[str, Any]], tasks: dict[str, Any], since: str = ""
             "merges": merges, "queue_merges": len(merged_tasks & queued_history),
             "hand_merges": hand_merges, "tick_duration": tick_duration,
             "operator": {"spend": round(operator_spend, 4),
-                          "share": round(operator_spend / total_spend, 4) if total_spend else None},
+                          "share": round(operator_spend / total_spend, 4) if total_spend else None,
+                          "unattributed_spend": round(unattributed_operator_spend, 4)},
             "ci_status": ci_status,
             "by_difficulty_model": difficulty_by_model(events, tasks),
             "difficulty_by_model": windowed_difficulty_by_model(events, tasks, since, until)}
@@ -695,27 +751,25 @@ def phase_summary(events: list[dict[str, Any]], tasks: dict[str, Any]) -> dict[s
     """The figures a closed phase is remembered by: dates, tasks done, merged PRs, lead
     time, revise rounds, first-pass rate and cost. `tasks` is id -> Task for the phase."""
     m = metrics(events, tasks)
+    cohort = acceptance_cohort(events, tasks)
+    m["accepted_cohort"] = cohort
     dispatches = [ev["at"] for ev in events if ev.get("kind") == "dispatch" and ev.get("task") in tasks]
-    done_at = {ev["task"]: ev["at"] for ev in events
-               if ev.get("kind") == "transition" and ev.get("to") == "done" and ev.get("task") in tasks}
+    done_at = {member["id"]: member["accepted_at"] for member in cohort["tasks"]}
     leads = [r["lead_hours"] for r in m["tasks"] if r["lead_hours"] is not None]
-    reviewed = [r for r in m["tasks"] if r["first_review"]]
-
-    def status_of(t: Any) -> str:
-        s = getattr(t, "status", "")
-        return getattr(s, "value", str(s))
+    reviewed = [member for member in cohort["tasks"] if member["first_review"]]
 
     return {
         "metrics": m,
         "first_dispatch": min(dispatches)[:10] if dispatches else "",
         "done_at": done_at,
-        "tasks_done": sum(1 for t in tasks.values() if status_of(t) == "done"),
+        "tasks_done": cohort["accepted"],
         "tasks_total": len(tasks),
-        "prs_merged": sum(1 for t in tasks.values() if getattr(t, "pr", "") and status_of(t) == "done"),
+        "prs_merged": sum(bool(getattr(tasks[tid], "pr", "")) for tid in done_at),
         "revisions": sum(r["revisions"] for r in m["tasks"]),
         "avg_lead_hours": round(sum(leads) / len(leads), 1) if leads else None,
         "first_pass_rate": round(sum(1 for r in reviewed if r["first_review"] == "approve") / len(reviewed), 2) if reviewed else None,
-        "cost_usd": round(sum(r["cost_usd"] for r in m["tasks"]), 2),
+        "cost_usd": cohort["known_cost_usd"],
+        "accepted_cohort": cohort,
         # No dispatch event for any task in the phase means it predates run records (the
         # scheduler didn't exist yet, or events.jsonl was started later): PRs-merged and cost
         # read as a real zero then, which looks like the phase did nothing rather than that

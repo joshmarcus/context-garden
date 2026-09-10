@@ -549,10 +549,19 @@ class RetroMixin:
         summary = phase_summary(self.events.read(), {t.id: t for t in phase.tasks})
         ledger_path = operator_spend_path(self.store.root, self.cfg, phase.path.parent)
         operator_records = read_operator_records(ledger_path)
-        operator_cost = operator_total_cost(operator_records, since=summary["first_dispatch"])
+        attributed_records = [record for record in operator_records
+                              if record.get("product") == phase.product
+                              and record.get("phase") in (phase.name, phase.key)]
+        unattributed_records = [record for record in operator_records
+                                if not record.get("product") and not record.get("phase")]
+        operator_cost = operator_total_cost(attributed_records, since=summary["first_dispatch"])
         numbers = numbers_section(summary["cost_usd"], operator_cost, summary["metrics"],
-                                  operator_turns=operator_total_turns(operator_records, since=summary["first_dispatch"]),
-                                  operator_ledger_path=ledger_path)
+                                  operator_turns=operator_total_turns(attributed_records, since=summary["first_dispatch"]),
+                                  operator_ledger_path=ledger_path,
+                                  unattributed_operator_cost_usd=operator_total_cost(
+                                      unattributed_records, since=summary["first_dispatch"]),
+                                  unattributed_operator_turns=operator_total_turns(
+                                      unattributed_records, since=summary["first_dispatch"]))
         retro_path.write_text(render_retro_doc(phase, rev, reports, self.store, filed=filed,
                                                filed_findings=filed_findings, filed_questions=questions, followups=followups,
                                                blocking=blocking, next_phase=next_phase,

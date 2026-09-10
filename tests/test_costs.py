@@ -185,6 +185,40 @@ def test_since_and_until_scope_to_a_window():
     assert series["grand_total"]["cost_usd"] == 3.0  # only the 09-04 events
 
 
+def test_accepted_cohort_uses_completion_window_and_full_history_with_missing_prices():
+    events = [
+        {"at": "2026-09-01T00:00:00+00:00", "kind": "dispatch", "task": "DM-001",
+         "mode": "work", "model": "sonnet", "harness": "claude"},
+        {"at": "2026-09-01T00:01:00+00:00", "kind": "run_finished", "task": "DM-001",
+         "mode": "work", "model": "sonnet", "harness": "claude", "cost_usd": 2.0},
+        {"at": "2026-09-02T00:01:00+00:00", "kind": "run_finished", "task": "DM-001",
+         "mode": "review", "cost_usd": None},
+        {"at": "2026-09-03T00:00:00+00:00", "kind": "transition", "task": "DM-001",
+         "to": "done", "base_merged": True},
+        # A forced completion is explicitly not acceptance provenance.
+        {"at": "2026-09-03T01:00:00+00:00", "kind": "transition", "task": "DM-002",
+         "to": "done", "base_merged": False},
+    ]
+    accepted = cost_series(events, _tasks(), since="2026-09-03T00:00:00+00:00",
+                           until="2026-09-04T00:00:00+00:00", model="sonnet")["accepted"]
+    assert accepted["accepted"] == 1
+    assert accepted["priced_tasks"] == 0 and accepted["unpriced_tasks"] == 1
+    assert accepted["known_cost_usd"] == 2.0
+    assert accepted["cost_per_accepted_task"] is None
+
+
+def test_phase_filter_excludes_other_spend_and_separates_unattributed_operator_cost():
+    events = _events() + [
+        {"at": "2026-09-05T10:00:00+00:00", "kind": "run_finished", "mode": "operator",
+         "cost_usd": 7.0, "product": "demo", "phase": "demo/p2"},
+        {"at": "2026-09-05T10:01:00+00:00", "kind": "run_finished", "mode": "operator",
+         "cost_usd": 11.0, "product": "", "phase": ""},
+    ]
+    series = cost_series(events, _tasks(), phase="demo/p1")
+    assert series["grand_total"]["cost_usd"] == 1.6
+    assert series["unattributed_operator"] == {"runs": 1, "cost_usd": 11.0}
+
+
 def test_outcomes_count_only_base_branch_merges_as_accepted():
     """CG-251: a completed-looking task is not accepted until the scheduler records its
     base-branch `done` transition (CG-228); its run cost must not lower the denominator."""

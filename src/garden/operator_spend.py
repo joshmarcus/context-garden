@@ -260,7 +260,8 @@ def to_cost_events(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             prev = total
             out.append({"kind": "run_finished", "at": str(r.get("at") or ""), "mode": "operator",
                        "session": sid, "task": "", "model": "", "harness": "",
-                       "cost_usd": round(delta, 4), "usage": {}})
+                       "cost_usd": round(delta, 4), "usage": {},
+                       "product": str(r.get("product") or ""), "phase": str(r.get("phase") or "")})
     return out
 
 

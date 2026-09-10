@@ -717,6 +717,8 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
     operator = m["operator"]
     console.print("Operator spend: " + (f"${operator['spend']:.2f} ({operator['share']:.0%} of recorded spend)"
                                          if operator["share"] is not None else "no ledger entries"))
+    if operator.get("unattributed_spend"):
+        console.print(f"Unattributed operator spend (excluded): ${operator['unattributed_spend']:.2f}")
     rb = m["rebase"]
     console.print(f"Rebases per merge: {rb['mechanical'] / rb['merges']:.2f} mechanical, "
                   f"{rb['agent'] / rb['merges']:.2f} agent" if rb["merges"] else "Rebases per merge: no merges")

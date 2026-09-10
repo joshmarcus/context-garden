@@ -30,7 +30,8 @@ def register(app: FastAPI, site: Site) -> None:
     @app.get("/costs", response_class=HTMLResponse)
     def costs_page(
         request: Request, since: str = "", bucket: str = "day", by: str = "activity",
-        difficulty: str = "", model: str = "", harness: str = "", phase: str = "", task: str = "", session: str = "",
+        difficulty: str = "", model: str = "", harness: str = "", phase: str = "", product: str = "",
+        task: str = "", session: str = "",
         metric: str = "total",
     ):
         s = hub.fresh()
@@ -43,15 +44,18 @@ def register(app: FastAPI, site: Site) -> None:
         metric = metric if metric in ("total", "per_task") else "total"
         window_since = resolve_since(since)
         series = cost_series(events, tasks, since=window_since, bucket=bucket, group_by=by,
-                             difficulty=difficulty, model=model, harness=harness, phase=phase, task=task,
+                             difficulty=difficulty, model=model, harness=harness, phase=phase, product=product, task=task,
                              session=session)
-        outcomes = metrics(events, tasks)
+        selected_tasks = {tid: t for tid, t in tasks.items()
+                          if (not product or t.product == product) and (not phase or t.key == phase)}
+        outcomes = metrics(events, selected_tasks, since=window_since)
         runs = [e for e in events if e.get("kind") == "run_finished"]
         models = sorted({str(e["model"]) for e in runs if e.get("model")})
         harnesses = sorted({str(e["harness"]) for e in runs if e.get("harness")})
         task_ids = sorted({str(e["task"]) for e in runs if e.get("task")})
         session_ids = sorted({str(e["session"]) for e in runs if e.get("session")})
         phase_keys = [ph.key for p in s.products() for ph in p.phases]
+        product_names = [p.name for p in s.products()]
         compactions = ops.compaction_marks(operator_records)
         annotations = [
             {"at": e.get("at"), "from": e.get("from"), "to": e.get("to")}
@@ -68,5 +72,6 @@ def register(app: FastAPI, site: Site) -> None:
             outcomes=outcomes,
             chart=chart,
             since=since, bucket=bucket, by=by, difficulty=difficulty, model=model, harness=harness,
-            phase=phase, task=task, session=session, metric=metric, models=models, harnesses=harnesses, task_ids=task_ids,
-            session_ids=session_ids, phase_keys=phase_keys))
+            phase=phase, product=product, task=task, session=session, metric=metric, models=models,
+            harnesses=harnesses, task_ids=task_ids,
+            session_ids=session_ids, phase_keys=phase_keys, product_names=product_names))

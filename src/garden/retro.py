@@ -226,7 +226,9 @@ def parse_retro(text: str) -> dict[str, Any]:
 
 def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
                     outcomes: dict[str, Any] | None = None, operator_turns: int | None = None,
-                    operator_ledger_path: Path | str | None = None) -> str:
+                    operator_ledger_path: Path | str | None = None,
+                    unattributed_operator_cost_usd: float = 0.0,
+                    unattributed_operator_turns: int = 0) -> str:
     """The phase's spend, workers against the operator watching them (CG-223): what the
     "operator seat is a goal" decision (docs/design.md) asks every retro to report, so the
     loop's most expensive seat is compared against the workers', not guessed at."""
@@ -240,8 +242,22 @@ def numbers_section(worker_cost_usd: float, operator_cost_usd: float,
             operator += f" — {operator_turns} turns"
         if share is not None:
             operator += f" — {share:.0%} of total"
-    lines = [f"- workers: ${worker_cost_usd:.2f}", operator, f"- total: ${total:.2f}"]
     outcomes = outcomes or {}
+    cohort = outcomes.get("accepted_cohort") or {}
+    partial = " partial known spend" if cohort.get("unpriced_tasks") else ""
+    lines = [f"- workers: ${worker_cost_usd:.2f}{partial}", operator, f"- total: ${total:.2f}{partial}"]
+    if cohort:
+        average = cohort.get("cost_per_accepted_task")
+        lines.append(f"- accepted cohort: {cohort['accepted']} tasks "
+                     f"({cohort['priced_tasks']} priced, {cohort['unpriced_tasks']} unpriced); "
+                     f"cost/accepted: {f'${average:.2f}' if average is not None else 'unavailable'}")
+        lines.append("- cohort rule: completion in the phase window; all task runs through acceptance")
+    if unattributed_operator_cost_usd:
+        recorded = total + unattributed_operator_cost_usd
+        detail = f" — {unattributed_operator_turns} turns" if unattributed_operator_turns else ""
+        share_of_recorded = unattributed_operator_cost_usd / recorded if recorded else 0
+        lines.append(f"- unattributed operator spend (excluded from phase): "
+                     f"${unattributed_operator_cost_usd:.2f}{detail} — {share_of_recorded:.0%} of recorded spend")
     if outcomes.get("hand_merges") is not None:
         lines.append(f"- hand merges: {outcomes['hand_merges']} (of {outcomes.get('merges', 0)} merged PRs)")
     timing = outcomes.get("tick_duration") or {}

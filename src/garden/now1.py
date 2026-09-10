@@ -28,7 +28,7 @@ from .criteria import criteria_counts
 from .events import THIN_SAMPLE, EventLog, _rank_row, difficulty_by_model, metrics
 from .inbox import automated_review_is_queued, merge_queue_view, needs_human_info
 from .model import Status, goals_text, phase_refusal
-from .outcomes import base_acceptance
+from .outcomes import acceptance_cohort, base_acceptance
 from .plants import plant_info
 from .runs import Run, RunStore
 from .store import Store
@@ -548,15 +548,12 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
             first_review[e["task"]] = e
     reviewed = [e for e in first_review.values() if e["at"] >= since]
     approved = sum(1 for e in reviewed if e.get("verdict") == "approve")
-    cost_by_task: dict[str, float] = defaultdict(float)
-    for e in events:
-        if e.get("kind") == "run_finished":
-            cost_by_task[str(e.get("task") or "")] += float(e.get("cost_usd") or 0.0)
-    finished = [e for e in window if e.get("kind") == "run_finished"]
+    finished = [e for e in window if e.get("kind") == "run_finished" and e.get("task") in tasks]
     op_window = [e for e in op_events if str(e.get("at") or "") >= since]
     cost = sum(float(e.get("cost_usd") or 0.0) for e in finished + op_window)
-    accepted_cost = sum(cost_by_task[t] for t in done_at)
-    series = cost_series(events + op_events, tasks, since=since, bucket=bucket, group_by="activity")
+    cohort = acceptance_cohort(events, tasks, since=since)
+    scoped_events = [e for e in events if not e.get("task") or e.get("task") in tasks]
+    series = cost_series(scoped_events + op_events, tasks, since=since, bucket=bucket, group_by="activity")
     buckets = [b["bucket"] for b in series.get("buckets") or []]
     per_bucket = Counter(bucket_key(e["at"], bucket) for e in finished)
     hand_steps = [e for e in window if e.get("kind") in HAND_KINDS]
@@ -568,7 +565,8 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     return {
         "since": since, "bucket": bucket, "quiet": quiet, "merged": len(done_at), "merged_ids": sorted(done_at),
         "first_pass": {"approved": approved, "reviewed": len(reviewed)},
-        "cost": round(cost, 2), "per_accepted": round(accepted_cost / len(done_at), 2) if done_at else None,
+        "cost": round(cost, 2), "per_accepted": cohort["cost_per_accepted_task"],
+        "priced_accepted": cohort["priced_tasks"], "unpriced_accepted": cohort["unpriced_tasks"],
         "runs": len(finished), "hand_steps": len(hand_steps),
         "hand_kinds": dict(Counter(e["kind"] for e in hand_steps)),
         "hand_merges": len(hand_merged), "hand_merged_ids": hand_merged,
@@ -643,7 +641,13 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
         "next": {"dispatch": dispatch_lines(sched),
                  "merge": merge_queue(store, tasks, state, events, strips, sched, str(tick.get("at") or ""))},
         "where": {"primary": primary, "others": sheets[1:], "closed": closed},
-        "period": period(events, op_events, tasks, since, bucket),
+        "period": period(
+            events,
+            op_events,
+            {tid: task for tid, task in tasks.items() if not primary or task.key == primary["key"]},
+            since,
+            bucket,
+        ),
     }
 
 

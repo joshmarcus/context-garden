@@ -67,3 +67,12 @@ def costs(
     console.print(table)
     grand = series["grand_total"]
     console.print(f"[dim]grand total: ${grand['cost_usd']:.2f} over {grand['runs']} run(s), bucketed by {bucket}[/dim]")
+    accepted = series["accepted"]
+    average = accepted["cost_per_accepted_task"]
+    console.print(f"[dim]accepted: {accepted['accepted']} ({accepted['priced_tasks']} priced, "
+                  f"{accepted['unpriced_tasks']} unpriced); cost/accepted: "
+                  f"{f'${average:.2f}' if average is not None else 'unavailable'}[/dim]")
+    if series["unattributed_operator"]["runs"]:
+        unknown = series["unattributed_operator"]
+        console.print(f"[dim]unattributed operator spend: ${unknown['cost_usd']:.2f} "
+                      f"over {unknown['runs']} record(s)[/dim]")
