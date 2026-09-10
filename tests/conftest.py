@@ -15,6 +15,7 @@ import pytest_timeout
 import yaml
 
 from garden import runner as runner_registry
+from garden import storage
 from garden.github import Feedback, PRInfo
 from garden.runner.base import _no_fsmonitor_env
 from garden.scheduler import Scheduler
@@ -195,6 +196,12 @@ def in_process_workers(monkeypatch):
     mechanics constructs `LocalRunner` itself and stubs `subprocess.Popen`."""
     monkeypatch.setitem(runner_registry.REGISTRY, "local", InProcessRunner)
     monkeypatch.setitem(runner_registry.REGISTRY, "claude-local", InProcessRunner)
+
+
+@pytest.fixture(autouse=True)
+def deterministic_native_storage(monkeypatch):
+    """Keep host WSL interop out of ordinary tests; storage tests opt back in explicitly."""
+    monkeypatch.setattr(storage, "_is_wsl", lambda: False)
 
 
 @pytest.fixture(autouse=True)
