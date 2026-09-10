@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from garden.config import Config
 from garden.github import GitHub
 from garden.source_control import (
     AuthenticationFailure,
@@ -101,3 +102,27 @@ def test_authentication_failure_does_not_echo_response_or_token(monkeypatch):
         github.find_pr("team/repo", "work")
     assert "secret" not in str(caught.value)
     assert "private.test" not in str(caught.value)
+
+
+def test_provider_neutral_product_config_preserves_non_default_base_and_trust(tmp_path):
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text("-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n")
+    config = Config(tmp_path, {
+        "products": {"demo": {
+            "base_branch": "release/next",
+            "source_control": {
+                "provider": "github", "repository": "team/repo", "host": "forge.test",
+                "web_url": "https://forge.test", "api_url": "https://forge.test/api/v3",
+                "credential_env": "FORGE_TOKEN", "ca_bundle": str(bundle),
+                "proxy": "https://proxy.test",
+            },
+        }},
+    })
+    route = config.product_source_control("demo")
+    assert config.product_base_branch("demo") == "release/next"
+    assert route == {
+        "provider": "github", "repository": "team/repo", "host": "forge.test",
+        "web_url": "https://forge.test", "api_base": "https://forge.test/api/v3",
+        "token_env": "FORGE_TOKEN", "ca_bundle": str(bundle),
+        "proxy": "https://proxy.test",
+    }
