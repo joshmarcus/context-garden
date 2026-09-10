@@ -54,33 +54,37 @@ class SandboxPolicy:
                                "dangerously-bypass-approvals-and-sandbox"}:
             raise SandboxError("sandbox.required is incompatible with a bypass permission mode")
         if harness == "claude":
-            return "claude-native"
+            native = "claude-native"
         if harness == "codex":
-            if self.network_destinations:
-                raise SandboxError(
-                    "Codex native sandbox cannot enforce named network destinations; "
-                    "configure no destinations or use a supported executor"
-                )
-            return "codex-native"
-        raise SandboxError(f"harness {harness!r} does not declare an enforceable sandbox capability")
+            native = "codex-native"
+        if harness not in {"claude", "codex"}:
+            raise SandboxError(f"harness {harness!r} does not declare an enforceable sandbox capability")
+        # The native sandbox is defence in depth. The OS wrapper is the common contract that
+        # also confines reads, descendants, symlink resolution, and destination-level network.
+        self._command_prefix()
+        return f"configured-os-wrapper+{native}"
+
+    def _command_prefix(self) -> list[str]:
+        if not self.command:
+            raise SandboxError(
+                "sandbox.required execution needs sandbox.command; configure a platform "
+                "sandbox wrapper (run garden in WSL on Windows)"
+            )
+        binary = self.command[0]
+        if not (Path(binary).is_file() if os.path.isabs(binary) else shutil.which(binary)):
+            raise SandboxError(f"sandbox command {binary!r} is not available on this host")
+        return list(self.command)
 
     def command_argv(self, shell_command: str, writable_root: Path) -> tuple[list[str], str]:
         """Wrap an approved command with the configured OS sandbox executable."""
         if not self.required:
             return ["sh", "-c", shell_command], ""
-        if not self.command:
-            raise SandboxError(
-                "sandbox.required command execution needs sandbox.command; "
-                "configure a platform sandbox wrapper (run garden in WSL on Windows)"
-            )
-        binary = self.command[0]
-        if not (Path(binary).is_file() if os.path.isabs(binary) else shutil.which(binary)):
-            raise SandboxError(f"sandbox command {binary!r} is not available on this host")
+        prefix = self._command_prefix()
         values = {
             "writable_root": str(writable_root.resolve()),
             "network_destinations": ",".join(self.network_destinations),
         }
-        argv = [part.format(**values) for part in self.command]
+        argv = [part.format(**values) for part in prefix]
         return [*argv, "--", "sh", "-c", shell_command], "configured-os-wrapper"
 
     @staticmethod

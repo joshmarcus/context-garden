@@ -194,7 +194,7 @@ class Harness:
                 if tools:
                     cmd += ["--allowedTools", ",".join(tools)]
                 fence = self.fence_settings(deny_paths, worktree)
-                if mechanism == "claude-native" and worktree:
+                if mechanism.endswith("claude-native") and worktree:
                     settings = json.loads(fence or "{}")
                     settings["sandbox"] = sandbox_policy.claude_settings(worktree)
                     fence = json.dumps(settings, separators=(",", ":"))
@@ -214,7 +214,7 @@ class Harness:
                 if sandbox not in ("workspace-write", "read-only"):
                     raise ValueError(f"unsupported Codex permission_mode: {mode}")
                 cmd += ["-c", f'sandbox_mode="{sandbox}"', "-c", 'approval_policy="never"']
-                if mechanism == "codex-native":
+                if mechanism.endswith("codex-native"):
                     cmd += ["-c", "sandbox_workspace_write.network_access=false"]
             if model:
                 cmd += ["-m", model]
