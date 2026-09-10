@@ -17,7 +17,13 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .remote_worker import WorkerClient, WorkerRequestError, deliver_pending_results, execute_claim
+from .remote_worker import (
+    WorkerClient,
+    WorkerRequestError,
+    deliver_pending_results,
+    execute_claim,
+    recover_active_claims,
+)
 from .system_resources import memory_bytes
 from .worker_diagnostics import WorkerEventLog, durable_worker_identity
 
@@ -165,6 +171,7 @@ def run(config: dict, *, once: bool = False):
     client.process_generation = generation
     with host_slot(root):
         while True:
+            recover_active_claims(root, client)
             deliver_pending_results(
                 root, client,
                 max_attempts=int(config.get("result_recovery_attempts", 5)),

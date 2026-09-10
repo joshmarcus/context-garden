@@ -312,6 +312,40 @@ def _persist_pending_result(root: Path, run_id: str, payload: dict[str, Any]) ->
     return path
 
 
+def _active_claim_path(root: Path, run_id: str) -> Path:
+    return root / "active-claims" / f"{run_id}.json"
+
+
+def _persist_active_claim(root: Path, run: dict[str, Any], execution_dir: Path,
+                          repo: Path, final_path: Path, supervisor_pid: int) -> Path:
+    """Save the minimum secret-bearing handoff needed by a replacement daemon.
+
+    This is operational state, not diagnostics. It is mode 0600 because the lease token
+    is authority; the brief and repository URL are deliberately omitted.
+    """
+    path = _active_claim_path(root, str(run["id"]))
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    saved_run = {key: value for key, value in run.items() if key not in {"brief", "repo"}}
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({
+        "run": saved_run, "execution_dir": str(execution_dir), "repo": str(repo),
+        "final_path": str(final_path), "supervisor_pid": supervisor_pid,
+    }))
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+    return path
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class _LeaseHeartbeat:
     """Renew a claim while any host-side stage is running."""
 
@@ -598,6 +632,109 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         ) from exc
 
 
+def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
+                          heartbeat: _LeaseHeartbeat, *, final: str,
+                          parsed: dict[str, Any], usage: dict[str, Any],
+                          cost: float | None, error: str, rc: int,
+                          execution_dir: Path | None = None) -> None:
+    if subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip():
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=garden", "-c", "user.email=garden@localhost",
+             "commit", "-m", f"{run['task_id']}: remote worker changes"],
+            cwd=repo, check=False,
+        )
+    heartbeat.ensure_current()
+    subprocess.run(
+        ["git", "push", "--force", "origin", f"HEAD:{run['push_ref']}"],
+        cwd=repo, check=rc == 0,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    heartbeat.ensure_current()
+    finish_payload = {
+        "lease_token": run["lease_token"], "exit_code": rc, "final_text": final,
+        "result": parsed, "usage": usage, "cost_usd": cost, "error": error,
+        "pushed_head": head,
+    }
+    if execution_dir is not None:
+        finish_payload["validation_receipts"] = _validation_receipts(execution_dir)
+    pending_result = _persist_pending_result(root, str(run["id"]), finish_payload)
+    heartbeat.finish(finish_payload)
+    pending_result.unlink(missing_ok=True)
+
+
+def recover_active_claims(root: Path, client: WorkerClient, *, sleep=time.sleep) -> int:
+    """Collect supervisors which survived a managed-worker daemon restart."""
+    active = root / "active-claims"
+    recovered = 0
+    if not active.exists():
+        return recovered
+    for path in sorted(active.glob("*.json")):
+        try:
+            state = json.loads(path.read_text())
+            run = dict(state["run"])
+            execution_dir = Path(state["execution_dir"])
+            repo = Path(state["repo"])
+            final_path = Path(state["final_path"])
+            supervisor_pid = int(state["supervisor_pid"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            _quarantine_pending(path, client, "invalid_active_claim", type(exc).__name__)
+            continue
+        heartbeat = _LeaseHeartbeat(run, client)
+        heartbeat.start()
+        try:
+            if client.events:
+                client.events.emit(
+                    "execution_reconnect", run_id=str(run["id"]), work_state="recovering",
+                    recovery_outcome="waiting_for_surviving_supervisor",
+                )
+            exit_path = execution_dir / "exit_code"
+            while not exit_path.exists() and _process_alive(supervisor_pid):
+                heartbeat.ensure_not_failed()
+                sleep(0.1)
+            if not exit_path.exists():
+                if client.events:
+                    client.events.emit(
+                        "worker_exit", run_id=str(run["id"]), exit_reason="process_crash",
+                        cause="supervisor_ended_without_exit_record",
+                        operator_action="inspect preserved active claim and supervisor logs",
+                    )
+                continue
+            rc = int(exit_path.read_text().strip())
+            stdout = (execution_dir / "stdout.log").read_text(errors="replace")
+            stderr = (execution_dir / "stderr.log").read_text(errors="replace")
+            harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
+            collected = harness.parse(
+                stdout, stderr, final_path, model=str(run.get("model") or "")
+            )
+            final = str(collected.get("final_text") or "")
+            parsed = collected.get("result") or parse_result(final) or {}
+            repo_lock = _acquire_repo_lock(run, root)
+            try:
+                _publish_claim_result(
+                    run, root, repo, heartbeat, final=final, parsed=parsed,
+                    usage=collected.get("usage") or {}, cost=collected.get("cost_usd"),
+                    error=str(collected.get("error") or ""), rc=rc,
+                    execution_dir=execution_dir,
+                )
+            finally:
+                repo_lock.close()
+            path.unlink(missing_ok=True)
+            recovered += 1
+            if client.events:
+                client.events.emit(
+                    "execution_recovered", run_id=str(run["id"]), work_state="returning_result",
+                    recovery_outcome="delivered_after_daemon_restart",
+                )
+        finally:
+            heartbeat.stop()
+    return recovered
+
+
 def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setup_command: str = "") -> None:
     """Materialise one claim, run it, push it, and post its auditable outcome."""
     heartbeat = _LeaseHeartbeat(run, client)
@@ -682,10 +819,15 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             execution_env["GARDEN_PRESERVE_FDS"] = str(repo_lock.fileno())
             supervised = [sys.executable, "-m", "garden.run_supervisor",
                           str(execution_dir), shlex.join(argv)]
-            with tempfile.NamedTemporaryFile(mode="w+") as stdout_file, tempfile.TemporaryFile(mode="w+") as stderr_file:
+            stdout_path = execution_dir / "stdout.log"
+            stderr_path = execution_dir / "stderr.log"
+            with stdout_path.open("w+") as stdout_file, stderr_path.open("w+") as stderr_file:
                 proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
                                         text=True, cwd=repo, env=execution_env,
-                                        pass_fds=(repo_lock.fileno(),))
+                                        pass_fds=(repo_lock.fileno(),), start_new_session=True)
+                active_claim = _persist_active_claim(
+                    root, run, execution_dir, repo, final_path, proc.pid,
+                )
                 assert proc.stdin is not None
                 proc.stdin.write(str(run.get("brief") or ""))
                 proc.stdin.close()
@@ -728,26 +870,12 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
             usage, cost, error, rc = collected.get("usage") or {}, collected.get("cost_usd"), str(collected.get("error") or ""), proc.returncode
-        if subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip():
-            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-            subprocess.run(["git", "-c", "user.name=garden", "-c", "user.email=garden@localhost", "commit", "-m", f"{run['task_id']}: remote worker changes"], cwd=repo, check=False)
-        # Confirm this lease immediately before publishing to its staging ref. The garden
-        # alone promotes that ref after accepting finish.
-        heartbeat.ensure_current()
-        push_ref = str(run["push_ref"])
-        subprocess.run(["git", "push", "--force", "origin", f"HEAD:{push_ref}"], cwd=repo, check=rc == 0)
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
-        # PID directory names do not describe completion order. Preserve the host's
-        # observed write order so the controller can make a later rerun authoritative.
-        receipts = _validation_receipts(execution_dir)
-        heartbeat.ensure_current()
-        finish_payload = {"lease_token": run["lease_token"], "exit_code": rc,
-                          "final_text": final, "result": parsed, "usage": usage,
-                          "cost_usd": cost, "error": error, "pushed_head": head,
-                          "validation_receipts": receipts}
-        pending_result = _persist_pending_result(root, str(run["id"]), finish_payload)
-        heartbeat.finish(finish_payload)
-        pending_result.unlink(missing_ok=True)
+        _publish_claim_result(
+            run, root, repo, heartbeat, final=final, parsed=parsed, usage=usage,
+            cost=cost, error=error, rc=rc, execution_dir=execution_dir,
+        )
+        if run.get("mode") != "check":
+            active_claim.unlink(missing_ok=True)
     finally:
         if repo_lock is not None:
             repo_lock.close()

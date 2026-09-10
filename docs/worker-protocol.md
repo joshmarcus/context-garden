@@ -286,7 +286,12 @@ request did not reach this controller, not proof of which network component drop
 An idle claim uses a configurable finite `claim_recovery_seconds` window (300 seconds by default),
 then exits with an operator action instead of retrying silently forever. The service supervisor may
 restart it, producing a new process generation. A permanent authentication response exits without
-retry. Completed finish payloads are written mode 0600 under `pending-results/` before transmission;
+retry. Before launching model work, managed workers write a mode-0600 active-claim handoff without
+the brief or repository URL. Harness output is written to claim-scoped files and the execution
+supervisor runs in its own session. A replacement daemon renews the same lease, waits for that
+surviving supervisor, and collects and publishes its result before requesting more work. This does
+not relaunch the harness. Completed finish payloads are written mode 0600 under
+`pending-results/` before transmission;
 on restart they are delivered before another claim and removed only after the controller's
 idempotent acknowledgement. A replaced lease rejects the saved generation and never re-executes it.
 When the durable recovery deadline passes, the old token is rejected and the run becomes
