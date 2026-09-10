@@ -393,6 +393,22 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
     delegated = bool(info.get("delegated_recovery")) or info["kind"] == "check_did_not_run"
     reviewer_owned = info["kind"] == "review_clarification"
     check_recovery = info["kind"] == "check_did_not_run"
+    investigation = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
+    investigation_pending = info["kind"] == "investigation" and not investigation.get("report")
+    if investigation_pending:
+        investigation_owner = str(investigation.get("owner") or "operator")
+        investigation_status = str(investigation.get("status") or "requested")
+        owner = "investigation agent" if investigation_owner == "agent" else "operator"
+        category = "Bounded investigation"
+        recommendation = {
+            "requested": ("Wait for the investigation agent" if investigation_owner == "agent"
+                          else "Take the requested investigation"),
+            "draining": "Wait for active work to reach a safe boundary",
+            "active": "Complete and publish the investigation report",
+            "failed": ("Retry the investigation agent" if investigation_owner == "agent"
+                       else "Take the failed investigation"),
+        }.get(investigation_status, "Continue the bounded investigation")
+        evidence.insert(0, f"investigation {investigation_status} · owner {owner}")
     if missing_check_provenance:
         category = "Interrupted check · provenance unavailable"
         owner = "operator"
@@ -414,7 +430,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                        "an existing-branch revision" if actionable else
                        "clears this terminal check pointer and resumes pipeline progression without an implementation run"),
         })
-    troubled = info["kind"] in ("troubled_task", "investigation", "investigation_report")
+    troubled = info["kind"] in ("troubled_task", "investigation_report")
     if info["kind"] == "revision_cap" and not delegated:
         owner = "you"
         recommendation = "Authorize one more bounded revision"
@@ -441,7 +457,22 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         actions.append({"label": "One more automated review", "kind": "review-again",
                         "command": f"garden review {t.id}",
                         "detail": "clears this reviewer-owned stop and requests another review; no author revision is queued"})
-    if troubled:
+    if investigation_pending:
+        investigation_status = str(investigation.get("status") or "requested")
+        investigation_owner = str(investigation.get("owner") or "operator")
+        if investigation_status in {"requested", "failed"} and investigation_owner == "operator":
+            actions.append({"label": "Take investigation", "kind": "investigation-take",
+                            "command": f"garden investigation-take {t.id}",
+                            "detail": "claims the bounded diagnosis for the operator; implementation stays paused"})
+        elif investigation_status == "failed" and investigation_owner == "agent":
+            actions.append({"label": "Retry investigation agent", "kind": "investigation-retry",
+                            "command": f"garden investigation-retry {t.id}",
+                            "detail": "queues a new bounded diagnosis and retains the failed transcript and cost"})
+        if investigation_status == "active" and investigation_owner == "operator":
+            actions.append({"label": "Publish investigation report", "kind": "investigation-report",
+                            "command": f'garden investigation-report {t.id} "..."',
+                            "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
+    elif troubled:
         actions.append({"label": "Continue one revision", "kind": "troubled-continue", "command": f"garden troubled-continue {t.id}",
                         "detail": "grants one bounded revision under normal capacity; lifetime counts, feedback, branch and PR remain"})
         actions.append({"label": "Pause for investigation", "kind": "investigate", "command": f'garden investigate {t.id} "..."',
@@ -450,19 +481,6 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                         "detail": "adds the owner's new approach to preserved feedback and queues one bounded revision"})
         actions.append({"label": "Defer", "kind": "defer", "command": f'garden troubled-defer {t.id} "..."',
                         "detail": "keeps all work and leaves implementation paused until an explicit later decision"})
-        if info["kind"] == "investigation":
-            if investigation := st.get("investigation"):
-                if investigation.get("status") == "requested" and investigation.get("owner") == "operator":
-                    actions.append({"label": "Take investigation", "kind": "investigation-take",
-                                    "command": f"garden investigation-take {t.id}",
-                                    "detail": "claims the bounded diagnosis for the operator; implementation stays paused"})
-                if investigation.get("status") == "failed":
-                    actions.append({"label": "Retry investigation agent", "kind": "investigation-retry",
-                                    "command": f"garden investigation-retry {t.id}",
-                                    "detail": "queues a new bounded diagnosis and retains the failed transcript and cost"})
-            actions.append({"label": "Publish investigation report", "kind": "investigation-report",
-                            "command": f'garden investigation-report {t.id} "..."',
-                            "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
     elif not reviewer_owned and not delegated and not stale_check_stop and info["kind"] not in {"base_broken", "deployment", "explicit_hold"}:
         retry_label = "Send failure to the worker" if info["kind"] == "worker_failed" else "Send outstanding work to a worker"
         if info["kind"] == "revision_cap":
@@ -478,7 +496,6 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
                                if troubled else "kills any running worker and closes the task as cancelled" + ("; the PR stays open on GitHub" if t.pr else ""))})
     if t.pr:
         actions.append({"label": "Open PR", "kind": "link", "href": t.pr, "detail": "the pull request on GitHub"})
-    investigation = st.get("investigation") if isinstance(st.get("investigation"), dict) else {}
     if investigation.get("report"):
         report = investigation["report"]
         if isinstance(report, dict):
@@ -486,7 +503,9 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             evidence.insert(0, f"likely cause ({report.get('confidence', 'unknown')} confidence): {report.get('likely_cause', 'not stated')}")
         else:
             evidence.insert(0, "investigation report: " + str(report))
-    effect = (("The task remains paused because its check result cannot be tied to the current PR head; "
+    effect = (("The task remains paused while the bounded investigation is in progress; its branch, PR, findings, and counters are preserved."
+               if investigation_pending else
+               "The task remains paused because its check result cannot be tied to the current PR head; "
                "its stopped run, result, PR, findings, and counters are preserved."
                if missing_check_provenance else
                "The task remains paused; its branch, PR, findings, and counters are preserved.")
@@ -500,6 +519,7 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
         "rebase_failed": "The automated conflict repair did not complete after its bounded retry.",
         "review_cap": "The automated review allowance is spent and the current PR needs judgment.",
         "stall": "The same implementation outcome returned unchanged, so automatic work stopped.",
+        "investigation": f"A bounded investigation is {str(investigation.get('status') or 'requested')}; implementation and review work remain paused.",
     }.get(info["kind"], kind_blurb or info["reason"])
     return {"kind": info["kind"], "kind_title": kind_title, "kind_blurb": kind_blurb, "reason": info["reason"],
             "category": category, "owner": owner, "recommendation": recommendation,

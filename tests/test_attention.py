@@ -530,6 +530,14 @@ def test_stale_successful_check_without_provenance_renders_investigation_not_rec
         "stop_reason": "older timeout",
         "stop_run": "",
     }
+    page = response.text
+    assert "Operator recovery: Investigation requested" in page
+    assert "investigation requested · owner operator" in page
+    assert "Your decision</dt><dd>Not required" in page
+    assert 'action="/tasks/DM-001/investigation-take"' in page
+    assert 'action="/tasks/DM-001/troubled-continue"' not in page
+    assert 'action="/tasks/DM-001/troubled-change-approach"' not in page
+    assert 'action="/tasks/DM-001/troubled-defer"' not in page
 
 
 def test_explicit_hold_and_real_question_name_the_correct_owner(garden):
