@@ -95,7 +95,34 @@ class DeliveryStore:
             raw = json.loads(self.path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
-        return raw if isinstance(raw, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        records = {key: value for key, value in raw.items()
+                   if isinstance(key, str) and self._valid_record(value)}
+        if len(records) != len(raw):
+            # Durable content may have been edited or partially written by an older
+            # version. Keep diagnostics bounded and content-free: records can contain
+            # private event fields even though current writers redact them.
+            LOGGER.warning("notification delivery ledger contains malformed records; ignored")
+        return records
+
+    @staticmethod
+    def _valid_record(record: Any) -> bool:
+        """Accept only record fields the delivery paths can inspect safely."""
+        if not isinstance(record, dict):
+            return False
+        if record.get("outcome") not in {"delivered", "failed", "permanent"}:
+            return False
+        if not isinstance(record.get("destination"), str):
+            return False
+        if not isinstance(record.get("event"), dict):
+            return False
+        retryable = record.get("retryable")
+        if retryable is not None and not isinstance(retryable, bool):
+            return False
+        next_attempt = record.get("next_attempt", 0)
+        return (isinstance(next_attempt, (int, float)) and not isinstance(next_attempt, bool)
+                and math.isfinite(next_attempt))
 
     def write(self, records: dict[str, dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

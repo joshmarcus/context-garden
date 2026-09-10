@@ -187,3 +187,28 @@ def test_unwritable_delivery_ledger_is_nonfatal(tmp_path, monkeypatch, caplog):
     ]
     assert "ledger could not be written" in caplog.text
     assert "private filesystem detail" not in caplog.text
+
+
+def test_structurally_malformed_ledger_keeps_valid_retries_and_delivery_nonfatal(
+    tmp_path, caplog,
+):
+    ledger = tmp_path / "notifications.json"
+    now = [100.0]
+    event = NotificationEvent("CG-520", "failed", "retry safely")
+    failing = SyntheticAdapter("transient")
+    delivery = NotificationDelivery(ledger, {"synthetic": failing}, lambda: now[0])
+    assert delivery.deliver(_cfg(backoff_seconds=5), event) == ["operator: failed"]
+
+    records = json.loads(ledger.read_text())
+    records["corrupt-record"] = 1
+    ledger.write_text(json.dumps(records))
+    now[0] = 106.0
+    recovered = SyntheticAdapter()
+    restarted = NotificationDelivery(ledger, {"synthetic": recovered}, lambda: now[0])
+
+    assert restarted.retry_pending(_cfg(backoff_seconds=5)) == ["operator: delivered"]
+    assert restarted.deliver(_cfg(), NotificationEvent("CG-521", "failed", "new event")) == [
+        "operator: delivered",
+    ]
+    assert len(recovered.calls) == 2
+    assert "malformed records; ignored" in caplog.text
