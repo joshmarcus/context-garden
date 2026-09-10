@@ -739,15 +739,15 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     assert "needs_human: 1" in re.search(r"var NOW_HANDS = \{([^}]+)\}", page).group(1)
     assert "check: 1" in re.search(r"var NEXT = \{([^}]+)\}", page).group(1)
     assert "phase_closed: 1" in re.search(r"var WHERE = \{([^}]+)\}", page).group(1)
-    assert 'if (refreshesHead && !refreshesPeriod) regions.head()' in page
-    assert "if (refreshesPeriod) refreshHeadAndPeriod()" in page
+    assert 'if (refreshesHead && !refreshesPeriod) regions.head(reading)' in page
+    assert "if (refreshesPeriod) refreshHeadAndPeriod(reading)" in page
     # Shared changes refresh immediately and atomically. Only events arriving while that
     # request is in flight are coalesced; production does not defer them behind a timer.
-    assert "function refreshHeadAndPeriod()" in page
+    assert "function refreshHeadAndPeriod(reading)" in page
     assert "if (pairedRefresh) { pairedRefreshAgain = true; return pairedRefresh; }" in page
     assert "}, 60000);" not in page
-    assert 'fetchText("/partials/now/head?window=" + win)' in page
-    assert 'fetchText("/partials/now/period?window=" + win)' in page
+    assert 'fetchText(partialUrl("head", reading))' in page
+    assert 'fetchText(partialUrl("period", reading))' in page
     assert "var head = parse(html[0]), period = parse(html[1]);" in page
 
 
