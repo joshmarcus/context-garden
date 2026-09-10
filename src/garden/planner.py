@@ -330,9 +330,14 @@ def run_planner(store: Store, prompt: str, harness_name: str = "", difficulty: s
         resolved = shutil.which(harness.bin) or harness.bin
         if cmd and cmd[0] == harness.bin and resolved != harness.bin:
             cmd = [resolved] + cmd[1:]
-        if policy.required:
-            cmd, _ = policy.command_argv(shlex.join(cmd), scratch_dir)
         env = scrubbed_env(store.config.data, worktree=scratch_dir)
+        if policy.required:
+            cmd, _ = policy.command_argv(
+                shlex.join(cmd), scratch_dir,
+                additional_writable_roots=[Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP")
+                                           if env.get(name)],
+                protected_roots=[store.root],
+            )
         mechanism = policy.native_harness(harness.name, str(harness.cfg.get("permission_mode") or ""))
         env.update(policy.report_env(mechanism))
         env["GARDEN_ROOT"] = no_live_garden_root(scratch_dir)
