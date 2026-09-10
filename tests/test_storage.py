@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 from garden import storage
 
@@ -48,3 +49,32 @@ def test_wsl_inaccessible_probe_is_unknown_not_fabricated(monkeypatch, tmp_path)
     backing = storage.measure_storage((tmp_path,))[-1]
     assert backing.free_bytes is None
     assert "unavailable" in backing.error
+
+
+def test_wsl_probe_failure_does_not_expose_sensitive_stderr(monkeypatch, tmp_path):
+    monkeypatch.setattr(storage, "_is_wsl", lambda: True)
+    monkeypatch.setattr(storage.shutil, "which", lambda name: "/bin/powershell.exe")
+    secret = r"C:\\Users\\private-user\\AppData\\Local\\Packages\\distro"
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr=f"cannot access {secret}")
+
+    monkeypatch.setattr(storage.subprocess, "run", run)
+    backing = storage.measure_storage((tmp_path,), windows_backing_path=secret)[-1]
+
+    assert backing.free_bytes is None
+    assert "probe failed" in backing.error
+    assert secret not in backing.error
+    assert "private-user" not in backing.error
+
+
+def test_native_probe_failure_does_not_expose_sensitive_path(monkeypatch, tmp_path):
+    secret = tmp_path / "private-user" / "work"
+    monkeypatch.setattr(storage, "_existing_parent", lambda path: secret)
+    monkeypatch.setattr(storage.os, "stat", lambda path: (_ for _ in ()).throw(OSError(f"denied: {secret}")))
+
+    volume = storage.measure_storage((secret,))[0]
+
+    assert volume.free_bytes is None
+    assert str(secret) not in volume.error
+    assert volume.error == "measurement unavailable: filesystem path could not be inspected"

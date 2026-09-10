@@ -147,6 +147,31 @@ def test_disk_growth_during_dispatch_closes_reservation_and_leaves_task_queued(s
     assert len(finished) == 1
 
 
+def test_revision_denied_before_stash_or_branch_sync(sched, monkeypatch):
+    """The fresh check precedes every write made while reusing a checkout."""
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    readings = iter((30 << 30, 19 << 30))
+    import garden.scheduler.resources as resources
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", next(readings)),
+    ))
+    task = sched.store.task("DM-001")
+    wt = sched.worktree_for(task)
+    from garden import gitops
+    gitops.prepare_worktree(sched.repo_for(task), wt, task.default_branch(), sched.base_for(task))
+    calls: list[str] = []
+    monkeypatch.setattr(sched, "_stash_dirty_worktree", lambda *args: calls.append("stash"))
+    monkeypatch.setattr(gitops, "sync_to_origin_head", lambda *args: calls.append("sync"))
+
+    with pytest.raises(ResourcePressureError, match="revise checkout synchronization"):
+        sched.dispatch(task, mode="revise")
+
+    assert calls == []
+    run = sched.runs.latest(task.id)
+    assert run is not None and run.status == "failed" and run.pid is None
+    assert task.attempts == 0
+
+
 def _claim_slot(root: str, start, outcomes) -> None:
     from garden.scheduler import Scheduler
     from garden.store import Store
