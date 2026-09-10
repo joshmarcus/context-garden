@@ -86,6 +86,23 @@ def test_actions_analyser_needs_gh_context(monkeypatch):
     monkeypatch.setenv("PATH", "/nonexistent")
     out = github_actions_failures({"repo_slug": "a/b", "branch": "x"}, {})
     assert out["status"] == "error" and "gh" in out["summary"]
+    assert out["failure_category"] == "infrastructure"
+
+
+def test_actions_analyser_types_authentication_failure_as_unavailable_evidence(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "HTTP 403: authentication token rejected"
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/fake/gh")
+    monkeypatch.setattr("garden.checks.subprocess.run", lambda *_args, **_kwargs: Result())
+
+    out = github_actions_failures({"repo_slug": "a/b", "branch": "x"}, {})
+
+    assert out["status"] == "error"
+    assert out["failure_category"] == "unavailable_evidence"
+    assert out["summary"] == "GitHub Actions diagnostics unavailable: authentication failed"
 
 
 def test_work_dir_moves_clones_and_worktrees_out_of_the_garden(garden, tmp_path):

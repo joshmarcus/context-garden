@@ -1457,6 +1457,40 @@ def test_pre_pr_collection_waives_only_trusted_capture_infrastructure(
         assert opened and not blocked
 
 
+def test_source_owned_mechanical_failure_escalates_once_before_revision(sched, monkeypatch):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    worktree = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task), task.default_branch(), sched.base_for(task)
+    )
+    (worktree / "broken.py").write_text("def broken(:\n")
+    gitops.git("add", "broken.py", cwd=worktree)
+    gitops.git("commit", "-m", "introduce syntax defect", cwd=worktree)
+    worker = sched.runs.new_run(task.id, "local", mode="work")
+    worker.status = "done"
+    worker.result = {"pr_body": "The source change is ready for verification."}
+    worker.save()
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    check.save()
+    revisions = []
+    monkeypatch.setattr(sched, "_start_check_revise", lambda *args: revisions.append(args))
+    cont = {
+        "worker_run_id": worker.run_id, "worktree": str(worktree),
+        "branch": task.default_branch(), "base": sched.base_for(task), "cost": "0",
+    }
+
+    sched._after_pre_pr_check(task, check, [], cont, TickReport())
+    sched._after_pre_pr_check(task, check, [], cont, TickReport())
+
+    routes = sched.state.get(task.id)["implementation_failure_escalations"]
+    assert len(routes) == 1
+    assert routes[0]["signal"] == "failed_final_verification"
+    assert "syntax" in routes[0]["identity"]
+    assert len(revisions) == 2
+
+
 def test_pre_pr_capture_advisory_is_bound_to_the_exact_generated_result(sched, monkeypatch):
     from garden import gitops
 

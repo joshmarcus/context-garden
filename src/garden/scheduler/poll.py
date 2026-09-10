@@ -509,7 +509,7 @@ class PollMixin:
             st["ci_rerun_waiting_for"] = (
                 str(cont.get("ci_failure_identity") or "") or self._ci_failure_identity(pr)
             )
-        elif ci_note and not self._check_did_not_run(run, results):
+        elif ci_note and self._has_typed_implementation_failure(results):
             identity = str(cont.get("ci_failure_identity") or "")
             # Legacy continuations predate authoritative provider identities. Only infer
             # their identity from a still-failing GitHub rollup; a newer provider result

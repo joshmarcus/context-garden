@@ -89,7 +89,8 @@ def _ci_run(sched, task, head):
 
 
 def _failed_ci():
-    return [{"name": "actions", "status": "fail", "summary": "six focused tests failed", "details": "test recovery[0-5]"}]
+    return [{"name": "actions", "status": "fail", "failure_category": "implementation",
+             "summary": "six focused tests failed", "details": "test recovery[0-5]"}]
 
 
 def _finish_ci(sched, task, run, head, rep=None, failure_identity=""):
@@ -199,6 +200,26 @@ def test_ci_infrastructure_failure_does_not_escalate_implementation(sched, fake_
     sched._after_ci_check(
         task, check, results,
         {"head": pr.head_sha, "ci_note": "- **CI** failed, but its analyser is unavailable."},
+        TickReport(),
+    )
+
+    assert not sched.state.get(task.id).get("implementation_failure_escalations")
+
+
+def test_ci_authentication_failure_does_not_escalate_without_implementation_verdict(
+    sched, fake_github,
+):
+    task, pr = _open_task(sched, fake_github)
+    check = _ci_run(sched, task, pr.head_sha)
+    results = [{
+        "name": "actions", "status": "error", "failure_category": "unavailable_evidence",
+        "summary": "GitHub Actions diagnostics unavailable: authentication failed", "details": "",
+    }]
+
+    sched._after_ci_check(
+        task, check, results,
+        {"head": pr.head_sha, "ci_note": "- **CI** failed, but diagnostics are unavailable.",
+         "ci_failure_identity": f"actions:{pr.head_sha}:failure"},
         TickReport(),
     )
 
@@ -503,7 +524,8 @@ def test_controller_owned_ci_diagnostic_is_head_bound_and_redacted_for_revision(
     run.env_snapshot["ci_head"] = pr.head_sha
     run.save()
     sched._after_ci_check(task, run, [{
-        "name": "actions", "status": "fail", "summary": "token=controller-secret test failure",
+        "name": "actions", "status": "fail", "failure_category": "implementation",
+        "summary": "token=controller-secret test failure",
         "details": "token=controller-secret\\nfailed test_example",
     }], check["cont"], TickReport())
     assert "test_example" in sched.state.get(task.id)["pending_feedback"]

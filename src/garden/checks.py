@@ -310,7 +310,8 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
     gh = shutil.which("gh")
     slug, branch = ctx.get("repo_slug", ""), ctx.get("branch", "")
     if not gh or not slug or not branch:
-        return {"status": "error", "summary": "gh CLI or repo/branch context missing", "details": ""}
+        return {"status": "error", "failure_category": "infrastructure",
+                "summary": "gh CLI or repo/branch context missing", "details": ""}
     # Check contexts cross process boundaries, where RepositorySlug becomes an ordinary
     # string.  Keep the host separately so Actions never inherits gh's ambient host.
     repo = f"{str(ctx.get('repo_host') or 'github.com').lower().rstrip('.')}/{slug}"
@@ -318,7 +319,8 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
                            "--json", "databaseId,name,conclusion,headSha,status,attempt"], capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         kind = "authentication failed" if re.search(r"auth|login|token|401|403", proc.stderr, re.IGNORECASE) else "request failed"
-        return {"status": "error", "summary": f"GitHub Actions diagnostics unavailable: {kind}", "details": ""}
+        return {"status": "error", "failure_category": "unavailable_evidence",
+                "summary": f"GitHub Actions diagnostics unavailable: {kind}", "details": ""}
     runs = json.loads(proc.stdout or "[]")
     head = ctx.get("head_sha", "")
     failed = [r for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled") and (not head or r.get("headSha") == head)]
@@ -330,7 +332,8 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
         viewed = subprocess.run([gh, "run", "view", str(r["databaseId"]), "-R", repo, "--log-failed"], capture_output=True, text=True, check=False)
         if viewed.returncode != 0:
             kind = "authentication failed" if re.search(r"auth|login|token|401|403", viewed.stderr, re.IGNORECASE) else "request failed"
-            return {"status": "error", "summary": f"GitHub Actions diagnostics unavailable for run {r['databaseId']}: {kind}", "details": ""}
+            return {"status": "error", "failure_category": "unavailable_evidence",
+                    "summary": f"GitHub Actions diagnostics unavailable for run {r['databaseId']}: {kind}", "details": ""}
         log = viewed.stdout
         clean = "\n".join(ln for ln in log.splitlines() if not NOISE_RE.match(ln))
         commands = _github_command_lines(log, int(spec.get("max_command_lines", 8)))
@@ -347,5 +350,6 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
         if spec.get("rerun"):
             out["retry_command"] = " && ".join(f"{gh} run rerun {i} -R {repo} --failed" for i in flaky_ids)
         return out
-    return {"status": "fail", "summary": f"{len(failed)} failed workflow run(s): " + ", ".join(str(r.get("name")) for r in failed),
+    return {"status": "fail", "failure_category": "implementation",
+            "summary": f"{len(failed)} failed workflow run(s): " + ", ".join(str(r.get("name")) for r in failed),
             "details": "\n\n".join(details)}
