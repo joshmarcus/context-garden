@@ -144,6 +144,8 @@ def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monk
     execution_dir = root / "runs" / "work"
     execution_dir.mkdir(parents=True)
     received = execution_dir / "received.md"
+    destination_created = execution_dir / "destination-created"
+    release_copy = execution_dir / "release-copy"
     brief = "begin\n" + ("complete-input-\N{SNOWMAN}\n" * 16_384) + "end\n"
     launcher = tmp_path / "launcher.py"
     launcher.write_text(
@@ -155,7 +157,9 @@ def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monk
         "run = {'id': 'run-work', 'task_id': 'DM-001', 'mode': 'work'}\n"
         "_launch_claim_supervisor(\n"
         "    [sys.executable, '-m', 'garden.run_supervisor', str(execution_dir),\n"
-        "     f'cat < {brief_path} > {received}'],\n"
+        "     f': > {received}; : > {execution_dir / \"destination-created\"}; "
+        "while [ ! -e {execution_dir / \"release-copy\"} ]; do sleep 0.01; done; "
+        "cat < {brief_path} > {received}'],\n"
         "    root=root, run=run, execution_dir=execution_dir, repo=repo,\n"
         "    final_path=execution_dir / 'final.md', env=dict(os.environ), pass_fds=(),\n"
         "    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n"
@@ -174,12 +178,21 @@ def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monk
 
     assert daemon.returncode == 73
     deadline = time.monotonic() + 5
-    while not received.exists() and time.monotonic() < deadline:
+    while not destination_created.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
+    assert destination_created.exists()
+    assert received.read_bytes() == b""
+    release_copy.touch()
+    deadline = time.monotonic() + 5
+    while not (execution_dir / "exit_code").exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert (execution_dir / "exit_code").read_text() == "0"
     assert received.read_text() == brief
     staged = execution_dir / "brief.md"
     assert staged.stat().st_mode & 0o777 == 0o600
-    assert json.loads((root / "active-claims" / "run-work.json").read_text())["supervisor_pid"]
+    active_claim = json.loads((root / "active-claims" / "run-work.json").read_text())
+    assert active_claim["supervisor_pid"]
+    assert active_claim["supervisor_birth"]
 
 
 @pytest.mark.parametrize("mode", ["work", "check"])
