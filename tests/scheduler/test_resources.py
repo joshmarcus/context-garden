@@ -85,6 +85,27 @@ def test_disk_reservations_are_atomic_and_released_on_completion(sched, monkeypa
     assert sched._new_local_run("DM-002", "work", "work")
 
 
+def test_runtime_recheck_carries_sibling_disk_reservations(sched, monkeypatch):
+    _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
+    _set_resource_limit(sched, "operation_required_bytes", 6 << 30)
+    _storage(monkeypatch, 40 << 30)
+    sched._new_local_run("DM-001", "work", "work")
+    run = sched._new_local_run("DM-002", "work", "work")
+    observed: list[int] = []
+
+    def capture_storage(*args, **kwargs):
+        observed.append(kwargs["required_bytes"])
+
+    monkeypatch.setattr("garden.runner.local.require_storage", capture_storage)
+    runner = sched.runner_for(sched.store.task("DM-002"), "local")
+    env = runner.worker_env(run, {}, sched.worktree_for(sched.store.task("DM-002")))
+
+    assert run.env_snapshot["disk_required_bytes"] == 6 << 30
+    assert run.env_snapshot["disk_recheck_required_bytes"] == 12 << 30
+    assert env["GARDEN_DISK_REQUIRED_BYTES"] == str(12 << 30)
+    assert observed == [12 << 30]
+
+
 def test_fresh_materialization_recheck_detects_growing_usage(sched, monkeypatch):
     _set_resource_limit(sched, "disk_reserve_bytes", 20 << 30)
     readings = iter((30 << 30, 19 << 30))
