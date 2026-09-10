@@ -290,7 +290,10 @@ retry. Before launching model work, managed workers write a mode-0600 active-cla
 the brief or repository URL. Harness output is written to claim-scoped files and the execution
 supervisor runs in its own session. A replacement daemon renews the same lease, waits for that
 surviving supervisor, and collects and publishes its result before requesting more work. This does
-not relaunch the harness. Completed finish payloads are written mode 0600 under
+not relaunch the harness. The handoff records the supervisor's process-birth identity as well as
+its PID. Recovery verifies both before waiting or sending a signal; a missing or mismatched identity
+is quarantined without touching that process, so PID reuse cannot transfer execution ownership.
+Completed finish payloads are written mode 0600 under
 `pending-results/` before transmission;
 on restart they are delivered before another claim and removed only after the controller's
 idempotent acknowledgement. A replaced lease rejects the saved generation and never re-executes it.

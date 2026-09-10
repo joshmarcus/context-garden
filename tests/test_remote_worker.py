@@ -384,6 +384,58 @@ def test_replacement_daemon_stops_execution_after_deadline_rejection(tmp_path, m
     assert count_path.read_text() == "run"
 
 
+def test_replacement_daemon_quarantines_reused_pid_without_signalling_or_replay(
+    tmp_path, monkeypatch,
+):
+    """A stale handoff cannot confer ownership of an unrelated process reusing its PID."""
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-stale"
+    execution_dir.mkdir(parents=True)
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "lease-1",
+        "heartbeat_seconds": 30, "recovery_seconds": 1, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+    }
+    active = _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", os.getpid(),
+    )
+    state = json.loads(active.read_text())
+    state["supervisor_birth"] = "linux:previous-boot:previous-start"
+    active.write_text(json.dumps(state))
+    signals = []
+    publications = []
+    monkeypatch.setattr("garden.remote_worker.os.kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(
+        "garden.remote_worker._publish_claim_result",
+        lambda *args, **kwargs: publications.append((args, kwargs)),
+    )
+    recorded = []
+
+    class Events:
+        def emit(self, kind, **fields):
+            recorded.append((kind, fields))
+
+    class Client:
+        events = Events()
+
+        def post(self, _path, _payload):
+            return 200, {}
+
+    assert recover_active_claims(root, Client()) == 0
+    assert signals == []
+    assert publications == []
+    assert not active.exists()
+    assert (active.parent / "quarantine" / active.name).exists()
+    assert recorded[-1] == ("execution_recovery_quarantined", {
+        "run_id": "run-1", "work_state": "recovering",
+        "cause": "supervisor_identity_mismatch", "exit_reason": "stale_active_claim",
+        "recovery_outcome": "quarantined_without_process_signal",
+        "operator_action": "inspect preserved active claim and supervisor logs",
+    })
+
+
 class HealthyHeartbeatClient:
     events = None
 
