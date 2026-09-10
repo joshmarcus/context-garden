@@ -15,6 +15,11 @@ class RemoteRunner(Runner):
     remote = True
 
     def start(self, run: Run, worktree: Path, brief_text: str) -> None:
+        if bool((self.config.get("sandbox") or {}).get("required")):
+            raise RunnerError(
+                "sandbox.required needs a remote worker capability attestation; "
+                "this remote protocol version does not provide one"
+            )
         if self.harness is None and run.mode != "check":
             raise RunnerError("remote runner needs a harness")
         (run.path / "brief.md").write_text(brief_text)
@@ -23,6 +28,11 @@ class RemoteRunner(Runner):
         run.save()
 
     def start_checks(self, run: Run, worktree: Path, payload: dict[str, Any]) -> None:
+        if bool((self.config.get("sandbox") or {}).get("required")):
+            raise RunnerError(
+                "sandbox.required needs a remote worker capability attestation; "
+                "this remote protocol version does not provide one"
+            )
         (run.path / "checks_input.json").write_text(json.dumps(payload))
         run.status = "running"
         run.save()
