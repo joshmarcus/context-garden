@@ -622,6 +622,9 @@ def _pump_output(source: IO[str], destination: Path, redactor, mirror: IO[str]) 
 class _FinalOutput:
     """Drain a harness final path without any blocking open or reader thread."""
 
+    _FINISH_BYTE_BUDGET = 64 * 1024 * 1024
+    _FINISH_TIME_BUDGET = 5.0
+
     def __init__(self, raw_path: Path, destination: Path, redactor) -> None:
         self.raw_path = raw_path
         self.destination = destination
@@ -654,39 +657,60 @@ class _FinalOutput:
             drained += len(chunk)
             self._write(self.decoder.decode(chunk))
 
+    def _drain_to_eof(self, fd: int, *, byte_budget: int, deadline: float) -> int:
+        """Drain a contained source completely or fail within the shutdown budget."""
+        drained = 0
+        while drained < byte_budget and time.monotonic() < deadline:
+            try:
+                chunk = os.read(fd, min(64 * 1024, byte_budget - drained))
+            except BlockingIOError as exc:
+                raise OSError("final output did not reach EOF after writers exited") from exc
+            if not chunk:
+                return drained
+            drained += len(chunk)
+            self._write(self.decoder.decode(chunk))
+        raise OSError("final output exceeded the bounded shutdown drain")
+
     def finish(self) -> None:
-        """Drain the FIFO or an atomic replacement, then finish redaction once."""
-        self.drain()
+        """Drain to EOF within one shutdown budget, then finish redaction once."""
+        deadline = time.monotonic() + self._FINISH_TIME_BUDGET
+        remaining = self._FINISH_BYTE_BUDGET
+        complete = False
         try:
-            current = self.raw_path.lstat()
-        except OSError:
-            current = None
-        if current is not None and (
-            current.st_dev != self.fifo_stat.st_dev or current.st_ino != self.fifo_stat.st_ino
-        ):
-            # A harness such as Codex may atomically replace its requested output path.
-            # The workload is contained and gone now, so this regular-file read cannot
-            # race a writer.  It still passes through the authority redactor before the
-            # durable result is published.
-            if current.st_uid != os.getuid() or not stat.S_ISREG(current.st_mode):
-                raise OSError("replacement final output is not a user-owned regular file")
-            flags = os.O_RDONLY
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            replacement_fd = os.open(self.raw_path, flags)
-            with os.fdopen(replacement_fd, "rb") as replacement:
-                while chunk := replacement.read(64 * 1024):
-                    self._write(self.decoder.decode(chunk))
-        self._write(self.decoder.decode(b"", final=True))
-        safe = self.stream.finish()
-        if safe:
-            self.output.write(safe)
-            sys.stdout.write(safe)
-        self.output.flush()
-        sys.stdout.flush()
-        self.output.close()
-        os.close(self.fd)
-        self.raw_path.unlink(missing_ok=True)
+            remaining -= self._drain_to_eof(self.fd, byte_budget=remaining, deadline=deadline)
+            try:
+                current = self.raw_path.lstat()
+            except OSError:
+                current = None
+            if current is not None and (
+                current.st_dev != self.fifo_stat.st_dev or current.st_ino != self.fifo_stat.st_ino
+            ):
+                # A harness such as Codex may atomically replace its requested output path.
+                # The workload is contained and gone now, so this regular-file read cannot
+                # race a writer. It remains bounded and passes through the authority redactor.
+                if current.st_uid != os.getuid() or not stat.S_ISREG(current.st_mode):
+                    raise OSError("replacement final output is not a user-owned regular file")
+                flags = os.O_RDONLY
+                if hasattr(os, "O_NOFOLLOW"):
+                    flags |= os.O_NOFOLLOW
+                replacement_fd = os.open(self.raw_path, flags)
+                try:
+                    self._drain_to_eof(replacement_fd, byte_budget=remaining, deadline=deadline)
+                finally:
+                    os.close(replacement_fd)
+            self._write(self.decoder.decode(b"", final=True))
+            safe = self.stream.finish()
+            if safe:
+                self.output.write(safe)
+                sys.stdout.write(safe)
+            self.output.flush()
+            sys.stdout.flush()
+            complete = True
+        finally:
+            self.output.close()
+            os.close(self.fd)
+            if complete:
+                self.raw_path.unlink(missing_ok=True)
 
 
 def _run_setup(run_dir: Path) -> bool:

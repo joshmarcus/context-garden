@@ -923,6 +923,46 @@ def test_supervisor_drains_final_held_by_descendant_and_keeps_child_failure(tmp_
     assert final.read_text() == "descendant final"
 
 
+def test_final_shutdown_drain_preserves_tail_past_active_poll_budget(tmp_path, monkeypatch):
+    """Finalization reaches EOF rather than treating one polling budget as completion."""
+    from garden.run_supervisor import _FinalOutput
+    from garden.workload_identity import AuthorityRedactor
+
+    raw = tmp_path / ".final.raw"
+    final = tmp_path / "final.md"
+    os.mkfifo(raw)
+    output = _FinalOutput(raw, final, AuthorityRedactor([]))
+    chunks = iter((b"first", b"-tail", b""))
+    monotonic = iter((0.0, 0.0, 0.02, 0.02, 0.02))
+    monkeypatch.setattr("garden.run_supervisor.os.read", lambda *_args: next(chunks))
+    monkeypatch.setattr("garden.run_supervisor.time.monotonic", lambda: next(monotonic))
+
+    output.finish()
+
+    assert final.read_text() == "first-tail"
+    assert not raw.exists()
+
+
+def test_final_shutdown_drain_keeps_replacement_when_bounded_collection_fails(
+        tmp_path, monkeypatch):
+    from garden.run_supervisor import _FinalOutput
+    from garden.workload_identity import AuthorityRedactor
+
+    raw = tmp_path / ".final.raw"
+    final = tmp_path / "final.md"
+    os.mkfifo(raw)
+    output = _FinalOutput(raw, final, AuthorityRedactor([]))
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"too much evidence")
+    replacement.replace(raw)
+    monkeypatch.setattr(output, "_FINISH_BYTE_BUDGET", 4)
+
+    with pytest.raises(OSError, match="bounded shutdown drain"):
+        output.finish()
+
+    assert raw.read_bytes() == b"too much evidence"
+
+
 def test_nested_supervisor_cannot_mutate_enclosing_final_routing(tmp_path):
     """Final control paths inherited from another owner are consumed without mutation."""
     outer = tmp_path / "outer"
