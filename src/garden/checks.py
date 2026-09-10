@@ -72,12 +72,28 @@ from pathlib import Path
 from typing import Any
 
 from .config import no_live_garden_root
+from .host_identity import scrub_shared_text
 from .runner.base import scrubbed_env, worker_credentials_dir
 from .sandbox import SandboxPolicy
 
 # Check output is persisted as recovery evidence.  Keep a generous documented ceiling for
 # pathological command output while retaining ordinary full stack traces, including signals.
 MAX_DETAILS = 100_000
+# Controller diagnostics are copied into a worker brief. Keep that transfer smaller than
+# the local recovery record, which can retain a full traceback for the operator.
+MAX_WORKER_DIAGNOSTIC = 12_000
+_SECRET_ENV = re.compile(r"(?:token|secret|password|api[_-]?key|authorization|credential)", re.IGNORECASE)
+
+
+def worker_diagnostic_excerpt(details: object, config: dict[str, Any]) -> str:
+    """Return a bounded, redacted diagnostic safe to send to an isolated worker."""
+    text = scrub_shared_text(str(details or ""), config)
+    for name, value in os.environ.items():
+        if _SECRET_ENV.search(name) and len(value) >= 4:
+            text = text.replace(value, "<redacted>")
+    if len(text) > MAX_WORKER_DIAGNOSTIC:
+        text = "[diagnostic excerpt truncated]\n" + text[-MAX_WORKER_DIAGNOSTIC:]
+    return text
 
 
 _PUBLISHING_CI_HELPER = re.compile(
@@ -286,7 +302,8 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
     proc = subprocess.run([gh, "run", "list", "-R", repo, "--branch", branch, "--limit", "10",
                            "--json", "databaseId,name,conclusion,headSha,status"], capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        return {"status": "error", "summary": proc.stderr.strip()[-300:], "details": ""}
+        kind = "authentication failed" if re.search(r"auth|login|token|401|403", proc.stderr, re.IGNORECASE) else "request failed"
+        return {"status": "error", "summary": f"GitHub Actions diagnostics unavailable: {kind}", "details": ""}
     runs = json.loads(proc.stdout or "[]")
     head = ctx.get("head_sha", "")
     failed = [r for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled") and (not head or r.get("headSha") == head)]
@@ -295,9 +312,13 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
     details: list[str] = []
     flaky_ids: list[int] = []
     for r in failed:
-        log = subprocess.run([gh, "run", "view", str(r["databaseId"]), "-R", repo, "--log-failed"], capture_output=True, text=True, check=False).stdout
+        viewed = subprocess.run([gh, "run", "view", str(r["databaseId"]), "-R", repo, "--log-failed"], capture_output=True, text=True, check=False)
+        if viewed.returncode != 0:
+            kind = "authentication failed" if re.search(r"auth|login|token|401|403", viewed.stderr, re.IGNORECASE) else "request failed"
+            return {"status": "error", "summary": f"GitHub Actions diagnostics unavailable for run {r['databaseId']}: {kind}", "details": ""}
+        log = viewed.stdout
         clean = "\n".join(ln for ln in log.splitlines() if not NOISE_RE.match(ln))
-        details.append(f"### {r.get('name')} (run {r['databaseId']})\n" + "\n".join(interesting_lines(clean, int(spec.get("max_lines", 40)))))
+        details.append(f"### {r.get('name')} (run {r['databaseId']}, source {r.get('headSha') or head})\n" + "\n".join(interesting_lines(clean, int(spec.get("max_lines", 40)))))
         if classify_log(clean, spec.get("flaky_patterns")) == "flaky":
             flaky_ids.append(int(r["databaseId"]))
     if flaky_ids and len(flaky_ids) == len(failed):
