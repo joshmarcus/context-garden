@@ -9,6 +9,7 @@ import os
 import subprocess
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -1074,6 +1075,88 @@ def test_restart_reclaims_an_interrupted_closing_review_preparation(sched, monke
     sched.prepare_claimed_closing_reviews(TickReport())
 
     assert started == ["request-one"]
+
+
+def test_retro_personas_fill_only_current_review_capacity(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer", "security"], "stage": "personas",
+             "persona_runs": {}, "request_id": "capacity-request"}
+    slots = iter([1, 0])
+    monkeypatch.setattr(sched, "review_slots_free_for", lambda task: next(slots))
+    monkeypatch.setattr(sched, "local_slots_free", lambda task_id="": 1)
+    launched = []
+
+    def dispatch(ph, name, **kwargs):
+        launched.append((name, kwargs["run_id"]))
+        return SimpleNamespace(run_id=kwargs["run_id"])
+
+    monkeypatch.setattr(sched, "dispatch_persona_phase", dispatch)
+    sched._dispatch_retro_personas(phase, entry, entry["personas"])
+
+    assert [name for name, _ in launched] == ["designer"]
+    assert set(entry["persona_runs"]) == {"designer"}
+    assert "waiting for review capacity" in entry["waiting_reason"]
+
+
+def test_phase_persona_counts_against_its_project_review_capacity(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    probe = sched._phase_persona_probe(phase)
+    run = sched.runs.new_run(probe.id, "local", mode="persona")
+    run.env_snapshot["product"] = phase.product
+    run.save()
+    monkeypatch.setattr(sched, "review_slots_free", lambda: 5)
+    monkeypatch.setattr(sched, "review_parallel_limit_for", lambda task: 1)
+
+    assert sched.review_slots_free_for(probe) == 0
+
+
+def test_interrupted_persona_launch_reconciles_durable_run_without_duplicate(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "stage": "personas", "persona_runs": {},
+             "request_id": "launch-request"}
+    monkeypatch.setattr(sched, "review_slots_free_for", lambda task: 1)
+    monkeypatch.setattr(sched, "local_slots_free", lambda task_id="": 1)
+    calls = 0
+
+    def interrupted(ph, name, **kwargs):
+        nonlocal calls
+        calls += 1
+        sched.runs.new_run(f"_{ph.product}-{ph.name}", "local", mode="persona",
+                           run_id=kwargs["run_id"])
+        raise RuntimeError("controller exited after durable run creation")
+
+    monkeypatch.setattr(sched, "dispatch_persona_phase", interrupted)
+    sched._dispatch_retro_personas(phase, entry, ["designer"])
+    sched._dispatch_retro_personas(phase, entry, ["designer"])
+
+    assert calls == 1
+    assert any(aux["run_id"] == entry["persona_runs"]["designer"]
+               for aux in sched._aux_list())
+
+
+def test_queued_review_rebinds_changed_accepted_evidence_before_dispatch(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {},
+             "automatic": True, "request_id": "evidence-request", "evidence": "old"}
+    sched._retro_list().append(entry)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    monkeypatch.setattr(sched, "_closing_review_policy",
+                        lambda ph: {"eligible": True, "evidence": "new"})
+    started = []
+    monkeypatch.setattr(sched, "_start_retro_entry", lambda ph, queued: started.append(queued))
+
+    sched.dispatch_queued_closing_reviews(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+
+    assert entry["stage"] == "queued"
+    assert entry["evidence"] == "new"
+    assert entry["source"] == ""
+    assert "re-preparing" in entry["waiting_reason"]
+    assert started == []
 
 
 def test_automatic_review_reuses_only_reports_for_its_accepted_source(sched):

@@ -17,7 +17,7 @@ class AuxMixin:
 
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
                      harness_name: str = "", difficulty: str = "", prepared_run: Run | None = None,
-                     model_override: str | None = None, pool_member: str = "") -> Run:
+                     model_override: str | None = None, pool_member: str = "", run_id: str = "") -> Run:
         self.require_maintenance_running()
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
@@ -28,9 +28,9 @@ class AuxMixin:
         # overwrite one another.
         run_task_id = probe.id if task or kind == "persona" else f"_{kind}"
         resource_weight = self.cfg.product_resource_weight(probe.product)
-        run = prepared_run or (self.runs.new_run(run_task_id, runner_name, mode=kind)
+        run = prepared_run or (self.runs.new_run(run_task_id, runner_name, mode=kind, run_id=run_id)
                                if runner_name == "remote" else self._new_local_run(
-                                   run_task_id, kind, kind, resource_weight=resource_weight))
+                                   run_task_id, kind, kind, run_id=run_id, resource_weight=resource_weight))
         run.branch = task.branch or task.default_branch() if task else self.final_base_for(probe)
         run.base = self.base_for(task) if task else self.final_base_for(probe)
         run.env_snapshot.update({"product": probe.product,

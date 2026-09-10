@@ -48,10 +48,12 @@ class PersonaMixin:
             rows.append({"id": t.id, "title": title, "status": t.status.value, "pr": t.pr, "body": body})
         return rows
 
-    def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False, min_severity: str = "low") -> Run:
+    def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
+                               min_severity: str = "low", run_id: str = "") -> Run:
         valid_name(name)
         product = phase.product
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
+        harness_name = str(self.cfg.get("review.harness") or "")
         repo = self.repo_for(probe)
         base = self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_phase-{product}-{phase.name}")
@@ -65,7 +67,8 @@ class PersonaMixin:
         return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
                                                              "persona": name, "target": "phase", "file_tasks": file_tasks,
                                                              "min_severity": min_severity},
-                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"))
+                                 harness_name=harness_name, difficulty=str(self.effective("retro.difficulty") or "hard"),
+                                 run_id=run_id)
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
                             required_evidence: bool = False,
