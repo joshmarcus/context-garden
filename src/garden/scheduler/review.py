@@ -479,17 +479,37 @@ class ReviewMixin:
         """Restore a reviewable current head that has neither a verdict nor a continuation."""
         for task in tasks.values():
             st = self.state.get(task.id)
+            head = str(st.get("head_sha") or "")
+            approved_head = self._effective_approved_head(task, st) if head else ""
+            approval_is_current = (
+                self._review_approval_is_proven(task, st) and approved_head == head
+            )
+            if approval_is_current:
+                pending = list(st.get("pending_reviews") or [])
+                retained = [
+                    item for item in pending
+                    if item.get("kind") != "review" or item.get("count_round") is False
+                ]
+                if retained != pending:
+                    if retained:
+                        st["pending_reviews"] = retained
+                    else:
+                        st.pop("pending_reviews", None)
+                    if not any(item.get("kind") == "review" for item in retained):
+                        recovery = st.get("review_recovery") or {}
+                        if str(recovery.get("head") or "") == head:
+                            st.pop("review_recovery", None)
+                    self.state.save()
             blocked = str(st.get("automerge_blocked") or "")
-            if (str((st.get("last_review") or {}).get("verdict") or "") == "approve"
-                    and int(st.get("review_rounds", 0)) >= 1
+            if (approval_is_current
                     and (re.search(r"review round\(s\).*need [2-9]\d*", blocked)
                          or "second review" in blocked)):
                 st.pop("automerge_blocked", None)
+                self.state.save()
             if task.status not in (Status.AWAITING_TRIAGE, Status.IN_REVIEW):
                 continue
             if not bool(self.effective("review.enabled", True, task.product)):
                 continue
-            head = str(st.get("head_sha") or "")
             recovery = st.get("review_recovery") or {}
             recovery_head = str(recovery.get("head") or "")
             if recovery_head and head and recovery_head != head:
@@ -511,7 +531,6 @@ class ReviewMixin:
                 continue
             review_runs = [run for run in self.runs.runs_for(task.id) if run.mode == "review"]
             applied_run = str(st.get("last_review_run") or "")
-            approved_head = self._effective_approved_head(task, st) if head else ""
             current_verdict = (bool(st.get("last_review")) and any(
                 run.run_id == applied_run
                 and (
