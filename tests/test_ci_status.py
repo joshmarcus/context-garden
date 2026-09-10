@@ -102,6 +102,37 @@ def test_worker_check_newest_matching_malformed_receipt_supersedes_older_success
     assert status.state == "malformed" and status.exists_for_sha and not status.green
 
 
+def test_worker_check_newest_matching_receipt_missing_command_supersedes_older_success(tmp_path):
+    validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
+    older = validations / "remote-20" / "result.json"
+    newer = validations / "remote-3" / "result.json"
+    write_receipt(older, receipt())
+    malformed = receipt()
+    malformed.pop("command")
+    write_receipt(newer, malformed)
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.state == "malformed" and status.exists_for_sha and not status.green
+
+
+def test_worker_check_newest_non_object_receipt_supersedes_older_success(tmp_path):
+    validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
+    older = validations / "remote-20" / "result.json"
+    newer = validations / "remote-3" / "result.json"
+    write_receipt(older, receipt())
+    newer.parent.mkdir(parents=True)
+    newer.write_text("[]")
+    os.utime(older, ns=(1, 1))
+    os.utime(newer, ns=(2, 2))
+
+    status = worker_check_status(tmp_path, "CG-1", "new", {"command": "pytest -q"})
+
+    assert status.state == "malformed" and not status.exists_for_sha and not status.green
+
+
 def test_worker_check_newest_matching_truncated_receipt_supersedes_older_success(tmp_path):
     validations = tmp_path / "runs" / "CG-1" / "run" / "validations"
     older = validations / "remote-20" / "result.json"

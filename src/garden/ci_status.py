@@ -113,10 +113,6 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
         try:
             raw = path.read_text()
             row = json.loads(raw)
-            receipt_sha = str(row["source_sha"])
-            command = str(row["command"])
-            exit_code = int(row["exit_code"])
-            log = str(row["log_location"])
         except OSError:
             malformed = True
             continue
@@ -132,8 +128,14 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
                 return CIStatus("malformed", sha, provider="worker_check")
             mismatched = True
             continue
-        except (ValueError, TypeError, KeyError):
-            if isinstance(row, dict) and row.get("malformed_validation_receipt") is True:
+        if not isinstance(row, dict):
+            # The newest completion has no trustworthy source identity, so an older
+            # success cannot safely stand in for it.
+            return CIStatus("malformed", sha, provider="worker_check")
+        try:
+            receipt_sha = str(row["source_sha"])
+        except (TypeError, KeyError):
+            if row.get("malformed_validation_receipt") is True:
                 sources = row.get("recoverable_source_shas")
                 overflow = row.get("recoverable_source_shas_overflow", False)
                 if not isinstance(sources, list) or not all(
@@ -148,11 +150,16 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
                     return CIStatus("malformed", sha, provider="worker_check")
                 mismatched = True
                 continue
-            malformed = True
-            continue
+            return CIStatus("malformed", sha, provider="worker_check")
         if receipt_sha != sha:
             mismatched = True
             continue
+        try:
+            command = str(row["command"])
+            exit_code = int(row["exit_code"])
+            log = str(row["log_location"])
+        except (ValueError, TypeError, KeyError):
+            return CIStatus("malformed", sha, exists_for_sha=True, provider="worker_check")
         if required_command and command != required_command:
             continue
         try:

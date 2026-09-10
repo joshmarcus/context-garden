@@ -227,6 +227,9 @@ def test_ui_check_produces_expected_screenshot_artifacts(tmp_path, monkeypatch):
     assert (tmp_path / "ui" / "task.html").exists()
     assert "task-decision" in result["pages"]
     assert 'class="panel decision-card"' in (tmp_path / "ui" / "task-decision.html").read_text()
+    task_page = (tmp_path / "ui" / "task.html").read_text()
+    assert "exact-head CI" in task_page
+    assert "stale" in task_page and "absent for SHA" in task_page
     for slug in ("now", "inbox", "board", "task"):
         for width in VIEWPORTS:
             for scheme in COLOR_SCHEMES:
@@ -549,6 +552,29 @@ def test_ui_check_classifies_clean_missing_result_as_return_infrastructure(tmp_p
 
     assert result["status"] == "error"
     assert result["capture_infrastructure"]["kind"] == "capture_result_unavailable"
+def test_ui_check_prefers_execution_checkout_over_serialized_controller_path(tmp_path, monkeypatch):
+    worktree = tmp_path / "remote-checkout"
+    (worktree / "src").mkdir(parents=True)
+    controller_path = tmp_path / "unavailable-controller-worktree"
+    seen = {}
+
+    execution_dir = tmp_path / "execution"
+    monkeypatch.setenv("GARDEN_EXECUTION_RUN_DIR", str(execution_dir))
+
+    def run(argv, **kwargs):
+        seen["argv"], seen["cwd"], seen["env"] = argv, kwargs["cwd"], kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, '{"status":"pass","pages":["task"]}\n', "")
+
+    monkeypatch.setattr("garden.walkthrough.subprocess.run", run)
+    result = ui_check(
+        {"worktree": str(worktree)},
+        {"out_dir": str(tmp_path / "captures"), "worktree": str(controller_path)},
+    )
+
+    assert result["status"] == "pass"
+    assert seen["cwd"] == worktree
+    assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(worktree / "src")
+    assert seen["argv"][4] == str(execution_dir / "ui")
 
 
 def test_browser_is_prepared_automatically(monkeypatch):

@@ -1,0 +1,86 @@
+DM-001 · qa
+
+  qacontext garden
+
+    Now 1
+    Now 2
+    Inbox 0
+    Now 2
+    Board
+    Trellis
+    Timeline
+    Trials
+    Runs
+    Costs
+
+    Config
+
+    Phases
+
+    p1Plate I · Pisum sativumdemo · 2 tasks+ new task
+
+    Running now
+
+    0 of 4 worker slots · 0 of 8 local execution slots · heavy 0/0 authoritative (requested 0) · isolation not configured
+
+      nothing running
+
+    Operating profile
+
+        plain garden.yaml values
+        economybalancedfast
+
+      Switch
+
+     Notify me in this browser
+
+    scheduler loop off
+
+    ↻ Tick now
+
+  demo / p1 · DM-001A worker that asks a question
+
+    sproutready sproutpriority next · 1 · easy
+
+  Brief
+
+  Back to draft
+
+  Dispatch now
+
+  tiereasymediumhard
+
+  priorityfirst · 0next · 1normal · 2later · 3someday · 4
+
+  Suggest a change…
+
+  Report friction…
+
+  Model trial…
+
+  Cancel
+
+    Goal
+
+The worker stops half way to ask which database to use; the person answers on the task page.
+
+qa-worker: needs_input
+
+    Runs
+
+      no runs yet
+
+        filedemo/p1/tasks/DM-001-a-worker-that-asks-a-question.md
+
+        depends on—
+        unblocks—
+        readingdemo/p1/specs/spec.md
+
+        branch—
+        PR—
+
+        exact-head CIworker_check · missing · abc123 · stale · absent for SHA
+
+        attempts0
+        runnerdefault / default harness
+        updated2026-01-01T00:00

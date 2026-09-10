@@ -852,6 +852,12 @@ def _seeded_ui_capture(out_dir: Path, pages: list[str] | None = None) -> dict[st
 
     with tempfile.TemporaryDirectory(prefix="garden-ui-") as scratch:
         garden_root = make_garden(Path(scratch))
+        state = State(garden_root / ".garden" / "state.json")
+        state.get("DM-001")["ci_status"] = {
+            "provider": "worker_check", "state": "missing", "queried_sha": "abc123",
+            "stale": True, "exists_for_sha": False, "evidence_url": "", "failures": [],
+        }
+        state.save()
         store = Store(garden_root)
         # Keep the visual fixture representative even before a worker has run: the
         # walkthrough must always give personas a real decision card to inspect.
@@ -922,7 +928,18 @@ def ui_check(ctx: dict[str, object], spec: dict[str, object]) -> dict[str, objec
     # The shared context is rewritten by pull-based workers to identify their host-local
     # clone.  Prefer it over a legacy per-check value, which may still name the controller's
     # checkout when a check payload crosses hosts.
+    # The check context is rebound to the checkout that actually executes the job.  This
+    # matters for remote checks: the serialized spec was created by the controller and may
+    # still contain its local absolute path, which is neither meaningful nor necessarily
+    # readable on the worker host.  Locally both values name the same checkout.
     worktree = Path(str(ctx.get("worktree") or spec.get("worktree") or ""))
+    serialized_worktree = Path(str(spec.get("worktree") or worktree))
+    if worktree != serialized_worktree:
+        # The controller's run directory is no more portable than its worktree. Remote
+        # workers expose a supervised execution directory specifically for run-owned output.
+        execution_dir = os.environ.get("GARDEN_EXECUTION_RUN_DIR")
+        if execution_dir:
+            out_dir = Path(execution_dir) / "ui"
     source = worktree / "src"
     if not source.is_dir():
         # This is the source under review, not screenshot transport.  A missing source tree

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -312,6 +313,10 @@ class GitHub:
         self.trusted_authors = {str(a).strip() for a in (trusted_authors or []) if str(a).strip()}
         self.trusted_bots = {str(b).strip() for b in (trusted_bots or []) if str(b).strip()}
         self._me: str | None = None
+        # Status is immutable for a completed SHA but pending checks can advance.  Keep a
+        # short controller-local cache so many task polls share one authenticated read.
+        self._check_cache: dict[tuple[str, str, str], tuple[float, str, list[str]]] = {}
+        self._rate_limit_until = 0.0
 
     @property
     def available(self) -> bool:
@@ -351,7 +356,9 @@ class GitHub:
             base = base.removesuffix("/v3")
         r = httpx.request(method, base + path, headers=headers, timeout=30, **kw)
         if r.status_code >= 400:
-            raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}")
+            reset = r.headers.get("x-ratelimit-reset", "")
+            suffix = f"; rate_limit_reset={reset}" if reset else ""
+            raise GitHubError(f"{method} {path}: {r.status_code} {r.text[:300]}{suffix}")
         return r.json() if r.content else None
 
     def _rest_pages(self, path: str, *, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -365,6 +372,112 @@ class GitHub:
             if len(batch) < 100:
                 return items
             page += 1
+
+    def _checks_for_sha(self, slug: str, sha: str) -> tuple[str, list[str]]:
+        """Return a coalesced exact-SHA rollup, failing visibly during rate limits."""
+        if not sha:
+            return "", []
+        now = time.time()
+        key = (self.host, slug.lower(), sha)
+        cached = self._check_cache.get(key)
+        if cached and cached[0] > now:
+            return cached[1], list(cached[2])
+        if self._rate_limit_until > now:
+            wait = max(1, int(self._rate_limit_until - now))
+            return "PENDING", [f"GitHub status unavailable; rate limit resets in {wait}s"]
+        try:
+            rollup: list[dict[str, Any]] = []
+            errors: list[GitHubError] = []
+            if self.gh:
+                try:
+                    runs = self._gh_object_pages(
+                        f"repos/{slug}/commits/{sha}/check-runs?per_page=100",
+                        "check_runs",
+                    )
+                    rollup.extend({"name": item.get("name"),
+                                   "conclusion": item.get("conclusion"),
+                                   "state": item.get("status")} for item in runs)
+                except GitHubError as exc:
+                    errors.append(exc)
+                try:
+                    statuses = self._gh_object_pages(
+                        f"repos/{slug}/commits/{sha}/status?per_page=100",
+                        "statuses",
+                    )
+                    rollup.extend({"name": item.get("context"), "state": item.get("state")}
+                                  for item in statuses)
+                except GitHubError as exc:
+                    errors.append(exc)
+            else:
+                for suffix, field in (("check-runs", "check_runs"), ("status", "statuses")):
+                    try:
+                        items: list[dict[str, Any]] = []
+                        page = 1
+                        while True:
+                            payload = self._rest(
+                                "GET", f"/repos/{slug}/commits/{sha}/{suffix}",
+                                params={"per_page": 100, "page": page},
+                            ) or {}
+                            batch = payload.get(field) if isinstance(payload, dict) else None
+                            if (not isinstance(batch, list)
+                                    or any(not isinstance(item, dict) for item in batch)):
+                                raise ValueError("malformed paginated GitHub response")
+                            items.extend(batch)
+                            raw_total = payload.get("total_count")
+                            total = int(raw_total) if raw_total is not None else None
+                            if total is not None and (total < 0 or total < len(items)):
+                                raise ValueError("malformed paginated GitHub response")
+                            if total is not None and len(items) >= total:
+                                break
+                            if not batch and total is not None:
+                                raise ValueError("incomplete paginated GitHub response")
+                            if total is None and len(batch) < 100:
+                                break
+                            page += 1
+                        if field == "check_runs":
+                            rollup.extend({"name": item.get("name"),
+                                           "conclusion": item.get("conclusion"),
+                                           "state": item.get("status")} for item in items)
+                        else:
+                            rollup.extend({"name": item.get("context"),
+                                           "state": item.get("state")} for item in items)
+                    except GitHubError as exc:
+                        errors.append(exc)
+                        message = str(exc)
+                        if ("rate limit" in message.lower()
+                                or re.search(r"rate_limit_reset=(\d+)", message)):
+                            break
+            if not errors:
+                state, failures = _rollup_state(rollup), _rollup_failed(rollup)
+            else:
+                messages = [str(exc) for exc in errors]
+                reset = next((match for message in messages
+                              if (match := re.search(r"rate_limit_reset=(\d+)", message))), None)
+                if reset or any("rate limit" in message.lower() for message in messages):
+                    self._rate_limit_until = max(
+                        now + 10.0, float(reset.group(1)) if reset else now + 60.0,
+                    )
+                    state, failures = "PENDING", ["GitHub status unavailable; rate limited"]
+                else:
+                    states = [_check_error_state(exc) for exc in errors]
+                    state = "PERMISSION" if "PERMISSION" in states else "UNAVAILABLE"
+                    failures = []
+            self._check_cache[key] = (now + 10.0, state, failures)
+            return state, failures
+        except (GitHubError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            message = str(exc)
+            reset = re.search(r"rate_limit_reset=(\d+)", message)
+            limited = "rate limit" in message.lower() or reset is not None
+            if limited:
+                self._rate_limit_until = max(now + 10.0, float(reset.group(1)) if reset else now + 60.0)
+                detail = "GitHub status unavailable; rate limited"
+            else:
+                detail = "GitHub status unavailable"
+            # Unavailability is pending, never equivalent to absent or green, and a short
+            # cache prevents one outage from multiplying requests across tasks.
+            unavailable_until = self._rate_limit_until if self._rate_limit_until > now else now + 10.0
+            self._check_cache[key] = (min(unavailable_until, now + 60.0), "PENDING", [detail])
+            return "PENDING", [detail]
 
     def me(self) -> str:
         if self._me is None:
@@ -553,12 +666,12 @@ class GitHub:
                 "--json", "number,url,state,title,body,author,headRefName,headRefOid,headRepository,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
-            rollup = p.get("statusCheckRollup") or []
+            checks, failed_checks = self._checks_for_sha(slug, p.get("headRefOid") or "")
             return PRInfo(
                 number=p["number"], url=p["url"], state=p["state"], title=p.get("title", ""),
                 head=p.get("headRefName", ""), base=p.get("baseRefName", ""),
                 review_decision=p.get("reviewDecision") or "", mergeable=p.get("mergeable") or "",
-                checks=_rollup_state(rollup), failed_checks=_rollup_failed(rollup), updated_at=p.get("updatedAt", ""),
+                checks=checks, failed_checks=failed_checks, updated_at=p.get("updatedAt", ""),
                 body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
                 merge_commit_sha=(p.get("mergeCommit") or {}).get("oid", ""),
                 head_repo=str((p.get("headRepository") or {}).get("nameWithOwner") or ""),
@@ -572,55 +685,7 @@ class GitHub:
         info.merge_commit_sha = p.get("merge_commit_sha") or ""
         info.head_repo = str(((p.get("head") or {}).get("repo") or {}).get("full_name") or "")
         if info.head_sha:
-            rollup: list[dict[str, Any]] = []
-            check_errors: list[GitHubError] = []
-            try:
-                check_runs: list[dict[str, Any]] = []
-                page = 1
-                while True:
-                    runs = self._rest(
-                        "GET", f"/repos/{slug}/commits/{info.head_sha}/check-runs",
-                        params={"per_page": 100, "page": page},
-                    ) or {}
-                    batch = runs.get("check_runs", [])
-                    check_runs.extend(batch)
-                    total = int(runs.get("total_count") or 0)
-                    if len(batch) < 100 or (total and len(check_runs) >= total):
-                        break
-                    page += 1
-                rollup.extend(
-                    {"name": check.get("name"), "conclusion": check.get("conclusion"),
-                     "state": check.get("status")}
-                    for check in check_runs
-                )
-            except GitHubError as exc:
-                check_errors.append(exc)
-            try:
-                statuses: list[dict[str, Any]] = []
-                page = 1
-                while True:
-                    combined = self._rest(
-                        "GET", f"/repos/{slug}/commits/{info.head_sha}/status",
-                        params={"per_page": 100, "page": page},
-                    ) or {}
-                    batch = combined.get("statuses", [])
-                    statuses.extend(batch)
-                    total = int(combined.get("total_count") or 0)
-                    if len(batch) < 100 or (total and len(statuses) >= total):
-                        break
-                    page += 1
-                rollup.extend(
-                    {"name": status.get("context"), "state": status.get("state")}
-                    for status in statuses
-                )
-            except GitHubError as exc:
-                check_errors.append(exc)
-            if rollup or not check_errors:
-                info.checks = _rollup_state(rollup)
-                info.failed_checks = _rollup_failed(rollup)
-            else:
-                states = [_check_error_state(exc) for exc in check_errors]
-                info.checks = "PERMISSION" if "PERMISSION" in states else "UNAVAILABLE"
+            info.checks, info.failed_checks = self._checks_for_sha(slug, info.head_sha)
         try:
             reviews = self._rest("GET", f"/repos/{slug}/pulls/{number}/reviews", params={"per_page": 100}) or []
             latest: dict[str, str] = {}
@@ -786,6 +851,19 @@ class GitHub:
         """Read all CLI pages as one JSON document, including a cursor boundary page."""
         data = json.loads(self._gh("api", path, "--paginate", "--slurp") or "[]")
         return [row for page in data for row in page] if data and isinstance(data[0], list) else data
+
+    def _gh_object_pages(self, path: str, field: str) -> list[dict[str, Any]]:
+        """Collect one list field from every object page returned by ``gh api``."""
+        pages = json.loads(self._gh("api", path, "--paginate", "--slurp") or "null")
+        if not isinstance(pages, list) or not pages:
+            raise ValueError("malformed paginated GitHub response")
+        rows: list[dict[str, Any]] = []
+        for page in pages:
+            batch = page.get(field) if isinstance(page, dict) else None
+            if not isinstance(batch, list) or any(not isinstance(row, dict) for row in batch):
+                raise ValueError("malformed paginated GitHub response")
+            rows.extend(batch)
+        return rows
 
     def _reviews_since(self, slug: str, number: int, since_iso: str) -> list[dict[str, Any]]:
         owner, name = slug.split("/", 1)

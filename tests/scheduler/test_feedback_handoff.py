@@ -8,6 +8,9 @@ from garden.store import Store
 
 
 def _open_task(sched, fake_github):
+    # These handoff tests use synthetic immutable SHA values to exercise ordering and
+    # replay.  Keep FakeGitHub from replacing them with the fixture remote's branch tip.
+    fake_github.remote = None
     sched.cfg.data["review"] = {**sched.cfg.data["review"], "enabled": False}
     sched.tick()
     sched.tick()
