@@ -41,6 +41,23 @@ def test_delivery_coalesces_duplicates_and_survives_restart(tmp_path):
     assert len(adapter.calls) == 1
 
 
+def test_delivery_emits_each_lifecycle_kind_once_per_identity(tmp_path):
+    adapter = SyntheticAdapter()
+    delivery = NotificationDelivery(tmp_path / "notifications.json", {"synthetic": adapter})
+    events = [
+        NotificationEvent("CG-520", "failed", "delivery failed", kind="failure"),
+        NotificationEvent("CG-520", "harness_resumed", "dispatch resumed", kind="recovery"),
+        NotificationEvent("CG-520", "needs_human", "choose a path", kind="required_action"),
+    ]
+
+    for event in events:
+        assert delivery.deliver(_cfg(), event) == ["operator: delivered"]
+        assert delivery.deliver(_cfg(), event) == []
+    assert [call["fields"]["kind"] for call in adapter.calls] == [
+        "failure", "recovery", "required_action",
+    ]
+
+
 def test_delivery_retries_transient_errors_with_bounded_backoff(tmp_path):
     now = [100.0]
     adapter = SyntheticAdapter("transient")
@@ -79,9 +96,29 @@ def test_delivery_filters_worker_text_and_honours_revocation(tmp_path):
 
     delivery.deliver(cfg, event)
     assert adapter.calls[0]["fields"] == {"task_id": "CG-520", "message": "$(danger) private token=<redacted>"}
+    ledger = (tmp_path / "notifications.json").read_text()
+    assert "host-203-0-113-10.internal" not in ledger
+    assert "token=secret" not in ledger
     cfg["notify"]["destinations"]["operator"]["revoked"] = True
     assert delivery.deliver(cfg, NotificationEvent("CG-520", "recovered", "safe")) == ["operator: revoked"]
     assert len(adapter.calls) == 1
+
+
+def test_delivery_scrubs_every_string_field_before_delivery_and_persistence(tmp_path):
+    adapter = SyntheticAdapter()
+    delivery = NotificationDelivery(tmp_path / "notifications.json", {"synthetic": adapter})
+    cfg = _cfg(fields=["task_id", "status", "message", "pr_url", "kind"])
+    cfg["ssh"] = {"hosts": [{"name": "private", "host": "host-203-0-113-10.internal"}]}
+    event = NotificationEvent("CG-520", "failed", "token=secret", "https://user:pass@host-203-0-113-10.internal/pull/1")
+
+    assert delivery.deliver(cfg, event) == ["operator: delivered"]
+    fields = adapter.calls[0]["fields"]
+    assert fields["message"] == "token=<redacted>"
+    assert fields["pr_url"] == "https://<redacted>@private/pull/1"
+    ledger = (tmp_path / "notifications.json").read_text()
+    assert "secret" not in ledger
+    assert "user:pass" not in ledger
+    assert "host-203-0-113-10.internal" not in ledger
 
 
 def test_delivery_records_permanent_adapter_failure_without_external_delivery(tmp_path):
