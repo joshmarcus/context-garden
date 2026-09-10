@@ -92,6 +92,19 @@ def test_dead_run_sweep_closes_a_run_that_never_started(sched):
     assert sched.store.task("DM-001").status == Status.FAILED
 
 
+@pytest.mark.parametrize("status", ("requested", "preparing"))
+def test_dead_run_sweep_leaves_a_dispatch_launch_reservation_alone(sched, status):
+    """The dispatcher, not a concurrent tick, owns its pre-pid launch window."""
+    sched.runs.new_run("DM-001", "local", mode="work", initial_status=status)
+
+    rep = TickReport()
+    sched.reap_dead_runs(rep)
+
+    current = sched.runs.latest("DM-001")
+    assert current.status == status
+    assert not rep.transitions
+
+
 def test_dead_run_sweep_closes_a_vanished_process(sched):
     """A run whose pid died before writing an exit code follows worker-crash handling."""
     task = sched.store.task("DM-001")
@@ -108,6 +121,33 @@ def test_dead_run_sweep_closes_a_vanished_process(sched):
     assert any("process vanished" in t for t in rep.transitions)
     assert sched.runs.latest("DM-001").status == "failed"
     assert sched.store.task("DM-001").status == Status.READY
+
+
+def test_dead_run_sweep_leaves_a_completion_signal_written_during_liveness_check(sched, monkeypatch):
+    """A supervisor can publish its exit code between the sweep's two observations."""
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    task.attempts = 1
+    sched.store.save(task)
+    run = sched.runs.new_run("DM-001", "local", mode="work")
+    run.pid = 999999
+    run.save()
+
+    def finished_after_signal(current):
+        if current.run_id == run.run_id:
+            (current.path / "exit_code").write_text("0")
+            return True
+        return False
+
+    monkeypatch.setattr("garden.runs.Run.process_finished", finished_after_signal)
+
+    rep = TickReport()
+    sched.reap_dead_runs(rep)
+
+    current = sched.runs.latest("DM-001")
+    assert current.status == "running"
+    assert current.error == ""
+    assert not rep.transitions
 
 
 def test_dead_run_failure_is_parked_during_manual_reservation(sched):
