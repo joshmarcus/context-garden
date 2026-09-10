@@ -20,6 +20,8 @@ from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
 from ...model import effective_owner
 from ...runs import Run
+from ...workers import WorkerContactStore
+from ...workers import snapshot as worker_snapshot
 from ..common import Site
 
 
@@ -138,6 +140,18 @@ def register(app: FastAPI, site: Site) -> None:
             if run.host != host.get("name"):
                 raise HTTPException(409, "host facts do not belong to the leased host")
             (run.path / "host_facts.json").write_text(json.dumps(facts))
+
+    def record_worker_contact(host: dict[str, Any], body: dict[str, Any], *, outcome: str) -> None:
+        facts = host_facts(body.get("host_facts"))
+        WorkerContactStore(hub.store.config.garden_dir).record(
+            str(host.get("name") or ""),
+            capacity=(min(max(1, int(body["capacity"])), int(host.get("max_parallel") or 1))
+                      if body.get("capacity") is not None else None),
+            harnesses=[str(value) for value in (body.get("harnesses") or [])],
+            tiers=[str(value) for value in (body.get("tiers") or [])],
+            facts=facts,
+            outcome=outcome,
+        )
 
     def worker_host(authorization: str) -> dict[str, Any]:
         from ...hosts.registry import authenticate_worker, worker_configuration
@@ -268,6 +282,14 @@ def register(app: FastAPI, site: Site) -> None:
             for task in tasks.values()
         ])
 
+    @app.get("/api/workers")
+    def api_workers():
+        """Cached worker presence and occupancy; never probes infrastructure on request."""
+        fresh = hub.fresh()
+        from ...runs import RunStore
+
+        return JSONResponse(worker_snapshot(fresh.config, RunStore(fresh.config.garden_dir)))
+
     @app.get("/api/operations/{task_id}/{run_id}")
     def api_operation(task_id: str, run_id: str):
         """Read one durable launch identity directly; never scan run history."""
@@ -334,6 +356,10 @@ def register(app: FastAPI, site: Site) -> None:
         with hub.action_lock:
             from ...runner.base import pass_env_patterns
             from ...runs import RunStore
+
+            # An authenticated empty claim is independent liveness evidence. Record it
+            # before admission so every 204 path keeps an idle worker visible.
+            record_worker_contact(host_cfg, body, outcome="polling")
 
             all_runs = RunStore(hub.store.config.garden_dir).all_runs()
             replay = next((r for r in all_runs if r.runner == "remote" and (
@@ -499,6 +525,7 @@ def register(app: FastAPI, site: Site) -> None:
                 run.claim_response = payload
                 persist_host_facts(run, body.get("host_facts"), host_cfg)
                 run.save()
+                record_worker_contact(host_cfg, body, outcome="claimed")
                 return JSONResponse(payload)
         return Response(status_code=204)
 
@@ -518,6 +545,7 @@ def register(app: FastAPI, site: Site) -> None:
         with hub.action_lock:
             run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
             chunk = transcript_value
+            record_worker_contact(host, body, outcome="heartbeat")
             if chunk:
                 transcript = run.path / "stdout.json"
                 current = transcript.stat().st_size if transcript.exists() else 0

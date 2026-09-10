@@ -122,6 +122,7 @@ of the loop touch different files.
 | `runner/remote.py` | the pull-based remote worker runner backend |
 | `remote_worker.py` | the independent-host worker agent |
 | `managed_worker.py` | measured single-host admission and remote resource/version attribution |
+| `workers.py` | bounded, provider-neutral worker presence and current-job snapshots for the API and Now view |
 | `proctree.py`, `system_resources.py` | procfs/BSD process observation and Linux/macOS host-memory telemetry used by local lifecycle and admission code |
 | `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py`, `hosts/scale.py` | scheduler-independent declarative host lifecycle, resumable bounded scale operations, strict configuration and versioned provider/profile contracts |
 | `hosts/ec2.py`, `hosts/command.py`, `hosts/fake.py` | the first infrastructure adapter, the vendor-neutral controller command adapter, and the local extension/contract fixture |
