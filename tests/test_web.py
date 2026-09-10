@@ -2482,6 +2482,23 @@ def test_config_editor_round_trips_empty_and_yaml_sensitive_strings(garden):
         assert Config.load(garden).get(key) == value
 
 
+@pytest.mark.parametrize("value", ["true", "123", "a: b"])
+def test_config_editor_round_trips_yaml_sensitive_string_or_list_scalars(garden, value):
+    import re
+
+    c = client(garden)
+    page = c.get("/config").text
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "upgrade.pip", "value": value, "revision": token},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert Config.load(garden).get("upgrade.pip") == value
+
+
 def test_config_editor_saves_structured_list_and_mapping_rows(garden):
     import re
 

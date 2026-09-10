@@ -20,7 +20,7 @@ def _parse_value(key: str, raw: str) -> Any:
     if field.value_type.startswith("optional_") and not raw.strip():
         return None
     expected = field.value_type.removeprefix("optional_")
-    if expected == "string":
+    if expected in {"string", "string_or_list"}:
         return raw
     try:
         value = yaml.safe_load(raw)
