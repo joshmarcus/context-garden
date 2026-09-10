@@ -22,11 +22,26 @@ from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...workers import WorkerContactStore
 from ...workers import snapshot as worker_snapshot
+from ...worker_diagnostics import WorkerEventLog
 from ..common import Site
 
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+
+    def record_worker_event(event: str, body: dict[str, Any], operation: str,
+                            status: int, run: Any | None = None, outcome: str = "success") -> None:
+        """Persist protocol metadata only; bodies, tokens, and physical host ids are excluded."""
+        WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl").emit(
+            event, request_id=str(body.get("request_id") or body.get("claim_request_id") or ""),
+            claim_request_id=str(body.get("claim_request_id") or ""), operation=operation,
+            endpoint_class=operation, http_status=status, outcome=outcome,
+            worker_id=str(body.get("worker_id") or body.get("host") or getattr(run, "host", "")),
+            process_generation=str(body.get("process_generation") or ""),
+            run_id=str(getattr(run, "run_id", "")), task_id=str(getattr(run, "task_id", "")),
+            work_state={"claim": "queued_or_idle", "heartbeat": "executing",
+                        "result": "returning_result"}.get(operation, "unknown"),
+        )
 
     def request_object(value: Any) -> dict[str, Any]:
         if not isinstance(value, dict):
@@ -322,6 +337,12 @@ def register(app: FastAPI, site: Site) -> None:
     def api_events():
         return JSONResponse(hub.events[-50:])
 
+    @app.get("/api/worker-diagnostics")
+    def api_worker_diagnostics(limit: int = 200):
+        """Return a bounded local export for CG-499 consumers; never contact worker hosts."""
+        log = WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl")
+        return JSONResponse(log.read(limit=max(1, min(limit, 1000))))
+
     @app.get("/api/decisions")
     def api_decisions(since: str = ""):
         """The decision-kind events since a timestamp, each with a one-line title and the URL
@@ -547,7 +568,9 @@ def register(app: FastAPI, site: Site) -> None:
                 except RunMutationConflict:
                     raise HTTPException(409, "run claim changed during allocation") from None
                 record_worker_contact(host_cfg, body, outcome="claimed")
+                record_worker_event("controller_response", body, "claim", 200, run, "claimed")
                 return JSONResponse(payload)
+        record_worker_event("controller_response", body, "claim", 204, outcome="idle")
         return Response(status_code=204)
 
     @app.post("/api/runs/{run_id}/heartbeat")
@@ -596,6 +619,8 @@ def register(app: FastAPI, site: Site) -> None:
                 ).isoformat()
             run.lease_updated_at = now.isoformat()
             run.save_locked()
+            record_worker_event("controller_response", body, "heartbeat", 200, run,
+                                "lease_renewed")
         transcript = run.path / "stdout.json"
         return {"ok": True, "lease_expires_at": run.lease_expires_at,
                 "transcript_offset": transcript.stat().st_size if transcript.exists() else 0}
@@ -679,4 +704,6 @@ def register(app: FastAPI, site: Site) -> None:
             # Completion is written last: once visible, claim skips this run and the accepted
             # generation remains immutable until reap promotes its staging commit.
             (run.path / "exit_code").write_text(str(exit_code))
+            record_worker_event("controller_response", body, "result", 200, run,
+                                "result_accepted")
         return {"ok": True}
