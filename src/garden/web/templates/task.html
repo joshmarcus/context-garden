@@ -35,6 +35,13 @@
 </div>
 {% endif %}
 
+{% if completion %}
+<div class="panel" style="border-color:var(--s-done);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--s-done)">Current completion · {{ completion.kind }}</div>
+  <p style="margin:6px 0 0"><b>{{ completion.source }}</b>{% if completion.at %} · <span class="mono">{{ completion.at[:16] }}</span>{% endif %}<br>{{ completion.reason }}</p>
+</div>
+{% endif %}
+
 {% if brief_gaps %}
 <div id="brief-card" class="panel" style="border-color:var(--bad);margin-bottom:14px">
   <div class="eyebrow" style="color:var(--bad)">Fix the brief before approving</div>
@@ -191,7 +198,7 @@
       <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for s in state.stashes %}<li style="margin-bottom:4px"><span class="mono">{{ s.sha[:12] }}</span> <span class="faint">{{ s.name }}</span>{% if s.at %} <span class="faint mono">— {{ s.at[:16] }}</span>{% endif %}</li>{% endfor %}</ul>
     </div>{% endif %}
     {% if state.pending_feedback and not task.status.terminal %}<div class="panel"><div class="eyebrow">Pending feedback for the next revise run</div><div class="prose" style="margin-top:6px">{{ state.pending_feedback|md|safe }}</div></div>{% endif %}
-    {% if state.last_review %}<div class="panel"><div class="eyebrow">Last automated review</div><div class="prose" style="margin-top:6px">{{ review_md|md|safe }}</div></div>{% endif %}
+    {% if completion and review_history %}<div class="panel"><div class="eyebrow">Historical automated reviews</div>{% for review in review_history %}<div class="prose" style="margin-top:10px"><p class="muted">{{ review.at[:16] if review.at else 'date unavailable' }} · <a href="/runs/{{ task.id }}/{{ review.run_id }}">review run</a>{% if review.head %} · source <span class="mono">{{ review.head[:12] }}</span>{% endif %}</p>{{ review.markdown|md|safe }}</div>{% endfor %}</div>{% elif state.last_review %}<div class="panel"><div class="eyebrow">Last automated review</div><div class="prose" style="margin-top:6px">{{ review_md|md|safe }}</div></div>{% endif %}
     {% if state.qa %}<div class="panel"><div class="eyebrow">Questions and answers</div>{% for item in state.qa %}<p><b>Q:</b> {{ item.q }}<br><b>A:</b> {{ item.a }}</p>{% endfor %}</div>{% endif %}
     {% if design_files.changed %}<div class="panel"><div class="eyebrow">Design files in this PR</div><ul>{% for f in design_files.changed %}<li><a href="{{ f.href }}">{{ f.name }}</a></li>{% endfor %}</ul></div>{% endif %}
     {% if design_files.shared %}<div class="panel"><div class="eyebrow">Relevant shared design files</div><ul>{% for f in design_files.shared %}<li><a href="{{ f.href }}">{{ f.name }}</a></li>{% endfor %}</ul></div>{% endif %}

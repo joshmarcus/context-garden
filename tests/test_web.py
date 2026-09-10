@@ -3647,6 +3647,88 @@ def test_task_page_renders_review_fixes_and_improvements(garden):
     assert "Improvements" in page and "Rename x to parsed_value." in page
 
 
+def test_done_task_shows_accepted_completion_before_historical_reviews(garden):
+    from garden.events import EventLog
+    from garden.scheduler import State
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DONE
+    store.save(task)
+    events = EventLog(garden / ".garden" / "events.jsonl")
+    events.emit("review", task.id, verdict="request_changes", summary="old rejection")
+    events.emit("transition", task.id, **{"from": "in_review", "to": "done"},
+                note="PR merged: https://example.test/pull/1", base_merged=True)
+    review_dir = garden / ".garden" / "runs" / task.id / "review-1"
+    Run(task_id=task.id, run_id="review-1", dir=str(review_dir), runner="local", mode="review",
+        status="done", started_at="2026-09-10T12:00:00+00:00", finished_at="2026-09-10T12:01:00+00:00",
+        env_snapshot={"review_head": "a" * 40},
+        result={"verdict": "request_changes", "summary": "old rejection",
+                "findings": [{"severity": "blocking", "summary": "boundary missing"}]}).save()
+    state = State(garden / ".garden" / "state.json")
+    state.get(task.id)["last_review"] = {"verdict": "request_changes", "summary": "old rejection"}
+    state.save()
+
+    page = client(garden).get(f"/tasks/{task.id}").text
+    assert "Current completion · Accepted completion" in page
+    assert "Reviewed and merged into the base branch" in page
+    assert "Historical automated reviews" in page
+    assert "source <span class=\"mono\">aaaaaaaaaaaa</span>" in page
+    assert page.index("Current completion") < page.index("Historical automated reviews")
+    assert "old rejection" in page
+
+
+def test_done_task_labels_forced_status_completion_as_not_accepted(garden):
+    from garden.events import EventLog
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DONE
+    store.save(task)
+    events = EventLog(garden / ".garden" / "events.jsonl")
+    events.emit("mark_done", task.id, actor="human_owner", reason="manual stop")
+    events.emit("transition", task.id, **{"from": "in_review", "to": "done"},
+                note="manual stop", base_merged=False)
+
+    page = client(garden).get(f"/tasks/{task.id}").text
+    assert "Current completion · Forced status completion" in page
+    assert "Forced completion by human owner" in page
+    assert "not recorded as base-branch acceptance" in page
+
+
+def test_done_task_distinguishes_owner_accepted_completion(garden):
+    from garden.events import EventLog
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DONE
+    store.save(task)
+    events = EventLog(garden / ".garden" / "events.jsonl")
+    events.emit("mark_done", task.id, actor="human_owner", reason="verified base merge")
+    events.emit("transition", task.id, **{"from": "in_review", "to": "done"},
+                note="verified base merge", base_merged=True)
+
+    page = client(garden).get(f"/tasks/{task.id}").text
+    assert "Current completion · Accepted completion" in page
+    assert "Owner acceptance by human owner" in page
+
+
+def test_done_task_recognises_legacy_merged_completion(garden):
+    from garden.events import EventLog
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DONE
+    store.save(task)
+    EventLog(garden / ".garden" / "events.jsonl").emit(
+        "transition", task.id, **{"from": "in_review", "to": "done"}, note="PR merged: old record"
+    )
+
+    page = client(garden).get(f"/tasks/{task.id}").text
+    assert "Current completion · Accepted completion" in page
+    assert "Reviewed and merged into the base branch" in page
+
+
 def test_posts_from_another_origin_are_refused(garden):
     c = client(garden)
     # A form posted by a page on another site carries its Origin: refused, nothing changes.
