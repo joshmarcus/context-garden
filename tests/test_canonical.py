@@ -23,6 +23,8 @@ from garden.canonical import (
 from garden.model import Status
 from garden.runner.ssh import SSHRunner
 from garden.scheduler import Scheduler
+from garden.scheduler.resources import ResourcePressureError
+from garden.storage import StorageVolume
 from garden.store import Store
 
 
@@ -50,6 +52,35 @@ def test_canonical_local_run_reconciles_every_warm_use(garden, fake_github, tmp_
     second = scheduler.dispatch(task, mode="resume")
     assert second.worktree == str(repo)
     assert tally.read_text() == "run\nrun\n"
+
+
+def test_canonical_root_is_included_in_fresh_storage_admission(
+    garden, fake_github, monkeypatch
+):
+    repo = (garden / "../repo").resolve()
+    scheduler = Scheduler(_enable(garden, repo), github=fake_github)
+    scheduler.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    observed_paths: list[tuple[Path, ...]] = []
+
+    def measure(paths, **_kwargs):
+        observed_paths.append(paths)
+        if repo in paths:
+            return (StorageVolume("canonical", "local filesystem", 19 << 30),)
+        return (StorageVolume("controller", "local filesystem", 30 << 30),)
+
+    monkeypatch.setattr("garden.scheduler.resources.measure_storage", measure)
+    mutations: list[str] = []
+    monkeypatch.setattr("garden.canonical.claim", lambda *_args: mutations.append("claim"))
+    monkeypatch.setattr("garden.canonical.preflight", lambda *_args: mutations.append("preflight"))
+    monkeypatch.setattr("garden.canonical.reconcile", lambda *_args: mutations.append("reconcile"))
+    task = scheduler.store.task("DM-001")
+
+    with pytest.raises(ResourcePressureError, match="canonical checkout preparation"):
+        scheduler.dispatch(task)
+
+    assert any(repo in paths for paths in observed_paths)
+    assert mutations == []
+    assert task.attempts == 0
 
 
 def test_canonical_claim_survives_restart_and_refuses_competitor(tmp_path):
