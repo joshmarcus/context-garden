@@ -150,7 +150,7 @@ class Scheduler(
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
-        self._closing_review_claims: list[tuple[str, str]] = []
+        self._closing_review_claims: list[tuple[str, str, str]] = []
         self.log = log or (lambda msg: None)
         if not read_only:
             self._restore_operational_history()

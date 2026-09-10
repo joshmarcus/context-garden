@@ -1114,6 +1114,88 @@ def test_restart_reclaims_an_interrupted_closing_review_preparation(sched, monke
     assert started == ["request-one"]
 
 
+def test_later_tick_persona_and_reconcile_launches_run_outside_controller_lock(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    held = False
+    original_lock = sched._controller_lock
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def tracked_lock():
+        nonlocal held
+        with original_lock():
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+    monkeypatch.setattr(sched, "_controller_lock", tracked_lock)
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["security"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "personas", "persona_runs": {},
+             "request_id": "later-persona"}
+    sched._retro_list().append(entry)
+    sched.state.save()
+    calls = []
+
+    def personas(ph, queued, names):
+        assert not held
+        calls.append(("personas", names))
+        return names
+
+    monkeypatch.setattr(sched, "_dispatch_retro_personas", personas)
+    sched.tick()
+    assert calls == [("personas", ["security"])]
+
+    entry = _retro_entry(sched, phase.key)
+    reviews = phase.path / "docs" / "reviews"
+    reviews.mkdir(parents=True, exist_ok=True)
+    (reviews / "designer-2026-09-10.md").write_text("complete")
+    entry["personas"] = ["designer"]
+    entry["stage"] = "personas"
+
+    def reconcile(queued, run_id=""):
+        assert not held
+        calls.append(("reconcile", run_id))
+        queued.update(stage="reconciling", recon_run_id=run_id,
+                      recon_task="_retro-demo-p1")
+
+    monkeypatch.setattr(sched, "_dispatch_reconcile", reconcile)
+    sched.state.save()
+    sched.tick()
+    assert calls[-1][0] == "reconcile"
+    assert calls[-1][1].startswith("retro-reconcile-")
+
+
+def test_restart_resumes_one_deferred_persona_job_with_its_reserved_identity(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["security"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "preparing_personas", "persona_runs": {},
+             "request_id": "later-restart", "preparation_action": "personas",
+             "preparation_names": ["security"], "preparation_claim": "dead",
+             "preparation_pid": 99999999}
+    sched._retro_list().append(entry)
+    sched.state.save()
+    monkeypatch.setattr(sched, "review_slots_free_for", lambda task: 1)
+    monkeypatch.setattr(sched, "local_slots_free", lambda task_id="": 1)
+    launched = []
+
+    def dispatch(ph, name, **kwargs):
+        launched.append(kwargs["run_id"])
+        return sched.runs.new_run(f"_{ph.product}-{ph.name}", "local", mode="persona",
+                                  run_id=kwargs["run_id"])
+
+    monkeypatch.setattr(sched, "dispatch_persona_phase", dispatch)
+    sched.tick()
+    sched.tick()
+
+    assert len(launched) == 1
+    assert _retro_entry(sched, phase.key)["persona_runs"]["security"] == launched[0]
+
+
 def test_retro_personas_fill_only_current_review_capacity(sched, monkeypatch):
     phase = sched.store.phase("demo", "p1")
     entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
