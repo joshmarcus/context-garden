@@ -768,6 +768,48 @@ def test_conflicting_garden_limits_keep_first_authoritative_capacity(tmp_path):
         assert run.read_exit_code() == 0
 
 
+def test_shared_capacity_migration_waits_for_competing_garden_to_be_idle(tmp_path, monkeypatch):
+    """An explicit migration cannot reinterpret a lease held by another client."""
+    import garden.run_supervisor as supervisor
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    run_dir = tmp_path / "other-garden-run"
+    run_dir.mkdir()
+    process = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(run_dir), "sleep 0.35"],
+        env=_standalone_supervisor_env(
+            XDG_RUNTIME_DIR=str(runtime),
+            GARDEN_HEAVY_TEST_PARALLEL="1",
+            GARDEN_HEAVY_EXECUTION="1",
+        ),
+    )
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            if json.loads((run_dir / "execution.json").read_text()).get("state") == "running":
+                break
+        except (OSError, json.JSONDecodeError):
+            pass
+        time.sleep(0.01)
+    else:
+        process.terminate()
+        process.wait()
+        pytest.fail("competing client did not acquire its validation lease")
+
+    with pytest.raises(RuntimeError, match="every garden.*idle"):
+        supervisor.reset_authoritative_limit(2)
+    assert supervisor._authoritative_limit(2) == (
+        1,
+        "configured limit 2 conflicts with authoritative limit 1",
+    )
+
+    assert process.wait() == 0
+    assert supervisor.reset_authoritative_limit(2) == (1, 2)
+    assert supervisor._authoritative_limit(2) == (2, None)
+
+
 def test_model_sessions_overlap_while_their_heavy_validations_serialize(tmp_path):
     """Agent capacity is independent of the authoritative local validation budget."""
     from garden.harness import Harness

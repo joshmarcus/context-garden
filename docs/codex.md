@@ -148,14 +148,20 @@ cgroup reserve, OOM-event and temporary-storage checks. The rail, config page an
 
 Supported local setup, checks, probes, and worker-issued validations take a kernel-backed,
 per-user heavy-execution lease shared by every garden using the same runtime directory. The
-first configured limit recorded there is authoritative; a different limit is reported in the
-run's `execution.json` and uses the authoritative capacity instead of creating extra slots.
+first configured limit recorded there is authoritative for the OS user and resolved runtime
+directory; garden roots and configuration filenames are not part of that namespace. A different
+limit is reported in the run's `execution.json` and uses the authoritative capacity instead of
+creating extra slots.
 Lease metadata and locks live in a user-owned private `0700` `garden-<uid>` directory below
 `$XDG_RUNTIME_DIR` (or below the root-owned sticky `/tmp` when XDG is absent); symlinks,
-foreign-owned files and non-regular files are rejected. Change capacity only while idle: stop local garden runs, verify
-there are no active lease holders, then remove only your own capacity metadata from that private
-directory before restarting with one consistent configuration. Never delete slot locks or any
-other user's runtime files.
+foreign-owned files and non-regular files are rejected. To migrate, first give every garden in
+that namespace one consistent `resources.heavy_test_parallel` value, let existing heavy work
+drain, and run `garden set-validation-capacity LIMIT`. The command takes the namespace guard and
+every old slot before replacing the authority; it refuses the change if any lease is active.
+Existing work is never cancelled or reinterpreted. Missing or invalid authority is not a
+migration signal: restart a garden to establish missing metadata, and repair invalid metadata
+only after the same idle check. Never delete capacity metadata, slot locks, or another user's
+runtime files by hand.
 Model sessions and remote-CI waits do not hold this lease, so independently configured local
 run capacity can keep agents thinking while heavy commands remain serial. Extra heavy work is visible as waiting;
 cancellation works while waiting, and process exit or a crash releases the lease without stale

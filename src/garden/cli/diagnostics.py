@@ -69,6 +69,21 @@ def runs(task_id: str | None = typer.Argument(None)):
     console.print(table)
 
 
+@app.command("set-validation-capacity", rich_help_panel=PANEL_DIAG)
+def set_validation_capacity(
+    limit: int = typer.Argument(..., min=0, help="New per-user heavy-validation capacity."),
+):
+    """Change the shared heavy-validation capacity after all gardens are idle."""
+    from ..run_supervisor import reset_authoritative_limit
+
+    try:
+        old, new = reset_authoritative_limit(limit)
+    except RuntimeError as exc:
+        err.print(f"[red]validation capacity unchanged: {exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"shared validation capacity changed from {old} to {new}")
+
+
 @app.command("archive-runs", rich_help_panel=PANEL_DIAG)
 def archive_runs(
     older_than_days: int = typer.Option(30, min=1, help="Archive terminal runs finished before this many days ago."),
