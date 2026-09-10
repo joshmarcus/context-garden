@@ -25,7 +25,7 @@ from .brief import parse_result
 from .harness import Harness
 from .runner.base import _no_fsmonitor_env, install_config_files, scrubbed_env, setup_marker
 from .validation import bounded_validation_timeout_seconds, validation_timeout_result
-from .workload_identity import WorkloadIdentityError, subprocess_authority
+from .workload_identity import AuthorityRedactor
 
 
 class WorkerRequestError(RuntimeError):
@@ -492,7 +492,6 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
     heartbeat = _LeaseHeartbeat(run, client)
     heartbeat.start()
     repo_lock = None
-    identity_operation = None
     try:
         try:
             repo_lock = _acquire_repo_lock(run, root)
@@ -507,19 +506,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             _finish_materialization_failure(run, heartbeat, failure)
             return
         setup = dict(run.get("setup") or {})
-        try:
-            identity_target = "check" if run.get("mode") == "check" else "worker"
-            identity_operation = subprocess_authority(
-                host_config or {}, identity_target, f"automation:{run['id']}", env,
-            )
-            (execution_env, _identity_metadata, authority_redactor,
-             resolved_authority) = identity_operation.__enter__()
-        except WorkloadIdentityError as exc:
-            _finish_materialization_failure(
-                run, heartbeat, ClaimMaterializationError("workload identity", str(exc))
-            )
-            return
-        env = execution_env
+        identity_target = "check" if run.get("mode") == "check" else "worker"
+        authority_redactor = AuthorityRedactor(())
         if run.get("mode") == "check":
             check_data = _host_check_data(run, repo)
             # A managed consumer passes the product command above so admission covers it.
@@ -538,30 +526,30 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 execution_env.pop(key, None)
             execution_env["GARDEN_HEAVY_EXECUTION"] = "1"
             execution_env["GARDEN_PRESERVE_FDS"] = str(repo_lock.fileno())
+            execution_env["GARDEN_WORKLOAD_IDENTITY_CONFIG"] = json.dumps(host_config or {})
+            execution_env["GARDEN_WORKLOAD_IDENTITY_TARGET"] = identity_target
+            execution_env["GARDEN_WORKLOAD_IDENTITY_RUN"] = f"automation:{run['id']}"
             execution_timeout = bounded_validation_timeout_seconds(run.get("validation_timeout_seconds"))
             execution_env["GARDEN_EXECUTION_TIMEOUT_SECONDS"] = f"{execution_timeout:g}"
             check_command = (
-                f"{shlex.quote(sys.executable)} -m garden.checkrun {shlex.quote(str(execution_dir))} "
-                f"> {shlex.quote(str(execution_dir / 'stdout.json'))} "
-                f"2> {shlex.quote(str(execution_dir / 'stderr.log'))}"
+                f"{shlex.quote(sys.executable)} -m garden.checkrun "
+                f"{shlex.quote(str(execution_dir))}"
             )
             proc = subprocess.Popen(
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
                 cwd=repo, env=execution_env, pass_fds=(repo_lock.fileno(),),
             )
-            try:
-                check_returncode = _wait_for_process(
-                    proc, heartbeat,
-                    enforce_authority=(resolved_authority.enforce_current
-                                       if resolved_authority is not None else None),
-                )
-            except WorkloadIdentityError as exc:
-                heartbeat.finish(authority_redactor.redact_data({
+            check_returncode = _wait_for_process(proc, heartbeat)
+            identity_error = execution_dir / "identity_error.json"
+            if identity_error.exists():
+                detail = json.loads(identity_error.read_text())
+                heartbeat.finish({
                     "lease_token": run["lease_token"], "exit_code": 1,
                     "final_text": "", "result": {}, "usage": {}, "cost_usd": None,
-                    "error": str(exc), "pushed_head": "",
+                    "error": str(detail.get("error") or "workload identity failed"),
+                    "pushed_head": "",
                     "env_error": True, "env_kind": "workload_identity",
-                }))
+                })
                 return
             result_path = execution_dir / "checks.json"
             if result_path.exists():
@@ -581,9 +569,6 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
-            final_path = repo.parent / f"{run['id']}-final.md"
-            argv = harness.command(str(run.get("model") or ""), final_path,
-                                   difficulty=str(run.get("difficulty") or "medium"), worktree=repo)
             # The same supervisor used by local workers supplies a usable validation
             # interpreter plus host-local run ownership. Merely exporting the interpreter
             # would leave garden.validation without the ownership fence it requires.
@@ -595,83 +580,69 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         "GARDEN_VALIDATION_RUNNER", "GARDEN_HEAVY_EXECUTION", "GARDEN_OWNER_SCOPED",
                         "GARDEN_PRESERVE_FDS"):
                 execution_env.pop(key, None)
+            # Resolve again inside the supervisor so raw authority exists only at the
+            # subprocess boundary. The supervisor's pipes redact stdout, stderr, and the
+            # harness final stream before any durable file or live upload sees them.
+            execution_env["GARDEN_WORKLOAD_IDENTITY_CONFIG"] = json.dumps(host_config or {})
+            execution_env["GARDEN_WORKLOAD_IDENTITY_TARGET"] = identity_target
+            execution_env["GARDEN_WORKLOAD_IDENTITY_RUN"] = f"automation:{run['id']}"
+            raw_final = execution_dir / ".final.raw"
+            final_path = execution_dir / "final.md"
             execution_env["GARDEN_PRESERVE_FDS"] = str(repo_lock.fileno())
+            argv = harness.command(str(run.get("model") or ""), raw_final,
+                                   difficulty=str(run.get("difficulty") or "medium"), worktree=repo)
+            if str(raw_final) in argv:
+                execution_env["GARDEN_RAW_FINAL_PATH"] = str(raw_final)
+                execution_env["GARDEN_FINAL_PATH"] = str(final_path)
             supervised = [sys.executable, "-m", "garden.run_supervisor",
                           str(execution_dir), shlex.join(argv)]
-            with tempfile.NamedTemporaryFile(mode="w+") as stdout_file, tempfile.TemporaryFile(mode="w+") as stderr_file:
-                transcript_redactor = authority_redactor.stream()
-                proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file,
-                                        text=True, cwd=repo, env=execution_env,
-                                        pass_fds=(repo_lock.fileno(),))
-                assert proc.stdin is not None
-                proc.stdin.write(str(run.get("brief") or ""))
-                proc.stdin.close()
-                transcript_read_offset = 0
-                transcript_upload_offset = 0
-                timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
-                deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
-                authority_failure = None
-                while proc.poll() is None:
-                    try:
-                        heartbeat.ensure_not_failed()
-                        if resolved_authority is not None:
-                            resolved_authority.enforce_current()
-                    except WorkloadIdentityError as exc:
-                        authority_failure = exc
-                        _stop_obsolete_process(proc)
-                    except BaseException:
-                        _stop_obsolete_process(proc)
-                        raise
-                    if deadline is not None and time.monotonic() >= deadline:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait()
-                        stderr_file.write(f"\nworker timed out after {timeout_minutes:g} minutes\n")
-                        break
-                    time.sleep(0.1)
-                    stdout_file.flush()
-                    with open(stdout_file.name) as transcript_file:
-                        transcript_file.seek(transcript_read_offset)
-                        chunk = transcript_file.read()
-                        transcript_read_offset = transcript_file.tell()
-                    if chunk:
-                        safe_chunk = transcript_redactor.feed(chunk)
-                        if safe_chunk:
-                            transcript_upload_offset = heartbeat.upload(
-                                transcript_upload_offset, safe_chunk
-                            )
-                stdout_file.flush()
-                stdout_file.seek(0)
-                stderr_file.seek(0)
-                stdout, stderr = stdout_file.read(), stderr_file.read()
-                stdout_file.seek(transcript_read_offset)
-                tail = stdout_file.read()
-                if tail:
-                    safe_tail = transcript_redactor.feed(tail)
-                    if safe_tail:
-                        transcript_upload_offset = heartbeat.upload(
-                            transcript_upload_offset, safe_tail
-                        )
-                final_chunk = transcript_redactor.finish()
-                if final_chunk:
-                    transcript_upload_offset = heartbeat.upload(
-                        transcript_upload_offset, final_chunk
-                    )
-            if authority_failure is not None:
-                heartbeat.finish(authority_redactor.redact_data({
+            proc = subprocess.Popen(
+                supervised, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, cwd=repo, env=execution_env,
+                pass_fds=(repo_lock.fileno(),),
+            )
+            assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+            proc.stdin.write(str(run.get("brief") or ""))
+            proc.stdin.close()
+            captured: dict[str, list[str]] = {"stdout": [], "stderr": []}
+
+            def read_stream(name: str, source: TextIO) -> None:
+                while chunk := source.read(4096):
+                    captured[name].append(chunk)
+
+            readers = [
+                threading.Thread(target=read_stream, args=("stdout", proc.stdout)),
+                threading.Thread(target=read_stream, args=("stderr", proc.stderr)),
+            ]
+            for reader in readers:
+                reader.start()
+            timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
+            deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
+            while proc.poll() is None:
+                try:
+                    heartbeat.ensure_not_failed()
+                except BaseException:
+                    _stop_obsolete_process(proc)
+                    raise
+                if deadline is not None and time.monotonic() >= deadline:
+                    _stop_obsolete_process(proc)
+                    break
+                time.sleep(0.1)
+            for reader in readers:
+                reader.join()
+            stdout, stderr = "".join(captured["stdout"]), "".join(captured["stderr"])
+            if stdout:
+                heartbeat.upload(0, stdout)
+            identity_error = execution_dir / "identity_error.json"
+            if identity_error.exists():
+                detail = json.loads(identity_error.read_text())
+                heartbeat.finish(AuthorityRedactor(()).redact_data({
                     "lease_token": run["lease_token"], "exit_code": 1,
                     "final_text": "", "result": {}, "usage": {}, "cost_usd": None,
-                    "error": str(authority_failure), "pushed_head": "",
+                    "error": str(detail.get("error") or "workload identity failed"), "pushed_head": "",
                     "env_error": True, "env_kind": "workload_identity",
                 }))
                 return
-            stdout = authority_redactor.redact(stdout)
-            stderr = authority_redactor.redact(stderr)
-            if final_path.exists():
-                final_path.write_text(authority_redactor.redact(final_path.read_text()))
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
@@ -695,8 +666,6 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                           "validation_receipts": receipts}
         heartbeat.finish(authority_redactor.redact_data(finish_payload))
     finally:
-        if identity_operation is not None:
-            identity_operation.__exit__(None, None, None)
         if repo_lock is not None:
             repo_lock.close()
         heartbeat.stop()
