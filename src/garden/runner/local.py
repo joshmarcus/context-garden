@@ -16,6 +16,7 @@ from typing import Any
 from ..config import no_live_garden_root
 from ..runs import Run
 from ..sandbox import SandboxPolicy
+from ..storage import StorageAdmissionError, require_storage
 from ..validation import bounded_validation_timeout_seconds
 from ..workload_identity import WorkloadIdentityError, subprocess_authority
 from .base import (
@@ -139,6 +140,10 @@ class LocalRunner(Runner):
         env["GARDEN_VALIDATION_TIMEOUT_SECONDS"] = str(
             int(self.config.get("checks", {}).get("timeout_seconds", 900) or 900)
         )
+        resources = self.config.get("resources", {})
+        env["GARDEN_DISK_RESERVE_BYTES"] = str(int(resources.get("disk_reserve_bytes", 0) or 0))
+        env["GARDEN_DISK_REQUIRED_BYTES"] = str(int((run.env_snapshot or {}).get("disk_required_bytes", 0) or 0))
+        env["GARDEN_WINDOWS_BACKING_PATH"] = str(resources.get("windows_backing_path", "") or "")
         return env
 
     def harness_environment(self, env: dict[str, str]) -> dict[str, str]:
@@ -341,6 +346,15 @@ class LocalRunner(Runner):
     def _probe_launch(self, argv: list[str], stdin_text: str, cwd: Path, env: dict[str, str]) -> tuple[str, str]:
         """The actual invocation, split out so the test suite's in-process runner can call the
         fake harness synchronously instead of spawning a real process (see tests/inprocess.py)."""
+        resources = self.config.get("resources", {})
+        try:
+            require_storage((cwd,),
+                            reserve_bytes=int(resources.get("disk_reserve_bytes", 0) or 0),
+                            required_bytes=int(resources.get("operation_required_bytes", 0) or 0),
+                            windows_backing_path=str(resources.get("windows_backing_path", "") or ""),
+                            operation="local harness probe scratch")
+        except StorageAdmissionError as exc:
+            raise OSError(str(exc)) from exc
         with tempfile.TemporaryDirectory(prefix="garden-probe-", dir=cwd) as raw_dir:
             run_dir = Path(raw_dir)
             stdin_path = run_dir / "stdin"

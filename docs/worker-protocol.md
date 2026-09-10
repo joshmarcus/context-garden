@@ -263,6 +263,23 @@ sequenceDiagram
 
 ## Step by step
 
+### Local storage admission API
+
+Local scheduler launches, setup, check/runtime scratch, harness probes, and checkout
+materialization retain `resources.disk_reserve_bytes` of free space on every required
+filesystem. Its default is 20 GiB (`20 * 1024**3`). On WSL this includes both the guest
+filesystem and the Windows volume containing the distribution; set
+`resources.windows_backing_path` when registry discovery is unavailable or the distribution
+uses an operator-managed location. `resources.operation_required_bytes` supplies a
+conservative per-operation estimate and is reserved across concurrent local runs.
+
+External operator tooling can use `garden.storage.require_storage(paths,
+reserve_bytes=..., required_bytes=..., windows_backing_path=..., operation=...)` before its
+own staging. Arbitrary external scripts are not intercepted automatically. A failed or
+unknown required measurement raises `StorageAdmissionError`; callers must leave work queued
+and retry with bounded cadence. The scheduler records this as transient resource pressure
+without changing operator or maintenance pauses, and never gates result collection.
+
 ### 1. Deciding what to run (scheduler, in `dispatch`)
 
 Before anything is started, the scheduler settles every choice a worker might otherwise

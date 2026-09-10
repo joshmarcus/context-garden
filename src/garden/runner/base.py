@@ -324,6 +324,19 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     command = str((setup or {}).get("command") or "").strip()
     if not command:
         return
+    from ..storage import StorageAdmissionError, require_storage
+
+    admission_env = env or os.environ
+    try:
+        require_storage(
+            (worktree, Path(admission_env.get("TMPDIR") or worktree)),
+            reserve_bytes=int(admission_env.get("GARDEN_DISK_RESERVE_BYTES", "0") or 0),
+            required_bytes=int(admission_env.get("GARDEN_DISK_REQUIRED_BYTES", "0") or 0),
+            windows_backing_path=admission_env.get("GARDEN_WINDOWS_BACKING_PATH", ""),
+            operation="product setup",
+        )
+    except StorageAdmissionError as exc:
+        raise RunnerError(str(exc)) from exc
     marker = setup_marker(worktree)
     env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
     for k, v in ((setup or {}).get("env") or {}).items():
