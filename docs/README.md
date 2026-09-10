@@ -22,6 +22,7 @@ Feature-specific references describe narrower supported workflows:
 - [Host lifecycle](host-lifecycle.md) and [host identity boundary](host-identity-boundary.md)
 - [GitHub Enterprise configuration](operations.md#github-enterprise)
 - [Focused test selection](test-suites.md) and [worker CI](worker-ci.md)
+- [Reproduce the evolving-node history film](../scripts/history-film/README.md)
 
 Files under `docs/design/`, `docs/validation/`, and `docs/evidence/` are design history or
 verification records. They may explain why a feature exists, but the guides above describe

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "sourceHead": "6e4f3521a1e28e59c0f9283968af3de114da7e3a",
+  "sourceStart": "2026-09-04T04:05:19.000Z",
+  "sourceEnd": "2026-09-10T13:24:10.000Z",
+  "description": "Approved evolving-node cut without retrospective excerpts. Event detail prose, goals, run IDs, local paths and commit subjects omitted; review-detail presence retained as a boolean for identical pulses.",
+  "sha256": {
+    "film.json": "82ed8600097275474929f329110aa25b7030a63759ce84223981b91bc1e4a236",
+    "dependencies.json": "46671ada618f5666e2d57f422034178b429dddeda24753ec693440451dac2082",
+    "phases.json": "de8f6617db5f6bd6eabd4dd08fa05cb4c8c5758734392857905efd3bff98379b",
+    "story.json": "3db15d71c92250b68ea943217af481e75463b060bcf2c34463a281dc40489442"
+  }
+}
