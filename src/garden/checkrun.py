@@ -48,6 +48,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
         except RunnerError as e:
             result: dict[str, Any] = {
                 "name": "setup", "status": "fail", "summary": "setup command failed", "details": str(e),
+                "origin": "infrastructure",
             }
             if e.returncode is not None:
                 result["exit_code"] = e.returncode
@@ -99,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": "error",
             "summary": f"check runner crashed: {type(e).__name__}: {e}",
             "details": traceback.format_exc(),
+            "origin": "infrastructure",
         }]
     (run_dir / "checks.json").write_text(json.dumps(results, indent=2))
     return 0

@@ -260,7 +260,8 @@ def test_pre_pr_checks_report_setup_failure(garden, fake_github):
     wt = gitops.prepare_worktree(sc.repo_for(t), sc.worktree_for(t), branch, base)
     results = sc._pre_pr_checks(t, wt, branch, base)
     assert results == [{"name": "setup", "status": "fail", "summary": "setup command failed",
-                        "details": results[0]["details"], "exit_code": 3, "unavailable": False}]
+                        "details": results[0]["details"], "origin": "infrastructure",
+                        "exit_code": 3, "unavailable": False}]
     assert "setup command failed" in results[0]["details"]
 
 

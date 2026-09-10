@@ -2610,6 +2610,29 @@ def test_check_run_page_keeps_pending_commands_and_setup_failure_unmatched(garde
     assert "These results are not associated with a configured command." in body
 
 
+def test_check_run_page_does_not_associate_setup_failure_with_named_check(garden):
+    """An infrastructure setup failure is not the result of a check also named setup."""
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "check")
+    run.status, run.exit_code = "done", 1
+    run.result = {"checks": [{
+        "name": "setup", "status": "fail", "summary": "setup command failed",
+        "details": "missing compiler",
+    }]}
+    run.save()
+    (run.path / "checks_input.json").write_text(
+        '{"specs":[{"name":"setup","command":"scripts/check-setup.sh"}]}'
+    )
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "scripts/check-setup.sh" in body
+    assert "pending" in body and "No result recorded." in body
+    assert "Unmatched outcomes" in body
+    assert "setup command failed" in body and "missing compiler" in body
+
+
 def test_check_run_page_shows_configured_commands_while_running(garden):
     """Configured commands remain visible before the runner reports any result."""
     from garden.runs import RunStore

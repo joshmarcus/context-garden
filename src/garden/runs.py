@@ -347,6 +347,22 @@ class Run:
                 return f"python check: {spec['python']}"
             return ""
 
+        def infrastructure_result(result: dict[str, Any]) -> bool:
+            """Recognize outcomes emitted before or outside configured check execution.
+
+            These legacy records have no persisted spec identity.  Match the exact shapes
+            written by ``checkrun`` so a configured check named ``setup`` or ``checks`` is
+            not credited with an infrastructure failure that prevented it from running.
+            """
+            name = str(result.get("name") or "")
+            status = str(result.get("status") or "")
+            summary = str(result.get("summary") or "")
+            return result.get("origin") == "infrastructure" or (
+                name == "setup" and status == "fail" and summary == "setup command failed"
+            ) or (
+                name == "checks" and status == "error" and summary.startswith("check runner crashed:")
+            )
+
         # Results normally preserve a spec's name, but setup and runner failures are emitted
         # outside the spec list.  Positional pairing turns those failures into false claims
         # about a configured command.  A name is sufficient only when it is unique on both
@@ -359,6 +375,8 @@ class Run:
             if spec_names.count(name) != 1 or result_names.count(name) != 1:
                 continue
             result_index = result_names.index(name)
+            if infrastructure_result(results[result_index]):
+                continue
             associated[spec_index] = results[result_index]
             matched_results.add(result_index)
 
