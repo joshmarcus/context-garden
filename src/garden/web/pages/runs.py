@@ -118,7 +118,7 @@ def register(app: FastAPI, site: Site) -> None:
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
             stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
-            captures=captures, recovery=recovery))
+            captures=captures, recovery=recovery, transcript_attempts=run.transcript_attempts()))
 
     @app.get("/runs/{task_id}/{run_id}/ui/{name}")
     def run_capture(task_id: str, run_id: str, name: str):
@@ -132,17 +132,29 @@ def register(app: FastAPI, site: Site) -> None:
         return Response(path.read_bytes(), media_type=media, headers=headers)
 
     @app.get("/runs/{task_id}/{run_id}/transcript.jsonl")
-    def run_transcript(task_id: str, run_id: str):
+    def run_transcript(task_id: str, run_id: str, attempt_id: str = ""):
         run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
                     if r.run_id == run_id), None)
-        path = (run.path / "transcripts" / run.transcript_attempt_id / "events.jsonl"
-                if run and run.transcript_attempt_id else None)
+        known_attempts = {str(item.get("attempt_id")) for item in run.transcript_attempts()} if run else set()
+        selected = attempt_id or (run.transcript_attempt_id if run else "")
+        path = (run.path / "transcripts" / selected / "events.jsonl"
+                if run and selected in known_attempts else None)
         if path is None or not path.is_file():
             raise HTTPException(404)
         return FileResponse(
-            path, media_type="application/x-ndjson", filename=f"{run_id}-transcript.jsonl",
+            path, media_type="application/x-ndjson", filename=f"{run_id}-{selected}-transcript.jsonl",
             headers={"X-Content-Type-Options": "nosniff"},
         )
+
+    @app.get("/runs/{task_id}/{run_id}/transcripts")
+    def run_transcript_attempts(task_id: str, run_id: str):
+        run = next((r for r in RunStore(hub.fresh().config.garden_dir).runs_for(task_id)
+                    if r.run_id == run_id), None)
+        if not run:
+            raise HTTPException(404)
+        return {"task_id": task_id, "run_id": run_id,
+                "current_attempt_id": run.transcript_attempt_id,
+                "attempts": run.transcript_attempts()}
 
     @app.get("/partials/runs/{task_id}/{run_id}/stdout", response_class=HTMLResponse)
     def run_stdout_partial(request: Request, task_id: str, run_id: str):

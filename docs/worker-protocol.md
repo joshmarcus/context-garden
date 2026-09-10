@@ -80,9 +80,14 @@ writes identity, revision, harness/schema, sequence and redaction counts, captur
 completion time. Only this durable receipt changes transcript delivery from `partial` to
 `complete`; worker execution completion remains independent. Workers retry chunks and
 finalization through the claim recovery window and post `/finish` only after transcript
-receipt, so cleanup cannot follow an unacknowledged transcript. Run pages show delivery state
+receipt, so cleanup cannot follow an unacknowledged transcript. The worker keeps a
+lease-generation-scoped spool and atomic durable-offset checkpoint under its configured root.
+A restarted worker replaying the same claim resumes from that checkpoint; an ambiguously
+acknowledged chunk is safely replayed. The spool is removed only after durable receipt. Run pages show delivery state
 and provide an authenticated same-origin, incrementally served `transcript.jsonl` download for
-server-side analysis. Check runs use the same contract and add their structured check result;
+server-side analysis. The `transcripts` endpoint lists every stored attempt and
+`transcript.jsonl` accepts an `attempt_id`, so superseded partial evidence remains reachable.
+Check runs use the same contract and add their structured check result;
 because their supervisor redirects the two channels to separate files, their metadata records
 that cross-channel emission order is unavailable rather than inventing an order.
 Local/SSH records retain their stdout/stderr files and existing run links; records without the

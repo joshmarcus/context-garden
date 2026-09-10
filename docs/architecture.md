@@ -121,6 +121,7 @@ of the loop touch different files.
 | `runner/manual.py` | the human-driven runner backend |
 | `runner/remote.py` | the pull-based remote worker runner backend |
 | `remote_worker.py` | the independent-host worker agent |
+| `transcripts.py` | bounded, lease-scoped transcript append/finalization and attempt discovery |
 | `managed_worker.py` | measured single-host admission and remote resource/version attribution |
 | `workers.py` | bounded, provider-neutral worker presence and current-job snapshots for the API and Now view |
 | `proctree.py`, `system_resources.py` | procfs/BSD process observation and Linux/macOS host-memory telemetry used by local lifecycle and admission code |

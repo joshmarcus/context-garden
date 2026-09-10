@@ -14,6 +14,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import re
 import signal
 import threading
 import time
@@ -409,15 +410,16 @@ class Run:
         p = self.path / "stderr.log"
         return p.read_text() if p.exists() else ""
 
-    def transcript_events(self) -> list[dict[str, Any]]:
+    def transcript_events(self, attempt_id: str | None = None) -> list[dict[str, Any]]:
         """Return canonical observable events as inert data for authorized analysis."""
-        return list(self.iter_transcript_events())
+        return list(self.iter_transcript_events(attempt_id))
 
-    def iter_transcript_events(self) -> Iterator[dict[str, Any]]:
+    def iter_transcript_events(self, attempt_id: str | None = None) -> Iterator[dict[str, Any]]:
         """Incrementally read canonical events without trusting or executing their content."""
-        if not self.transcript_attempt_id:
+        selected = attempt_id or self.transcript_attempt_id
+        if not selected or not re.fullmatch(r"[0-9a-f]{24}", selected):
             return
-        path = self.path / "transcripts" / self.transcript_attempt_id / "events.jsonl"
+        path = self.path / "transcripts" / selected / "events.jsonl"
         if not path.exists():
             return
         with path.open(errors="replace") as source:
@@ -428,6 +430,12 @@ class Run:
                     continue
                 if isinstance(value, dict):
                     yield value
+
+    def transcript_attempts(self) -> list[dict[str, Any]]:
+        """List current and superseded transcript attempts with durable status metadata."""
+        from .transcripts import transcript_attempts
+
+        return transcript_attempts(self.path)
 
 
 def _newest_mtime(root: Path) -> float:

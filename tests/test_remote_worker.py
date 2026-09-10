@@ -36,6 +36,7 @@ from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
 from garden.store import Store
+from garden.transcripts import TranscriptStore
 from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 from garden.web.app import create_app
 from tests.conftest import git, write
@@ -1387,6 +1388,21 @@ def test_canonical_transcript_upload_finalizes_with_integrity_metadata(garden, m
     assert saved.transcript_events()[0]["channel"] == "stderr"
     export = client.get(f"/runs/DM-001/{run.run_id}/transcript.jsonl")
     assert export.status_code == 200 and export.content == content
+    superseded = TranscriptStore(saved.path, "superseded-generation")
+    partial = b'{"sequence":0,"channel":"stdout","data":"old partial"}\n'
+    superseded.append(0, partial, hashlib.sha256(partial).hexdigest())
+    superseded.record_partial({
+        "task_id": saved.task_id, "run_id": saved.run_id, "worker": "old-worker",
+        "source_revision": "old-head", "harness": "claude",
+    })
+    attempts = client.get(f"/runs/DM-001/{run.run_id}/transcripts").json()
+    assert {item["attempt_id"] for item in attempts["attempts"]} == {
+        saved.transcript_attempt_id, superseded.attempt,
+    }
+    old_export = client.get(
+        f"/runs/DM-001/{run.run_id}/transcript.jsonl?attempt_id={superseded.attempt}"
+    )
+    assert old_export.status_code == 200 and old_export.content == partial
 
 
 def test_transcript_redacts_secret_across_capture_read_boundary(tmp_path):
@@ -1403,6 +1419,35 @@ def test_transcript_redacts_secret_across_capture_read_boundary(tmp_path):
     assert "".join(event["data"] for event in events[:-1]) == prefix + "<redacted> suffix"
     assert events[-1]["payload"] == {"details": "found <redacted>"}
     assert capture.redactions == 2
+
+
+def test_transcript_spool_resumes_from_durable_acknowledged_offset(tmp_path):
+    class Upload:
+        def __init__(self):
+            self.content = bytearray()
+
+        def upload_transcript(self, offset, chunk):
+            if offset < len(self.content):
+                assert self.content[offset:offset + len(chunk)] == chunk
+            else:
+                assert offset == len(self.content)
+                self.content.extend(chunk)
+            return offset + len(chunk)
+
+    spool = tmp_path / "transcript-spool" / "run-generation"
+    first = _TranscriptCapture(spool, {})
+    first.record("stdout", "before restart")
+    upload = Upload()
+    acknowledged = first.upload_available(upload)
+    assert acknowledged == len(upload.content)
+
+    recovered = _TranscriptCapture(spool, {})
+    assert recovered.acknowledged_offset() == acknowledged
+    recovered.record("stderr", "after restart")
+    assert recovered.upload_available(upload) == recovered.path.stat().st_size
+    events = [json.loads(line) for line in bytes(upload.content).decode().splitlines()]
+    assert [event["sequence"] for event in events] == [0, 1]
+    assert [event["data"] for event in events] == ["before restart", "after restart"]
 
 
 def test_finish_acknowledgement_replay_collects_one_result(garden, monkeypatch):

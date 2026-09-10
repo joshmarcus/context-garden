@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -355,13 +357,25 @@ class _TranscriptCapture:
     """Capture both process streams in observed order while retaining parser inputs."""
 
     def __init__(self, root: Path, environment: dict[str, str]):
+        root.mkdir(parents=True, exist_ok=True)
+        self.root = root
         self.path = root / "transcript.jsonl"
         self.path.touch()
         self.stdout_path = root / "stdout.log"
         self.stderr_path = root / "stderr.log"
+        self.checkpoint_path = root / "upload.json"
         self.lock = threading.Lock()
         self.sequence = 0
         self.redactions = 0
+        with self.path.open(errors="replace") as existing:
+            for line in existing:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    self.sequence = max(self.sequence, int(event.get("sequence", -1)) + 1)
+                    self.redactions += int(event.get("redactions", 0))
         secret_names = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "ACCESS_KEY")
         self.secrets = sorted({value for key, value in environment.items()
                                if len(value) >= 4
@@ -408,7 +422,7 @@ class _TranscriptCapture:
 
     def reader(self, stream: TextIO, channel: str) -> None:
         raw_path = self.stdout_path if channel == "stdout" else self.stderr_path
-        with raw_path.open("w") as raw, self.path.open("a") as transcript:
+        with raw_path.open("a") as raw, self.path.open("a") as transcript:
             # Fixed reads keep a harness that emits one enormous line from becoming an
             # unbounded worker-side allocation. Concatenating channel data is lossless.
             for data, redacted in self._redacted_parts(stream):
@@ -464,13 +478,30 @@ class _TranscriptCapture:
             return values, count
         return value, 0
 
-    def upload_available(self, heartbeat: _LeaseHeartbeat, offset: int) -> int:
+    def acknowledged_offset(self) -> int:
+        try:
+            value = json.loads(self.checkpoint_path.read_text()).get("offset", 0)
+            return value if isinstance(value, int) and value >= 0 else 0
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return 0
+
+    def _checkpoint(self, offset: int) -> None:
+        temporary = self.checkpoint_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"offset": offset}))
+        with temporary.open("rb") as source:
+            os.fsync(source.fileno())
+        temporary.replace(self.checkpoint_path)
+
+    def upload_available(self, heartbeat: _LeaseHeartbeat, offset: int | None = None) -> int:
+        if offset is None:
+            offset = self.acknowledged_offset()
         if not self.path.exists():
             return offset
         with self.path.open("rb") as source:
             source.seek(offset)
             while chunk := source.read(1024 * 1024):
                 offset = heartbeat.upload_transcript(offset, chunk)
+                self._checkpoint(offset)
         return offset
 
     def capture_file(self, path: Path, channel: str) -> None:
@@ -508,6 +539,11 @@ class _TranscriptCapture:
         with self.stdout_path.open() as source:
             while chunk := source.read(256 * 1024):
                 offset = heartbeat.upload(offset, chunk)
+
+
+def _transcript_spool(root: Path, run: dict[str, Any]) -> Path:
+    """Stable, lease-scoped capture path used again after a worker process restart."""
+    return root / "transcript-spool" / _claim_suffix(run)
 
 
 def _env(names: list[str], worktree: Path, run: dict[str, Any]) -> dict[str, str]:
@@ -746,12 +782,12 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         "summary": "check execution did not complete", "details": error,
                     }]
             final, parsed, usage, cost, rc = "", {"checks": results}, {}, 0.0, check_returncode
-            with tempfile.TemporaryDirectory(prefix="transcript-", dir=runs_dir) as capture_dir:
+            with nullcontext(str(_transcript_spool(root, run))) as capture_dir:
                 capture = _TranscriptCapture(Path(capture_dir), execution_env)
                 capture.capture_file(execution_dir / "stdout.json", "stdout")
                 capture.capture_file(execution_dir / "stderr.log", "stderr")
                 capture.record("worker", "check result", payload=parsed)
-                transcript_upload_offset = capture.upload_available(heartbeat, 0)
+                transcript_upload_offset = capture.upload_available(heartbeat)
                 heartbeat.finish_transcript(
                     byte_count=transcript_upload_offset, sha256=capture.digest(),
                     event_count=capture.sequence, redactions=capture.redactions,
@@ -761,6 +797,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                     ],
                 )
                 capture.upload_legacy_stdout(heartbeat)
+                shutil.rmtree(capture.root)
         else:
             harness = Harness(str(run["harness"]), dict(run.get("harness_config") or {}))
             final_path = repo.parent / f"{run['id']}-final.md"
@@ -780,7 +817,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             execution_env["GARDEN_PRESERVE_FDS"] = str(repo_lock.fileno())
             supervised = [sys.executable, "-m", "garden.run_supervisor",
                           str(execution_dir), shlex.join(argv)]
-            with tempfile.TemporaryDirectory(prefix="transcript-", dir=runs_dir) as capture_dir:
+            with nullcontext(str(_transcript_spool(root, run))) as capture_dir:
                 capture = _TranscriptCapture(Path(capture_dir), execution_env)
                 proc = subprocess.Popen(supervised, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, cwd=repo,
@@ -793,7 +830,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                     reader.start()
                 proc.stdin.write(str(run.get("brief") or ""))
                 proc.stdin.close()
-                transcript_upload_offset = 0
+                transcript_upload_offset = capture.acknowledged_offset()
                 timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
                 deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
                 while proc.poll() is None:
@@ -831,6 +868,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 # Keep the legacy stdout renderer populated while canonical delivery is
                 # independently finalized and acknowledged.
                 capture.upload_legacy_stdout(heartbeat)
+                shutil.rmtree(capture.root)
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
@@ -862,14 +900,34 @@ def run_worker(url: str, host: str, token: str, root: Path, harnesses: list[str]
                capacity: int = 1, once: bool = False, poll_seconds: float = 5,
                setup_command: str = "") -> None:
     client = WorkerClient(url, token)
+    claim_state = root / "claim-requests" / f"{hashlib.sha256(host.encode()).hexdigest()[:16]}.json"
     while True:
-        status, claim = client.post("/api/runs/claim", {"host": host, "harnesses": harnesses,
-                                                        "tiers": tiers, "capacity": capacity})
+        claim_state.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            claim_request_id = str(json.loads(claim_state.read_text())["claim_request_id"])
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            claim_request_id = secrets.token_urlsafe(24)
+            temporary = claim_state.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"claim_request_id": claim_request_id}))
+            with temporary.open("rb") as source:
+                os.fsync(source.fileno())
+            temporary.replace(claim_state)
+        try:
+            status, claim = client.post("/api/runs/claim", {
+                "host": host, "harnesses": harnesses, "tiers": tiers,
+                "capacity": capacity, "claim_request_id": claim_request_id,
+            })
+        except WorkerRequestError as exc:
+            if exc.status != 409:
+                raise
+            claim_state.unlink(missing_ok=True)
+            continue
         if status == 204 or not claim:
             if once:
                 return
             time.sleep(poll_seconds)
             continue
         execute_claim(claim, root, client, setup_command=setup_command)
+        claim_state.unlink(missing_ok=True)
         if once:
             return

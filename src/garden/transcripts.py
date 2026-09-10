@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 MAX_CHUNK_BYTES = 1024 * 1024
+_ATTEMPT_ID = re.compile(r"[0-9a-f]{24}")
 
 
 class TranscriptError(RuntimeError):
@@ -99,6 +101,25 @@ class TranscriptStore:
         temporary.replace(self.metadata)
         return record
 
+    def record_partial(self, metadata: dict[str, Any], *, status: str = "partial") -> dict[str, Any]:
+        """Persist attempt identity beside useful bytes before finalization."""
+        if self.metadata.exists():
+            existing = json.loads(self.metadata.read_text())
+            if isinstance(existing, dict) and existing.get("status") == "complete":
+                return existing
+        receipt = self.receipt()
+        record = {
+            "schema_version": SCHEMA_VERSION, **metadata, "attempt_id": self.attempt,
+            "byte_count": receipt.offset, "sha256": receipt.sha256, "status": status,
+        }
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = self.metadata.with_suffix(".tmp")
+        temporary.write_text(json.dumps(record, indent=2))
+        with temporary.open("rb") as source:
+            os.fsync(source.fileno())
+        temporary.replace(self.metadata)
+        return record
+
     def state(self) -> dict[str, Any]:
         if self.metadata.exists():
             return json.loads(self.metadata.read_text())
@@ -106,3 +127,36 @@ class TranscriptStore:
         return {"schema_version": SCHEMA_VERSION, "attempt_id": self.attempt,
                 "byte_count": receipt.offset, "sha256": receipt.sha256,
                 "status": "partial" if receipt.offset else "missing"}
+
+
+def transcript_attempts(run_path: Path) -> list[dict[str, Any]]:
+    """Return every safely named stored attempt without reading its event stream."""
+    root = run_path / "transcripts"
+    attempts = []
+    if not root.is_dir():
+        return attempts
+    for path in root.iterdir():
+        if path.is_dir() and _ATTEMPT_ID.fullmatch(path.name):
+            try:
+                metadata = path / "metadata.json"
+                if metadata.exists():
+                    value = json.loads(metadata.read_text())
+                else:
+                    stream = path / "events.jsonl"
+                    size = stream.stat().st_size if stream.exists() else 0
+                    digest_state = hashlib.sha256()
+                    if stream.exists():
+                        with stream.open("rb") as source:
+                            for block in iter(lambda: source.read(1024 * 1024), b""):
+                                digest_state.update(block)
+                    value = {"schema_version": SCHEMA_VERSION, "attempt_id": path.name,
+                             "byte_count": size, "sha256": digest_state.hexdigest(),
+                             "status": "partial" if size else "missing"}
+                if isinstance(value, dict):
+                    # Directory identity is authoritative even if metadata is corrupt.
+                    value["attempt_id"] = path.name
+                    attempts.append(value)
+            except (OSError, json.JSONDecodeError):
+                attempts.append({"schema_version": SCHEMA_VERSION, "attempt_id": path.name,
+                                 "status": "failed", "error": "attempt metadata unavailable"})
+    return sorted(attempts, key=lambda item: str(item.get("completed_at") or item.get("attempt_id")))

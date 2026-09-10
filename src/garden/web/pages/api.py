@@ -599,11 +599,19 @@ def register(app: FastAPI, site: Site) -> None:
             limit = int(hub.store.config.get("workers.transcripts.max_bytes", DEFAULT_MAX_BYTES)
                         or DEFAULT_MAX_BYTES)
             store = TranscriptStore(run.path, run.lease_token, max_bytes=limit)
+            identity = {
+                "task_id": run.task_id, "run_id": run.run_id, "worker": run.host,
+                "source_revision": run.source_head or run.start_head, "harness": run.harness,
+            }
             try:
                 receipt = store.append(offset, payload, str(body.get("sha256") or ""))
             except TranscriptError as exc:
                 run.transcript_status = "failed" if "storage" in str(exc) else "partial"
                 run.transcript_attempt_id = store.attempt
+                try:
+                    store.record_partial(identity, status=run.transcript_status)
+                except OSError:
+                    pass
                 run.save()
                 raise HTTPException(409 if "offset" in str(exc) or "conflicts" in str(exc) else 422,
                                     str(exc)) from exc
@@ -611,6 +619,7 @@ def register(app: FastAPI, site: Site) -> None:
             run.transcript_attempt_id = store.attempt
             run.transcript_bytes = receipt.offset
             run.transcript_sha256 = receipt.sha256
+            store.record_partial(identity)
             renew(run)
             run.save()
         return {"ok": True, "offset": receipt.offset, "sha256": receipt.sha256}

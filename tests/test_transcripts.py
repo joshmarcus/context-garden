@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from garden.transcripts import TranscriptError, TranscriptStore
+from garden.transcripts import TranscriptError, TranscriptStore, transcript_attempts
 
 
 def test_attempt_stream_is_ordered_idempotent_and_durably_finalized(tmp_path):
@@ -50,3 +50,6 @@ def test_reclaimed_generation_preserves_each_attempt(tmp_path):
     assert old.stream.read_bytes() == b"partial"
     assert new.stream.read_bytes() == b"replacement"
     assert old.root != new.root
+    attempts = transcript_attempts(tmp_path)
+    assert {item["attempt_id"] for item in attempts} == {old.attempt, new.attempt}
+    assert {item["status"] for item in attempts} == {"partial"}
