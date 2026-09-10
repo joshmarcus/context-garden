@@ -27,9 +27,9 @@ from garden.remote_worker import (
     _claim_suffix,
     _host_check_data,
     _LeaseHeartbeat,
-    _validation_receipts,
     _persist_active_claim,
     _persist_pending_result,
+    _validation_receipts,
     _wait_for_process,
     deliver_pending_results,
     doctor_worker,
@@ -307,7 +307,7 @@ def test_replacement_daemon_collects_surviving_check_once(tmp_path, monkeypatch)
     assert count_path.read_text() == "run"
 
 
-def test_replacement_daemon_stops_execution_after_deadline_rejection(tmp_path, monkeypatch):
+def test_replacement_daemon_stops_execution_after_local_deadline(tmp_path, monkeypatch):
     """A fixed deadline remains a terminal fence after the worker daemon restarts."""
     isolated_execution_runtime(tmp_path, monkeypatch)
     root = tmp_path / "host"
@@ -372,7 +372,7 @@ def test_replacement_daemon_stops_execution_after_deadline_rejection(tmp_path, m
                 if kind == "execution_recovery_quarantined"]
     assert terminal == [{
         "run_id": "run-1", "work_state": "recovering", "cause": "execution_deadline",
-        "exit_reason": "execution_deadline_expired", "exception": "http_409",
+        "exit_reason": "execution_deadline_expired",
         "recovery_outcome": "supervisor_terminated_without_replay",
         "operator_action": (
             "verify lease generation and execution deadline, then inspect the quarantined "
@@ -382,6 +382,79 @@ def test_replacement_daemon_stops_execution_after_deadline_rejection(tmp_path, m
 
     assert recover_active_claims(root, DeadlineClient()) == 0
     assert count_path.read_text() == "run"
+
+
+def test_replacement_daemon_enforces_deadline_during_controller_outage(tmp_path, monkeypatch):
+    """Controller unavailability cannot extend a recovered execution's fixed deadline."""
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "claim-outage"
+    execution_dir.mkdir(parents=True)
+    started_path = execution_dir / "started"
+    stopped_path = execution_dir / "stopped"
+    child = execution_dir / "author.py"
+    child.write_text(
+        "import signal, time\n"
+        "from pathlib import Path\n"
+        f"started = Path({str(started_path)!r})\n"
+        f"stopped = Path({str(stopped_path)!r})\n"
+        "started.write_text('run')\n"
+        "def stop(*_args):\n"
+        "    stopped.write_text('deadline')\n"
+        "    raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "while True: time.sleep(0.05)\n"
+    )
+    supervisor = subprocess.Popen(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+         f"{sys.executable} {child}"],
+        start_new_session=True,
+    )
+    wait_deadline = time.monotonic() + 5
+    while not started_path.exists() and time.monotonic() < wait_deadline:
+        time.sleep(0.02)
+    assert started_path.read_text() == "run"
+    run = {
+        "id": "run-1", "task_id": "DM-001", "lease_token": "current-lease",
+        "heartbeat_seconds": 0.05, "recovery_seconds": 5, "harness": "claude",
+        "harness_config": {}, "model": "small", "push_ref": "refs/recovery/run-1",
+        "execution_deadline_at": (
+            dt.datetime.now(dt.UTC) + dt.timedelta(milliseconds=200)
+        ).isoformat(),
+    }
+    _persist_active_claim(
+        root, run, execution_dir, repo, repo.parent / "run-1-final.md", supervisor.pid,
+    )
+    recorded = []
+
+    class Events:
+        def emit(self, kind, **fields):
+            recorded.append((kind, fields))
+
+    class UnavailableClient:
+        events = Events()
+
+        def post(self, path, _payload):
+            assert path == "/api/runs/run-1/heartbeat"
+            raise WorkerRequestError(503, "controller unavailable")
+
+    assert recover_active_claims(root, UnavailableClient()) == 0
+    supervisor.wait(timeout=5)
+    assert stopped_path.read_text() == "deadline"
+    assert (root / "active-claims" / "quarantine" / "run-1.json").exists()
+    terminal = [fields for kind, fields in recorded
+                if kind == "execution_recovery_quarantined"]
+    assert terminal == [{
+        "run_id": "run-1", "work_state": "recovering", "cause": "execution_deadline",
+        "exit_reason": "execution_deadline_expired",
+        "recovery_outcome": "supervisor_terminated_without_replay",
+        "operator_action": (
+            "verify lease generation and execution deadline, then inspect the quarantined "
+            "active claim"
+        ),
+    }]
 
 
 def test_replacement_daemon_quarantines_reused_pid_without_signalling_or_replay(
