@@ -159,7 +159,8 @@ class Brief:
     text: str
     sections: dict[str, int] = field(default_factory=dict)  # section -> chars
     inlined: list[str] = field(default_factory=list)
-    referenced: list[str] = field(default_factory=list)  # too big to inline; worker must read
+    referenced: list[str] = field(default_factory=list)  # too big to inline; worker can read from checkout
+    controller_owned: list[str] = field(default_factory=list)  # controller context, unavailable in checkout
     missing: list[str] = field(default_factory=list)
 
     @property
@@ -410,6 +411,7 @@ def build_brief(
     sections: list[tuple[str, str]] = []
     inlined: list[str] = []
     referenced: list[str] = []
+    controller_owned: list[str] = []
     missing: list[str] = []
 
     head = f"# Task {task.id}: {task.title}\n\nProduct: **{task.product}** · Phase: **{task.phase}**\n"
@@ -463,9 +465,9 @@ def build_brief(
         sections.append((
             "generated_context",
             "## Generated design context\n\n"
-            "The scheduler saved sanitized, read-only operational context for this run at "
-            f"`{generated_context}`. Read it when it helps with this task. Do not copy it into "
-            "the product checkout or commit it.\n",
+            "The scheduler recorded sanitized, read-only operational context for this run at "
+            f"`{generated_context}`. This controller-owned file is not in your checkout; do not "
+            "try to read or commit it. If its contents are necessary, report that need.\n",
         ))
     if not parse_criteria(task.body):
         sections.append(("criteria_contract", "## Criteria contract\n\nThis task has no acceptance-criteria checklist. Its Goal is the contract; state what you verified and how in `verified`.\n"))
@@ -478,7 +480,9 @@ def build_brief(
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []
-    to_read: list[str] = []
+    checkout_refs: list[str] = []
+    inlined_checkout: list[str] = []
+    inlined_controller: list[str] = []
     seen: set[str] = set()
     for rel in task.reading:
         if rel in seen:
@@ -500,33 +504,48 @@ def build_brief(
             if content is None:
                 missing.append(frel)
                 continue
+            checkout_readable = source_root.resolve() != root.resolve()
             if not content or len(content) > inline_max:
-                referenced.append(frel)
-                to_read.append(frel)
+                if checkout_readable:
+                    referenced.append(frel)
+                    checkout_refs.append(frel)
+                else:
+                    controller_owned.append(frel)
                 continue
             fence = "````" if "```" in content else "```"
             lang = f.suffix.lstrip(".") or "text"
             reading_parts.append(f"### {frel}\n\n{fence}{lang}\n{content.rstrip()}\n{fence}\n")
             inlined.append(frel)
+            (inlined_checkout if checkout_readable else inlined_controller).append(frel)
     if reading_parts:
         sections.append(("reading", "## Reading list (inlined)\n\n" + "\n".join(reading_parts)))
-    if to_read:
+    if checkout_refs:
         sections.append(
             (
                 "reading_refs",
-                "## Reading list (read these)\n\nThese files are relevant but too large to inline. "
+                "## Reading list (read from the checkout)\n\nThese files are relevant but too large to inline. "
                 "Read them (paths relative to your current directory) before starting:\n\n"
-                + "\n".join(f"- `{r}`" for r in to_read)
+                + "\n".join(f"- `{r}`" for r in checkout_refs)
                 + "\n",
             )
         )
+    if controller_owned:
+        sections.append((
+            "controller_refs",
+            "## Controller-owned references\n\n"
+            "These sources exist in the garden's controller context, not in your checkout. "
+            "Their contents were not inlined, so do not try to read these paths from the checkout. "
+            "If one is necessary to complete the task, report that need.\n\n"
+            + "\n".join(f"- `{r}`" for r in controller_owned)
+            + "\n",
+        ))
     if missing:
         sections.append(("gaps", "## Brief gaps\n\nThe following reading-list entries were dropped because they did not resolve:\n\n"
                          + "\n".join(f"- `{path}`" for path in missing) + "\n"))
     if review_feedback:
         sections.append(("feedback", "## Review feedback to address\n\n" + review_feedback.strip() + "\n"))
     if validation_plan is not None:
-        sections.append(("validation_plan", "## Validation plan\n\nThis frozen, head-bound plan is shared with the pre-check and reviewer. Keep its acceptance claims and valid current-head evidence; report any newly discovered demand as a justified scope expansion.\n\n```json\n" + json.dumps(validation_plan, indent=2, sort_keys=True) + "\n```\n"))
+        sections.append(("validation_plan", "## Validation plan\n\nThis is the dispatch-time scope for the checkout you start from. The scheduler refreshes it from the resulting checkout before pre-check and review, so changed behavior is assessed against that later head. Keep its explicit configured checks and report any newly discovered demand as a justified scope expansion.\n\n```json\n" + json.dumps(validation_plan, indent=2, sort_keys=True) + "\n```\n"))
     if qa:
         lines = ["## Answers from the human\n", "Earlier runs of this task asked questions; the answers are binding.\n"]
         for i, item in enumerate(qa, 1):
@@ -539,11 +558,20 @@ def build_brief(
         trimmed: list[tuple[str, str]] = []
         for name, s in sections:
             if name == "reading":
-                s = (
-                    "## Reading list (read these)\n\nThe inlined reading list exceeded the brief budget; read these files instead:\n\n"
-                    + "\n".join(f"- `{r}`" for r in inlined if r not in (store.rel(digest), ))
-                    + "\n"
-                )
+                checkout_paths = [path for path in inlined_checkout if path != store.rel(digest)]
+                controller_paths = [path for path in inlined_controller if path != store.rel(digest)]
+                parts = []
+                if checkout_paths:
+                    parts.append("## Reading list (read from the checkout)\n\n"
+                                 "The inlined reading list exceeded the brief budget; read these files "
+                                 "instead:\n\n" + "\n".join(f"- `{path}`" for path in checkout_paths) + "\n")
+                if controller_paths:
+                    parts.append("## Controller-owned references\n\n"
+                                 "The inlined reading list exceeded the brief budget. These garden "
+                                 "sources are not in your checkout; report a need for their contents "
+                                 "rather than trying to read them:\n\n"
+                                 + "\n".join(f"- `{path}`" for path in controller_paths) + "\n")
+                s = "\n".join(parts)
             trimmed.append((name, s))
         sections = trimmed
         text = "\n".join(s for _, s in sections)
@@ -554,6 +582,7 @@ def build_brief(
         sections={n: len(s) for n, s in sections},
         inlined=inlined,
         referenced=referenced,
+        controller_owned=controller_owned,
         missing=missing,
     )
 
