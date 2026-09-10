@@ -327,12 +327,17 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            _signal_process_tree(proc.pid, signal.SIGTERM)
+            owned_pids = _signal_process_tree(proc.pid, signal.SIGTERM)
             try:
                 stdout, stderr = proc.communicate(timeout=2)
             except subprocess.TimeoutExpired:
-                _signal_process_tree(proc.pid, signal.SIGKILL)
+                _signal_process_tree(proc.pid, signal.SIGKILL, owned_pids=owned_pids)
                 stdout, stderr = proc.communicate()
+            else:
+                # The leader can exit and close its pipes while a descendant in another
+                # session ignores SIGTERM. Its original parentage is gone at that point,
+                # so reuse the pre-termination ownership snapshot for the hard stop.
+                _signal_process_tree(proc.pid, signal.SIGKILL, owned_pids=owned_pids)
             raise RunnerError(f"setup command timed out after {timeout:g}s: {command}") from exc
     out = ((stdout or "") + "\n" + (stderr or "")).strip()
     if log_path is not None:
@@ -348,9 +353,12 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         )
 
 
-def _signal_process_tree(leader_pgid: int, sig: int) -> None:
-    """Signal session-escaping descendants before their parent process group."""
-    for pid in reversed(descendants(leader_pgid)):
+def _signal_process_tree(
+    leader_pgid: int, sig: int, *, owned_pids: list[int] | None = None,
+) -> list[int]:
+    """Signal session-escaping descendants before their parent group and return the snapshot."""
+    owned_pids = descendants(leader_pgid) if owned_pids is None else owned_pids
+    for pid in reversed(owned_pids):
         try:
             os.kill(pid, sig)
         except (ProcessLookupError, PermissionError):
@@ -359,6 +367,7 @@ def _signal_process_tree(leader_pgid: int, sig: int) -> None:
         os.killpg(leader_pgid, sig)
     except (ProcessLookupError, PermissionError):
         pass
+    return owned_pids
 
 
 class Runner(ABC):

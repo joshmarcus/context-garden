@@ -129,7 +129,9 @@ def test_run_setup_timeout_kills_session_escaping_descendant(tmp_path):
         "pid = os.fork()\n"
         "if pid == 0:\n"
         " os.setsid()\n"
+        " signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
         f" pathlib.Path({str(child_pid)!r}).write_text(str(os.getpid()))\n"
+        " os.close(1); os.close(2)\n"
         " signal.pause()\n"
         "signal.pause()\n"
     )
