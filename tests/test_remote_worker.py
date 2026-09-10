@@ -229,6 +229,7 @@ def test_replacement_daemon_collects_surviving_supervisor_once(tmp_path, monkeyp
     }
     _persist_active_claim(root, run, execution_dir, repo, final_path, supervisor.pid)
     published = []
+    collected_output = []
 
     class ReplacementClient:
         events = None
@@ -237,15 +238,18 @@ def test_replacement_daemon_collects_surviving_supervisor_once(tmp_path, monkeyp
             assert path == "/api/runs/run-1/heartbeat"
             return 200, {}
 
-    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
-        "final_text": "survived", "result": {"status": "done"}, "usage": {},
-        "cost_usd": 0.0, "error": "",
-    })
+    def parse(_harness, stdout, stderr, *_args, **_kwargs):
+        collected_output.append((stdout, stderr))
+        return {"final_text": stdout, "result": {"status": "done"}, "usage": {},
+                "cost_usd": 0.0, "error": stderr}
+
+    monkeypatch.setattr(Harness, "parse", parse)
     monkeypatch.setattr("garden.remote_worker._publish_claim_result",
                         lambda *args, **kwargs: published.append(kwargs))
 
     assert recover_active_claims(root, ReplacementClient()) == 1
     supervisor.wait(timeout=5)
+    assert collected_output == [("survived", "")]
     assert published[0]["final"] == "survived"
     assert published[0]["rc"] == 0
     assert recover_active_claims(root, ReplacementClient()) == 0
