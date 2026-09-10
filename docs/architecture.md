@@ -6,6 +6,10 @@ through the one conversation that matters most, between the scheduler and a work
 spun up. The [specification index](../specs/README.md) maps current product contracts and
 historical phase specifications.
 
+The top-level [ontology](../ONTOLOGY.md) is the canonical reference for what Garden's domain
+concepts mean and how their persisted, derived, and protocol representations relate. This
+page remains the implementation module map and runtime architecture.
+
 Everything on this page is what the code does today (`src/garden/`), not a plan.
 
 ## The shape of it

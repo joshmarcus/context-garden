@@ -6,6 +6,8 @@ workspace; this repository keeps the implementation-facing architecture and prot
 beside the code.
 
 - [System design](../docs/design.md) explains the product idea and operating loop.
+- [Canonical ontology](../ONTOLOGY.md) defines Garden's domain vocabulary, identities,
+  relationships, lifecycles, authority boundaries, and representation-evolution rules.
 - [Implementation architecture](../docs/architecture.md) records current source boundaries.
 - [Worker protocol](../docs/worker-protocol.md) defines dispatch, evidence, and recovery.
 - [Specification audit](audit-2026-09-10.md) inventories both repositories, with status,
