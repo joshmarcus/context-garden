@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -41,6 +42,19 @@ def pytest_configure(config):
     reaches every git the suite runs, including the ones product code runs on its behalf.
     """
     os.environ.update(_no_fsmonitor_env())
+    if sys.platform == "darwin":
+        # /usr/bin/git is a developer-tools shim on macOS. Resolve the same Apple Git
+        # implementation once rather than paying the shim's lookup cost for every one of
+        # the suite's thousands of short Git commands.
+        try:
+            resolved = subprocess.run(
+                ["/usr/bin/xcrun", "--find", "git"], capture_output=True, text=True,
+                check=False, timeout=5,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            resolved = ""
+        if resolved and Path(resolved).is_file():
+            os.environ["PATH"] = f"{Path(resolved).parent}:{os.environ.get('PATH', '')}"
 
 
 def pytest_sessionstart(session):

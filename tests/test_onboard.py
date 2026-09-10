@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -209,6 +210,12 @@ def test_onboard_this_repository_preserves_documented_publishing_ci_helper(tmp_p
     garden = tmp_path / "garden"
     info = discover_project(repo)
     backlog_item, source = info.backlog[0]
+    real_run = subprocess.run
+
+    def synthetic_public_remote(args, *positional, **kwargs):
+        if args[:4] == ["git", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(args, 0, stdout="https://github.com/example/context-garden.git\n")
+        return real_run(args, *positional, **kwargs)
 
     def self_plan(_store: Store, _prompt: str) -> str:
         item = json.loads(_valid_plan(_store, _prompt))[0]
@@ -218,6 +225,7 @@ def test_onboard_this_repository_preserves_documented_publishing_ci_helper(tmp_p
         return json.dumps([item])
 
     monkeypatch.setattr("garden.onboard._gh_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("garden.onboard.subprocess.run", synthetic_public_remote)
     onboard_project(repo, garden, planner=self_plan)
 
     config = yaml.safe_load((garden / "garden.yaml").read_text())
