@@ -15,14 +15,17 @@ import fcntl
 import json
 import os
 import signal
+import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .hosts.locking import file_lock
 from .proctree import pid_alive as _pid_alive
 from .proctree import process_group_alive as _process_group_alive
 
@@ -72,6 +75,10 @@ class RecoveryLaunchConflict(RuntimeError):
     def __init__(self, current_run_id: str):
         super().__init__("the expected run is stale")
         self.current_run_id = current_run_id
+
+
+class RunMutationConflict(RuntimeError):
+    """A writer attempted to commit an obsolete worker claim generation."""
 
 
 @dataclass
@@ -143,6 +150,7 @@ class Run:
     # Dirty worktree material is never folded into a worker's branch by recovery. Dispatch
     # and reap record named stash artifacts here so provenance stays with the run.
     recovery_artifacts: list[dict[str, Any]] = field(default_factory=list)
+    record_version: int = 0  # optimistic generation for process-safe whole-record writes
 
     @property
     def path(self) -> Path:
@@ -164,18 +172,96 @@ class Run:
 
     def save(self) -> None:
         self.path.mkdir(parents=True, exist_ok=True)
-        (self.path / "run.json").write_text(json.dumps(asdict(self), indent=2))
+        record = self.path / "run.json"
+        # Run metadata has two independent writers in a split-controller deployment:
+        # worker HTTP requests and the standalone scheduler. Serialize the replacement and
+        # retain a newer worker generation/completion when a scheduler saves an object it
+        # read before that request. Lock order is run-mutation.lock, then run.json; callers
+        # must not acquire the scheduler tick lock while holding this lock.
+        with file_lock(self.path.parents[2] / "run-mutation.lock"):
+            self.save_locked(record)
         # A metadata rewrite does not change the parent directory mtime by itself.  Touch
         # the task bucket so other processes can detect this one changed without statting
         # every run.json in it.
         self.path.parent.touch()
         _invalidate_index(self.path.parents[1], self.task_id)
 
+    def save_locked(self, record: Path | None = None) -> None:
+        """Commit while the garden run-mutation lock is already held."""
+        record = record or self.path / "run.json"
+        if record.exists():
+            current = Run.load(self.path)
+            self._merge_concurrent_record(current)
+            self.record_version = current.record_version + 1
+        else:
+            self.record_version = 1
+        payload = json.dumps(asdict(self), indent=2)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=self.path, prefix=".run-", delete=False
+        ) as staged:
+            staged.write(payload)
+            staged_path = Path(staged.name)
+        os.replace(staged_path, record)
+        self._loaded_fields = deepcopy(asdict(self))
+
+    def _merge_concurrent_record(self, current: Run) -> None:
+        """Three-way merge disjoint changes, rejecting competing lifecycle writes."""
+        baseline = getattr(self, "_loaded_fields", None)
+        if baseline is None or current.record_version == self.record_version:
+            return
+        current_fields = asdict(current)
+        if self.lease_token != baseline["lease_token"]:
+            # Claim/reclaim and revocation are generation changes. They are valid only
+            # against the exact record inspected by the caller, never as a field merge.
+            raise RunMutationConflict("run changed before claim generation committed")
+        publishes_completion = any(
+            getattr(self, name) != baseline[name]
+            for name in ("final_received_at", "pushed_head")
+        )
+        worker_generation_advanced = any(
+            current_fields[name] != baseline[name]
+            for name in ("lease_token", "lease_updated_at", "claim_history", "final_received_at")
+        )
+        if worker_generation_advanced:
+            if publishes_completion:
+                raise RunMutationConflict("run claim generation changed before mutation committed")
+            # A scheduler decision made from an older lease/completion observation is no
+            # longer valid. Keep the entire newer record; its next tick will re-evaluate it.
+            for name, durable in current_fields.items():
+                if name != "dir":
+                    setattr(self, name, deepcopy(durable))
+            return
+        for name, original in baseline.items():
+            if name in {"dir", "record_version"}:
+                continue
+            proposed = getattr(self, name)
+            durable = current_fields[name]
+            if proposed == original:
+                setattr(self, name, deepcopy(durable))
+            elif durable != original and proposed != durable:
+                raise RunMutationConflict(f"run field {name} changed concurrently")
+
+    @classmethod
+    @contextmanager
+    def mutation(cls, path: Path) -> Iterator[Run]:
+        """Yield the latest record under the portable cross-process mutation lock.
+
+        Lock order is the garden ``run-mutation.lock`` followed by run files. Callers
+        must not acquire the scheduler tick lock, or perform provider/model work, while
+        this short transaction is held.
+        """
+        with file_lock(path.parents[2] / "run-mutation.lock"):
+            yield cls.load(path)
+        path.parent.touch()
+        _invalidate_index(path.parents[1], path.parent.name)
+
     @classmethod
     def load(cls, d: Path) -> Run:
         data = json.loads((d / "run.json").read_text())
         data["dir"] = str(d)
-        return cls(**data)
+        run = cls(**data)
+        run._loaded_fields = deepcopy(asdict(run))
+        return run
 
     # ---- process state -----------------------------------------------------
     @property

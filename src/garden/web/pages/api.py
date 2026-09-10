@@ -19,7 +19,7 @@ from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
 from ...model import effective_owner
-from ...runs import Run
+from ...runs import Run, RunMutationConflict
 from ...workers import WorkerContactStore
 from ...workers import snapshot as worker_snapshot
 from ..common import Site
@@ -228,6 +228,10 @@ def register(app: FastAPI, site: Site) -> None:
 
     def claimed_run(run_id: str, host: dict[str, Any], lease_token: str):
         run = run_for(run_id)
+        ensure_claimed(run, host, lease_token)
+        return run
+
+    def ensure_claimed(run: Run, host: dict[str, Any], lease_token: str) -> None:
         if run.status != "running" or run.process_finished():
             raise HTTPException(409, "run generation is no longer active")
         deadline = execution_deadline(run)
@@ -239,7 +243,6 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(409, "run lease has been replaced")
         if not leased(run) and not recovering(run):
             raise HTTPException(409, "run lease recovery deadline has expired")
-        return run
 
     def credential_free_repo_url(value: str) -> str:
         """Return a clone URL without credentials; reject ambiguous git URL syntax."""
@@ -390,7 +393,7 @@ def register(app: FastAPI, site: Site) -> None:
             runs = RunStore(hub.store.config.garden_dir).active()
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))
-                     and not r.process_finished()]
+                     and not r.process_finished() and not r.final_received_at]
             if in_place and owned:
                 return Response(status_code=204)
             used = sum(int((r.env_snapshot or {}).get("resource_weight") or 1) for r in owned)
@@ -398,7 +401,8 @@ def register(app: FastAPI, site: Site) -> None:
                 return Response(status_code=204)
             now = dt.datetime.now(dt.UTC)
             for run in runs:
-                if run.runner != "remote" or run.status != "running" or run.process_finished():
+                if (run.runner != "remote" or run.status != "running"
+                        or run.process_finished() or run.final_received_at):
                     continue
                 if run.host and (leased(run) or recovering(run)):
                     continue
@@ -538,7 +542,10 @@ def register(app: FastAPI, site: Site) -> None:
                     }
                 run.claim_response = payload
                 persist_host_facts(run, body.get("host_facts"), host_cfg)
-                run.save()
+                try:
+                    run.save()
+                except RunMutationConflict:
+                    raise HTTPException(409, "run claim changed during allocation") from None
                 record_worker_contact(host_cfg, body, outcome="claimed")
                 return JSONResponse(payload)
         return Response(status_code=204)
@@ -556,8 +563,10 @@ def register(app: FastAPI, site: Site) -> None:
                 and (isinstance(offset_value, bool) or not isinstance(offset_value, int)
                      or offset_value < 0)):
             raise HTTPException(422, "transcript_offset must be a non-negative integer")
-        with hub.action_lock:
-            run = claimed_run(run_id, host, str(body.get("lease_token") or ""))
+        candidate = run_for(run_id)
+        with hub.action_lock, Run.mutation(candidate.path):
+            run = Run.load(candidate.path)
+            ensure_claimed(run, host, str(body.get("lease_token") or ""))
             chunk = transcript_value
             record_worker_contact(host, body, outcome="heartbeat")
             if chunk:
@@ -586,7 +595,7 @@ def register(app: FastAPI, site: Site) -> None:
                     dt.datetime.fromisoformat(run.lease_expires_at), deadline
                 ).isoformat()
             run.lease_updated_at = now.isoformat()
-            run.save()
+            run.save_locked()
         transcript = run.path / "stdout.json"
         return {"ok": True, "lease_expires_at": run.lease_expires_at,
                 "transcript_offset": transcript.stat().st_size if transcript.exists() else 0}
@@ -609,8 +618,11 @@ def register(app: FastAPI, site: Site) -> None:
         if isinstance(exit_code, bool) or not isinstance(exit_code, int):
             raise HTTPException(422, "exit_code must be an integer")
         bound_host_facts(body.get("host_facts"), host)
-        with hub.action_lock:
-            run = run_for(run_id)
+        candidate = run_for(run_id)
+        with hub.action_lock, Run.mutation(candidate.path):
+            # Reload under the process-safe lock: lease validation, result publication,
+            # metadata and the completion marker are one fenced transaction.
+            run = Run.load(candidate.path)
             token = str(body.get("lease_token") or "")
             final = str(body.get("final_text") or "")
             posted = {"result": result, "usage": usage,
@@ -633,9 +645,7 @@ def register(app: FastAPI, site: Site) -> None:
                 if not same:
                     raise HTTPException(409, "completed run result is immutable")
                 return {"ok": True, "already_finished": True}
-            if run.status != "running":
-                raise HTTPException(409, "run lease has been revoked")
-            run = claimed_run(run_id, host, token)
+            ensure_claimed(run, host, token)
             persist_host_facts(run, body.get("host_facts"), host)
             run.pushed_head = str(body.get("pushed_head") or "")
             run.final_received_at = dt.datetime.now(dt.UTC).isoformat()
@@ -665,7 +675,7 @@ def register(app: FastAPI, site: Site) -> None:
                                "summary": "check execution did not complete",
                                "details": posted["error"]}]
                 (run.path / "checks.json").write_text(json.dumps(checks))
-            run.save()
+            run.save_locked()
             # Completion is written last: once visible, claim skips this run and the accepted
             # generation remains immutable until reap promotes its staging commit.
             (run.path / "exit_code").write_text(str(exit_code))
