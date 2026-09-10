@@ -461,6 +461,12 @@ class PollMixin:
             # observation through the analyser once more. The ci_reruns limit prevents
             # another flaky rerun, while the head checks reject obsolete commits.
             st["ci_rerun_waiting_for"] = self._ci_failure_identity(pr)
+        elif ci_note and pr.checks == "FAILURE" and not self._check_did_not_run(run, results):
+            identity = f"{head}:" + ",".join(sorted(pr.failed_checks))
+            self._record_implementation_failure(
+                task, "failed_final_verification", identity,
+                "terminal CI failure was classified as actionable implementation feedback",
+            )
         self._apply_feedback(task, pr, fb, ci_note, rep, replace_ci=True)
         self.state.save()
         if reran:

@@ -739,6 +739,13 @@ class CheckRunMixin:
         base_failures = self._blocking_check_failures(run, results)
         if not base_failures:
             # The base is clean: this branch owns the failure.
+            identity = f"{worker_run.run_id if worker_run else 'unknown'}:{base_sha}:" + ",".join(
+                sorted(str(item.get("name") or "") for item in failed)
+            )
+            self._record_implementation_failure(
+                task, "failed_final_verification", identity,
+                "branch-owned pre-PR verification failed",
+            )
             self._start_check_revise(task, failed, rep, cost)
             return
         names = ", ".join(str(f.get("name")) for f in base_failures)

@@ -631,6 +631,10 @@ class ReapMixin:
                 run.status = "failed"
                 run.error = "no commits pushed"
                 run.save()
+                self._record_implementation_failure(
+                    task, "missing_expected_changes", run.run_id,
+                    "remote worker finished without pushing commits",
+                )
                 self._retry_or_fail(task, run, rep, "remote worker finished without pushing commits")
                 return
             run.status = "done"
@@ -679,6 +683,10 @@ class ReapMixin:
             run.status = "failed"
             run.error = "no commits"
             run.save()
+            self._record_implementation_failure(
+                task, "missing_expected_changes", run.run_id,
+                "worker finished with no commits",
+            )
             self._retry_or_fail(task, run, rep, "worker finished with no commits")
             return
         run.status = "done"
@@ -1411,6 +1419,7 @@ class ReapMixin:
 
     # ---- stall detection ---------------------------------------------------
     def _stall(self, task: Task, rep: TickReport, reason: str) -> None:
+        self._record_implementation_failure(task, "repeated_unchanged_attempt", reason, reason)
         self._set_needs_human(task, "stall", reason)
         self.events.emit("stall", task.id, reason=reason)
         action = f'garden triage {task.id} --changes "<feedback>" to unblock'
