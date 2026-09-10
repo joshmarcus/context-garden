@@ -690,6 +690,43 @@ def test_retro_runs_missing_personas_first_then_reconciles(tmp_path, fake_github
     assert list((root / "gdn" / "p1" / "docs" / "reviews").glob("usability-expert-*.md"))
 
 
+def test_retro_reconcile_waits_when_sequential_mode_selects_an_earlier_phase(
+        tmp_path, fake_github, monkeypatch):
+    """A completed persona is active work, but its reconcile is a fresh model admission."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    repo = _garden_repo(tmp_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+
+    phase = store.phase("gdn", "p1")
+    entry = sched.start_retro(phase, ["security"], skip_personas=False)
+    assert entry["stage"] == "personas"
+
+    # Enabling sequential execution while the persona is in flight selects the newly
+    # discovered earlier phase. The persona may finish, but reconciliation must wait.
+    _write(root / "gdn" / "p0" / "goals.md", "# p0\n\nEarlier phase.\n")
+    sched.cfg.data["phase_execution"] = "sequential"
+    store.invalidate_tasks()
+    rep = sched.tick()
+
+    entry = _retro_entry(sched, phase.key)
+    assert entry["stage"] == "personas"
+    assert "gdn/p0 to close" in entry["reconcile_phase_wait"]
+    assert any("reconcile deferred" in transition for transition in rep.transitions)
+    assert not rep.errors
+
+    store.set_phase_closed(store.phase("gdn", "p0"), "2026-09-10")
+    store.invalidate_tasks()
+    rep = sched.tick()
+
+    entry = _retro_entry(sched, phase.key)
+    assert entry["stage"] == "reconciling"
+    assert "reconcile_phase_wait" not in entry
+    assert not rep.errors
+
+
 def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_github, monkeypatch):
     """CG-145: the phase-02 retro dispatched the reconciliation while personas were still being
     started, because completion was judged by whether a run was still active rather than by

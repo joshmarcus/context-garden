@@ -219,6 +219,9 @@ class RetroMixin:
     def _dispatch_reconcile(self, entry: dict[str, Any]) -> None:
         self.require_maintenance_running()
         phase = self.store.phase(entry["product"], entry["phase_name"])
+        admission_probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}",
+                               title="", product=phase.product, phase=phase.name)
+        self._refuse_if_phase_not_admitted(admission_probe)
         probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                      product=entry["self_product"], phase="")
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
@@ -277,6 +280,18 @@ class RetroMixin:
                     have = persona_reports(phase, entry["personas"])
                     if len(have) < len(entry["personas"]):
                         continue
+                    admission_probe = Task(
+                        path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
+                        product=phase.product, phase=phase.name,
+                    )
+                    if refusal := self.phase_admission_refusal(admission_probe):
+                        if entry.get("reconcile_phase_wait") != refusal:
+                            entry["reconcile_phase_wait"] = refusal
+                            rep.transitions.append(
+                                f"retro {entry['phase']} reconcile deferred ({refusal})"
+                            )
+                        continue
+                    entry.pop("reconcile_phase_wait", None)
                     probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                                 product=entry["self_product"], phase="")
                     harness_name = self.resolved_harness_name(probe, str(self.cfg.get("review.harness") or ""))
