@@ -25,7 +25,14 @@ from typing import Any
 
 from .. import gitops
 from ..events import EventLog
-from ..github import GitHub, GitHubRouter, RepositorySlug, is_git_remote_url, is_safe_pr_url
+from ..github import (
+    GitHub,
+    GitHubRouter,
+    RepositorySlug,
+    is_git_remote_url,
+    is_safe_pr_url,
+    pull_request_number,
+)
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, now_iso
 from ..notify import notify, retry_pending, should_notify
@@ -704,6 +711,8 @@ class Scheduler(
         parser = getattr(self.github, "change_request_number", None)
         if repository and callable(parser):
             return parser(repository, url)
+        if isinstance(repository, RepositorySlug):
+            return pull_request_number(url, repository, repository.host)
         match = re.search(r"/pull/(\d+)", url)
         return int(match.group(1)) if match else None
 

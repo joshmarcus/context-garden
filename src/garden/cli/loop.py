@@ -450,7 +450,7 @@ def take(
         slug = sched.slug_for(t)
         pr_number = sched.change_request_number(t, pr_url) if slug else None
         if not pr_number or not sched.github.available:
-            err.print("[red]--pr must be an accessible change-request URL for this repository[/red]")
+            err.print("[red]--pr must be an accessible GitHub URL for this repository[/red]")
             raise typer.Exit(1)
         try:
             sched._refuse_attachment_run_conflict(t)

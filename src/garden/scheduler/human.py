@@ -891,8 +891,10 @@ class HumanMixin:
         head, or a PR whose ref cannot be resolved rather than falling back to a task default.
         """
         slug = self.slug_for(task)
+        if not self.is_safe_change_request_url(task, url):
+            raise RuntimeError("PR attachment URL has unsupported components")
         number = self.change_request_number(task, url)
-        if not slug or not number or not self.is_safe_change_request_url(task, url):
+        if not slug or not number:
             raise RuntimeError("PR attachment needs an accessible PR URL for the configured repository")
         if not self.github.available:
             raise RuntimeError("PR attachment needs an available GitHub provider")
