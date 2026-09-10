@@ -349,7 +349,7 @@ def test_same_sha_garden_push_and_pr_run_one_ordinary_suite():
 ])
 def test_repository_ci_event_fixtures(event, head_repo, repository, head_branch, uses_gate, runs_suite):
     assert _uses_push_ci_gate(event, head_repo, repository, head_branch) is uses_gate
-    assert not _uses_push_ci_gate(event, head_repo, repository, head_branch) is runs_suite
+    assert _uses_push_ci_gate(event, head_repo, repository, head_branch) is not runs_suite
 
 
 def _exact_push_run_passes(run: dict[str, str], sha: str, branch: str) -> bool:
