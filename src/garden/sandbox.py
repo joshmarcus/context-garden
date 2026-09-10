@@ -12,7 +12,10 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,7 +105,69 @@ class SandboxPolicy:
             missing = sorted(_REQUIRED_CAPABILITIES - capabilities)
             detail = f"; missing {', '.join(missing)}" if missing else ""
             raise SandboxError(f"sandbox command does not attest to contract version 1{detail}")
+        self._verify_enforcement(prefix)
         return prefix, mechanism
+
+    def _verify_enforcement(self, prefix: list[str]) -> None:
+        """Challenge the wrapper's claimed boundary with real hostile operations.
+
+        The challenge is deliberately independent of command text and runs before untrusted
+        input. A wrapper must permit an authorized read/write while denying protected access,
+        a symlink escape, the same write from a descendant, and an unapproved connection.
+        """
+        with tempfile.TemporaryDirectory(prefix="garden-sandbox-probe-") as raw:
+            root = Path(raw)
+            writable = root / "writable"
+            readable = root / "readable"
+            protected = root / "protected"
+            for path in (writable, readable, protected):
+                path.mkdir()
+            (readable / "context").write_text("context")
+            (protected / "secret").write_text("secret")
+            (writable / "escape").symlink_to(protected, target_is_directory=True)
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = listener.getsockname()[1]
+            token = os.urandom(16).hex()
+            script = """
+import pathlib, socket, subprocess, sys
+w, r, p, port, token = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+def denied(fn):
+    try: fn()
+    except (OSError, PermissionError): return True
+    return False
+ok = (r / 'context').read_text() == 'context'
+(w / 'normal').write_text('ok')
+checks = [
+    denied(lambda: (p / 'secret').read_text()),
+    denied(lambda: (p / 'changed').write_text('bad')),
+    denied(lambda: (w / 'escape' / 'secret').read_text()),
+    subprocess.run([sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('bad')", str(p / 'child')], capture_output=True).returncode != 0,
+    denied(lambda: socket.create_connection(('127.0.0.1', port), timeout=.25)),
+]
+if ok and all(checks): print(token)
+else: raise SystemExit(97)
+"""
+            policy = {
+                "contract_version": 1,
+                "writable_roots": [str(writable)],
+                "readable_roots": [str(writable), str(readable)],
+                "protected_roots": [str(protected)],
+                "network_destinations": [],
+                "inherit_to_descendants": True,
+                "resolve_symlinks": True,
+            }
+            argv = [*prefix, _POLICY_FLAG, json.dumps(policy, separators=(",", ":")), "--",
+                    sys.executable, "-c", script, str(writable), str(readable), str(protected), str(port), token]
+            try:
+                result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=5)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise SandboxError(f"sandbox enforcement challenge failed: {exc}") from exc
+            finally:
+                listener.close()
+            if result.returncode != 0 or result.stdout.strip() != token:
+                raise SandboxError("sandbox command failed the filesystem, descendant, symlink, or network enforcement challenge")
 
     def command_argv(self, shell_command: str, writable_root: Path, *,
                      additional_writable_roots: list[Path] | None = None,
