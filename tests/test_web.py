@@ -1,4 +1,5 @@
 import datetime as dt
+import gc
 import html
 import json
 import math
@@ -648,6 +649,23 @@ def test_failed_discovery_watch_registration_uses_signature_fallback(garden, mon
     page = c.get("/tasks/DM-001")
     assert page.status_code == 200
     assert "Edited after failed watch" in page.text
+
+
+def test_discovery_watch_releases_its_descriptor_when_discarded():
+    """Short-lived web apps must not consume the process inotify-instance budget."""
+    from garden.web.common import _DiscoveryWatch
+
+    read_fd, write_fd = os.pipe()
+    watch = _DiscoveryWatch.__new__(_DiscoveryWatch)
+    watch.fd = read_fd
+    watch._libc = object()
+    try:
+        del watch
+        gc.collect()
+        with pytest.raises(OSError):
+            os.fstat(read_fd)
+    finally:
+        os.close(write_fd)
 
 
 def test_task_page_shows_exact_head_ci_freshness_and_absence(garden):
