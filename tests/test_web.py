@@ -923,6 +923,7 @@ def test_task_design_files_show_only_the_current_pr_and_shared_references(garden
     (repo / "docs" / "design").mkdir(parents=True)
     (repo / "docs" / "design" / "shared.md").write_text("# Shared")
     (repo / "docs" / "design" / "reference.md").write_text("# Reference")
+    (repo / "docs" / "design" / "rename-source.md").write_text("# Rename source")
     commit("add shared design")
     subprocess.run(["git", "push", "origin", "main"], cwd=repo, check=True)
 
@@ -980,6 +981,17 @@ def test_task_design_files_show_only_the_current_pr_and_shared_references(garden
     deleted_design_page = c.get(f"/tasks/{task.id}").text
     assert f"/design/parent.md?ref={child_ref}" not in deleted_design_page
     assert deleted_design_page.count(f"/design/parent.md?ref={parent_ref}") == 1
+
+    # A pure rename is current PR output at its destination, which exists at the head.
+    subprocess.run(["git", "checkout", child], cwd=repo, check=True)
+    (repo / "docs" / "design" / "rename-source.md").rename(repo / "docs" / "design" / "renamed.md")
+    commit("rename design variant")
+    subprocess.run(["git", "push"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True)
+    renamed_design_page = c.get(f"/tasks/{task.id}").text
+    assert f"/design/rename-source.md?ref={child_ref}" not in renamed_design_page
+    assert f"/design/renamed.md?ref={child_ref}" in renamed_design_page
+    assert c.get(f"/design/renamed.md?ref=origin%2F{child}&product=demo").status_code == 200
 
     # A branch with no changed designs has no PR-output panel, even if it reads shared art.
     no_design = store.task("DM-001")

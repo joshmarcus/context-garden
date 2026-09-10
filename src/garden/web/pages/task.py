@@ -78,13 +78,25 @@ def _design_files(task: Any, store: Any, state: dict[str, Any]) -> dict[str, lis
         except gitops.GitError:
             gitops.git("rev-parse", "--verify", task.branch, cwd=repo)
             head_ref = task.branch
-        names = gitops.git(
-            "diff", "--name-only", "--diff-filter=AM", f"{base_ref}...{head_ref}", cwd=repo,
-        ).splitlines()
+        diff = gitops.git(
+            "diff", "--name-status", "-z", "--find-renames", "--diff-filter=AMR",
+            f"{base_ref}...{head_ref}", cwd=repo,
+        )
     except Exception:  # noqa: BLE001
         return {"changed": [], "shared": []}
 
-    changed = sorted({name for name in names if _is_design_path(name)})
+    changed_paths: set[str] = set()
+    fields = iter(diff.split("\0"))
+    for status in fields:
+        if not status:
+            break
+        if status.startswith("R"):
+            next(fields)  # The old name is absent at the PR head.
+        name = next(fields)
+        if _is_design_path(name):
+            changed_paths.add(name)
+
+    changed = sorted(changed_paths)
     shared = sorted({path for path in task.reading if _is_design_path(path)} - set(changed))
     return {
         "changed": [{"name": name, "href": _design_href(name, head_ref, task.product)} for name in changed],
