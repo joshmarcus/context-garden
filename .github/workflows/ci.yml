@@ -7,6 +7,13 @@ on:
   pull_request:
 jobs:
   test:
+    # Assigned garden branches are pushed before their PR is opened, so their
+    # exact-head push run is the required result. Forks still need PR CI because
+    # their head branch has no push run in this repository.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      !startsWith(github.event.pull_request.head.ref, 'garden/')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
