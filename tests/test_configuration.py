@@ -183,6 +183,21 @@ def test_reload_rejects_inconsistent_locks_global_only_overrides_and_invalid_val
             Config.load(tmp_path)
 
 
+def test_legacy_global_and_product_review_count_floors_are_normalized(tmp_path):
+    data = {
+        "github": {"automerge_min_review_rounds": 3},
+        "products": {"demo": {"automerge_min_review_rounds": 2}},
+    }
+    (tmp_path / "garden.yaml").write_text(yaml.safe_dump(data))
+
+    with pytest.warns(UserWarning, match="normalized to 1") as warnings:
+        config = Config.load(tmp_path)
+
+    assert len(warnings) == 2
+    assert config.get("github.automerge_min_review_rounds") == 1
+    assert config.product("demo")["automerge_min_review_rounds"] == 1
+
+
 def test_plain_lock_freezes_inherited_value_across_global_edits_and_reload(tmp_path):
     before = {
         "max_parallel": 4,

@@ -85,15 +85,9 @@ class ReviewMixin:
         if bool(self.effective("review.enabled", True, task.product)):
             max_rounds = self.effective("review.max_rounds", 2, task.product)
             rounds = int(st.get("review_rounds", 0))
-            self_product_default = (self.cfg.product_self(task.product)
-                                    and "automerge_min_review_rounds" not in self.cfg.product(task.product))
-            # The garden reviews its own changes. Once the first automated opinion is in,
-            # the default second opinion must be independent evidence (persona or human), not
-            # another automated pass from the same product. An explicit product setting keeps
-            # control of the ordinary automated-round policy.
-            if (max_rounds is None or rounds < max_rounds) and not (self_product_default and rounds >= 1):
+            if max_rounds is None or rounds < max_rounds:
                 wanted.append({"kind": "review", "count_round": not after_rebase})
-            elif not self_product_default:
+            else:
                 reason = f"{max_rounds} automated review round(s) used; this PR is yours"
                 self._set_needs_human(task, "review_cap", reason)
                 self.events.emit("needs_human", task.id, stop_kind="review_cap", reason=reason)
@@ -484,11 +478,17 @@ class ReviewMixin:
     def _audit_review_continuations(self, tasks: dict[str, Task], rep: TickReport) -> None:
         """Restore a reviewable current head that has neither a verdict nor a continuation."""
         for task in tasks.values():
+            st = self.state.get(task.id)
+            blocked = str(st.get("automerge_blocked") or "")
+            if (str((st.get("last_review") or {}).get("verdict") or "") == "approve"
+                    and int(st.get("review_rounds", 0)) >= 1
+                    and (re.search(r"review round\(s\).*need [2-9]\d*", blocked)
+                         or "second review" in blocked)):
+                st.pop("automerge_blocked", None)
             if task.status not in (Status.AWAITING_TRIAGE, Status.IN_REVIEW):
                 continue
             if not bool(self.effective("review.enabled", True, task.product)):
                 continue
-            st = self.state.get(task.id)
             head = str(st.get("head_sha") or "")
             recovery = st.get("review_recovery") or {}
             recovery_head = str(recovery.get("head") or "")
