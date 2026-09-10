@@ -462,7 +462,7 @@ def build_brief(
         refs.append(f"- Phase goals and owner decisions: `{snapshot('phase-goals.md', goals_text(phase.goals_path))}`")
         inlined.append(store.rel(phase.goals_path))
 
-    task_text = f"# {task.id}: {task.title}\n\n{task.body.strip()}\n"
+    task_text = _read(task.path) or f"# {task.id}: {task.title}\n\n{task.body.strip()}\n"
     refs.append(f"- Authoritative task and full acceptance criteria: `{snapshot('task.md', task_text)}`")
     sections.append(("launch", "## Launch note\n\nOpen the authoritative task first, then inspect the referenced context and any additional source, history, or evidence that is relevant within the assigned scope. Preserve unresolved findings and owner decisions you discover; references are inputs, not a universal checklist.\n\n## Reference index\n\n" + "\n".join(refs) + "\n"))
     if generated_context is not None:
