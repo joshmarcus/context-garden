@@ -207,15 +207,19 @@ class PersonaMixin:
         rev = parse_persona(final)
         name = str(entry.get("persona"))
         if not rev:
+            detail = run.error[:120] or "no parseable verdict"
             self.events.emit("persona", entry["task"], persona=name, status="no_verdict", target=entry.get("target"))
             rep.errors.append(f"persona {name}: no verdict ({run.error[:100] or 'see final.md'})")
+            if entry.get("target") == "phase":
+                self._record_retro_persona_failure(run, name, detail)
             if entry.get("required_evidence"):
                 task = self.store.task(entry["task"])
-                self._required_persona_failed(task, name, run.error[:120] or "no parseable verdict", rep)
+                self._required_persona_failed(task, name, detail, rep)
             return
         self.events.emit("persona", entry["task"], persona=name, target=entry.get("target"), score=rev.get("score"),
                          high=sum(1 for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"))
         if entry.get("target") == "phase":
+            self._clear_retro_persona_failure(run, name)
             phase = self.store.phase(str(entry["product"]), str(entry["phase"]))
             path = report_path(phase, name)
             report = report_markdown(rev, f"{name} review of {phase.key}", run.run_id)

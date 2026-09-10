@@ -72,14 +72,8 @@ class RetroMixin:
     def _retro_remove(self, entry: dict[str, Any]) -> None:
         self.state.get("_retro")["runs"] = [e for e in self._retro_list() if e is not entry]
 
-    def closing_review_status(self, phase: Phase) -> dict[str, Any]:
-        """Return the durable/operator-facing automatic closing-review state and policy.
-
-        Phase frontmatter may override the global switch with ``auto_closing_review`` and
-        records an owner gate with ``closing_review_approved``. Stabilization remains the
-        existing authoritative evidence gate; live canaries are intentionally not added.
-        """
-        active = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+    def _closing_review_policy(self, phase: Phase) -> dict[str, Any]:
+        """Evaluate the current automatic closing-review gates for ``phase``."""
         enabled = bool(phase.meta.get("auto_closing_review", self.cfg.get("retro.auto_start", False)))
         personas = phase.meta.get("closing_review_personas") or self.cfg.get("retro.personas") or self.retro_default_personas()
         configured = self.cfg.get("retro.prerequisites") or {}
@@ -118,15 +112,29 @@ class RetroMixin:
                 reasons.append("stabilization evidence is unaccepted: " + "; ".join(missing))
         except (OSError, ValueError) as exc:
             reasons.append(f"stabilization evidence could not be read: {exc}")
+        return {"eligible": not reasons, "personas": list(personas),
+                "evidence": evidence_identity, "reason": "; ".join(reasons)}
+
+    def closing_review_status(self, phase: Phase) -> dict[str, Any]:
+        """Return the durable/operator-facing automatic closing-review state and policy.
+
+        Phase frontmatter may override the global switch with ``auto_closing_review`` and
+        records an owner gate with ``closing_review_approved``. Stabilization remains the
+        existing authoritative evidence gate; live canaries are intentionally not added.
+        """
+        active = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+        policy = self._closing_review_policy(phase)
         if active:
+            reason = str(active.get("waiting_reason") or "")
+            if active.get("automatic") and not policy["eligible"]:
+                reason = policy["reason"]
             return {"eligible": False, "stage": str(active.get("stage") or "queued"),
-                    "queued": True, "personas": list(active.get("personas") or personas),
+                    "queued": True, "personas": list(active.get("personas") or policy["personas"]),
                     "source": str(active.get("source") or ""),
-                    "evidence": str(active.get("evidence") or evidence_identity),
-                    "reason": str(active.get("waiting_reason") or "")}
-        return {"eligible": not reasons, "stage": "eligible" if not reasons else "waiting",
-                "queued": False, "personas": list(personas), "source": "", "evidence": evidence_identity,
-                "reason": "; ".join(reasons)}
+                    "evidence": str(active.get("evidence") or policy["evidence"]),
+                    "reason": reason}
+        return {**policy, "stage": "eligible" if policy["eligible"] else "waiting",
+                "queued": False, "source": ""}
 
     def queue_eligible_closing_reviews(self, rep: TickReport) -> None:
         """Persist one idempotent request per newly eligible phase; admission happens later."""
@@ -213,6 +221,14 @@ class RetroMixin:
                             or entry.get("preparation_claim") != claim):
                         continue
                     phase = self.store.phase(entry["product"], entry["phase_name"])
+                    if entry.get("automatic"):
+                        policy = self._closing_review_policy(phase)
+                        if not policy["eligible"]:
+                            entry.update(stage="queued", waiting_reason=policy["reason"])
+                            entry.pop("preparation_claim", None)
+                            entry.pop("preparation_pid", None)
+                            self.state.save()
+                            continue
                     if entry.get("automatic") and self._current_phase_source(phase) != source:
                         entry.update(stage="queued", waiting_reason="accepted phase source changed during preparation")
                         entry.pop("preparation_claim", None)
@@ -404,8 +420,20 @@ class RetroMixin:
                          "self_product": self_prod, "stage": "queued", "persona_runs": {},
                          "no_file": bool(no_file), "request_id": uuid.uuid4().hex}
                 self._retro_list().append(entry)
+            elif (entry.get("automatic") and entry.get("stage") in {"queued", "preparing", "dispatching"}
+                  and not self._closing_review_policy(phase)["eligible"]):
+                # An explicit manual start is the supported policy override for a durable
+                # automatic request that is waiting on a newly introduced gate.
+                entry["automatic"] = False
+                entry.pop("waiting_reason", None)
             if entry.get("stage") not in {"queued", "preparing", "dispatching"}:
-                return entry
+                failed = list((entry.get("persona_failures") or {}).keys())
+                if entry.get("stage") != "personas" or not failed:
+                    return entry
+                for name in failed:
+                    entry.get("persona_runs", {}).pop(name, None)
+                entry.pop("persona_failures", None)
+                entry["stage"] = "queued"
             owner_pid = int(entry.get("preparation_pid") or 0)
             if entry.get("stage") != "queued" and owner_pid:
                 try:
@@ -453,6 +481,37 @@ class RetroMixin:
                              running=",".join(missing), reuse=",".join(n for n in names if n in have))
         self.state.save()
 
+    def _record_retro_persona_failure(self, run: Run, name: str, detail: str) -> bool:
+        """Attach a failed phase-persona run to its owning retro request, if any."""
+        for entry in self._retro_list():
+            if entry.get("stage") != "personas":
+                continue
+            if (entry.get("persona_runs") or {}).get(name) != run.run_id:
+                continue
+            reason = f"persona `{name}` failed: {detail}"
+            failures = entry.setdefault("persona_failures", {})
+            failures[name] = reason
+            entry["waiting_reason"] = "; ".join(failures.values()) + \
+                f"; retry with `garden retro {entry['phase']}`"
+            self.state.save()
+            return True
+        return False
+
+    def _clear_retro_persona_failure(self, run: Run, name: str) -> None:
+        for entry in self._retro_list():
+            if (entry.get("persona_runs") or {}).get(name) != run.run_id:
+                continue
+            failures = entry.get("persona_failures") or {}
+            failures.pop(name, None)
+            if failures:
+                entry["waiting_reason"] = "; ".join(failures.values()) + \
+                    f"; retry with `garden retro {entry['phase']}`"
+            else:
+                entry.pop("persona_failures", None)
+                entry.pop("waiting_reason", None)
+            self.state.save()
+            return
+
     def _dispatch_reconcile(self, entry: dict[str, Any]) -> None:
         self.require_maintenance_running()
         phase = self.store.phase(entry["product"], entry["phase_name"])
@@ -498,7 +557,7 @@ class RetroMixin:
                       "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})
         self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)
 
-    def retro_pending(self, phase_key: str) -> dict[str, int] | None:
+    def retro_pending(self, phase_key: str) -> dict[str, Any] | None:
         """The persona-wait state of the phase's active retro, if any is stuck waiting: `{"done":
         n, "total": m}`. For `garden status` and the phase page. None once every requested
         report is in (the reconciliation dispatches) or if no retro is running for the phase."""
@@ -507,7 +566,10 @@ class RetroMixin:
                 continue
             phase = self.store.phase(entry["product"], entry["phase_name"])
             have = self._reports_for_entry(phase, entry)
-            return {"done": len(have), "total": len(entry["personas"])}
+            pending: dict[str, Any] = {"done": len(have), "total": len(entry["personas"])}
+            if entry.get("waiting_reason"):
+                pending["reason"] = str(entry["waiting_reason"])
+            return pending
         return None
 
     def reap_retro(self, rep: TickReport) -> None:
