@@ -38,6 +38,14 @@ class PollMixin:
     _PR_OBSERVATIONS = "__open_prs__"
 
     @staticmethod
+    def _ci_failure_identity(pr: PRInfo) -> str:
+        return json.dumps({
+            "head": pr.head_sha,
+            "state": pr.checks,
+            "failed_checks": sorted(pr.failed_checks),
+        }, sort_keys=True)
+
+    @staticmethod
     def _feedback_key(item: dict[str, Any]) -> str:
         identity = str(item.get("id") or "")
         if identity and not identity.endswith(":"):
@@ -259,12 +267,20 @@ class PollMixin:
         # visibly red but never routed back to revision. Persisting the head and failure
         # shape keeps repeated observations idempotent across ticks and controller restarts;
         # analyser run IDs separately deduplicate the bounded retry attempts they initiate.
-        ci_identity = json.dumps({
-            "head": pr.head_sha,
-            "state": pr.checks,
-            "failed_checks": sorted(pr.failed_checks),
-        }, sort_keys=True)
-        if provider in ("actions", "status", "legacy") and pr.checks == "FAILURE" and st.get("ci_failed_at") != ci_identity:
+        ci_identity = self._ci_failure_identity(pr)
+        # Reaping a flaky analyser and polling happen in the same tick. Give the requested
+        # external rerun that one observation boundary to replace the old failed rollup;
+        # otherwise this poll immediately analyses the same attempt again and spends the
+        # bounded retry before the provider can publish its result. A changed failure shape
+        # is a new failure and remains immediately actionable.
+        waiting_identity = st.get("ci_rerun_waiting_for")
+        waiting_for_rerun = waiting_identity == ci_identity
+        if waiting_identity:
+            st.pop("ci_rerun_waiting_for", None)
+        if waiting_for_rerun:
+            st.pop("ci_failed_at", None)
+        if (provider in ("actions", "status", "legacy") and pr.checks == "FAILURE"
+                and not waiting_for_rerun and st.get("ci_failed_at") != ci_identity):
             names = ", ".join(pr.failed_checks) or "unknown"
             ci_note = f"- **CI** is failing on this branch (failed checks: {names}). Investigate the failing checks and fix them."
             specs = list(self.cfg.get("checks.ci", []) or [])
@@ -397,10 +413,10 @@ class PollMixin:
         if reran:
             st["ci_reruns"] = int(st.get("ci_reruns", 0)) + 1
             # The provider may continue reporting the same head and FAILURE after the
-            # requested rerun. Let that result through the analyser once more; the
-            # ci_reruns limit prevents another flaky rerun, while the head checks above
-            # still reject results for obsolete commits.
-            st.pop("ci_failed_at", None)
+            # requested rerun. Suppress the poll later in this tick, then let a subsequent
+            # observation through the analyser once more. The ci_reruns limit prevents
+            # another flaky rerun, while the head checks reject obsolete commits.
+            st["ci_rerun_waiting_for"] = self._ci_failure_identity(pr)
         self._apply_feedback(task, pr, fb, ci_note, rep, replace_ci=True)
         self.state.save()
         if reran:
