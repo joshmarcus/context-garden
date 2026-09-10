@@ -491,15 +491,18 @@ def test_automerge_waits_out_a_pending_rollup(sched, fake_github):
     assert pr.state == "MERGED"
 
 
-# ---- a failing gate records the reason and leaves the PR in review -----------
-def test_red_ci_holds_the_merge_with_reason_on_the_task(sched, fake_github):
+# ---- a failing gate leaves the merge queue and starts a bounded revision -----
+def test_red_ci_leaves_the_merge_queue_and_starts_revision(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     pr.checks = "FAILURE"
     sched.tick()
     assert fake_github.merged == []
-    assert sched.store.task("DM-001").status == Status.IN_REVIEW
-    blocked = sched.state.get("DM-001").get("automerge_blocked")
-    assert blocked and "checks" in blocked
+    assert sched.store.task("DM-001").status == Status.RUNNING
+    st = sched.state.get("DM-001")
+    assert not st.get("automerge_candidate")
+    revise = sched.runs.latest("DM-001")
+    assert revise.mode == "revise"
+    assert "**CI** is failing" in (revise.path / "brief.md").read_text()
 
 
 # ---- guarded-path hold (CG-194) ---------------------------------------------
