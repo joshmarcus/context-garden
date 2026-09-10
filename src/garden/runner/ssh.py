@@ -151,7 +151,7 @@ garden_copy_config() {{
 }}
 garden_scrub() {{
   garden_harness_key=
-  if [ "${{1:-}}" = harness ] && [ -n {api_key_env} ]; then
+  if [ "${{1:-}}" = harness ] && [ -n "{api_key_env}" ]; then
     eval "garden_harness_key=\${{{api_key_env}:-}}"
   fi
   set -f  # keep `for pat in $GARDEN_ENV_ALLOW` below from globbing a bare `*` against the worktree
@@ -169,7 +169,7 @@ garden_scrub() {{
 {config_files}
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
 {setup_env}
-  if [ "${{1:-}}" = harness ] && [ -n {api_key_env} ] && [ -n "$garden_harness_key" ]; then
+  if [ "${{1:-}}" = harness ] && [ -n "{api_key_env}" ] && [ -n "$garden_harness_key" ]; then
     export {api_key_env}="$garden_harness_key"
   fi
   export GARDEN_VALIDATION_TIMEOUT_SECONDS={validation_timeout}
@@ -273,8 +273,6 @@ class SSHRunner(Runner):
             raise RunnerError("brief contains the heredoc delimiter")
         harness_cmd = self.harness_shell(run, None)
         api_key_env = self.harness.api_key_env
-        if api_key_env and (not api_key_env.replace("_", "a").isalnum() or api_key_env[0].isdigit()):
-            raise RunnerError("harness api_key_env must be an environment variable name")
         setup = self._setup_for(host)
         checkout = dict(self.config.get("checkout") or {})
         setup_cmd = str(setup.get("command") or "").strip()

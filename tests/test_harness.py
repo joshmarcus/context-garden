@@ -35,7 +35,7 @@ def test_codex_command():
     assert Harness("codex", {"models": {}}).model_for("medium") == ""  # explicit CLI default
 
 
-def test_fake_openrouter_smoke():
+def test_fake_openrouter_smoke(tmp_path):
     fake = Path(__file__).with_name("fake_openrouter.py")
     harness = Harness("openrouter", {"bin": str(fake), "base_url": "http://openrouter.test/api/v1"})
     command = harness.command("openai/gpt-5.2-codex")
@@ -46,6 +46,7 @@ def test_fake_openrouter_smoke():
         capture_output=True,
         text=True,
         env={"OPENROUTER_API_KEY": "test-key"},
+        cwd=tmp_path,
         check=False,
     )
     parsed = harness.parse(completed.stdout, completed.stderr)
@@ -74,6 +75,11 @@ def test_openrouter_defaults_and_probe_use_provider_configuration():
     assert 'model_provider="openrouter"' in argv
     assert 'sandbox_mode="read-only"' in argv
     assert argv[argv.index("-m") + 1] == "openrouter/qwen/qwen3-coder"
+
+
+def test_openrouter_rejects_unsafe_api_key_environment_name():
+    with pytest.raises(ValueError, match="environment variable name"):
+        Harness("openrouter", {"api_key_env": "KEY=value"}).api_key_env
 
 
 def test_claude_spend_limit_is_a_quota_env_error():
