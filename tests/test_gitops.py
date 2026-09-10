@@ -205,6 +205,35 @@ def test_sync_remote_branch_noop_without_remote_commits(origin_repo: tuple[Path,
     assert ok and files == [] and _sha(repo) == head
 
 
+def test_stash_all_keeps_its_own_identity_when_another_worktree_stashes(
+    origin_repo: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shared stash namespace cannot change which preserved edits a run records."""
+    repo, _ = origin_repo
+    other = tmp_path / "other-worktree"
+    _git("worktree", "add", "--detach", str(other), "HEAD", cwd=repo)
+    (repo / "preserved.txt").write_text("preserve this run\n")
+    (other / "unrelated.txt").write_text("preserve another run\n")
+
+    original_git = gitops.git
+
+    def stash_from_other_worktree(*args: str, **kwargs: object) -> str:
+        result = original_git(*args, **kwargs)
+        if args[:2] == ("stash", "push") and kwargs.get("cwd") == repo:
+            _git("stash", "push", "--include-untracked", "-m", "unrelated work", cwd=other)
+        return result
+
+    monkeypatch.setattr(gitops, "git", stash_from_other_worktree)
+    sha = gitops.stash_all(repo, "garden:DM-001:run-1:reap")
+
+    assert _sha(repo, "refs/stash") != sha  # the unrelated stash now occupies the shared tip
+    assert original_git("cat-file", "-t", sha, cwd=repo).strip() == "commit"
+    original_git("stash", "apply", sha, cwd=repo)
+    assert (repo / "preserved.txt").read_text() == "preserve this run\n"
+    assert not (repo / "unrelated.txt").exists()
+    assert "unrelated work" in original_git("stash", "list", cwd=repo)
+
+
 def test_sync_remote_branch_preserves_conflict_stages_before_abort(
     origin_repo: tuple[Path, Path], tmp_path: Path,
 ) -> None:
