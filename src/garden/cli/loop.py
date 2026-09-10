@@ -8,9 +8,12 @@ import time
 from pathlib import Path
 
 import typer
+import yaml
 from rich.table import Table
 
+from ..configuration import CONFIG_FIELDS, revision
 from ..model import Status, now_iso
+from ..scheduler_health import WatchHeartbeat
 from .common import (
     PANEL_BOARD,
     PANEL_DECIDE,
@@ -197,8 +200,12 @@ def return_automation(task_id: str):
     console.print(f"{task_id}: returned to automation")
 
 
-# keys settable live (garden set / the Configuration page) and their value type; see Scheduler.set_override
-LIVE_OVERRIDES: dict[str, type] = {"max_parallel": int, "observe.profile": str}
+# Runtime controls are selected from the shared configuration inventory; their casters remain
+# Python callables because Typer receives strings at this boundary.
+LIVE_OVERRIDES: dict[str, type] = {
+    key: {"integer": int, "string": str}[CONFIG_FIELDS[key].value_type]
+    for key in ("max_parallel", "observe.profile")
+}
 
 
 @app.command("set", rich_help_panel=PANEL_LOOP)
@@ -266,6 +273,48 @@ def config_accept():
     console.print("[green]held config reload accepted[/green] (applies on the next tick)")
 
 
+@config_app.command("set")
+def config_set_saved(
+    key: str,
+    value: str,
+    product: str = typer.Option("", "--product", help="Save a project override"),
+    expected_revision: str = typer.Option("", "--revision", help="Reject if configuration changed"),
+) -> None:
+    """Atomically save a known global value or project override to garden.yaml."""
+    store = _store()
+    try:
+        parsed = yaml.safe_load(value)
+        _scheduler(store).save_config_changes(
+            {key: parsed}, product=product or None,
+            expected_revision=expected_revision or revision(store.config.data), by="cli",
+        )
+    except (PermissionError, RuntimeError, ValueError) as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    scope = f"project {product}" if product else "global"
+    console.print(f"[green]{key} saved ({scope})[/green]")
+
+
+@config_app.command("reset")
+def config_reset_saved(
+    key: str,
+    product: str = typer.Option("", "--product", help="Reset a project override"),
+    expected_revision: str = typer.Option("", "--revision", help="Reject if configuration changed"),
+) -> None:
+    """Atomically remove a saved value; project resets resume inheritance."""
+    store = _store()
+    try:
+        _scheduler(store).save_config_changes(
+            {key: None}, product=product or None,
+            expected_revision=expected_revision or revision(store.config.data), reset=True, by="cli",
+        )
+    except (PermissionError, RuntimeError, ValueError) as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    scope = f"project {product}" if product else "global"
+    console.print(f"[green]{key} reset ({scope})[/green]")
+
+
 @app.command(rich_help_panel=PANEL_LOOP)
 def tick(no_dispatch: bool = typer.Option(False, help="Only reap and poll; don't start workers")):
     """One scheduler pass: reap finished workers, poll PRs, dispatch ready tasks."""
@@ -282,25 +331,31 @@ def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: 
     store = _store()
     interval = interval or int(store.config.get("tick_interval", 60))
     sched = _scheduler(store)
+    heartbeat = WatchHeartbeat(store.config.garden_dir, interval)
     console.print(f"watching {store.root} every {interval}s (ctrl-c to stop)")
-    start_rep = sched.reap_on_start()  # reap any run the last process finished but never reaped
-    if start_rep.changed:
-        console.print(f"[dim]{now_iso()}[/dim] start-up reap: {start_rep.summary()}")
     try:
+        heartbeat.write("starting")
+        start_rep = sched.reap_on_start()  # reap any run the last process finished but never reaped
+        if start_rep.changed:
+            console.print(f"[dim]{now_iso()}[/dim] start-up reap: {start_rep.summary()}")
         while True:
+            heartbeat.write("running")
             rep = sched.tick()
+            heartbeat.write("running", last_tick=now_iso())
             if rep.changed:
                 console.print(f"[dim]{now_iso()}[/dim] {rep.summary()}")
             time.sleep(interval)
     except KeyboardInterrupt:
+        heartbeat.remove()
         console.print("stopped")
+    except Exception as exc:
+        heartbeat.write("failed", error=str(exc))
+        raise
 
 
 @app.command(rich_help_panel=PANEL_LOOP)
 def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"), force: bool = typer.Option(False, help="Ignore deps/status")):
     """Start a worker for one task now."""
-    from ..graph import blockers
-
     store = _store()
     t = _task(store, task_id)
     sched = _scheduler(store)
@@ -323,7 +378,7 @@ def dispatch(task_id: str, mode: str = typer.Option("work", help="work|revise"),
                 raise typer.Exit(1) from None
             if warning:
                 err.print(f"[yellow]{warning}[/yellow]")
-        b = blockers(t, store.tasks())
+        b = sched.task_blockers(t, store.tasks())
         if b and mode == "work":
             err.print(f"[red]{t.id} is blocked by {', '.join(b)}; use --force[/red]")
             raise typer.Exit(1) from None
@@ -398,23 +453,19 @@ def take(
             err.print("[red]--pr must be an accessible change-request URL for this repository[/red]")
             raise typer.Exit(1)
         try:
-            info = sched.github.get_pr(slug, pr_number)
-        except Exception as e:  # GitHub clients expose provider-specific errors
-            err.print(f"[red]could not read PR: {e}[/red]")
+            sched._refuse_attachment_run_conflict(t)
+        except RuntimeError as e:
+            err.print(f"[red]{e}[/red]")
             raise typer.Exit(1) from None
-        if branch and branch != info.head:
-            err.print(f"[red]--branch {branch} does not match PR head {info.head}[/red]")
-            raise typer.Exit(1)
-        branch = info.head
-    if external and not branch:
+    if external and not branch and not pr_url:
         err.print("[red]external work needs --branch or --pr[/red]")
         raise typer.Exit(1)
     try:
         run = sched.dispatch(t, mode=mode, runner=ManualRunner({}), worktree=worktree,
                              branch_override=branch, worktree_override=external_worktree,
                              completion_mode="pushed" if pushed_result else ("external" if external else "managed"),
-                             external_pr=info.url if pr_url else "",
-                             external_pr_number=info.number if pr_url else None)
+                             external_pr=pr_url,
+                             external_pr_number=pr_number if pr_url else None)
     except RuntimeError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
@@ -729,7 +780,7 @@ def metrics(target: str | None = typer.Argument(None, help="product/phase (defau
                       f"${d['cost_per_accepted_task']:.2f}" if d["cost_per_accepted_task"] is not None else "",
                       f"{d['avg_lead_hours']:.1f}" if d["avg_lead_hours"] is not None else "")
     console.print(table)
-    for dimension, label in (("by_model", "model"), ("by_harness", "harness")):
+    for dimension, label in (("by_model", "model"), ("by_harness", "harness"), ("by_pool_member", "pool member")):
         table = Table(title=f"outcomes by {label}")
         for c in (label, "accepted", "cost/accepted", "first-pass approve", "reviewed"):
             table.add_column(c)
@@ -788,6 +839,13 @@ def trial(
     store = _store()
     t = _task(store, task_id)
     sc = _scheduler(store)
+    expanded: list[str] = []
+    for contender in contenders:
+        if contender.startswith("tier:"):
+            expanded.extend(member["label"] for member in sc.pool_members(contender.split(":", 1)[1]))
+        else:
+            expanded.append(contender)
+    contenders = expanded
     try:
         runs = sc.start_trial(t, contenders, again=again, keep_prs=keep_prs)
     except RuntimeError as e:

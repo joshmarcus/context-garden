@@ -10,7 +10,7 @@ from typing import Any
 
 from .. import gitops
 from ..brief import brief_gaps, resume_prompt
-from ..github import GitHubError, mark_garden_comment
+from ..github import GitHubError, PRInfo, mark_garden_comment
 from ..graph import blockers
 from ..model import (
     Phase,
@@ -35,7 +35,73 @@ INVESTIGATION_RECOMMENDATIONS = frozenset({
 })
 
 
+def validate_investigation_report(report: Any) -> dict[str, Any]:
+    """Return a complete structured investigation report or raise a useful error."""
+    required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
+                "retain_work", "alternatives", "recommendation"}
+    missing = sorted(required - report.keys()) if isinstance(report, dict) else sorted(required)
+    if missing:
+        raise RuntimeError(f"investigation report is missing: {', '.join(missing)}")
+    for field in ("likely_cause", "confidence"):
+        if not isinstance(report[field], str) or not report[field].strip():
+            raise RuntimeError(f"investigation report {field} is required")
+    for field in ("unknowns", "evidence", "attempted_checks", "alternatives"):
+        if not isinstance(report[field], list) or not all(isinstance(item, str) for item in report[field]):
+            raise RuntimeError(f"investigation report {field} must be a list of text values")
+    if not report["evidence"] or not report["attempted_checks"] or not report["alternatives"]:
+        raise RuntimeError("investigation report requires evidence, attempted checks, and alternatives")
+    if not isinstance(report["retain_work"], bool):
+        raise RuntimeError("investigation report retain_work must be true or false")
+    if report["recommendation"] not in INVESTIGATION_RECOMMENDATIONS:
+        raise RuntimeError("investigation report has an unsupported recommendation")
+    links = report.get("links", [])
+    if not isinstance(links, list) or not all(isinstance(item, str) for item in links):
+        raise RuntimeError("investigation report links must be a list of text values")
+    return report
+
+
 class HumanMixin:
+    def set_difficulty(self, task: Task, difficulty: str, *, reason: str = "", actor: str = "") -> None:
+        """Set an implementation tier without accidentally lowering an escalation floor.
+
+        A lower tier is reserved for a deliberately simpler follow-up. Its reason is
+        retained in scheduler state and the task log so a later dispatch or restart
+        cannot mistake the change for an accidental downgrade.
+        """
+        levels = ("easy", "medium", "hard")
+        if difficulty not in levels:
+            raise RuntimeError(f"difficulty must be one of {', '.join(levels)}")
+        st = self.state.get(task.id)
+        floor = str(st.get("difficulty_floor") or "")
+        below_floor = floor in levels and levels.index(difficulty) < levels.index(floor)
+        if below_floor and not reason.strip():
+            raise RuntimeError(
+                f"difficulty {difficulty} is below the durable {floor} escalation floor; "
+                "give an explicit reason for a deliberately simpler fix"
+            )
+        old = task.difficulty
+        task.difficulty = difficulty
+        source = actor.strip() or "operator"
+        if below_floor:
+            override = {
+                "at": now_iso(),
+                "from": old,
+                "to": difficulty,
+                "floor": floor,
+                "reason": reason.strip(),
+                "actor": source,
+            }
+            st.setdefault("difficulty_overrides", []).append(override)
+            task.log(
+                f"difficulty {old} -> {difficulty} ({source}; deliberate override below "
+                f"{floor} floor: {reason.strip()})"
+            )
+            self.events.emit("difficulty_floor_overridden", task.id, **override)
+            self.state.save()
+        else:
+            task.log(f"difficulty {old} -> {difficulty}" + (f" ({source})" if actor else ""))
+        self.store.save(task)
+
     @staticmethod
     def _validate_action_actor(actor: str) -> str:
         """Return a recorded action actor, rejecting ambiguous live provenance."""
@@ -155,7 +221,7 @@ class HumanMixin:
             raise RuntimeError(f"{task.id} is already claimed; its manual session is active")
         if task.status not in (Status.READY, Status.CHANGES_REQUESTED):
             raise RuntimeError(f"{task.id} is {task.status.value}, not ready to take")
-        if task.status == Status.READY and blockers(task, self.store.tasks(), stack=self.stack_enabled):
+        if task.status == Status.READY and blockers(task, self.store.tasks(), stack=self.stack_enabled_for(task)):
             raise RuntimeError(f"{task.id} is waiting for dependencies and cannot be taken yet")
         refusal = phase_refusal(self.store.phase(task.product, task.phase), task)
         if refusal:
@@ -284,6 +350,7 @@ class HumanMixin:
         count = int(st.get("substantive_revisions", st.get("revisions", 0)))
         every, decision_after = int(policy["every"]), int(policy["decision_after"])
         thresholds = list(st.get("revision_thresholds") or [])
+        decision_thresholds = list(st.get("revision_decision_thresholds") or [])
         if st.get("troubled_decisions") and int(st.get("revision_allowance", 0)) <= 0:
             reason = f"the granted revision allowance is exhausted after {count} substantive revisions"
             self._set_needs_human(task, "troubled_task", reason)
@@ -293,12 +360,26 @@ class HumanMixin:
                              difficulty=task.difficulty, model=task.model or "")
             self.state.save()
             raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
-        if count < every or count % every or count in thresholds:
-            return
         levels = ("easy", "medium", "hard")
         current = task.difficulty if task.difficulty in levels else "medium"
-        if count >= decision_after or current == "hard" or task.model:
-            reason = (f"{count} substantive revision rounds reached the decision threshold"
+        if count >= decision_after and decision_after not in decision_thresholds:
+            reason = f"{count} substantive revision rounds reached the decision threshold"
+            self._set_needs_human(task, "troubled_task", reason)
+            st["troubled"] = {"reason": reason, "counter": count, "at": now_iso(),
+                               "owner": "product owner", "recommendation": "pause and investigate the repeated findings"}
+            decision_thresholds.append(decision_after)
+            st["revision_decision_thresholds"] = decision_thresholds
+            if count % every == 0 and count not in thresholds:
+                thresholds.append(count)
+                st["revision_thresholds"] = thresholds
+            self.events.emit("troubled_task", task.id, counter=count, reason=reason,
+                             difficulty=current, model=task.model or "")
+            self.state.save()
+            raise RuntimeError(f"{task.id} is troubled: {reason}; choose how to continue")
+        if count < every or count % every or count in thresholds:
+            return
+        if current == "hard" or task.model:
+            reason = (f"{count} substantive revision rounds reached the top difficulty"
                       if not task.model else
                       f"{count} substantive revision rounds reached an escalation threshold, but explicit model {task.model} is protected")
             self._set_needs_human(task, "troubled_task", reason)
@@ -333,12 +414,22 @@ class HumanMixin:
                                 origins: dict[str, str] | None = None) -> None:
         """Request an idempotent safe-boundary investigation without touching live work."""
         ensure_open(task)
+        if owner not in ("operator", "agent"):
+            raise RuntimeError("investigation owner must be operator or agent")
         st = self.state.get(task.id)
         existing = st.get("investigation")
-        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active", "report_ready"):
+        if isinstance(existing, dict) and existing.get("status") in ("requested", "draining", "active"):
             return
         if isinstance(existing, dict):
             st.setdefault("investigation_history", []).append(dict(existing))
+        if origins is None:
+            stop = st.get("needs_human") or {}
+            if isinstance(stop, dict):
+                origins = {
+                    "stop_kind": str(stop.get("kind") or ""),
+                    "stop_reason": str(stop.get("reason") or ""),
+                    "stop_run": str(stop.get("run") or ""),
+                }
         active = any(r.status in ("running", "requested", "preparing") for r in self.runs.runs_for(task.id))
         status = "draining" if active else "requested"
         st["investigation"] = {"status": status, "reason": reason.strip() or "troubled task",
@@ -411,26 +502,7 @@ class HumanMixin:
         inv = st.get("investigation")
         if not isinstance(inv, dict) or inv.get("status") not in ("requested", "active"):
             raise RuntimeError(f"{task.id} has no active investigation")
-        required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
-                    "retain_work", "alternatives", "recommendation"}
-        missing = sorted(required - report.keys()) if isinstance(report, dict) else sorted(required)
-        if missing:
-            raise RuntimeError(f"investigation report is missing: {', '.join(missing)}")
-        for field in ("likely_cause", "confidence"):
-            if not isinstance(report[field], str) or not report[field].strip():
-                raise RuntimeError(f"investigation report {field} is required")
-        for field in ("unknowns", "evidence", "attempted_checks", "alternatives"):
-            if not isinstance(report[field], list) or not all(isinstance(item, str) for item in report[field]):
-                raise RuntimeError(f"investigation report {field} must be a list of text values")
-        if not report["evidence"] or not report["attempted_checks"] or not report["alternatives"]:
-            raise RuntimeError("investigation report requires evidence, attempted checks, and alternatives")
-        if not isinstance(report["retain_work"], bool):
-            raise RuntimeError("investigation report retain_work must be true or false")
-        if report["recommendation"] not in INVESTIGATION_RECOMMENDATIONS:
-            raise RuntimeError("investigation report has an unsupported recommendation")
-        links = report.get("links", [])
-        if not isinstance(links, list) or not all(isinstance(item, str) for item in links):
-            raise RuntimeError("investigation report links must be a list of text values")
+        validate_investigation_report(report)
         inv.update({"status": "report_ready", "report": report, "completed_at": now_iso()})
         self._set_needs_human(task, "investigation_report", "investigation report ready; choose the next task action")
         self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))
@@ -475,14 +547,18 @@ class HumanMixin:
         """Queue one preserved revision with the owner's distinct revised approach."""
         if not approach.strip():
             raise RuntimeError("the changed approach is required")
-        st = self.state.get(task.id)
-        info = st.get("needs_human")
-        if not isinstance(info, dict) or info.get("kind") not in ("troubled_task", "investigation_report"):
-            raise RuntimeError(f"{task.id} has no troubled-task decision to change")
-        old_feedback = str(st.get("pending_feedback") or "").strip()
-        st["pending_feedback"] = (old_feedback + "\n\n## Owner-selected change of approach\n\n" + approach.strip()).strip()
-        st.setdefault("approach_changes", []).append({"at": now_iso(), "approach": approach.strip()})
-        self.continue_troubled(task, allowance=allowance)
+        if allowance <= 0 or allowance > 3:
+            raise RuntimeError("allowance must be between 1 and 3")
+        with self._controller_lock():
+            current, st = self._current_troubled_decision(task.id, action="change")
+            old_feedback = str(st.get("pending_feedback") or "").strip()
+            st["pending_feedback"] = (
+                old_feedback + "\n\n## Owner-selected change of approach\n\n" + approach.strip()
+            ).strip()
+            st.setdefault("approach_changes", []).append(
+                {"at": now_iso(), "approach": approach.strip()}
+            )
+            self._continue_troubled_locked(current, st, allowance=allowance)
 
     def cancel_troubled(self, task: Task, reason: str) -> None:
         """Cancel from a troubled decision while retaining all branch/run artifacts."""
@@ -499,20 +575,64 @@ class HumanMixin:
 
     def continue_troubled(self, task: Task, allowance: int = 1, difficulty: str = "") -> None:
         """Idempotently grant bounded preserved revisions without erasing lifetime history."""
+        with self._controller_lock():
+            current, st = self._current_troubled_decision(task.id, action="continue")
+            self._continue_troubled_locked(
+                current, st, allowance=allowance, difficulty=difficulty
+            )
+
+    def _current_troubled_decision(
+        self, task_id: str, *, action: str
+    ) -> tuple[Task, _TaskState]:
+        """Reload and validate the decision while its controller transaction is held."""
+        self.store.invalidate_tasks()
+        self.state = State(self.state.path)
+        task = self.store.task(task_id)
         ensure_open(task)
-        if allowance <= 0 or allowance > 3:
-            raise RuntimeError("allowance must be between 1 and 3")
+        if any(run.status in ("requested", "preparing", "running")
+               for run in self.runs.runs_for(task.id)):
+            raise RuntimeError(f"{task.id} has a run in flight; troubled-task decision is stale")
         st = self.state.get(task.id)
         raw = st.get("needs_human")
-        if not raw or (isinstance(raw, dict) and raw.get("kind") not in ("revision_cap", "troubled_task", "investigation_report")):
-            raise RuntimeError(f"{task.id} has no troubled-task decision to continue")
+        allowed = ("revision_cap", "troubled_task", "investigation_report")
+        if not raw or (isinstance(raw, dict) and raw.get("kind") not in allowed):
+            raise RuntimeError(f"{task.id} has no troubled-task decision to {action}")
+        return task, st
+
+    def _continue_troubled_locked(
+        self, task: Task, st: _TaskState, *, allowance: int, difficulty: str = ""
+    ) -> None:
+        """Apply one bounded grant and acknowledge its current policy boundary atomically."""
+        if allowance <= 0 or allowance > 3:
+            raise RuntimeError("allowance must be between 1 and 3")
         if difficulty:
             levels = ("easy", "medium", "hard")
-            if difficulty not in levels or levels.index(difficulty) < levels.index(task.difficulty):
-                raise RuntimeError("difficulty must preserve or raise the current floor")
+            floor = str(st.get("difficulty_floor") or task.difficulty)
+            if floor not in levels:
+                floor = task.difficulty
+            if (difficulty not in levels
+                    or task.difficulty not in levels
+                    or levels.index(difficulty) < max(levels.index(task.difficulty), levels.index(floor))):
+                raise RuntimeError("difficulty must preserve or raise the durable floor")
             task.difficulty = difficulty
+            st["difficulty_floor"] = difficulty
         decision = {"at": now_iso(), "allowance": allowance, "difficulty": task.difficulty,
                     "counter": int(st.get("substantive_revisions", st.get("revisions", 0)))}
+        policy = self.cfg.revision_policy()
+        if policy["enabled"]:
+            count = int(decision["counter"])
+            every = int(policy["every"])
+            if count >= every and count % every == 0:
+                thresholds = list(st.get("revision_thresholds") or [])
+                if count not in thresholds:
+                    thresholds.append(count)
+                    st["revision_thresholds"] = thresholds
+            decision_after = int(policy["decision_after"])
+            if count >= decision_after:
+                decision_thresholds = list(st.get("revision_decision_thresholds") or [])
+                if decision_after not in decision_thresholds:
+                    decision_thresholds.append(decision_after)
+                    st["revision_decision_thresholds"] = decision_thresholds
         st.setdefault("troubled_decisions", []).append(decision)
         st["revision_allowance"] = int(st.get("revision_allowance", 0)) + allowance
         investigation = st.get("investigation")
@@ -534,7 +654,8 @@ class HumanMixin:
         st.pop("needs_human", None)
         st.pop("troubled", None)
         st.pop("investigation", None)
-        self._grant_one_more_round(st)
+        if not policy["enabled"]:
+            self._grant_one_more_round(st)
         self._transition(task, Status.CHANGES_REQUESTED, f"troubled task continued with {allowance} bounded revision(s) at {task.difficulty}")
         self.events.emit("troubled_continued", task.id, **decision)
         self.state.save()
@@ -576,6 +697,15 @@ class HumanMixin:
 
     # ---- human answers -----------------------------------------------------
     def answer(self, task: Task, text: str) -> Run:
+        with self.tick_lock():
+            # A web action deliberately does not share Hub's in-process tick lock. Reload
+            # after taking the cross-process controller lock so an in-flight pass cannot
+            # save its stale waiting_human task over the resumed dispatch.
+            self.store.invalidate_tasks()
+            self.state = State(self.state.path)
+            return self._answer_locked(self.store.task(task.id), text)
+
+    def _answer_locked(self, task: Task, text: str) -> Run:
         ensure_open(task)
         if task.status != Status.WAITING_HUMAN:
             raise RuntimeError(f"{task.id} is {task.status.value}, not waiting_human")
@@ -753,29 +883,69 @@ class HumanMixin:
         raise RuntimeError("triage needs --ready or --changes")
 
     # ---- attaching a PR by hand ---------------------------------------------
+    def resolve_pr_attachment(self, task: Task, url: str) -> PRInfo:
+        """Read and validate the immutable identity needed to adopt an existing PR.
+
+        The URL is only a locator.  The provider's current branch and SHA are the identity
+        that revisions must use, so reject a URL that does not name this repository, a fork
+        head, or a PR whose ref cannot be resolved rather than falling back to a task default.
+        """
+        slug = self.slug_for(task)
+        number = self.change_request_number(task, url)
+        if not slug or not number or not self.is_safe_change_request_url(task, url):
+            raise RuntimeError("PR attachment needs an accessible PR URL for the configured repository")
+        if not self.github.available:
+            raise RuntimeError("PR attachment needs an available GitHub provider")
+        try:
+            pr = self.github.get_pr(slug, number)
+        except (GitHubError, KeyError) as exc:
+            detail = exc.args[0] if exc.args else exc
+            raise RuntimeError(f"could not read external PR: {detail}") from exc
+        if pr.number != number or pr.url.rstrip("/") != url.rstrip("/"):
+            raise RuntimeError("PR URL does not match the configured repository's PR")
+        if not pr.head or not pr.head_sha or not pr.base:
+            raise RuntimeError(
+                "external PR is missing immutable head or base metadata; "
+                "attachment needs one resolved head branch and SHA"
+            )
+        if not pr.head_repo or pr.head_repo.lower() != slug.lower():
+            raise RuntimeError(
+                "PR attachment needs a verified head repository and refuses a fork head "
+                "that the scheduler cannot revise"
+            )
+        return pr
+
+    def _refuse_attachment_run_conflict(self, task: Task) -> None:
+        active = [run for run in self.runs.active() if run.task_id == task.id]
+        if active:
+            raise RuntimeError(
+                f"{task.id} has active run {active[0].run_id}; refusing to replace its checkout identity"
+            )
+
     def attach_pr(self, task: Task, url: str) -> None:
-        """Point this task at a PR opened (or reopened) by hand -- e.g. a stacked PR GitHub
-        closed when its base branch went away, reopened under a new number. Resets every
-        cached PR fact so the next poll follows the new PR instead of stale state left over
-        from the old one: a stale `pr_number` would keep polling the old PR, and a stale
-        `review_run` would hold automerge on a run that belongs to a PR this task no longer
-        has (CG-174). Used by `garden pr` and its web equivalent, if one exists."""
+        """Adopt a verified existing PR without discarding task feedback or history."""
+        self._refuse_attachment_run_conflict(task)
+        pr = self.resolve_pr_attachment(task, url)
         st = self.state.get(task.id)
         old_number = st.get("pr_number")
-        new_number = self.change_request_number(task, url)
-        task.pr = url
-        for key in ("pr_number", "pr_state", "head_sha", "review_run"):
+        task.pr, task.branch = pr.url, pr.head
+        # These are observations of the previous PR, not useful task context.  Leave
+        # feedback, Q&A and completed run history intact for the adopted revision.
+        for key in ("pr_number", "pr_state", "head_sha", "review_run", "pr_draft",
+                    "pr_base", "checks", "failed_checks", "review_decision", "ci_missing"):
             st.pop(key, None)
         self._queue_leave(task)
-        if new_number:
-            st["pr_number"] = new_number
-        note = f"PR attached: {url} (pr_number {old_number or 'none'} -> {new_number or 'none'})"
-        if task.status in (Status.RUNNING, Status.READY, Status.DRAFT, Status.FAILED):
+        st.update({"pr_number": pr.number, "pr_state": pr.state, "head_sha": pr.head_sha,
+                   "pr_base": pr.base, "pr_draft": pr.is_draft, "checks": pr.checks,
+                   "failed_checks": list(pr.failed_checks), "review_decision": pr.review_decision})
+        note = f"PR attached: {pr.url} ({pr.head}@{pr.head_sha}, pr_number {old_number or 'none'} -> {pr.number})"
+        if task.status in (Status.READY, Status.DRAFT, Status.RUNNING, Status.FAILED):
             self._transition(task, Status.IN_REVIEW, note)
         else:
             task.log(note)
             self.store.save(task)
-        self.events.emit("pr_attached", task.id, pr=url, old_pr_number=old_number or 0, new_pr_number=new_number or 0)
+        self.events.emit("pr_attached", task.id, pr=pr.url, branch=pr.head, head_sha=pr.head_sha,
+                         old_pr_number=old_number or 0, new_pr_number=pr.number)
         self.state.save()
 
     def mark_done(self, task: Task, note: str = "", force: bool = False, *, actor: str = "human_owner") -> None:
@@ -996,20 +1166,50 @@ class HumanMixin:
         cannot loop indefinitely under delegated authority.
         """
         ensure_open(task)
-        if not bool(self.cfg.get("recovery.delegated", False)):
-            raise RuntimeError("delegated recovery is disabled; an owner must choose a retry")
         st = self.state.get(task.id)
         raw = st.get("needs_human")
         info = raw if isinstance(raw, dict) else {}
         kind = str(info.get("kind") or "")
         if kind not in {"revision_cap", "check_did_not_run"}:
             raise RuntimeError(f"{task.id} has no delegated recovery for {kind or 'this stop'}")
+        if kind == "revision_cap" and not bool(self.cfg.get("recovery.delegated", False)):
+            raise RuntimeError("delegated revision recovery is disabled; an owner must choose a retry")
         feedback = str(st.get("pending_feedback") or "")
         check = dict(st.get("recovery_check") or {})
-        fingerprint = "\x1f".join((kind, feedback, str(check.get("stage") or ""), str(check.get("cause") or "")))
+        fingerprint = "\x1f".join((kind, feedback, str(check.get("stage") or ""),
+                                    str(check.get("cause") or ""), str(check.get("source_head") or "")))
         used = set(str(item) for item in (st.get("delegated_recovery_fingerprints") or []))
         if fingerprint in used:
             raise RuntimeError("this unchanged recovery has already used its delegated continuation")
+        active = [run for run in self.runs.active() if run.task_id == task.id]
+        if active:
+            raise RuntimeError(f"{task.id} already has active work; recovery was not duplicated")
+        expected_head = str(check.get("source_head") or "")
+        if kind == "check_did_not_run" and str(check.get("stage") or "") == "ci":
+            if not expected_head:
+                raise RuntimeError(
+                    f"{task.id} interrupted CI check has no recorded source head; it was not retried"
+                )
+            slug = self.slug_for(task)
+            number = self._pr_number(task)
+            if not self.github.available or not slug or not number:
+                raise RuntimeError(
+                    f"{task.id} current PR head could not be established; the interrupted check was not retried"
+                )
+            try:
+                current_head = str(self.github.get_pr(slug, number).head_sha or "")
+            except (GitHubError, KeyError, OSError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{task.id} current PR head could not be established; the interrupted check was not retried"
+                ) from exc
+            if not current_head:
+                raise RuntimeError(
+                    f"{task.id} current PR head could not be established; the interrupted check was not retried"
+                )
+            if expected_head != current_head:
+                raise RuntimeError(
+                    f"{task.id} moved to a different PR head; the interrupted check was not retried"
+                )
         rep = rep or TickReport()
         if kind == "revision_cap":
             if not feedback:
@@ -1033,6 +1233,7 @@ class HumanMixin:
             specs=list(check["specs"]), stage=str(check["stage"]),
             cont=dict(check["cont"]), rep=rep, retries=int(check.get("retries", 0)) + 1,
             backend=str(check.get("backend") or ""), provenance=str(check.get("provenance") or ""),
+            source_head=expected_head,
         )
         used.add(fingerprint)
         st["delegated_recovery_fingerprints"] = sorted(used)
@@ -1254,7 +1455,11 @@ class HumanMixin:
         if claimed_base and pr.base != claimed_base:
             refuse(f"external PR base moved from {claimed_base!r} to {pr.base!r}")
         claimed_head = str(run.env_snapshot.get("external_head_sha") or "")
-        if claimed_head and pr.head_sha != claimed_head:
+        # An open operator-owned PR can advance between claim and completion.  Its URL,
+        # repository, branch, and base remain the stable attachment identity, and the
+        # current provider SHA is recorded below.  A merged PR is different: its claimed
+        # source SHA participates in the provenance proof, so movement must fail closed.
+        if pr.state == "MERGED" and claimed_head and pr.head_sha != claimed_head:
             refuse("external PR head moved since it was claimed; take it again to authorize the new source")
         if pr.base != self.final_base_for(task):
             refuse(
@@ -1292,6 +1497,8 @@ class HumanMixin:
                    "failed_checks": pr.failed_checks, "review_decision": pr.review_decision})
         ManualRunner.finish(run, {**result, "pr": pr.url})
         run.result = {**result, "pr": pr.url}
+        if pr.head_sha:
+            run.env_snapshot["review_source_head"] = pr.head_sha
         run.finished_at = now_iso()
         run.cost_usd = float(result["cost_usd"]) if isinstance(result.get("cost_usd"), (int, float)) else None
         run.status = "done"

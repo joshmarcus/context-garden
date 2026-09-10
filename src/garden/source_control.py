@@ -37,6 +37,14 @@ class ProviderUnavailable(SourceControlError):
     pass
 
 
+class RateLimitFailure(ProviderUnavailable):
+    """Provider refusal carrying an optional absolute retry timestamp."""
+
+    def __init__(self, reset_at: float | None = None):
+        super().__init__("source-control provider rate limited")
+        self.reset_at = reset_at
+
+
 class UnsupportedOperation(SourceControlError):
     pass
 

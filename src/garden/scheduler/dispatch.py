@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
-import time
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +10,6 @@ from .. import gitops
 from ..brief import build_brief
 from ..canonical import configured_root
 from ..criteria import parse_criteria
-from ..github import GitHubError
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -27,31 +24,8 @@ MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 
 class DispatchMixin:
     def _sweep_terminal_worktrees(self, rep: TickReport) -> None:
-        """Cheaply reclaim caches from terminal task worktrees without touching live runs."""
-        active_task_ids = {run.task_id for run in self.runs.active()}
-        keep_days = float(self.cfg.get("worktrees.keep_days", 2) or 0)
-        now = time.time()
-        for task in self.store.tasks().values():
-            if task.status not in (Status.DONE, Status.CANCELLED) or task.id in active_task_ids:
-                continue
-            if str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place":
-                continue  # canonical checkouts are provisioned assets, never disposable caches
-            worktree = self.worktree_for(task)
-            if not worktree.exists():
-                continue
-            try:
-                age_days = (now - worktree.stat().st_mtime) / 86400
-            except OSError:
-                continue
-            if age_days >= keep_days:
-                gitops.remove_worktree(self.repo_for(task), worktree)
-                if worktree.exists() and not worktree.is_symlink():
-                    shutil.rmtree(worktree, ignore_errors=True)
-                rep.transitions.append(f"{task.id}: removed terminal worktree")
-                continue
-            for cache in [worktree / ".venv", worktree / ".pytest_cache", *worktree.rglob("__pycache__")]:
-                if cache.is_dir() and not cache.is_symlink():
-                    shutil.rmtree(cache, ignore_errors=True)
+        """Reconcile terminal worktrees and their caches through the guarded storage sweep."""
+        self.sweep_storage(rep, measure=False)
 
     # ---- dispatch ----------------------------------------------------------
     def _refuse_if_closed_or_frozen(self, task: Task) -> None:
@@ -78,7 +52,7 @@ class DispatchMixin:
         policy = self.cfg.revision_policy()
         max_rev = 10**9 if policy["enabled"] else int(self.cfg.get("max_revisions", 3))
         candidates = [(task, mode) for task, mode in worker_candidates(
-            tasks, self.state, max_rev, self.stack_enabled, self._edit_pending)
+            tasks, self.state, max_rev, True, self._edit_pending)
             if (mode != "work" or not self.state.get(task.id).get("needs_human"))
             # A persisted hold may briefly precede its task-file routing after an I/O error.
             # It remains an operational stop for revise rounds as well as new work.
@@ -121,11 +95,21 @@ class DispatchMixin:
                 continue  # the phase is closed or frozen; nothing dispatches into it without an exception
             if self.budget_exceeded(task):
                 continue
-            runner = self.runner_for(task)
+            if not bool(self.effective("auto_dispatch", True, task.product)):
+                continue
+            # Admission may defer this task for several reasons below. Peek at its route so
+            # those deferrals do not consume a pool slot; commit the rotation only once the
+            # worker has actually started.
+            member = self.select_pool_member(task, task.difficulty, advance=False)
+            runner = self.runner_for(task, harness_name=str(member["harness"]) if member else "")
             if not runner.detached:
                 continue  # manual tasks are taken by a human, not auto-dispatched
             if self.slots_free() <= 0:
                 break
+            if self.slots_free_for(task) <= 0:
+                continue
+            if not runner.remote and self.local_slots_free() <= 0:
+                continue  # remote candidates may still run while the operator host drains
             if runner.name == "local":
                 resource = self.resource_status()
                 weight = self.resource_weight(task.id)
@@ -142,6 +126,8 @@ class DispatchMixin:
                 if any(int(self.state.get(old.id).get("resource_bypasses", 0)) >= max_bypasses
                        for old in blocked_local):
                     continue
+            if member is None and self.pool_members(task.difficulty):
+                continue  # every configured member is paused
             if runner.harness and self.is_harness_paused(runner.harness.name):
                 continue  # the harness hit a quota/spend-limit stop; a probe resumes it on its own
             if self.capture_required(task) and not self.browser_ready_for(task):
@@ -149,7 +135,11 @@ class DispatchMixin:
             if not self.operator_scope_ready(task):
                 continue  # live config is an operator prerequisite, never worker scope
             try:
-                self.dispatch(task, mode=mode, runner=runner)
+                self.dispatch(task, mode=mode, runner=runner,
+                              model_override=member["model"] if member is not None else None,
+                              pool_member=(member or {}).get("label") or "")
+                if member is not None:
+                    self.select_pool_member(task, task.difficulty)
                 rep.dispatched.append(f"{task.id}({mode})")
                 if runner.name == "local":
                     self.state.get(task.id).pop("resource_bypasses", None)
@@ -421,7 +411,7 @@ class DispatchMixin:
             st.pop("stack_parent", None)
             st["pr_base"] = self.final_base_for(task)
             return None
-        if not self.stack_enabled or blockers(task, self.store.tasks(), stack=False) == []:
+        if not self.stack_enabled_for(task) or blockers(task, self.store.tasks(), stack=False) == []:
             return None
         parents = stack_parents(task, self.store.tasks())
         if len(parents) != 1:
@@ -447,7 +437,8 @@ class DispatchMixin:
                  session_id: str = "", prompt_override: str = "", branch_override: str = "",
                  worktree_override: Path | None = None, model_override: str | None = None,
                  reserved_run: Run | None = None, completion_mode: str = "managed",
-                 external_pr: str = "", external_pr_number: int | None = None) -> Run:
+                 external_pr: str = "", external_pr_number: int | None = None,
+                 pool_member: str = "") -> Run:
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
@@ -456,7 +447,7 @@ class DispatchMixin:
         try:
             return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
                                   branch_override, worktree_override, model_override, reserved_run,
-                                  completion_mode, external_pr, external_pr_number)
+                                  completion_mode, external_pr, external_pr_number, pool_member)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
             # A runner may have launched the worker and then raised while recording
@@ -490,7 +481,8 @@ class DispatchMixin:
                   session_id: str = "", prompt_override: str = "", branch_override: str = "",
                   worktree_override: Path | None = None, model_override: str | None = None,
                   reserved_run: Run | None = None, completion_mode: str = "managed",
-                  external_pr: str = "", external_pr_number: int | None = None) -> Run:
+                  external_pr: str = "", external_pr_number: int | None = None,
+                  pool_member: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
         # A read-only local diagnosis may explain work in a held phase. The hold still
@@ -499,7 +491,17 @@ class DispatchMixin:
             self._refuse_if_closed_or_frozen(task)
         if not self.operator_scope_ready(task):
             raise RuntimeError("operator evidence is required before checkout work can dispatch")
-        runner = runner or self.runner_for(task)
+        if runner is None:
+            tier = "easy" if mode == "rebase" else task.difficulty
+            member = self.select_pool_member(task, tier)
+            if self.pool_members(tier) and member is None:
+                raise RuntimeError(f"every {tier} tier pool member is paused")
+            runner = self.runner_for(task, harness_name=str((member or {}).get("harness") or ""))
+            if model_override is None and member is not None:
+                # An empty configured model (for example ``codex:``) intentionally asks the
+                # harness to use its own default.  It is not a missing value to fall back from.
+                model_override = member["model"]
+            pool_member = pool_member or str((member or {}).get("label") or "")
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
@@ -539,7 +541,25 @@ class DispatchMixin:
                 raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         if mode == "revise" and not st.get("pending_feedback_easy") and not st.get("pending_feedback_rebase"):
             self._apply_revision_policy(task, st)
-        claimed_pr = None
+        attached_pr = None
+        if completion_mode == "external" and external_pr:
+            attached_pr = self.resolve_pr_attachment(task, external_pr)
+            if branch_override and branch_override != attached_pr.head:
+                raise RuntimeError(
+                    f"external branch {branch_override!r} does not match PR head {attached_pr.head!r}"
+                )
+            if external_pr_number is not None and external_pr_number != attached_pr.number:
+                raise RuntimeError("external PR number does not match resolved PR")
+            branch = attached_pr.head
+            external_pr_number = attached_pr.number
+            task.branch, task.pr = attached_pr.head, attached_pr.url
+            st.update({"pr_number": attached_pr.number, "head_sha": attached_pr.head_sha,
+                       "pr_state": attached_pr.state, "pr_base": attached_pr.base,
+                       "pr_draft": attached_pr.is_draft, "checks": attached_pr.checks,
+                       "failed_checks": list(attached_pr.failed_checks),
+                       "review_decision": attached_pr.review_decision})
+            self.store.save(task)
+            self.state.save()
         # An external claim names an operator-owned branch (and sometimes a PR) before
         # there is anything to finish. Keep that identity on the task as well as the
         # run, so a restart and every task-facing surface describe the claimed work
@@ -547,7 +567,6 @@ class DispatchMixin:
         # callers may still use branch_override without changing the task identity.
         if completion_mode in ("external", "pushed"):
             if external_pr:
-                slug = self.slug_for(task)
                 if not self.is_safe_change_request_url(task, external_pr):
                     raise RuntimeError("external PR URL contains unsupported components")
                 if external_pr_number is not None and external_pr_number <= 0:
@@ -559,23 +578,12 @@ class DispatchMixin:
                 if external_pr_number is None:
                     external_pr_number = self.change_request_number(task, external_pr)
                 if completion_mode == "external":
-                    if not slug or not self.github.available:
-                        raise RuntimeError("external claim needs an accessible configured repository")
                     if external_pr_number is None:
                         raise RuntimeError("external claim needs an identifiable PR number")
-                    try:
-                        claimed_pr = self.github.get_pr(slug, external_pr_number)
-                    except (GitHubError, KeyError) as exc:
-                        detail = exc.args[0] if exc.args else exc
-                        raise RuntimeError(f"could not read external PR: {detail}") from exc
-                    if claimed_pr.head != branch:
-                        raise RuntimeError(
-                            f"external PR head {claimed_pr.head!r} does not match claimed branch {branch!r}"
-                        )
-                    if not claimed_pr.head_sha or not claimed_pr.base:
-                        raise RuntimeError("external PR is missing immutable head or base metadata")
             task.branch = branch
-            if external_pr:
+            if attached_pr is not None:
+                task.pr = attached_pr.url
+            elif external_pr:
                 task.pr = external_pr
                 if external_pr_number is not None:
                     st["pr_number"] = external_pr_number
@@ -603,6 +611,18 @@ class DispatchMixin:
             raise RuntimeError("recovery launch reservation is no longer dispatchable")
         self._dispatching_run = run
         run.status = "preparing"
+        # Persist the intended checkout before preparation starts. If worktree creation or
+        # setup is interrupted, storage cleanup can still attribute a nonstandard trial,
+        # probe or scratch path to this managed attempt instead of retaining it forever as
+        # an unknown directory.
+        run.branch = branch
+        run.base = self.base_for(task)
+        run.completion_mode = completion_mode
+        run.env_snapshot["product"] = task.product
+        if worktree and not runner.remote:
+            run.worktree = str(worktree_override or self.worktree_for(task))
+        elif worktree_override is not None:
+            run.worktree = str(worktree_override)
         run.save()
         stack = self._stack_for(task) if mode in ("work", "trial") else None
         base = self.base_for(task)
@@ -732,14 +752,15 @@ class DispatchMixin:
         run.branch, run.base, run.brief_tokens = branch, base, max(1, len(text) // 4)
         run.completion_mode = completion_mode
         run.external_pr = external_pr
-        if claimed_pr is not None:
+        if attached_pr is not None:
             run.env_snapshot.update({
                 "external_repository": self.slug_for(task),
-                "external_base": claimed_pr.base,
-                "external_head_sha": claimed_pr.head_sha,
+                "external_base": attached_pr.base,
+                "external_head_sha": attached_pr.head_sha,
             })
         run.start_head = start_head
         run.model = model_override if model_override is not None else self.model_for(task, runner, "easy" if easy_tier else "")
+        run.pool_member = pool_member
         run.difficulty = "easy" if easy_tier else task.difficulty
         run.harness = runner.harness.name if runner.harness else ""
         run.session_id = session_id
@@ -817,7 +838,7 @@ class DispatchMixin:
         how = "resumed session" if session_id else "fresh session"
         stacked = f" stacked on {stack['parent_id']}" if stack else ""
         tier_note = ", description only; easy tier" if revise_easy else (", conflict only; easy tier" if mode == "rebase" else "")
-        self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness,
+        self.events.emit("dispatch", task.id, run=run.run_id, mode=mode, model=run.model, harness=run.harness, pool_member=run.pool_member,
                          host=run.host, base=base, brief_tokens=run.brief_tokens, resumed=bool(session_id))
         self._transition(task, Status.RUNNING, f"dispatched {mode} run {run.run_id} via {runner.name}{where} [{run.harness or 'human'}{model}] ({how}, base {base}{stacked}{tier_note}{rebase_note}, ~{run.brief_tokens} tokens)")
         self.state.save()

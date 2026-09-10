@@ -26,6 +26,7 @@ from .source_control import (
     ConnectionPolicy,
     ProviderUnavailable,
     ProxyFailure,
+    RateLimitFailure,
     SourceControlError,
     UnsupportedOperation,
 )
@@ -225,6 +226,10 @@ def is_safe_pr_url(url: str) -> bool:
 
 def _check_error_state(exc: GitHubError) -> str:
     """Represent a failed check-rollup request without implying that no checks exist."""
+    if isinstance(exc, AuthenticationFailure):
+        return "PERMISSION"
+    # Compatibility for injected clients and adapters that still raise the historical
+    # GitHubError text. Native REST requests use the typed branch above.
     message = str(exc)
     return "PERMISSION" if " 401 " in message or " 403 " in message else "UNAVAILABLE"
 
@@ -388,10 +393,15 @@ class GitHub:
         self.connection_policy.validate_response(r)
         if r.status_code >= 400:
             reset = r.headers.get("x-ratelimit-reset", "")
-            suffix = f"; rate_limit_reset={reset}" if reset else ""
+            if r.status_code in (403, 429) and reset:
+                try:
+                    reset_at = float(reset)
+                except ValueError:
+                    reset_at = None
+                raise RateLimitFailure(reset_at)
             if r.status_code in (401, 403):
                 raise AuthenticationFailure(f"source-control authentication failed ({r.status_code})")
-            raise GitHubError(f"source-control request failed ({r.status_code}){suffix}")
+            raise GitHubError(f"source-control request failed ({r.status_code})")
         return r.json() if r.content else None
 
     def _rest_pages(self, path: str, *, params: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -476,19 +486,26 @@ class GitHub:
                                            "state": item.get("state")} for item in items)
                     except GitHubError as exc:
                         errors.append(exc)
-                        message = str(exc)
-                        if ("rate limit" in message.lower()
-                                or re.search(r"rate_limit_reset=(\d+)", message)):
+                        if isinstance(exc, RateLimitFailure) or "rate limit" in str(exc).lower():
                             break
             if not errors:
                 state, failures = _rollup_state(rollup), _rollup_failed(rollup)
             else:
+                rate_limit = next(
+                    (exc for exc in errors if isinstance(exc, RateLimitFailure)), None
+                )
                 messages = [str(exc) for exc in errors]
-                reset = next((match for message in messages
-                              if (match := re.search(r"rate_limit_reset=(\d+)", message))), None)
-                if reset or any("rate limit" in message.lower() for message in messages):
+                legacy_reset = next(
+                    (match for message in messages
+                     if (match := re.search(r"rate_limit_reset=(\d+)", message))), None
+                )
+                if rate_limit or legacy_reset or any("rate limit" in message.lower() for message in messages):
+                    reset_at = (
+                        rate_limit.reset_at if rate_limit else
+                        float(legacy_reset.group(1)) if legacy_reset else None
+                    )
                     self._rate_limit_until = max(
-                        now + 10.0, float(reset.group(1)) if reset else now + 60.0,
+                        now + 10.0, reset_at if reset_at is not None else now + 60.0,
                     )
                     state, failures = "PENDING", ["GitHub status unavailable; rate limited"]
                 else:
@@ -499,10 +516,20 @@ class GitHub:
             return state, failures
         except (GitHubError, ValueError, TypeError, json.JSONDecodeError) as exc:
             message = str(exc)
-            reset = re.search(r"rate_limit_reset=(\d+)", message)
-            limited = "rate limit" in message.lower() or reset is not None
+            legacy_reset = re.search(r"rate_limit_reset=(\d+)", message)
+            reset_at = (
+                exc.reset_at if isinstance(exc, RateLimitFailure) else
+                float(legacy_reset.group(1)) if legacy_reset else None
+            )
+            limited = (
+                isinstance(exc, RateLimitFailure)
+                or legacy_reset is not None
+                or "rate limit" in message.lower()
+            )
             if limited:
-                self._rate_limit_until = max(now + 10.0, float(reset.group(1)) if reset else now + 60.0)
+                self._rate_limit_until = max(
+                    now + 10.0, reset_at if reset_at is not None else now + 60.0,
+                )
                 detail = "GitHub status unavailable; rate limited"
             else:
                 detail = "GitHub status unavailable"

@@ -11,6 +11,7 @@ from garden.source_control import (
     ConnectionPolicy,
     ProviderUnavailable,
     ProxyFailure,
+    RateLimitFailure,
     RepositoryIdentity,
     SourceControlError,
     SourceControlProvider,
@@ -174,6 +175,33 @@ def test_authentication_failure_does_not_echo_response_or_token(monkeypatch):
     assert isinstance(caught.value, GitHubError)
     assert "secret" not in str(caught.value)
     assert "private.test" not in str(caught.value)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_rest_authentication_statuses_are_typed(monkeypatch, status):
+    github = GitHub(use_gh=False, token="secret")
+    monkeypatch.setattr(
+        "garden.github.httpx.request",
+        lambda *_args, **_kwargs: httpx.Response(status),
+    )
+
+    with pytest.raises(AuthenticationFailure):
+        github._rest("GET", "/user")
+
+
+def test_rest_rate_limit_precedes_403_authentication_and_preserves_reset(monkeypatch):
+    github = GitHub(use_gh=False, token="secret")
+    monkeypatch.setattr(
+        "garden.github.httpx.request",
+        lambda *_args, **_kwargs: httpx.Response(
+            403, headers={"x-ratelimit-reset": "1234"},
+        ),
+    )
+
+    with pytest.raises(RateLimitFailure) as caught:
+        github._rest("GET", "/user")
+
+    assert caught.value.reset_at == 1234.0
 
 
 def test_provider_neutral_product_config_preserves_non_default_base_and_trust(tmp_path):
