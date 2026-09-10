@@ -114,7 +114,12 @@ class InProcessRunner(LocalRunner):
         d = run.path
         run.status = "running"
         run.save()
-        env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        if payload.get("execution_owner") == "controller":
+            env = dict(os.environ)
+            env["GARDEN_TASK_ID"] = run.task_id
+            env["GARDEN_RUN_ID"] = run.run_id
+        else:
+            env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
         if env.get("TMPDIR"):
             payload = {**payload, "temp_dir": env["TMPDIR"]}
         (d / "checks_input.json").write_text(json.dumps(payload))
@@ -122,7 +127,11 @@ class InProcessRunner(LocalRunner):
         (d / "stderr.log").write_text("")
         run.pid = os.getpid()
         run.save()
-        results = run_check_job(payload)
+        if payload.get("execution_owner") == "controller":
+            with patch.dict(os.environ, env, clear=True):
+                results = run_check_job(payload)
+        else:
+            results = run_check_job(payload)
         (d / "checks.json").write_text(json.dumps(results))
         (d / "exit_code").write_text("0\n")
 

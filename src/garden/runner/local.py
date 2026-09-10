@@ -240,7 +240,16 @@ class LocalRunner(Runner):
         them later instead of running the product's suite in-process (CG-182). Overridden by
         the in-process test runner to run the same job synchronously."""
         d = run.path
-        env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
+        # Controller-owned Python analysers may use controller credentials. Their output is
+        # redacted before revision dispatch; command checks and setup still create scrubbed
+        # child environments in checkrun/checks.py.
+        if payload.get("execution_owner") == "controller":
+            env = dict(os.environ)
+            env["GARDEN_TASK_ID"] = run.task_id
+            env["GARDEN_RUN_ID"] = run.run_id
+            env["GARDEN_ROOT"] = no_live_garden_root(run.path)
+        else:
+            env = self.worker_env(run, dict(self.config.get("setup") or {}), worktree)
         policy = SandboxPolicy.from_config(self.config)
         if policy.required:
             _, mechanism = policy.command_argv("true", worktree)

@@ -175,6 +175,8 @@ class CheckRunMixin:
                    "timeout": int(self.cfg.get("checks.timeout_seconds", 600)), "config": self.cfg.data,
                    "setup_cache_key": str(cont.get("setup_cache_key") or ""),
                    **(extra or {})}
+        if runner_name == "local" and provenance.startswith("controller-owned"):
+            payload["execution_owner"] = "controller"
         # A CI analyser may have no worktree; launch the process somewhere that exists.
         launch_cwd = worktree if worktree.exists() else run.path
         canonical = self.prepare_canonical_run(task, run, runner, branch, base)
