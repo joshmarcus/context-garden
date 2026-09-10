@@ -89,6 +89,10 @@ class InProcessRunner(LocalRunner):
         (d / "stdout.json").write_text(stdout)
         (d / "stderr.log").write_text(stderr)
         if code is not None:
+            with patch.dict(os.environ, env, clear=True):
+                from garden.run_supervisor import redact_authority_outputs
+
+                redact_authority_outputs(d)
             (d / "exit_code").write_text(f"{code}\n")  # the completion signal reap waits for
 
     def start_checks(self, run: Run, worktree: Path, payload: dict) -> None:
