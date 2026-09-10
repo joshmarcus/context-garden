@@ -534,7 +534,8 @@ def delete_local_branch(repo: Path, branch: str, expected_head: str) -> bool:
     return True
 
 
-def delete_remote_branch(repo: Path, remote: str, branch: str, expected_head: str) -> bool:
+def delete_remote_branch(repo: Path, remote: str, branch: str, expected_head: str, *,
+                         timeout: float | None = None) -> bool:
     """Delete a remote branch with an expected-head lease.
 
     This uses the configured Git remote directly, so it works for non-``origin`` remotes
@@ -544,13 +545,14 @@ def delete_remote_branch(repo: Path, remote: str, branch: str, expected_head: st
     if not remote_url(repo, remote):
         raise GitError(f"remote {remote!r} is not configured")
     ref = f"refs/heads/{branch}"
-    line = git("ls-remote", "--heads", remote, ref, cwd=repo).strip()
+    line = git("ls-remote", "--heads", remote, ref, cwd=repo, timeout=timeout).strip()
     actual = line.split()[0] if line else ""
     if not actual:
         return False
     if not expected_head or actual != expected_head:
         raise LeaseRejected(branch, expected_head, actual)
-    git("push", f"--force-with-lease={ref}:{expected_head}", remote, f":{ref}", cwd=repo)
+    git("push", f"--force-with-lease={ref}:{expected_head}", remote, f":{ref}", cwd=repo,
+        timeout=timeout)
     return True
 
 

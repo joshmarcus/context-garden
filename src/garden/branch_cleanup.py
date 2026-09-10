@@ -135,6 +135,7 @@ def classify_branches(
 def delete_disposition(
     item: BranchDisposition, repo: Path, *, remote: str = "origin",
     recheck: Callable[[BranchDisposition], str] | None = None,
+    remote_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Recheck claims, then independently compare-and-delete remote and local refs."""
     refusal = recheck(item) if recheck else ""
@@ -144,7 +145,9 @@ def delete_disposition(
     errors: list[str] = []
     if item.remote_head:
         try:
-            if gitops.delete_remote_branch(repo, remote, item.branch, item.remote_head):
+            if gitops.delete_remote_branch(
+                repo, remote, item.branch, item.remote_head, timeout=remote_timeout,
+            ):
                 removed.append("remote")
         except gitops.GitError as exc:
             errors.append(f"remote: {exc}")

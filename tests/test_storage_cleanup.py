@@ -156,7 +156,7 @@ def test_storage_measurement_uses_allocated_bytes_and_reports_capabilities(tmp_p
     assert "host_reason" in status
 
 
-def test_completed_worktree_is_removed_before_its_branch(sched):
+def test_completed_worktree_is_removed_before_its_branch(sched, monkeypatch):
     task = sched.store.task("DM-001")
     sched.tick()
     sched.tick(dispatch=False)
@@ -178,10 +178,20 @@ def test_completed_worktree_is_removed_before_its_branch(sched):
     old = time.time() - 3 * 86400
     os.utime(worktree, (old, old))
     report = type("Report", (), {"transitions": []})()
+    inventory_branches = []
+    original_inventory = sched.branch_cleanup_inventory
+
+    def observed_inventory(*, only_remote_branch=""):
+        inventory_branches.append(only_remote_branch)
+        return original_inventory(only_remote_branch=only_remote_branch)
+
+    monkeypatch.setattr(sched, "branch_cleanup_inventory", observed_inventory)
 
     storage = sched.sweep_storage(report, apply=True, limit=20)
     assert not worktree.exists()
     assert storage["bytes_reclaimed"] > 0
+    assert inventory_branches[0] == ""
+    assert all(branch == task.branch for branch in inventory_branches[1:])
     row = next(row for row in sched.branch_cleanup_inventory() if row.branch == task.branch)
     assert row.classification == "removable", row.reason
     results = sched.sweep_worker_branches(report, limit=20)

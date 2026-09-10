@@ -28,7 +28,9 @@ from .report import TickReport
 
 
 class CleanupMixin:
-    def storage_inventory(self, *, measure: bool = True) -> dict[str, Any]:
+    def storage_inventory(self, *, measure: bool = True,
+                          branch_rows: dict[tuple[str, str], BranchDisposition] | None = None,
+                          ) -> dict[str, Any]:
         """Account for bounded Garden-owned worktrees, isolated homes and run temp data."""
         self.runs.invalidate()
         tasks = self.store.tasks()
@@ -39,7 +41,10 @@ class CleanupMixin:
             if run.worktree:
                 key = str(Path(run.worktree).absolute())
                 runs_by_worktree.setdefault(key, []).append(run)
-        branch_rows = {(row.product, row.branch): row for row in self.branch_cleanup_inventory()}
+        if branch_rows is None:
+            branch_rows = {
+                (row.product, row.branch): row for row in self.branch_cleanup_inventory()
+            }
         keep_days = float(self.cfg.get("worktrees.keep_days", 2) or 0)
         home_keep_days = float(self.cfg.get("storage_cleanup.home_keep_days", keep_days) or 0)
         now = time.time()
@@ -235,7 +240,22 @@ class CleanupMixin:
                 # The preview may be older than an operator edit made during this sweep.
                 # Refresh task ownership immediately before the destructive recheck.
                 self.store.invalidate_tasks()
-                current = next((row for row in self.storage_inventory(measure=False)["items"]
+                current_branch_rows: dict[tuple[str, str], BranchDisposition] = {}
+                if item["category"] == "worktree":
+                    task = self.store.task(str(item["owner"]))
+                    matching = [
+                        run for run in self.runs.all_runs()
+                        if run.worktree and str(Path(run.worktree).absolute()) == str(path.absolute())
+                    ]
+                    branch = matching[-1].branch if matching else task.branch
+                    if branch:
+                        current_branch_rows = {
+                            (row.product, row.branch): row
+                            for row in self.branch_cleanup_inventory(only_remote_branch=branch)
+                        }
+                current = next((row for row in self.storage_inventory(
+                                    measure=False, branch_rows=current_branch_rows,
+                                )["items"]
                                 if row["path"] == str(path)), None)
                 if not current or not current["eligible"]:
                     record({"path": str(path), "outcome": "retained",
@@ -472,7 +492,10 @@ class CleanupMixin:
                 continue
             result = delete_disposition(item, self.repo_for(representative),
                                         remote=self._branch_cleanup_remote(),
-                                        recheck=self._branch_delete_recheck)
+                                        recheck=self._branch_delete_recheck,
+                                        remote_timeout=float(self.cfg.get(
+                                            "branches.remote_timeout_seconds", 5,
+                                        )))
             results.append(result)
             self.events.emit("branch_cleanup", ",".join(item.task_ids), product=item.product,
                              branch=item.branch, head=item.remote_head or item.local_head,

@@ -290,3 +290,23 @@ def test_zero_cleanup_limits_skip_inventory_before_automatic_work(sched, monkeyp
     assert sched.sweep_worker_branches(report) == []
     assert sched.sweep_storage(report)["status"] == "disabled"
     sched._sweep_terminal_worktrees(report)
+
+
+def test_sweep_bounds_authoritative_remote_delete(sched, monkeypatch):
+    task = sched.store.tasks()["DM-001"]
+    item = BranchDisposition(
+        task.product, "garden/remove-me", "removable", "preserved",
+        remote_head="a" * 40, task_ids=(task.id,),
+    )
+    observed: list[float | None] = []
+    monkeypatch.setattr(sched, "branch_cleanup_inventory", lambda **_kwargs: [item])
+    monkeypatch.setattr(sched, "_branch_delete_recheck", lambda _item: "")
+    monkeypatch.setattr(
+        gitops, "delete_remote_branch",
+        lambda *_args, timeout=None, **_kwargs: observed.append(timeout) or False,
+    )
+
+    result = sched.sweep_worker_branches(type("Report", (), {"transitions": []})())
+
+    assert result[0]["outcome"] == "absent"
+    assert observed == [5.0]
