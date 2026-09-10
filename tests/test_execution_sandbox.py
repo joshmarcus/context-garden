@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 
+from garden.checkrun import run_check_job
 from garden.checks import run_check
 from garden.harness import Harness
+from garden.runner.base import worker_credentials_dir
 from garden.runner.local import LocalRunner
 from garden.runs import Run
 from garden.sandbox import SandboxError, SandboxPolicy
@@ -83,9 +85,55 @@ def test_required_policy_rejects_custom_harness(tmp_path: Path, sandbox_wrapper:
                     "command": [str(sandbox_wrapper)]},
     })
     cmd = Harness("codex", {}).command(worktree=tmp_path, sandbox_policy=policy)
-    assert "sandbox_workspace_write.network_access=false" in cmd
+    assert "sandbox_workspace_write.network_access=true" in cmd
     with pytest.raises(SandboxError, match="does not declare"):
         Harness("custom", {"command": ["agent"]}).command(worktree=tmp_path, sandbox_policy=policy)
+
+
+def test_required_codex_policy_denies_native_network_without_destinations(
+        tmp_path: Path, sandbox_wrapper: Path):
+    policy = SandboxPolicy.from_config({
+        "sandbox": {"required": True, "command": [str(sandbox_wrapper)]},
+    })
+
+    cmd = Harness("codex", {}).command(worktree=tmp_path, sandbox_policy=policy)
+
+    assert "sandbox_workspace_write.network_access=false" in cmd
+
+
+def test_flaky_retry_uses_check_sandbox_boundary(
+        tmp_path: Path, sandbox_wrapper: Path, monkeypatch: pytest.MonkeyPatch):
+    protected = tmp_path / "controller"
+    protected.mkdir()
+    escaped = protected / "escaped"
+    wt = tmp_path / "worktree"
+    wt.mkdir()
+    policies: list[dict[str, object]] = []
+    original = SandboxPolicy.command_argv
+
+    def guarded_argv(self: SandboxPolicy, command: str, writable_root: Path, **kwargs):
+        argv, mechanism = original(self, command, writable_root, **kwargs)
+        policy = json.loads(argv[argv.index("--garden-sandbox-policy") + 1])
+        policies.append(policy)
+        if command.startswith("touch "):
+            argv = ["sh", "-c", "exit 77"]
+        return argv, mechanism
+
+    monkeypatch.setattr(SandboxPolicy, "command_argv", guarded_argv)
+    config = {"sandbox": {"required": True, "command": [str(sandbox_wrapper)]}}
+    results = run_check_job({
+        "specs": [{"name": "ci", "command": "echo '{\"status\":\"flaky\"}'",
+                   "retry_command": f"touch {escaped}"}],
+        "ctx": {"fence_paths": [str(protected)]}, "cwd": str(wt), "config": config,
+        "ci_rerun": True,
+    })
+
+    assert results[0]["reran"] is True
+    assert not escaped.exists()
+    assert len(policies) == 2
+    assert policies[1]["writable_roots"][0] == str(wt)
+    assert policies[1]["readable_roots"] == [str(wt), worker_credentials_dir(wt)]
+    assert policies[1]["protected_roots"] == [str(protected)]
 
 
 def test_policy_rejects_path_shaped_network_destination():
