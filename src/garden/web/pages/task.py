@@ -374,7 +374,7 @@ def _completion_view(task: Any, events: list[dict[str, Any]]) -> dict[str, str] 
             actor = str(source_event.get("actor") or "owner").replace("_", " ")
             return {"kind": "Accepted completion", "source": f"Owner acceptance by {actor}",
                     "reason": reason, "at": at}
-        return {"kind": "Accepted completion", "source": "Reviewed and merged into the base branch",
+        return {"kind": "Accepted completion", "source": "Merged into the base branch",
                 "reason": reason, "at": at}
     actor = str(source_event.get("actor") or "owner").replace("_", " ")
     source = (f"Status override by {actor}" if source_event.get("kind") == "set_status"

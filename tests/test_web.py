@@ -3671,7 +3671,7 @@ def test_done_task_shows_accepted_completion_before_historical_reviews(garden):
 
     page = client(garden).get(f"/tasks/{task.id}").text
     assert "Current completion · Accepted completion" in page
-    assert "Reviewed and merged into the base branch" in page
+    assert "Merged into the base branch" in page
     assert "Historical automated reviews" in page
     assert "source <span class=\"mono\">aaaaaaaaaaaa</span>" in page
     assert page.index("Current completion") < page.index("Historical automated reviews")
@@ -3726,7 +3726,7 @@ def test_done_task_recognises_legacy_merged_completion(garden):
 
     page = client(garden).get(f"/tasks/{task.id}").text
     assert "Current completion · Accepted completion" in page
-    assert "Reviewed and merged into the base branch" in page
+    assert "Merged into the base branch" in page
 
 
 def test_posts_from_another_origin_are_refused(garden):
