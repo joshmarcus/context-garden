@@ -20,6 +20,7 @@ from ...events import EventLog
 from ...graph import dependency_after, dependents, deps_in_later_phase
 from ...inbox import approve_phase_options, decision_card_view, split_log
 from ...model import effective_owner, phase_refusal
+from ...outcomes import base_acceptance
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
@@ -181,6 +182,8 @@ def register(app: FastAPI, site: Site) -> None:
         trial_log = TrialLog(s.config.garden_dir / "trials.jsonl")
         prior_trials = [(tr, ranking_markdown(tr)) for tr in reversed(trial_log.read()) if tr.get("task") == t.id]
         trial_view = _trial_view(st.get("trial"), runs)
+        completion = _completion_view(t, evs)
+        review_history = _review_history(runs) if completion else []
         manual_runner = (t.runner or s.config.product_runner(t.product)) == "manual"
         phase = s.phase(t.product, t.phase)
         phase_hold = phase_refusal(phase, t)
@@ -251,6 +254,8 @@ def register(app: FastAPI, site: Site) -> None:
             owner_source=effective_owner(t, phase)[1],
             design_files=_design_files(t, s, st),
             return_to=_return_to(request, task_id),
+            completion=completion,
+            review_history=review_history,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -345,6 +350,51 @@ def _acceptance_text(body: str) -> str:
 
     match = re.search(r"(?ms)^##\s+Acceptance criteria\s*$\n?(.*?)(?=^##\s|\Z)", body)
     return match.group(1).strip() if match else ""
+
+
+def _completion_view(task: Any, events: list[dict[str, Any]]) -> dict[str, str] | None:
+    """Describe the current done status without treating an old review as its outcome."""
+    if getattr(getattr(task, "status", None), "value", "") != "done":
+        return None
+    transition_index = next((index for index in range(len(events) - 1, -1, -1)
+                             if events[index].get("kind") == "transition"
+                             and events[index].get("to") == "done"), None)
+    if transition_index is None:
+        return {"kind": "Completion provenance unavailable", "source": "No completion transition recorded",
+                "reason": "This task is done, but its historical completion record is unavailable.", "at": ""}
+    transition = events[transition_index]
+    source_event = (events[transition_index - 1] if transition_index
+                    and events[transition_index - 1].get("kind") in {"mark_done", "set_status"} else {})
+    reason = str(transition.get("note") or "No completion reason recorded.")
+    at = str(transition.get("at") or "")
+    merged_tasks = {str(event.get("task") or "") for event in events
+                    if event.get("kind") == "automerged"}
+    if base_acceptance(transition, merged_tasks):
+        if source_event.get("kind") == "mark_done":
+            actor = str(source_event.get("actor") or "owner").replace("_", " ")
+            return {"kind": "Accepted completion", "source": f"Owner acceptance by {actor}",
+                    "reason": reason, "at": at}
+        return {"kind": "Accepted completion", "source": "Merged into the base branch",
+                "reason": reason, "at": at}
+    actor = str(source_event.get("actor") or "owner").replace("_", " ")
+    source = (f"Status override by {actor}" if source_event.get("kind") == "set_status"
+              else f"Forced completion by {actor}")
+    return {"kind": "Forced status completion", "source": source,
+            "reason": reason + " This is not recorded as base-branch acceptance.", "at": at}
+
+
+def _review_history(runs: list[Any]) -> list[dict[str, Any]]:
+    """Return dated, source-specific automated review findings for a completed task."""
+    history = []
+    for run in reversed(runs):
+        review = run.result if run.mode == "review" and isinstance(run.result, dict) else None
+        if not review or not review.get("verdict"):
+            continue
+        snapshot = run.env_snapshot or {}
+        history.append({"run_id": run.run_id, "at": run.finished_at or run.started_at,
+                        "head": str(snapshot.get("review_head") or ""),
+                        "markdown": review_to_markdown(review)})
+    return history
 
 
 def _trial_view(trial: Any, runs: list[Any]) -> dict[str, Any] | None:
