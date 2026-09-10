@@ -53,9 +53,13 @@ class _RunIndex:
     generation: int = 0
     built_generation: int = -1
     built_at: float = 0.0
-    runs: tuple[Run, ...] = ()
     by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
     by_claim_request: dict[str, Run] = field(default_factory=dict)
+    claim_candidates: dict[str, dict[tuple[str, str], Run]] = field(default_factory=dict)
+    active_by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
+    totals_by_task: dict[str, dict[str, Any]] = field(default_factory=dict)
+    archived: tuple[Run, ...] = ()
+    archived_by_task: dict[str, tuple[Run, ...]] = field(default_factory=dict)
     active: tuple[Run, ...] = ()
     totals: dict[str, Any] = field(default_factory=dict)
     task_fingerprints: dict[str, tuple[int, int]] = field(default_factory=dict)
@@ -680,7 +684,9 @@ class RunStore:
     def _snapshot(self) -> list[Run]:
         idx = self._ensure_index()
         with idx.lock:
-            return deepcopy(list(idx.runs))
+            found = [run for runs in idx.by_task.values() for run in runs]
+            found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
+            return deepcopy(found)
 
     def _ensure_index(self) -> _RunIndex:
         idx = self._index
@@ -712,48 +718,64 @@ class RunStore:
             idx.built_at = time.monotonic()
             idx.scans += 1
             return
-        previous_archived = [r for r in idx.runs if r.path.is_relative_to(self.archive_dir)]
+        previous_archived = idx.archived
         if archive_changed:
             archived = self._archived_runs()
             # A changed ledger also tells an existing reader in another process which
             # live buckets moved, even if their directory timestamps/size did not change.
             before = {(r.task_id, r.run_id) for r in previous_archived}
             after = {(r.task_id, r.run_id) for r in archived}
-            changed |= {task for task, _run_id in before ^ after}
+            changed |= {task for task, _run_id in before | after}
+            archived_by_task_lists: dict[str, list[Run]] = {}
+            for run in archived:
+                archived_by_task_lists.setdefault(run.task_id, []).append(run)
+            archived_by_task = {
+                task: tuple(runs) for task, runs in archived_by_task_lists.items()
+            }
         else:
-            archived = previous_archived
-        active_by_task: dict[str, list[Run]] = {}
-        for run in idx.runs:
-            if not run.path.is_relative_to(self.archive_dir):
-                active_by_task.setdefault(run.task_id, []).append(run)
+            archived = list(previous_archived)
+            archived_by_task = idx.archived_by_task
         for task in changed:
-            active_by_task[task] = self._read_task_runs(task) if task in task_fingerprints else []
-        found = [run for runs in active_by_task.values() for run in runs]
-        found.extend(archived)
-        found.sort(key=lambda r: (r.started_at, r.task_id, r.run_id))
-        idx.runs = tuple(found)
-        grouped: dict[str, list[Run]] = {}
-        for run in found:
-            grouped.setdefault(run.task_id, []).append(run)
-        idx.by_task = {task: tuple(runs) for task, runs in grouped.items()}
-        by_claim_request: dict[str, Run] = {}
-        for run in found:
-            if run.runner != "remote":
-                continue
-            identities = [run.claim_request_id, *(
-                str(item.get("claim_request_id") or "") for item in run.claim_history
-            )]
-            for request_id in identities:
-                if request_id:
-                    # Preserve the historical lookup's oldest-match collision behavior.
-                    # The API rejects an identity that no longer names the current claim
-                    # generation rather than allowing it to allocate new work.
-                    by_claim_request.setdefault(request_id, run)
-        idx.by_claim_request = by_claim_request
-        idx.active = tuple(
-            run for run in found if run.status in ("requested", "preparing", "running")
-        )
-        idx.totals = _totals(found)
+            old_runs = idx.by_task.get(task, ())
+            old_totals = idx.totals_by_task.get(task, _empty_totals())
+            affected_ids = _claim_request_ids(old_runs)
+            for request_id in affected_ids:
+                candidates = idx.claim_candidates[request_id]
+                for key in [key for key in candidates if key[0] == task]:
+                    del candidates[key]
+                if not candidates:
+                    del idx.claim_candidates[request_id]
+            live = self._read_task_runs(task) if task in task_fingerprints else []
+            task_runs = sorted([*live, *archived_by_task.get(task, ())], key=_run_sort_key)
+            if task_runs:
+                idx.by_task[task] = tuple(task_runs)
+                idx.active_by_task[task] = tuple(
+                    run for run in task_runs if run.status in ("requested", "preparing", "running")
+                )
+                idx.totals_by_task[task] = _totals(task_runs)
+            else:
+                idx.by_task.pop(task, None)
+                idx.active_by_task.pop(task, None)
+                idx.totals_by_task.pop(task, None)
+            idx.totals = _adjust_totals(
+                idx.totals, old_totals, idx.totals_by_task.get(task, _empty_totals())
+            )
+            affected_ids |= _claim_request_ids(task_runs)
+            for run in task_runs:
+                if run.runner == "remote":
+                    for request_id in _run_claim_request_ids(run):
+                        idx.claim_candidates.setdefault(request_id, {})[(task, run.run_id)] = run
+            for request_id in affected_ids:
+                candidates = idx.claim_candidates.get(request_id, {})
+                if candidates:
+                    idx.by_claim_request[request_id] = min(candidates.values(), key=_run_sort_key)
+                else:
+                    idx.by_claim_request.pop(request_id, None)
+        idx.archived = tuple(archived)
+        idx.archived_by_task = archived_by_task
+        idx.active = tuple(sorted(
+            (run for runs in idx.active_by_task.values() for run in runs), key=_run_sort_key
+        ))
         idx.task_fingerprints = task_fingerprints
         idx.archive_fingerprint = archive_fingerprint
         idx.dirty_tasks.clear()
@@ -1149,3 +1171,48 @@ def _totals(runs: list[Run]) -> dict[str, Any]:
     return {key: rollup[key] for key in (
         "runs", "cost_usd", "input_tokens", "output_tokens", "cache_read_input_tokens"
     )}
+
+
+def _empty_totals() -> dict[str, Any]:
+    return {
+        "runs": 0,
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
+
+def _adjust_totals(
+    current: dict[str, Any], old: dict[str, Any], new: dict[str, Any]
+) -> dict[str, Any]:
+    """Replace one task contribution in the aggregate in constant work."""
+    combined = current.copy() if current else _empty_totals()
+    for key in combined:
+        combined[key] += new[key] - old[key]
+    combined["cost_usd"] = round(combined["cost_usd"], 4)
+    return combined
+
+
+def _run_sort_key(run: Run) -> tuple[str, str, str]:
+    return run.started_at, run.task_id, run.run_id
+
+
+def _run_claim_request_ids(run: Run) -> set[str]:
+    return {
+        request_id
+        for request_id in [
+            run.claim_request_id,
+            *(str(item.get("claim_request_id") or "") for item in run.claim_history),
+        ]
+        if request_id
+    }
+
+
+def _claim_request_ids(runs: tuple[Run, ...] | list[Run]) -> set[str]:
+    return {
+        request_id
+        for run in runs
+        if run.runner == "remote"
+        for request_id in _run_claim_request_ids(run)
+    }

@@ -153,6 +153,31 @@ def test_claim_request_lookup_copies_only_matching_run(tmp_path: Path, monkeypat
     assert copied == [claimed.run_id]
 
 
+def test_claim_request_changed_bucket_does_not_revisit_unrelated_history(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    for number in range(200):
+        _finished(rs, "CG-HISTORY", f"terminal-{number:04d}")
+    claimed = rs.new_run("CG-ACTIVE", "remote", run_id="claimed")
+    claimed.claim_request_id = "durable-request-identity"
+    claimed.save()
+    assert rs.claim_request(claimed.claim_request_id) is not None
+
+    original_load = Run.load
+
+    def bounded_load(_cls, path: Path):
+        assert path.parent.name != "CG-HISTORY", "refreshed unrelated terminal history"
+        return original_load(path)
+
+    monkeypatch.setattr(Run, "load", classmethod(bounded_load))
+    current = original_load(claimed.path)
+    current.lease_updated_at = "2026-01-02T00:00:00+00:00"
+    current.save()
+
+    replay = rs.claim_request("durable-request-identity")
+
+    assert replay is not None and replay.run_id == claimed.run_id
+
+
 def test_stale_scheduler_save_preserves_authenticated_worker_completion(tmp_path: Path):
     rs = RunStore(tmp_path)
     run = rs.new_run("CG-001", "remote", run_id="20260101T000000Z-work")
