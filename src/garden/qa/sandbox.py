@@ -373,9 +373,12 @@ class Sandbox:
 
 
 def start(root: Path, host: str = "127.0.0.1", port: int = 0,
-          prepare: Callable[[Path], None] | None = None) -> Sandbox:
-    """Build the throwaway garden under `root` and serve it (with the scheduler loop) on a
-    thread. Returns once the server accepts connections."""
+          prepare: Callable[[Path], None] | None = None, watch: bool = True) -> Sandbox:
+    """Build and serve a throwaway garden, returning once the server accepts connections.
+
+    ``watch`` is optional for focused served-page checks that prepare their state directly;
+    the QA journey keeps its scheduler loop by default.
+    """
     import uvicorn
 
     from ..store import Store
@@ -394,7 +397,7 @@ def start(root: Path, host: str = "127.0.0.1", port: int = 0,
         probe.bind((host, 0))
         port = probe.getsockname()[1]
         probe.close()
-    app = create_app(Store(garden), watch=True, github=github, host=host, port=port)
+    app = create_app(Store(garden), watch=watch, github=github, host=host, port=port)
     register_pretend_github(app, github)
     recorder = PageRecorder(app, root / "pages")
     config = uvicorn.Config(recorder, host=host, port=port, log_level="warning")
