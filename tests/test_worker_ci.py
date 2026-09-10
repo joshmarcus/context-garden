@@ -321,9 +321,9 @@ def test_validation_policies_load(garden, validation):
     )
 
 
-def _workflow_test_job_runs(event: str, head_repo: str, repository: str, head_branch: str) -> bool:
-    """Mirror the CI job condition for the event fixtures below."""
-    return event != "pull_request" or head_repo != repository or not head_branch.startswith("garden/")
+def _uses_push_ci_gate(event: str, head_repo: str, repository: str, head_branch: str) -> bool:
+    """Mirror the event selection for the lightweight required-check gate."""
+    return event == "pull_request" and head_repo == repository and head_branch.startswith("garden/")
 
 
 def test_same_sha_garden_push_and_pr_run_one_ordinary_suite():
@@ -332,23 +332,45 @@ def test_same_sha_garden_push_and_pr_run_one_ordinary_suite():
         ("pull_request", "owner/repo", "owner/repo", "garden/change"),
     ]
     before = len(events)
-    after = sum(_workflow_test_job_runs(*event) for event in events)
+    after = sum(not _uses_push_ci_gate(*event) for event in events)
 
     assert before == 2
     assert after == 1
 
 
-@pytest.mark.parametrize(("event", "head_repo", "repository", "head_branch", "runs"), [
-    # A same-SHA garden push supplies the one ordinary-suite run for its PR.
-    ("push", "owner/repo", "owner/repo", "garden/change", True),
-    ("pull_request", "owner/repo", "owner/repo", "garden/change", False),
+@pytest.mark.parametrize(("event", "head_repo", "repository", "head_branch", "uses_gate", "runs_suite"), [
+    # Only a same-repository garden PR uses the lightweight exact-head gate.
+    ("push", "owner/repo", "owner/repo", "garden/change", False, True),
+    ("pull_request", "owner/repo", "owner/repo", "garden/change", True, False),
     # Forks and non-equivalent branch workflows retain their PR coverage.
-    ("pull_request", "fork/repo", "owner/repo", "garden/change", True),
-    ("push", "owner/repo", "owner/repo", "garden/standalone", True),
-    ("pull_request", "owner/repo", "owner/repo", "codex/change", True),
+    ("pull_request", "fork/repo", "owner/repo", "garden/change", False, True),
+    ("push", "owner/repo", "owner/repo", "garden/standalone", False, True),
+    ("pull_request", "owner/repo", "owner/repo", "codex/change", False, True),
 ])
-def test_repository_ci_event_fixtures(event, head_repo, repository, head_branch, runs):
-    assert _workflow_test_job_runs(event, head_repo, repository, head_branch) is runs
+def test_repository_ci_event_fixtures(event, head_repo, repository, head_branch, uses_gate, runs_suite):
+    assert _uses_push_ci_gate(event, head_repo, repository, head_branch) is uses_gate
+    assert not _uses_push_ci_gate(event, head_repo, repository, head_branch) is runs_suite
+
+
+def _exact_push_run_passes(run: dict[str, str], sha: str, branch: str) -> bool:
+    """Mirror the gate's exact-identity success requirement."""
+    return (run.get("headSha") == sha and run.get("headBranch") == branch
+            and run.get("event") == "push" and run.get("status") == "completed"
+            and run.get("conclusion") == "success")
+
+
+@pytest.mark.parametrize(("run", "passes"), [
+    ({"headSha": SHA, "headBranch": BRANCH, "event": "push", "status": "completed",
+      "conclusion": "success"}, True),
+    ({"headSha": "b" * 40, "headBranch": BRANCH, "event": "push", "status": "completed",
+      "conclusion": "success"}, False),
+    ({"headSha": SHA, "headBranch": BRANCH, "event": "push", "status": "in_progress",
+      "conclusion": ""}, False),
+    ({"headSha": SHA, "headBranch": BRANCH, "event": "push", "status": "completed",
+      "conclusion": "failure"}, False),
+])
+def test_exact_push_gate_rejects_stale_pending_and_failed_runs(run, passes):
+    assert _exact_push_run_passes(run, SHA, BRANCH) is passes
 
 
 def test_repository_ci_runs_before_pr_and_keeps_full_suite():
@@ -356,11 +378,16 @@ def test_repository_ci_runs_before_pr_and_keeps_full_suite():
     cfg = yaml.load((Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
     assert set(cfg["on"]["push"]["branches"]) >= {"garden/**", "codex/**", "main"}
     assert "pull_request" in cfg["on"]
-    condition = cfg["jobs"]["test"]["if"]
-    assert "github.event_name != 'pull_request'" in condition
-    assert "github.event.pull_request.head.repo.full_name != github.repository" in condition
-    assert "!startsWith(github.event.pull_request.head.ref, 'garden/')" in condition
+    assert "if" not in cfg["jobs"]["test"]
+    steps = cfg["jobs"]["test"]["steps"]
+    gate = next(step for step in steps if step.get("name") == "Verify exact-head push CI")
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in gate["if"]
+    assert "startsWith(github.event.pull_request.head.ref, 'garden/')" in gate["if"]
+    assert "--event push" in gate["run"]
+    assert "CI_HEAD_SHA" in gate["run"] and "CI_HEAD_BRANCH" in gate["run"]
+    assert "did not register or finish" in gate["run"]
+    assert "actions" in cfg["permissions"]
     assert any(
         s.get("run") == "pytest -q --durations=40 --timeout=120 --timeout-method=thread"
-        for s in cfg["jobs"]["test"]["steps"]
+        for s in steps
     )
