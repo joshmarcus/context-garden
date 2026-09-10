@@ -116,6 +116,24 @@ class LocalRunner(Runner):
         inside the worktree hits find_root(), which checks this variable and fails loudly
         because the path below does not contain a garden.yaml."""
         wt = worktree if worktree is not None else (Path(run.worktree) if run.worktree else None)
+        resources = self.config.get("resources", {})
+        reserve = int(resources.get("disk_reserve_bytes", 0) or 0)
+        required = int((run.env_snapshot or {}).get(
+            "disk_recheck_required_bytes",
+            (run.env_snapshot or {}).get("disk_required_bytes", 0),
+        ) or 0)
+        backing = str(resources.get("windows_backing_path", "") or "")
+        work_dir = self.config.get("work_dir")
+        temp_dir = run_temp_dir(work_dir, run) if work_dir else None
+        storage_paths = tuple(path for path in (wt, temp_dir, run.path) if path is not None)
+        try:
+            require_storage(storage_paths, reserve_bytes=reserve, required_bytes=required,
+                            windows_backing_path=backing, operation="local runtime scratch")
+        except StorageAdmissionError as exc:
+            raise RunnerError(str(exc)) from exc
+
+        # scrubbed_env refreshes the isolated HOME and copies approved credentials/config.
+        # Construct it only after the fresh check so denial remains write-free.
         env = scrubbed_env(self.config, setup, worktree=wt)
         # This private supervisor input belongs only to a detached check or nested
         # garden.validation invocation. Never let an enclosing process cap a model run.
@@ -130,22 +148,7 @@ class LocalRunner(Runner):
         # ordinary worktree fence still prevents writes there.
         env["GARDEN_ROOT"] = (str(run.path.parents[3]) if run.mode == "investigation"
                               else no_live_garden_root(run.path))
-        resources = self.config.get("resources", {})
-        reserve = int(resources.get("disk_reserve_bytes", 0) or 0)
-        required = int((run.env_snapshot or {}).get(
-            "disk_recheck_required_bytes",
-            (run.env_snapshot or {}).get("disk_required_bytes", 0),
-        ) or 0)
-        backing = str(resources.get("windows_backing_path", "") or "")
-        work_dir = self.config.get("work_dir")
-        if work_dir:
-            temp_dir = run_temp_dir(work_dir, run)
-            try:
-                require_storage(tuple(path for path in (wt, temp_dir) if path is not None),
-                                reserve_bytes=reserve, required_bytes=required,
-                                windows_backing_path=backing, operation="local runtime scratch")
-            except StorageAdmissionError as exc:
-                raise RunnerError(str(exc)) from exc
+        if temp_dir is not None:
             temp_dir.mkdir(parents=True, exist_ok=True)
             env["TMPDIR"] = str(temp_dir)
             env["PYTEST_DEBUG_TEMPROOT"] = str(temp_dir)
@@ -347,15 +350,23 @@ class LocalRunner(Runner):
         environment a worker gets. Unlike a real dispatch this never grants edit/Bash
         permissions: a paused harness's probe must not be able to touch anything."""
         assert self.harness is not None
-        cwd.mkdir(parents=True, exist_ok=True)
         argv, stdin_text = self.harness.login_probe()
         resolved = shutil.which(self.harness.bin) or self.harness.bin
         if argv and argv[0] == self.harness.bin and resolved != self.harness.bin:
             argv = [resolved] + argv[1:]
-        env = scrubbed_env(self.config, dict(self.config.get("setup") or {}), worktree=cwd)
         try:
+            resources = self.config.get("resources", {})
+            require_storage(
+                (cwd,),
+                reserve_bytes=int(resources.get("disk_reserve_bytes", 0) or 0),
+                required_bytes=int(resources.get("operation_required_bytes", 0) or 0),
+                windows_backing_path=str(resources.get("windows_backing_path", "") or ""),
+                operation="local harness probe scratch",
+            )
+            cwd.mkdir(parents=True, exist_ok=True)
+            env = scrubbed_env(self.config, dict(self.config.get("setup") or {}), worktree=cwd)
             stdout, stderr = self._probe_launch(argv, stdin_text, cwd, env)
-        except (subprocess.TimeoutExpired, OSError) as e:
+        except (StorageAdmissionError, subprocess.TimeoutExpired, OSError) as e:
             return {"final_text": "", "usage": {}, "cost_usd": None, "session_id": "", "result": {},
                     "error": str(e), "env_error": True, "env_kind": "probe_failed"}
         return self.harness.parse(stdout, stderr)
