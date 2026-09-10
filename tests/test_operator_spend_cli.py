@@ -52,7 +52,8 @@ def test_operator_ledger_default_is_shared_by_command_costs_and_now(garden):
     assert json.loads(costs.output)["totals"]["operator"]["cost_usd"] == 2.5
     store = Store(garden)
     now = snapshot(store, Scheduler(store, github=FakeGitHub(), log=lambda _: None), window="24h")
-    assert now["period"]["operator"]["spend"] == 2.5
+    assert now["period"]["operator"]["spend"] == 0
+    assert now["period"]["unattributed_operator"]["spend"] == 2.5
 
 
 def test_operator_spend_record_from_transcript_appends_and_prints(garden, tmp_path):

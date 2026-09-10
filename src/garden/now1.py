@@ -531,12 +531,29 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     page), cost per accepted task, the hand's work (hand merges, hand steps, rebase rounds
     per merge split into mechanical and agent, the operator's spend and share), the
     cost-by-activity series with its annotations, throughput per bucket, and the two kinds of
-    shaded table: runs by harness and model, and the five difficulty-by-model tables."""
-    window = [e for e in events if str(e.get("at") or "") >= since]
+    shaded table: runs by harness and model, and the five difficulty-by-model tables. ``tasks``
+    is the selected phase cohort. Task lifecycle and worker spend must belong to it; operator
+    spend must name that product and phase, while unattributed operator spend is only reported
+    separately."""
+    task_ids = set(tasks)
+    selected_products = {str(task.product) for task in tasks.values()}
+    selected_phases = {str(task.key) for task in tasks.values()}
+    selected_phase_names = {key.rsplit("/", 1)[-1] for key in selected_phases}
+
+    def selected_event(event: dict[str, Any]) -> bool:
+        tid = str(event.get("task") or "")
+        return not tid or tid in task_ids
+
+    def selected_operator(event: dict[str, Any]) -> bool:
+        product = str(event.get("product") or "")
+        phase = str(event.get("phase") or "")
+        return product in selected_products and phase in selected_phases | selected_phase_names
+
+    window = [e for e in events if str(e.get("at") or "") >= since and selected_event(e)]
     done_at: dict[str, str] = {}
     merge_facts = {str(e.get("task")) for e in events if e.get("kind") == "automerged" and e.get("task")}
     for e in window:
-        if base_acceptance(e, merge_facts) and e.get("task"):
+        if e.get("task") in task_ids and base_acceptance(e, merge_facts):
             done_at[e["task"]] = e["at"]
     # A merge the loop made emits `automerged` for the task (the digest's rule); a task that
     # reached done without one was merged by hand, the phase's definition-of-done number.
@@ -544,16 +561,18 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     hand_merged = sorted(t for t in done_at if t not in automerged)
     first_review: dict[str, dict[str, Any]] = {}
     for e in events:
-        if e.get("kind") == "review" and e.get("task") and e["task"] not in first_review:
+        if e.get("kind") == "review" and e.get("task") in task_ids and e["task"] not in first_review:
             first_review[e["task"]] = e
     reviewed = [e for e in first_review.values() if e["at"] >= since]
     approved = sum(1 for e in reviewed if e.get("verdict") == "approve")
     finished = [e for e in window if e.get("kind") == "run_finished" and e.get("task") in tasks]
-    op_window = [e for e in op_events if str(e.get("at") or "") >= since]
+    op_window = [e for e in op_events if str(e.get("at") or "") >= since and selected_operator(e)]
+    unattributed_op_window = [e for e in op_events if str(e.get("at") or "") >= since
+                              and not e.get("product") and not e.get("phase")]
     cost = sum(float(e.get("cost_usd") or 0.0) for e in finished + op_window)
     cohort = acceptance_cohort(events, tasks, since=since)
-    scoped_events = [e for e in events if not e.get("task") or e.get("task") in tasks]
-    series = cost_series(scoped_events + op_events, tasks, since=since, bucket=bucket, group_by="activity")
+    scoped_events = [e for e in events if str(e.get("task") or "") in task_ids]
+    series = cost_series(scoped_events + op_window, tasks, since=since, bucket=bucket, group_by="activity")
     buckets = [b["bucket"] for b in series.get("buckets") or []]
     per_bucket = Counter(bucket_key(e["at"], bucket) for e in finished)
     hand_steps = [e for e in window if e.get("kind") in HAND_KINDS]
@@ -561,7 +580,7 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
     # The window is quiet only when nothing at all was recorded in it. A window with only the
     # operator's ledger entries, a hand step or a profile change still shows its figures, so
     # the operator's spend and share are never hidden behind "no runs".
-    quiet = not (finished or done_at or op_window or hand_steps or annotations)
+    quiet = not (finished or done_at or op_window or unattributed_op_window or hand_steps or annotations)
     return {
         "since": since, "bucket": bucket, "quiet": quiet, "merged": len(done_at), "merged_ids": sorted(done_at),
         "first_pass": {"approved": approved, "reviewed": len(reviewed)},
@@ -571,6 +590,7 @@ def period(events: list[dict[str, Any]], op_events: list[dict[str, Any]], tasks:
         "hand_kinds": dict(Counter(e["kind"] for e in hand_steps)),
         "hand_merges": len(hand_merged), "hand_merged_ids": hand_merged,
         "rebase": rebase_rounds(window, tasks), "operator": operator_share(op_window, cost),
+        "unattributed_operator": operator_share(unattributed_op_window, 0.0),
         "by_model": runs_by_model(finished),
         "tiers": difficulty_by_model(events, tasks, since),
         "series": series, "throughput": [per_bucket.get(b, 0) for b in buckets],
@@ -675,7 +695,11 @@ def hand_lines(w: dict[str, Any]) -> list[str]:
         operator = f"operator {money(op['spend'])}{share}"
     else:
         operator = "operator: no ledger entry in this window"
-    return [merges, steps, rebases, operator]
+    lines = [merges, steps, rebases, operator]
+    unattributed = w.get("unattributed_operator") or {}
+    if unattributed.get("spend"):
+        lines.append(f"unattributed operator {money(unattributed['spend'])} · excluded from this phase")
+    return lines
 
 
 def render_text(snap: dict[str, Any]) -> str:
