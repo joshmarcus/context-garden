@@ -241,7 +241,12 @@ class Scheduler(
 
     def pool_members(self, tier: str, review: bool = False) -> list[dict[str, Any]]:
         """Normalise a configured tier/review pool, leaving string tier maps to model_for."""
-        raw: Any = self.cfg.get("review.pool") if review else self.effective("models")
+        if review:
+            raw: Any = self.cfg.get("review.pool")
+        elif "models" in self.overrides():
+            raw = self.overrides()["models"]
+        else:
+            raw = self.operating_profile().get("models", self.cfg.get("models"))
         if review:
             entries = raw if isinstance(raw, list) else []
         else:

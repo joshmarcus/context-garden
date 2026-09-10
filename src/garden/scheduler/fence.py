@@ -199,7 +199,10 @@ class FenceMixin:
         # hold still names every active run whose fence disagrees with the disk.
         baseline = mismatched[0][1]
         held_data = apply_executable_signature(self.cfg.data, baseline)
-        self.store.config = Config(root=self.cfg.root, data=held_data, sources=self.cfg.sources, env=self.cfg.env)
+        self.store.config = Config(
+            root=self.cfg.root, data=held_data, sources=self.cfg.sources, env=self.cfg.env,
+            source_documents=self.cfg.source_documents,
+        )
         self.cfg = self.store.config
         keys = sorted({key for _, _, changed in mismatched for key in changed})
         run_ids = sorted(run.run_id for run, _, _ in mismatched)

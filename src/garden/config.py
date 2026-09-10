@@ -19,6 +19,7 @@ from .configuration import (
     apply_changes,
     assert_inherited_locks_unchanged,
     assert_mutation_allowed,
+    product_configuration,
     resolve_value,
     revision,
     validate_configuration,
@@ -26,6 +27,15 @@ from .configuration import (
 from .github import is_git_remote_url
 
 CONFIG_NAME = "garden.yaml"
+
+
+def _contains(data: dict[str, Any], dotted: str) -> bool:
+    current: Any = data
+    for part in dotted.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return True
 
 # Config keys read once at startup — either when the Scheduler is constructed or when the
 # watch/serve loop first computes its sleep interval — and so NOT picked up by the per-tick
@@ -322,6 +332,7 @@ class Config:
     data: dict[str, Any] = field(default_factory=dict)
     sources: list[str] = field(default_factory=list)
     env: str = ""
+    source_documents: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     @classmethod
     def load(cls, root: Path, env: str | None = None) -> Config:
@@ -333,6 +344,7 @@ class Config:
         env = os.environ.get("GARDEN_ENV", "") if env is None else env
         data = dict(DEFAULTS)
         sources: list[str] = []
+        documents: list[tuple[str, dict[str, Any]]] = [("default", DEFAULTS)]
         for name in _source_names(env):
             p = root / name
             if p.exists():
@@ -341,9 +353,42 @@ class Config:
                     raise ValueError(f"{name}: top level must be a mapping")
                 data = _merge(data, raw)
                 sources.append(name)
+                documents.append((name, raw))
         _validate_product_policies(data)
         validate_configuration(data)
-        return cls(root=root, data=data, sources=sources, env=env)
+        return cls(root=root, data=data, sources=sources, env=env,
+                   source_documents=documents)
+
+    def editable(self) -> Config:
+        """The defaults plus the document the Configuration page can actually change."""
+        path = self.root / CONFIG_NAME
+        raw = yaml.safe_load(path.read_text()) if path.exists() else {}
+        raw = raw or {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"{CONFIG_NAME}: top level must be a mapping")
+        documents = [("default", DEFAULTS)]
+        sources: list[str] = []
+        if path.exists():
+            documents.append((CONFIG_NAME, raw))
+            sources.append(CONFIG_NAME)
+        return type(self)(self.root, _merge(dict(DEFAULTS), raw), sources, self.env,
+                          documents)
+
+    def setting_source(self, key: str, product: str | None = None) -> str:
+        """Name the source documents that contribute the resolved saved value."""
+        def contains(document: dict[str, Any]) -> bool:
+            if product is not None:
+                overrides, locks = product_configuration(document, product)
+                resolved = product_configuration(self.data, product)
+                if key in resolved[1]:
+                    return key in locks
+                if key in resolved[0]:
+                    return key in overrides
+            return _contains(document, key)
+
+        names = [name for name, document in self.source_documents if contains(document)]
+        explicit = [name for name in names if name != "default"]
+        return " + ".join(explicit or names) if names else "default"
 
     def source_names(self) -> list[str]:
         """The garden.yaml / garden.<env>.yaml / garden.local.yaml file names this config is

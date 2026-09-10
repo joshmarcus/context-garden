@@ -22,6 +22,7 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         cfg = s.config
         saved_cfg = Config.load(s.root, cfg.env)
+        editable_cfg = saved_cfg.editable()
         sched = hub.reader()
         observe_cfg = dict(cfg.get("observe") or {})
         effective = {
@@ -61,15 +62,17 @@ def register(app: FastAPI, site: Site) -> None:
         products = sorted((saved_cfg.data.get("products") or {}).keys())
         if selected_product not in products:
             selected_product = ""
-        project_overrides, _ = product_configuration(saved_cfg.data, selected_product) if selected_product else ({}, {})
+        project_overrides, _ = product_configuration(editable_cfg.data, selected_product) if selected_product else ({}, {})
         editor_rows = []
         for field in CONFIG_FIELDS.values():
             if ConfigScope.DERIVED in field.scopes:
                 continue
-            provenance = saved_cfg.setting(field.key, selected_product or None)
+            saved_provenance = editable_cfg.setting(field.key, selected_product or None)
+            layered_provenance = saved_cfg.setting(field.key, selected_product or None)
+            accepted_provenance = cfg.setting(field.key, selected_product or None)
             can_project = ConfigScope.PROJECT in field.scopes
-            editable = not selected_product or (can_project and not provenance.locked)
-            saved_value = provenance.value
+            editable = not selected_product or (can_project and not layered_provenance.locked)
+            saved_value = saved_provenance.value
             if field.secret:
                 rendered = ""
                 display = "••••••••" if saved_value not in (None, "", [], {}) else "not set"
@@ -80,13 +83,24 @@ def register(app: FastAPI, site: Site) -> None:
             effective_value = sched.effective(field.key, field.default, product=selected_product or None)
             effective_display = ("protected" if field.secret and effective_value not in (None, "", [], {})
                                  else yaml.safe_dump(effective_value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip())
+            scheduler_source = sched.effective_source(field.key)
+            if accepted_provenance.source != "global":
+                effective_source = cfg.setting_source(field.key, selected_product)
+            elif scheduler_source == "override":
+                effective_source = "runtime override"
+            elif scheduler_source == "profile":
+                effective_source = f"operating profile {sched.operating_profile_name()}"
+            else:
+                effective_source = cfg.setting_source(field.key)
+            saved_source = editable_cfg.setting_source(field.key, selected_product or None)
             editor_rows.append({
                 "field": field, "editable": editable, "rendered": rendered,
                 "display": display, "effective": effective_display,
-                "source": provenance.source, "locked": provenance.locked,
-                "effective_source": (provenance.source if provenance.source != "global"
-                                     else sched.effective_source(field.key)),
-                "reason": provenance.reason, "policy_source": provenance.policy_source,
+                "source": saved_source, "locked": layered_provenance.locked,
+                "effective_source": effective_source,
+                "masked": saved_source != effective_source,
+                "reason": layered_provenance.reason,
+                "policy_source": layered_provenance.policy_source,
                 "overridden": field.key in project_overrides,
                 "collection_kind": ("mapping" if isinstance(saved_value, dict) else
                                     "list" if isinstance(saved_value, list) else

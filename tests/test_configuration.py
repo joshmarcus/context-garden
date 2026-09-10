@@ -37,6 +37,24 @@ def configured() -> dict:
     }
 
 
+def test_config_reports_editable_and_layered_setting_sources(tmp_path, monkeypatch):
+    (tmp_path / "garden.yaml").write_text("max_parallel: 3\n")
+    (tmp_path / "garden.work.yaml").write_text("max_parallel: 5\n")
+    (tmp_path / "garden.local.yaml").write_text("max_parallel: 7\n")
+    monkeypatch.setenv("GARDEN_ENV", "work")
+
+    layered = Config.load(tmp_path)
+    editable = layered.editable()
+
+    assert editable.get("max_parallel") == 3
+    assert editable.setting_source("max_parallel") == "garden.yaml"
+    assert layered.get("max_parallel") == 7
+    assert layered.setting_source("max_parallel") == (
+        "garden.yaml + garden.work.yaml + garden.local.yaml"
+    )
+    assert layered.setting_source("auto_dispatch") == "default"
+
+
 def test_metadata_inventory_describes_every_value_on_configuration_page():
     displayed = {
         "max_parallel", "review_parallel", "auto_dispatch", "auto_revise", "stack",
