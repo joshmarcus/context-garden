@@ -771,8 +771,11 @@ def difficulty_by_model(events: list[dict[str, Any]], tasks: dict[str, Any], sin
                 value = statistics.median(vals) if key == "lead_time" else sum(vals) / len(vals)
                 cells[model] = {"value": round(value, 3), "n": len(vals), "thin": len(vals) < THIN_SAMPLE,
                                 "rank": None, "best": False, "worst": False}
-                if key in ("cost_per_accepted", "work_run_cost"):
-                    cells[model]["cost_complete"] = all(priced for _, priced in values)
+                # Complete pricing is the long-standing default for comparison cells.  Keep
+                # that compact shape so existing consumers need only handle the exceptional
+                # partial case, where a zero could otherwise look like a known price.
+                if key in ("cost_per_accepted", "work_run_cost") and not all(priced for _, priced in values):
+                    cells[model]["cost_complete"] = False
             _rank_row(cells, better)
             rows[d] = cells
         tables.append({"key": key, "label": label, "unit": unit, "better": better, "n_unit": n_unit, "rows": rows})
