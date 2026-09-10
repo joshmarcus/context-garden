@@ -231,8 +231,8 @@ def register(app: FastAPI, site: Site) -> None:
             from ...runner.base import pass_env_patterns
             from ...runs import RunStore
 
-            runs = RunStore(hub.store.config.garden_dir).all_runs()
-            replay = next((r for r in runs if r.runner == "remote" and (
+            all_runs = RunStore(hub.store.config.garden_dir).all_runs()
+            replay = next((r for r in all_runs if r.runner == "remote" and (
                 r.claim_request_id == request_id
                 or any(item.get("claim_request_id") == request_id for item in r.claim_history)
             )), None)
@@ -243,6 +243,7 @@ def register(app: FastAPI, site: Site) -> None:
                     raise HTTPException(409, "claim request identity cannot be replayed")
                 claimed_run(replay.run_id, host_cfg, response_token)
                 return JSONResponse(replay.claim_response)
+            runs = RunStore(hub.store.config.garden_dir).active()
             owned = [r for r in runs if r.runner == "remote" and r.status == "running"
                      and r.host == body["host"] and (leased(r) or recovering(r))
                      and not r.process_finished()]
