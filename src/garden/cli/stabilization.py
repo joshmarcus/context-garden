@@ -85,6 +85,34 @@ def outcome(target: str, name: str, status: str = typer.Option(...), command: st
     console.print(f"recorded {name}: {status.upper()}")
 
 
+@stabilization_app.command("accept-limitations")
+def accept_stabilization_limitations(
+    target: str,
+    build_sha: str = typer.Option(..., "--build-sha", help="Exact build this decision permits."),
+    actor_type: str = typer.Option(..., "--actor-type", help="human_owner or delegated_operator"),
+    actor: str = typer.Option(..., "--actor", help="Accountable person's identity."),
+    authority: str = typer.Option(..., "--authority", help="Authority for making this decision."),
+    rationale: str = typer.Option(..., "--rationale"),
+    source: list[str] = typer.Option(..., "--source", help="Evidence or decision reference; repeatable."),
+):
+    """Accept measured stabilization limitations for exactly one phase and build."""
+    from ..stabilization import accept_limitations
+
+    _, phase = _target(target)
+    try:
+        row = accept_limitations(
+            phase, build_sha, actor_type=actor_type, actor=actor, authority=authority,
+            rationale=rationale, sources=source,
+        )
+    except ValueError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(
+        f"{phase.key}: stabilization limitations accepted for {row['build_sha']} "
+        f"by {row['actor_type']} {row['actor']}"
+    )
+
+
 @stabilization_app.command("report")
 def report(target: str):
     """Render the evidence report and print its PASS/UNPROVEN gate result."""

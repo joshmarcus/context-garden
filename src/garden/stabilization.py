@@ -36,6 +36,7 @@ INTERVENTION_KINDS = frozenset({
 NON_OPERATIVE_KINDS = frozenset({"status_question", "conversation"})
 ACTION_KINDS = INTERVENTION_KINDS | NON_OPERATIVE_KINDS
 ACTORS = frozenset({"human_owner", "delegated_operator", "automated_scheduler", "unknown"})
+ACCEPTANCE_ACTORS = frozenset({"human_owner", "delegated_operator"})
 
 # ``automerged`` is emitted only after Scheduler has completed the merge.  It is therefore
 # authoritative scheduler provenance even in an older event row that predates ``actor``.
@@ -52,6 +53,102 @@ def running_build_sha() -> str:
 
 def evidence_paths(phase: Phase) -> tuple[Path, Path]:
     return phase.path / "docs" / "stabilization-evidence.json", phase.path / "docs" / "stabilization-evidence.md"
+
+
+def acceptance_path(phase: Phase) -> Path:
+    """Return the append-only operator decision ledger, separate from measured evidence."""
+    return phase.path / "docs" / "stabilization-acceptance.json"
+
+
+def load_acceptances(phase: Phase) -> list[dict[str, Any]]:
+    path = acceptance_path(phase)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def accept_limitations(
+    phase: Phase,
+    build_sha: str,
+    *,
+    actor_type: str,
+    actor: str,
+    authority: str,
+    rationale: str,
+    sources: list[str],
+    at: str | None = None,
+) -> dict[str, Any]:
+    """Append an accountable acceptance without modifying the measurements it assesses."""
+    if actor_type not in ACCEPTANCE_ACTORS:
+        raise ValueError("acceptance actor type must be human_owner or delegated_operator")
+    text_fields = {"build SHA": build_sha, "actor": actor, "authority": authority, "rationale": rationale}
+    missing = [name for name, value in text_fields.items() if not isinstance(value, str) or not value.strip()]
+    if missing:
+        raise ValueError("acceptance requires nonempty " + ", ".join(missing))
+    if not sources or not all(isinstance(source, str) and source.strip() for source in sources):
+        raise ValueError("acceptance requires one or more nonempty evidence/source references")
+    recorded_at = at or now_iso()
+    try:
+        timestamp = dt.datetime.fromisoformat(recorded_at)
+    except (TypeError, ValueError):
+        raise ValueError("acceptance timestamp must be ISO 8601") from None
+    if timestamp.tzinfo is None:
+        raise ValueError("acceptance timestamp must include a timezone")
+    row = {
+        "phase": phase.key,
+        "build_sha": build_sha.strip(),
+        "disposition": "accepted_with_limitations",
+        "actor_type": actor_type,
+        "actor": actor.strip(),
+        "authority": authority.strip(),
+        "rationale": rationale.strip(),
+        "sources": [source.strip() for source in sources],
+        "at": recorded_at,
+    }
+    path = acceptance_path(phase)
+    decisions = load_acceptances(phase)
+    if path.exists() and not decisions:
+        try:
+            existing = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing = None
+        if existing != []:
+            raise ValueError("existing stabilization acceptance ledger is malformed; refusing to overwrite it")
+    decisions.append(row)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(decisions, indent=2, sort_keys=True) + "\n")
+    return row
+
+
+def matching_acceptance(phase: Phase, build_sha: str) -> dict[str, Any] | None:
+    """Return the newest structurally valid acceptance for this exact phase and build."""
+    for row in reversed(load_acceptances(phase)):
+        if _valid_acceptance(row, phase.key, build_sha):
+            return row
+    return None
+
+
+def _valid_acceptance(row: Any, phase_key: str, build_sha: str) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if row.get("phase") != phase_key or row.get("build_sha") != build_sha:
+        return False
+    if row.get("disposition") != "accepted_with_limitations" or row.get("actor_type") not in ACCEPTANCE_ACTORS:
+        return False
+    if not all(isinstance(row.get(field), str) and row[field].strip()
+               for field in ("actor", "authority", "rationale", "at")):
+        return False
+    sources = row.get("sources")
+    if not isinstance(sources, list) or not sources or not all(isinstance(item, str) and item.strip() for item in sources):
+        return False
+    try:
+        return dt.datetime.fromisoformat(row["at"]).tzinfo is not None
+    except (TypeError, ValueError):
+        return False
 
 
 def load_evidence(phase: Phase) -> dict[str, Any]:
@@ -151,9 +248,18 @@ def gate(phase: Phase, *, build_sha: str | None = None) -> tuple[bool, list[str]
         return True, []
     data = load_evidence(phase)
     current = build_sha or running_build_sha()
+    missing = _measured_missing(data, current)
+    if not missing:
+        return True, []
+    if current and matching_acceptance(phase, current):
+        return True, []
+    return False, missing
+
+
+def _measured_missing(data: dict[str, Any], current: str) -> list[str]:
     missing: list[str] = []
     if data.get("invalid"):
-        return False, ["evidence JSON is invalid"]
+        return ["evidence JSON is invalid"]
     if not current or data.get("build_sha") != current:
         missing.append("evidence is not tied to the current running build")
     outcomes = data.get("outcomes") or {}
@@ -175,13 +281,17 @@ def gate(phase: Phase, *, build_sha: str | None = None) -> tuple[bool, list[str]
     if journey.get("evidence_type") != "interaction":
         missing.append("application_journey: actual interaction evidence is required")
     _check_soak(data, outcomes.get("productive_unattended") or {}, missing)
-    return not missing, missing
+    return missing
 
 
 def render_report(phase: Phase, *, build_sha: str | None = None) -> str:
     data = load_evidence(phase)
-    ok, missing = gate(phase, build_sha=build_sha)
-    lines = [f"# Stabilization evidence — {phase.key}", "", f"**Overall: {'PASS' if ok else 'UNPROVEN'}**",
+    current = build_sha or running_build_sha()
+    acceptance = matching_acceptance(phase, current) if current else None
+    ok, _ = gate(phase, build_sha=current)
+    measured_missing = _measured_missing(data, current)
+    overall = "ACCEPTED WITH LIMITATIONS" if acceptance else ("PASS" if ok else "UNPROVEN")
+    lines = [f"# Stabilization evidence — {phase.key}", "", f"**Overall: {overall}**",
              "", f"Build: `{data.get('build_sha') or 'unknown'}`", "", "## Outcomes", ""]
     for name in OUTCOMES:
         row = (data.get("outcomes") or {}).get(name) or {}
@@ -193,7 +303,13 @@ def render_report(phase: Phase, *, build_sha: str | None = None) -> str:
                 "Real-user provenance: " + ("recorded" if row.get("real_user") else "not recorded (fixture evidence remains valid)"),
                 "",
             ]
-    lines += ["## Unverified requirements", ""] + ([f"- {item}" for item in missing] if missing else ["- None."])
+    if acceptance:
+        lines += ["## Operator acceptance", "",
+                  f"Disposition: accepted with limitations by {acceptance['actor_type']} `{acceptance['actor']}`",
+                  f"Authority: {acceptance['authority']}", f"Rationale: {acceptance['rationale']}",
+                  "Sources: " + ", ".join(f"`{source}`" for source in acceptance["sources"]),
+                  f"Accepted at: {acceptance['at']}", f"Accepted build: `{acceptance['build_sha']}`", ""]
+    lines += ["## Unverified requirements", ""] + ([f"- {item}" for item in measured_missing] if measured_missing else ["- None."])
     actions = data.get("interventions") or []
     counts = {actor: sum(a.get("actor", "unknown") == actor for a in actions) for actor in ACTORS}
     lines += ["", "## No-owner-action window", "",
