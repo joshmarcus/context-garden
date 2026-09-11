@@ -788,10 +788,15 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
         elif t.status == Status.IN_REVIEW and not st.get("needs_human"):
             if st.get("ci_missing"):
                 diagnostic = str(st.get("ci_diagnostic") or "CI has not reported a status for this PR head")
+                # An unanswerable provider and an answer bound to no result for this head
+                # need different first moves, so name which one this is.
+                unanswerable = str((st.get("ci_status") or {}).get("state") or "") in (
+                    "unavailable", "malformed", "timeout", "unknown")
                 add("operator", t, diagnostic, [
                     {"label": "Open PR", "kind": "link", "href": t.pr,
                      "detail": "inspect or re-run the configured CI provider; the PR and its feedback remain unchanged"},
-                ], kind="ci_missing", kind_title="CI status missing",
+                ], kind="ci_missing",
+                    kind_title="CI status unavailable" if unanswerable else "CI status missing",
                     kind_blurb="This is an operational prerequisite, not approval of the product outcome.",
                     reason=diagnostic, evidence=_evidence_lines(t, st, runs))
                 continue

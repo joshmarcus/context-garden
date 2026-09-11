@@ -676,7 +676,11 @@ class Site:
             task_state = State(s.config.garden_dir / "state.json").get(task.id) if task is not None else {}
             checks = pr.checks
             if validation == "command" and task is not None:
-                checks = "SUCCESS" if pr.head_sha and task_state.get("validation_head") == pr.head_sha else ""
+                # The scheduler's exact-head observation is the only evidence here, and it
+                # counts for this row only while it is green and bound to this same head.
+                exact_head = task_state.get("ci_status") or {}
+                checks = "SUCCESS" if (pr.head_sha and exact_head.get("green")
+                                       and exact_head.get("queried_sha") == pr.head_sha) else ""
             rows.append({
                 "pr": pr,
                 "task": task,
