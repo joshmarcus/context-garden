@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import random
+import re
 import subprocess
+import time
 
 import pytest
 
 from garden import gitops
-from garden.branch_cleanup import BranchDisposition, delete_disposition
+from garden.branch_cleanup import BranchDisposition, delete_disposition, referenced_run_ids
 from garden.model import Status
+
+
+def _legacy_referenced_run_ids(state_text: str, run_ids: set[str]) -> set[str]:
+    return {
+        run_id for run_id in run_ids
+        if run_id in state_text
+        and re.search(rf"(?<![\w-]){re.escape(run_id)}(?![\w-])", state_text)
+    }
 
 
 def _git(repo, *args):
@@ -142,6 +153,100 @@ def test_recovery_reference_does_not_match_a_shorter_run_id(sched, reference_kin
     assert rows[first.branch].classification == "removable", rows[first.branch]
     assert rows[second.branch].classification == "needed", rows[second.branch]
     assert "recovery state" in rows[second.branch].reason
+
+
+def test_reference_index_matches_literal_regex_semantics_differentially():
+    random_source = random.Random(622)
+    alphabet = "ab09_-.:+()[]{}é雪"
+    run_ids = {
+        "".join(random_source.choice(alphabet) for _ in range(random_source.randint(1, 18)))
+        for _ in range(300)
+    }
+    run_ids.update({"same-second", "same-second-2", "a+b", "雪.é", "[run](1)"})
+    fragments = [
+        random_source.choice((run_id, f"prefix{run_id}", f"{run_id}suffix", f"/{run_id}.json"))
+        for run_id in run_ids
+    ]
+    state_text = " | ".join(fragments)
+    expected = _legacy_referenced_run_ids(state_text, run_ids)
+
+    assert referenced_run_ids(state_text, run_ids) == expected
+
+
+def test_reference_index_scans_state_once_as_run_count_grows():
+    text = "x" * 100_000 + "/run-1999.json"
+    ids = {f"run-{number:04d}" for number in range(2_000)}
+    iterations = 0
+
+    class CountedText(str):
+        def __iter__(self):
+            nonlocal iterations
+            for character in super().__iter__():
+                iterations += 1
+                yield character
+
+    assert referenced_run_ids(CountedText(text), ids) == {"run-1999"}
+    assert iterations == len(text)
+
+
+def test_single_branch_inventory_limits_recovery_index_to_that_branch(sched, monkeypatch):
+    task = sched.store.tasks()["DM-001"]
+    task.status = Status.DONE
+    sched.store.save(task)
+    repo = sched.repo_for(task)
+    expected_run = _record_branch(sched, task.id, "garden/recheck")
+    _make_branch(repo, expected_run.branch)
+    for number in range(50):
+        _record_branch(sched, task.id, f"garden/irrelevant-{number}")
+    observed: set[str] = set()
+    original = referenced_run_ids
+
+    def capture(state_text, run_ids):
+        observed.update(run_ids)
+        return original(state_text, run_ids)
+
+    monkeypatch.setattr("garden.branch_cleanup.referenced_run_ids", capture)
+
+    sched.branch_cleanup_inventory(only_remote_branch=expected_run.branch)
+
+    assert observed == {expected_run.run_id}
+
+
+def test_single_branch_inventory_keeps_global_active_stack_base_claim(sched):
+    first, second = sched.store.tasks()["DM-001"], sched.store.tasks()["DM-002"]
+    first.status = Status.DONE
+    sched.store.save(first)
+    repo = sched.repo_for(first)
+    completed = _record_branch(sched, first.id, "garden/recheck-base")
+    _make_branch(repo, completed.branch)
+    active = _record_branch(sched, second.id, "garden/active", active=True)
+    active.base = completed.branch
+    active.save()
+
+    row = sched.branch_cleanup_inventory(only_remote_branch=completed.branch)[0]
+
+    assert row.classification == "needed"
+    assert "stack base" in row.reason
+
+
+@pytest.mark.stress
+def test_reference_index_5000_run_13mb_benchmark():
+    run_ids = {f"20260911T000000Z-task-{number:04d}" for number in range(5_000)}
+    block = "{" + ",".join(f'\"field{number}\":\"unrelated scheduler state\"'
+                               for number in range(1_000)) + "}"
+    state_text = (block * ((13 * 1024 * 1024) // len(block) + 1))[:13 * 1024 * 1024]
+    state_text += "/20260911T000000Z-task-4999.json"
+
+    legacy_started = time.perf_counter()
+    legacy_found = _legacy_referenced_run_ids(state_text, run_ids)
+    legacy_elapsed = time.perf_counter() - legacy_started
+    indexed_started = time.perf_counter()
+    found = referenced_run_ids(state_text, run_ids)
+    indexed_elapsed = time.perf_counter() - indexed_started
+
+    assert legacy_found == found == {"20260911T000000Z-task-4999"}
+    assert indexed_elapsed < legacy_elapsed
+    print(f"legacy={legacy_elapsed:.3f}s indexed={indexed_elapsed:.3f}s")
 
 
 def test_superseded_attempt_branch_is_removable_after_task_completes_when_preserved(sched):

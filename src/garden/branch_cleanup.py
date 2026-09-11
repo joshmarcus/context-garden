@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -27,17 +28,64 @@ class BranchDisposition:
         return asdict(self)
 
 
-def _has_run_reference(state_text: str, run_id: str) -> bool:
-    """Keep literal run references without claiming a longer ID's prefix.
+_RUN_ID_CONTINUATION = re.compile(r"[\w-]")
+
+
+def referenced_run_ids(state_text: str, run_ids: set[str]) -> set[str]:
+    """Find exact run-ID references in one pass over a state snapshot.
 
     Same-second runs receive -2/-3 suffixes. Boundaries also preserve IDs recorded
     in backup paths, artifact filenames and stash names, not just bare JSON values.
     Punctuation can delimit a reference; native run-ID suffixes continue with word
     characters or hyphens.
+
+    The Aho-Corasick automaton keeps matching proportional to the snapshot, IDs and
+    reported matches instead of rescanning the complete snapshot for every run.
     """
-    if not run_id or run_id not in state_text:
-        return False
-    return re.search(rf"(?<![\w-]){re.escape(run_id)}(?![\w-])", state_text) is not None
+    transitions: list[dict[str, int]] = [{}]
+    failures = [0]
+    outputs: list[list[str]] = [[]]
+    for run_id in run_ids:
+        if not run_id:
+            continue
+        state = 0
+        for character in run_id:
+            next_state = transitions[state].get(character)
+            if next_state is None:
+                next_state = len(transitions)
+                transitions[state][character] = next_state
+                transitions.append({})
+                failures.append(0)
+                outputs.append([])
+            state = next_state
+        outputs[state].append(run_id)
+
+    pending = deque(transitions[0].values())
+    while pending:
+        state = pending.popleft()
+        for character, next_state in transitions[state].items():
+            pending.append(next_state)
+            fallback = failures[state]
+            while fallback and character not in transitions[fallback]:
+                fallback = failures[fallback]
+            failures[next_state] = transitions[fallback].get(character, 0)
+            outputs[next_state].extend(outputs[failures[next_state]])
+
+    referenced: set[str] = set()
+    state = 0
+    for end, character in enumerate(state_text):
+        while state and character not in transitions[state]:
+            state = failures[state]
+        state = transitions[state].get(character, 0)
+        for run_id in outputs[state]:
+            start = end - len(run_id) + 1
+            before = state_text[start - 1] if start else ""
+            after = state_text[end + 1] if end + 1 < len(state_text) else ""
+            if (not before or _RUN_ID_CONTINUATION.fullmatch(before) is None) and (
+                not after or _RUN_ID_CONTINUATION.fullmatch(after) is None
+            ):
+                referenced.add(run_id)
+    return referenced
 
 
 def classify_branches(
@@ -69,8 +117,12 @@ def classify_branches(
 
     active = {(task_product.get(run.task_id, ""), run.branch) for run in runs
               if run.lifecycle_state != "finished" and run.branch}
-    recovery = {(task_product.get(run.task_id, ""), run.branch) for run in runs
-                if run.branch and _has_run_reference(state_text, run.run_id)}
+    recovery_runs = [run for run in runs if run.branch and (
+        branch_filter is None or run.branch in branch_filter
+    )]
+    recovery_ids = referenced_run_ids(state_text, {run.run_id for run in recovery_runs})
+    recovery = {(task_product.get(run.task_id, ""), run.branch) for run in recovery_runs
+                if run.run_id in recovery_ids}
     stack_bases = claimed_bases | {
         (task.product, run.base) for run in runs if run.base and run.lifecycle_state != "finished"
         for task in [tasks.get(run.task_id)] if task is not None
