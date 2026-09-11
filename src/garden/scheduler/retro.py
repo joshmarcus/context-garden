@@ -247,14 +247,47 @@ class RetroMixin:
                             continue
                 if action == "personas":
                     names = list(entry.get("preparation_names") or [])
-                    self._dispatch_retro_personas(phase, entry, names)
+                    source = str(entry.get("source") or "")
+                    prepared = self._prepare_deferred_retro_personas(
+                        phase, entry, names, source
+                    )
                     with self._controller_lock():
+                        self.state = type(self.state)(self.state.path)
                         entry = next((item for item in self._retro_list()
                                       if item.get("request_id") == request_id), None)
-                        if entry and entry.get("preparation_claim") == claim:
-                            entry["stage"] = "personas"
-                            self._clear_retro_preparation(entry)
-                            self.state.save()
+                        if (entry is None or entry.get("stage") != expected_stage
+                                or entry.get("preparation_claim") != claim):
+                            self._discard_prepared_retro_personas(
+                                prepared, "persona preparation claim was superseded"
+                            )
+                            continue
+                        phase = self.store.phase(entry["product"], entry["phase_name"])
+                        if entry.get("automatic"):
+                            policy = self._closing_review_policy(phase)
+                            current_source = self._current_phase_source(phase)
+                            identity_changed = (
+                                source != current_source
+                                or str(entry.get("source") or "") != source
+                                or str(entry.get("evidence") or "")
+                                != str(policy.get("evidence") or "")
+                            )
+                            if not policy["eligible"] or identity_changed:
+                                reason = policy.get("reason") or (
+                                    "accepted source or stabilization evidence changed during "
+                                    "persona preparation; re-preparing"
+                                )
+                                entry.update(stage="queued", source="",
+                                             evidence=str(policy.get("evidence") or ""),
+                                             waiting_reason=reason)
+                                self._clear_retro_preparation(entry)
+                                self.state.save()
+                                self._discard_prepared_retro_personas(prepared, reason)
+                                continue
+                        admitted = self._commit_prepared_retro_personas(entry, prepared)
+                        entry["stage"] = "personas"
+                        self._clear_retro_preparation(entry)
+                        self.state.save()
+                    self._launch_prepared_retro_personas(admitted)
                     continue
                 if action == "reconcile":
                     prepared = self._prepare_reconcile(
@@ -710,6 +743,72 @@ class RetroMixin:
             self.state.save()
             launched.append(name)
         return launched
+
+    def _prepare_deferred_retro_personas(
+        self, phase: Phase, entry: dict[str, Any], names: list[str], source: str
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Build exact source-bound payloads for missing later-stage persona roles."""
+        prepared: list[tuple[str, dict[str, Any]]] = []
+        probe = self._phase_persona_probe(phase)
+        available = self.review_slots_free_for(probe)
+        if self.runner_for(probe).name != "remote":
+            available = min(available, self.local_slots_free(probe.id))
+        for name in names[:max(0, available)]:
+            if (entry.get("persona_runs") or {}).get(name):
+                continue
+            run_id = f"retro-persona-{uuid.uuid4().hex}"
+            payload = self.prepare_persona_phase(
+                phase, name, run_id=run_id, source=source
+            )
+            prepared.append((name, payload))
+        return prepared
+
+    def _commit_prepared_retro_personas(
+        self, entry: dict[str, Any], prepared: list[tuple[str, dict[str, Any]]]
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Admit and publish deferred roles while holding ``tick.lock``."""
+        phase = self.store.phase(entry["product"], entry["phase_name"])
+        probe = self._phase_persona_probe(phase)
+        # Preparing an aux payload creates its not-yet-launched run record. Admission helpers
+        # therefore already count these exact reservations; add only those reservations back
+        # before applying the current limit so concurrent unrelated work still reduces slots.
+        prepared_ids = {payload["run"].run_id for _name, payload in prepared}
+        reserved = sum(run.run_id in prepared_ids for run in self.review_runs_active())
+        available = self.review_slots_free_for(probe) + reserved
+        if self.runner_for(probe).name != "remote":
+            available = min(available, self.local_slots_free(probe.id) + len(prepared))
+        admitted = prepared[:max(0, available)]
+        deferred = prepared[len(admitted):]
+        for name, payload in admitted:
+            run_id = payload["run"].run_id
+            entry.setdefault("persona_runs", {})[name] = run_id
+            entry.setdefault("persona_launch_claims", {})[name] = {
+                "run_id": run_id, "claimed_at": now_iso(),
+            }
+            self._commit_prepared_aux(payload)
+        if deferred:
+            entry["waiting_reason"] = (
+                f"waiting for review capacity ({len(self.review_runs_active())}/"
+                f"{self.review_parallel_limit()} running)"
+            )
+            self._discard_prepared_retro_personas(
+                deferred, "persona preparation exceeded current review capacity"
+            )
+        else:
+            entry.pop("waiting_reason", None)
+        return admitted
+
+    def _launch_prepared_retro_personas(
+        self, prepared: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        for _name, payload in prepared:
+            self._launch_prepared_aux(payload)
+
+    def _discard_prepared_retro_personas(
+        self, prepared: list[tuple[str, dict[str, Any]]], reason: str
+    ) -> None:
+        for _name, payload in prepared:
+            self._discard_prepared_aux(payload, reason)
 
     def _record_retro_persona_failure(self, run: Run, name: str, detail: str) -> bool:
         """Attach a failed phase-persona run to its owning retro request, if any."""
