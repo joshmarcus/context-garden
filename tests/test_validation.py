@@ -88,25 +88,28 @@ def test_current_policy_excludes_old_stress_without_rewriting_checkout(tmp_path,
 
 
 @pytest.mark.parametrize(
-    "inherited_policy", [False, True], ids=["clean", "worker-policy"]
+    ("configured_addopts", "has_policy", "keeps_unrelated_option"),
+    [
+        ("", False, False),
+        (shlex.join(POLICY_ADDOPTS), True, False),
+        ("--tb=short", False, True),
+    ],
+    ids=["clean", "worker-policy", "unrelated-option"],
 )
-def test_old_branch_can_explicitly_opt_in_to_known_stress(tmp_path, inherited_policy):
+def test_old_branch_can_explicitly_opt_in_to_known_stress(
+    tmp_path, monkeypatch, configured_addopts, has_policy, keeps_unrelated_option
+):
     repo = _checkout(tmp_path, "old")
     requested = [sys.executable, "-m", "pytest", "--run-stress", "-q"]
+    monkeypatch.setenv("VALIDATION_FIXTURE_PARENT", "preserved")
 
     effective, policy = resolve_validation(requested, repo)
     env = os.environ.copy()
-    inherited_options = [
-        option for option in shlex.split(env.get("PYTEST_ADDOPTS", ""))
-        if option not in POLICY_ADDOPTS
-    ]
-    if inherited_policy:
-        inherited_options.extend(
-            option for option in POLICY_ADDOPTS if option not in inherited_options
-        )
-    assert all(option in inherited_options for option in POLICY_ADDOPTS) is inherited_policy
-    env["PYTEST_ADDOPTS"] = shlex.join(inherited_options)
+    env["PYTEST_ADDOPTS"] = configured_addopts
+    assert all(option in shlex.split(env["PYTEST_ADDOPTS"]) for option in POLICY_ADDOPTS) is has_policy
     validation._enable_stress_opt_in(env)
+    assert env["VALIDATION_FIXTURE_PARENT"] == "preserved"
+    assert ("--tb=short" in shlex.split(env["PYTEST_ADDOPTS"])) is keeps_unrelated_option
     assert all(option not in shlex.split(env["PYTEST_ADDOPTS"]) for option in POLICY_ADDOPTS)
     result = subprocess.run(
         effective, cwd=repo, env=env, capture_output=True, text=True, timeout=15,
