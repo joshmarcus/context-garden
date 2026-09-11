@@ -778,9 +778,14 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
     for name in names:
         assert f"evidence/personas/{name}.md" in refs
 
-    rep = sched.tick()  # every report is in now -> the reconciliation dispatches
-    assert not rep.errors, rep.errors
-    entry = sched._retro_list()[0]
+    # The persona workers admitted on the previous tick may still own all local slots.
+    # Subsequent ticks reap them and automatically resume the queued reconciliation.
+    for _ in range(3):
+        rep = sched.tick()
+        assert not rep.errors, rep.errors
+        entry = sched._retro_list()[0]
+        if entry["stage"] == "reconciling":
+            break
     assert entry["stage"] == "reconciling"
     rep = sched.tick()
     assert not rep.errors, rep.errors
@@ -1171,12 +1176,21 @@ def test_later_tick_persona_and_reconcile_launches_run_outside_controller_lock(s
     sched.state.save()
     calls = []
 
-    def personas(ph, queued, names):
+    def prepare_personas(ph, queued, names, source):
         assert not held
         calls.append(("personas", names))
-        return names
+        return [("security", {"run": SimpleNamespace(run_id="security-run")})]
 
-    monkeypatch.setattr(sched, "_dispatch_retro_personas", personas)
+    def commit_personas(queued, prepared):
+        assert held
+        return prepared
+
+    def launch_personas(prepared):
+        assert not held
+
+    monkeypatch.setattr(sched, "_prepare_deferred_retro_personas", prepare_personas)
+    monkeypatch.setattr(sched, "_commit_prepared_retro_personas", commit_personas)
+    monkeypatch.setattr(sched, "_launch_prepared_retro_personas", launch_personas)
     sched.tick()
     assert calls == [("personas", ["security"])]
 
@@ -1314,6 +1328,60 @@ def test_initial_persona_preparation_requeues_when_accepted_source_changes(sched
     assert len([item for item in sched._retro_list() if item["phase"] == phase.key]) == 1
 
 
+def test_deferred_persona_preparation_requeues_when_accepted_source_changes(sched, monkeypatch):
+    """A later persona payload cannot launch after its accepted source becomes stale."""
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["security"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "personas", "persona_runs": {},
+             "automatic": True, "request_id": "deferred-source-race",
+             "source": "a" * 40, "evidence": "evidence-a"}
+    sched._retro_list().append(entry)
+    identity = {"source": "a" * 40}
+    barrier = threading.Barrier(2)
+    payload = [("security", {"run": SimpleNamespace(run_id="prepared-security")})]
+
+    def prepare(ph, queued, names, source):
+        assert source == "a" * 40
+        barrier.wait()
+        barrier.wait()
+        return payload
+
+    def change_source():
+        barrier.wait()
+        identity["source"] = "b" * 40
+        barrier.wait()
+
+    updater = threading.Thread(target=change_source)
+    updater.start()
+    launched = []
+    discarded = []
+    monkeypatch.setattr(sched, "_reports_for_entry", lambda ph, queued: {})
+    monkeypatch.setattr(sched, "_closing_review_policy",
+                        lambda ph: {"eligible": True, "evidence": "evidence-a", "reason": ""})
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: identity["source"])
+    monkeypatch.setattr(sched, "_prepare_deferred_retro_personas", prepare)
+    monkeypatch.setattr(sched, "_launch_prepared_retro_personas",
+                        lambda prepared: launched.extend(prepared))
+    monkeypatch.setattr(sched, "_discard_prepared_retro_personas",
+                        lambda prepared, reason: discarded.append(reason))
+
+    sched.reap_retro(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+    updater.join()
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "queued"
+    assert current["source"] == ""
+    assert "changed during persona preparation" in current["waiting_reason"]
+    assert current["persona_runs"] == {}
+    assert launched == []
+    assert discarded == [
+        "accepted source or stabilization evidence changed during persona preparation; "
+        "re-preparing"
+    ]
+
+
 def test_restart_reprepares_a_committed_reconcile_that_never_launched(sched):
     phase = sched.store.phase("demo", "p1")
     run = sched.runs.new_run("_retro-demo-p1", "local", mode="retro",
@@ -1349,12 +1417,15 @@ def test_restart_resumes_one_deferred_persona_job_with_its_reserved_identity(sch
     monkeypatch.setattr(sched, "local_slots_free", lambda task_id="": 1)
     launched = []
 
-    def dispatch(ph, name, **kwargs):
-        launched.append(kwargs["run_id"])
-        return sched.runs.new_run(f"_{ph.product}-{ph.name}", "local", mode="persona",
-                                  run_id=kwargs["run_id"])
+    def prepare(ph, name, **kwargs):
+        run = sched.runs.new_run(f"_{ph.product}-{ph.name}", "local", mode="persona",
+                                 run_id=kwargs["run_id"])
+        return {"run": run}
 
-    monkeypatch.setattr(sched, "dispatch_persona_phase", dispatch)
+    monkeypatch.setattr(sched, "prepare_persona_phase", prepare)
+    monkeypatch.setattr(sched, "_commit_prepared_aux", lambda payload: payload["run"].save())
+    monkeypatch.setattr(sched, "_launch_prepared_aux",
+                        lambda payload: launched.append(payload["run"].run_id))
     sched.tick()
     sched.tick()
 
