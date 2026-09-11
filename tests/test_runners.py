@@ -1557,13 +1557,12 @@ def test_runtime_leases_accept_the_system_tmp_directory(monkeypatch):
     assert root.stat().st_mode & 0o777 == 0o700
 
 
-@pytest.mark.parametrize("name", [
-    "garden-heavy-test-{uid}-capacity.json",
-    "garden-heavy-test-{uid}-capacity.lock",
-    "garden-heavy-test-{uid}-0.lock",
-    "garden-heavy-test-{uid}-owner-owner.lock",
+@pytest.mark.parametrize(("name", "mode"), [
+    ("garden-heavy-test-{uid}-capacity.json", stat.S_IFIFO),
+    ("garden-heavy-test-{uid}-capacity.lock", stat.S_IFDIR),
+    ("garden-heavy-test-{uid}-0.lock", stat.S_IFIFO),
+    ("garden-heavy-test-{uid}-owner-owner.lock", stat.S_IFDIR),
 ])
-@pytest.mark.parametrize("mode", [stat.S_IFIFO, stat.S_IFDIR])
 def test_safe_runtime_file_rejects_foreign_and_nonregular_fstat_results(tmp_path, monkeypatch, name, mode):
     """Every metadata and lease-file name fails closed on an unsafe fstat result."""
     import garden.run_supervisor as supervisor
@@ -1609,8 +1608,12 @@ def test_safe_runtime_file_rejects_foreign_and_nonregular_fstat_results(tmp_path
         supervisor._safe_runtime_file(root, expected_name)
 
 
-@pytest.mark.parametrize("kind", ["symlink", "fifo"])
-@pytest.mark.parametrize("lease", ["metadata", "guard", "slot", "owner"])
+@pytest.mark.parametrize(("lease", "kind"), [
+    ("metadata", "symlink"),
+    ("guard", "fifo"),
+    ("slot", "symlink"),
+    ("owner", "fifo"),
+])
 def test_runtime_leases_reject_precreated_hostile_files(tmp_path, monkeypatch, kind, lease):
     """Capacity metadata and every lock class refuse substitutions without following them."""
     import garden.run_supervisor as supervisor

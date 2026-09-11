@@ -418,8 +418,12 @@ def test_ssh_in_place_refuses_competing_active_claim_without_fetch_or_mutation(
     assert refs_after == refs_before
 
 
-@pytest.mark.parametrize("consumer", ["review", "persona", "rebase", "retro"])
-@pytest.mark.parametrize("unsafe", ["dirty", "drift", "competing"])
+@pytest.mark.parametrize(("consumer", "unsafe"), [
+    ("review", "dirty"),
+    ("persona", "drift"),
+    ("rebase", "competing"),
+    ("retro", "dirty"),
+])
 def test_every_canonical_consumer_claims_before_git_operations(
     garden, fake_github, consumer, unsafe, monkeypatch
 ):

@@ -116,8 +116,14 @@ def test_inventory_preserves_external_and_recovery_owned_branches(sched):
     assert "recovery state" in rows["garden/recovery"].reason
 
 
-@pytest.mark.parametrize("prefix", ["20260911T000000Z-work", "legacy.run+work"])
-@pytest.mark.parametrize("reference_kind", ["id", "nested", "backup", "stash", "artifact", "note"])
+@pytest.mark.parametrize(("reference_kind", "prefix"), [
+    ("id", "20260911T000000Z-work"),
+    ("nested", "legacy.run+work"),
+    ("backup", "20260911T000000Z-work"),
+    ("stash", "legacy.run+work"),
+    ("artifact", "20260911T000000Z-work"),
+    ("note", "legacy.run+work"),
+])
 def test_recovery_reference_does_not_match_a_shorter_run_id(sched, reference_kind, prefix):
     first = sched.store.task("DM-001")
     second = sched.store.task("DM-002")

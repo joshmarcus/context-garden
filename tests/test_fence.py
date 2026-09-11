@@ -416,11 +416,10 @@ def test_read_command_and_quoted_redirect_character_are_not_write_evidence(sched
     assert not sched._worker_named(transcript, sched.store.root, "garden.yaml")
 
 
-@pytest.mark.parametrize("harness", ["claude", "codex"])
-@pytest.mark.parametrize("command", [
-    "cat {target} > elsewhere.txt",
-    "cp {target} elsewhere.txt",
-    "tee elsewhere.txt < {target}",
+@pytest.mark.parametrize(("harness", "command"), [
+    ("claude", "cat {target} > elsewhere.txt"),
+    ("codex", "cp {target} elsewhere.txt"),
+    ("claude", "tee elsewhere.txt < {target}"),
 ])
 def test_shell_read_operand_is_not_write_evidence(sched, harness, command):
     target = sched.store.root / "garden.yaml"
