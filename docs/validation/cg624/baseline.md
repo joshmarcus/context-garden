@@ -37,6 +37,20 @@ ruff 0.16.7. Dependencies were already installed. Pytest caches and the disposab
 
 ## Runtime attempt and limitation
 
+GitHub Actions subsequently completed the repository's ordinary CI command at the exact
+accepted source in [run 34592989538](https://github.com/joshmarcus/context-garden/actions/runs/34592989538).
+The Ubuntu hosted job used CPython 3.12.14 and passed **2,876 tests**, skipped **4**, and
+deselected the same **8** opt-in cases in **602.68 seconds**. Its slowest-test table and
+timestamps are retained in the Actions log. The job began from a fresh checkout and installed
+the development dependencies before pytest; installation and queue time are separate workflow
+steps and are not included in pytest's reported wall time.
+
+This successful run proves the exact accepted suite completes in the authorized hosted
+environment and supplies one cold-like observation. It is not represented as the contract's
+serial cold/warm denominator because the workflow ran pytest only once and did not use the
+specified paired cache conditions. A second ordinary run on a different hosted runner would
+also not be a warm repetition with unchanged runner state.
+
 The exact command was:
 
 ```sh
