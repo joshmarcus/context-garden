@@ -746,7 +746,9 @@ class HostLifecycle:
                     detail = f"{host.host_id}: admission unavailable: {exc}"
                     self._record_environment_stop(pool, detail, data=data)
                     raise EnvironmentStop(detail) from exc
-                claim_time = now()
+            claim_time = now()
+            if requirements is not None:
+                assert admission is not None
                 reason = self._admission_rejection(admission, requirements, claim_time)
                 if reason:
                     if admission.lease_id:
@@ -758,8 +760,6 @@ class HostLifecycle:
                             reason = f"{reason}; admission lease release failed: {exc}"
                     failures.append(f"{host.host_id}: {reason}")
                     continue
-            else:
-                claim_time = now()
             # Read and claim again under the store lock. Another controller may have
             # completed the same readiness probe while this one was in the wrapper.
             with self.state.locked():
