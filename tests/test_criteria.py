@@ -261,6 +261,23 @@ def test_review_brief_shows_the_authors_verification(garden):
     assert "The API returns 200 for a valid request.** — author gave no evidence" in text
 
 
+def test_review_brief_surfaces_reconciliation_notes_for_wording_drift(garden):
+    store = Store(garden)
+    t = store.task("DM-001")
+    t.body = CRITERIA_BODY
+    store.save(t)
+    store.invalidate()
+    # the worker's wording for the first criterion drifted; its evidence would otherwise
+    # look like a silent gap on "The widget renders on the home page."
+    verified = [{"criterion": "The widget shows up on the home page.", "evidence": "test_widget"},
+                {"criterion": "The API returns 200 for a valid request.", "evidence": "test_api"}]
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T",
+                        pr_body="B", diff="+a", max_diff_chars=1000, verified=verified)
+    assert "The widget renders on the home page.** — author gave no evidence" in text
+    assert "### Reconciliation notes" in text
+    assert "The widget shows up on the home page." in text and "test_widget" in text
+
+
 def test_review_markdown_lists_criteria():
     rev = {"verdict": "request_changes", "summary": "s",
            "criteria": [{"criterion": "A renders.", "met": True, "reason": "test_a"},

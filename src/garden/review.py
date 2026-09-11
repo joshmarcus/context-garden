@@ -470,9 +470,12 @@ REVIEW_RULES = """\
 You are the automated first reviewer for the pull request described below. The human
 reviewer reads your comment before looking at the code, so be precise and terse. You are
 in a git worktree of the PR branch (`{branch}`, based on `{base}`); the diff is included
-below when it fits, otherwise run `git diff {base}...HEAD`. You may run the project's
-checks if they are fast. Do NOT modify tracked worktree files and do NOT commit. Running-app
-evidence may write artifacts only into its disposable garden or a temporary directory.
+below when it fits, otherwise run `git diff {base}...HEAD`. The validation plan and pre-review
+checks below (when present) are the same allowed check scope the pre-PR check runner used for
+this run — you may run any of those if they are fast, or add a narrower focused check of your
+own (a single file or case), but do not broaden into a broader or browser-backed suite that is
+not part of that recorded scope. Do NOT modify tracked worktree files and do NOT commit.
+Running-app evidence may write artifacts only into its disposable garden or a temporary directory.
 
 Use your judgment to choose verification for the actual change. Focused tests, source
 inspection, a CLI command, CI, browser interaction, or another small exercise may each be
@@ -518,7 +521,10 @@ The JSON must be on one line.
 def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = None) -> str:
     """The author's per-criterion evidence, laid out for the reviewer to check the diff
     against. Empty when the task has no criteria and the author claimed nothing."""
-    rows = reconcile(criteria if criteria is not None else parse_criteria(task.body), verified)
+    from .criteria import unmatched_worker_entries
+
+    frozen = criteria if criteria is not None else parse_criteria(task.body)
+    rows = reconcile(frozen, verified)
     if not rows:
         return ""
     lines = ["## Author's verification\n", "One row per acceptance criterion; check each against the diff.\n"]
@@ -529,6 +535,18 @@ def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = 
             lines.append(f"- **{row['criterion']}** — {row['evidence']}")
         else:
             lines.append(f"- **{row['criterion']}** — author gave no evidence")
+    unmatched = unmatched_worker_entries(frozen, verified)
+    if unmatched:
+        lines.append("\n### Reconciliation notes\n")
+        lines.append(
+            "The author reported evidence quoting a criterion that does not match any frozen "
+            "criterion above by text; it may cover the row marked 'no evidence given' under "
+            "different wording rather than being truly missing. Judge whether it does:\n"
+        )
+        for entry in unmatched:
+            evidence = entry.get("evidence") or ("not done: " + str(entry.get("reason") or "no reason given")
+                                                  if entry.get("not_done") else "no evidence given")
+            lines.append(f"- author quoted **{entry.get('criterion', '')}** — {evidence}")
     return "\n".join(lines) + "\n"
 
 
