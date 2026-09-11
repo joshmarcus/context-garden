@@ -99,6 +99,25 @@ def test_all_gates_green_merges_and_reaches_done(sched, fake_github):
     assert "DM-001" in [e["task"] for e in d["merged"]]
 
 
+def test_approved_source_waits_for_pending_ci_then_merges_without_second_review(sched, fake_github):
+    task, st, pr = _in_review(sched, fake_github)
+    pr.checks = "PENDING"
+
+    sched.tick()
+
+    assert fake_github.merged == []
+    current = sched.state.get(task.id)
+    assert current["last_review"]["verdict"] == "approve"
+    assert current["automerge_blocked"] == "the PR checks rollup is pending"
+    assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == 1
+
+    pr.checks = "SUCCESS"
+    sched.tick()
+
+    assert fake_github.merged == [{"number": pr.number, "method": "squash", "delete_branch": True}]
+    assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == 1
+
+
 def test_method_and_min_rounds_are_configurable(sched, fake_github):
     t, st, pr = _in_review(sched, fake_github)
     sched.cfg.data["github"]["automerge_method"] = "rebase"

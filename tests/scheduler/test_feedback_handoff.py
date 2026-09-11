@@ -149,6 +149,48 @@ def test_ci_then_review_waits_for_the_review_run_and_dispatches_one_combined_rev
     assert sched.state.get(task.id)["revisions"] == 1
 
 
+def test_repeated_pending_gate_does_not_stall_a_new_implementation_finding(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    pending = {
+        "severity": "blocking",
+        "failure_category": "external_gate",
+        "gate_state": "pending",
+        "file": "",
+        "line": None,
+        "summary": "Exact-head CI is still running",
+        "fix": "Wait for the external check to finish.",
+    }
+    waiting_review = {
+        "verdict": "request_changes",
+        "summary": "Source is accepted while exact-head CI runs.",
+        "description_ok": True,
+        "criteria": [],
+        "findings": [pending],
+    }
+
+    sched._apply_review(
+        task, _review_run(sched, task, pr.head_sha, waiting_review), waiting_review,
+        TickReport(), emitted=False,
+    )
+
+    assert task.status == Status.IN_REVIEW
+    assert sched.state.get(task.id)["last_findings"] == []
+
+    implementation_review = _review(finding="The response parser drops valid empty arrays")
+    implementation_review["findings"].insert(0, pending)
+    rep = TickReport()
+    sched._apply_review(
+        task, _review_run(sched, task, pr.head_sha, implementation_review),
+        implementation_review, rep, emitted=False,
+    )
+
+    st = sched.state.get(task.id)
+    assert task.status == Status.CHANGES_REQUESTED
+    assert not st.get("needs_human")
+    assert "The response parser drops valid empty arrays" in st["pending_feedback"]
+    assert rep.transitions == ["DM-001 -> changes_requested (review)"]
+
+
 def test_stale_ci_completion_after_a_head_move_cannot_change_or_revive_feedback(sched, fake_github):
     task, pr = _open_task(sched, fake_github)
     old_head = pr.head_sha
