@@ -673,7 +673,7 @@ class HostLifecycle:
         readiness = getattr(provider, "readiness", None)
         if readiness is None:
             raise EnvironmentStop(f"provider {provider.name!r} does not support readiness")
-        current_time = now()
+        scan_time = now()
         candidates: list[HostFacts] = []
         for host in checked:
             if host.state not in {HostState.READY, HostState.STOPPED}:
@@ -685,8 +685,8 @@ class HostLifecycle:
                 continue
             lease = leases.get(host.provider_id, {})
             if isinstance(lease, dict):
-                acquired = float(lease.get("acquired_at", current_time))
-                if current_time - acquired >= pool.maximum_age_minutes * 60:
+                acquired = float(lease.get("acquired_at", scan_time))
+                if scan_time - acquired >= pool.maximum_age_minutes * 60:
                     self.destroy(
                         pool,
                         host.provider_id,
@@ -698,7 +698,7 @@ class HostLifecycle:
                 previous = str(lease.get("run_id", ""))
                 reserved_until = float(lease.get("reserved_until", 0))
                 if not lease.get("released", False) and not previous:
-                    if current_time < reserved_until:
+                    if scan_time < reserved_until:
                         continue
                     leases.pop(host.provider_id, None)
                 if previous and not process_terminal(previous):
@@ -708,7 +708,7 @@ class HostLifecycle:
         for host in candidates:
             lease = leases.get(host.provider_id, {})
             assert isinstance(lease, dict)
-            acquired_at = float(lease.get("acquired_at", current_time))
+            acquired_at = float(lease.get("acquired_at", scan_time))
             try:
                 if host.state == HostState.STOPPED:
                     if not provider.capabilities.stop_start:
@@ -746,7 +746,10 @@ class HostLifecycle:
                     detail = f"{host.host_id}: admission unavailable: {exc}"
                     self._record_environment_stop(pool, detail, data=data)
                     raise EnvironmentStop(detail) from exc
-                reason = self._admission_rejection(admission, requirements, current_time)
+            claim_time = now()
+            if requirements is not None:
+                assert admission is not None
+                reason = self._admission_rejection(admission, requirements, claim_time)
                 if reason:
                     if admission.lease_id:
                         try:
@@ -770,7 +773,7 @@ class HostLifecycle:
                     actively_reserved = (
                         not existing.get("released", False)
                         and not existing_run
-                        and current_time < reserved_until
+                        and claim_time < reserved_until
                     )
                     active_run = bool(existing_run and not process_terminal(existing_run))
                     if actively_reserved or active_run:
@@ -787,8 +790,8 @@ class HostLifecycle:
                     acquired_at = float(existing.get("acquired_at", acquired_at))
                 claimed_leases[host.provider_id] = {
                     "acquired_at": acquired_at,
-                    "last_used_at": current_time,
-                    "reserved_until": current_time + self.reservation_seconds,
+                    "last_used_at": claim_time,
+                    "reserved_until": claim_time + self.reservation_seconds,
                     "workspace": workspace,
                     "revision": revision,
                     "harness": harness,

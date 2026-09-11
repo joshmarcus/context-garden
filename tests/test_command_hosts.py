@@ -547,6 +547,36 @@ def test_host_local_admission_routes_on_fresh_resources_and_capabilities(tmp_pat
     assert "release-admission" in [call[0][-1] for call in wrapper.calls]
 
 
+def test_slow_readiness_uses_a_fresh_clock_for_admission_and_reservation(tmp_path, monkeypatch):
+    clock = [1_000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    wrapper = Wrapper()
+    original = wrapper.run
+
+    def delayed_readiness(argv, stdin, *, timeout_seconds):
+        result = original(argv, stdin, timeout_seconds=timeout_seconds)
+        if argv[-1] == "ready":
+            clock[0] += 10
+        return result
+
+    wrapper.run = delayed_readiness
+    state_path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(state_path),
+        reservation_seconds=300,
+    )
+
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(), now=lambda: clock[0],
+    )
+
+    lease = json.loads(state_path.read_text())["leases"][host.provider_id]
+    assert lease["admission"]["measured_at"] == 1_010
+    assert lease["last_used_at"] == 1_010
+    assert lease["reserved_until"] == 1_310
+
+
 @pytest.mark.parametrize(
     ("admission_change", "requirements_change", "reason"),
     [
