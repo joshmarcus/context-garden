@@ -422,7 +422,11 @@ def test_same_second_acceptance_change_requeues_closing_review(garden, monkeypat
     phase = protected_phase(garden)
     monkeypatch.setattr("garden.stabilization.running_build_sha", lambda: "build-a")
     scheduler = Scheduler(Store(garden))
-    scheduler.cfg.data["retro"]["auto_start"] = True
+    scheduler.cfg.data["retro"].update({
+        "auto_start": True,
+        "prerequisites": {},
+        "require_owner_approval": False,
+    })
     for task in phase.tasks:
         task.status = task.status.CANCELLED
         scheduler.store.save(task)
