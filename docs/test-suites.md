@@ -94,6 +94,10 @@ python3 scripts/check_ci.py
 
 ## Full-suite timing
 
+The current accepted-source count and runtime denominator, including cold/warm cache
+conditions and the ordinary-versus-opt-in inventory, is recorded in the
+[CG-624 baseline and candidate report](validation/cg624/baseline.md).
+
 ## Ordinary-suite runtime diagnostics
 
 The ordinary suite is serial on Linux/WSL. On macOS, the default full-suite invocation

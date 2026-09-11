@@ -35,7 +35,23 @@ pytest-timeout 2.4.0, FastAPI 0.141.1, Starlette 1.6.0, httpx 0.28.1, PyYAML 6.0
 ruff 0.16.7. Dependencies were already installed. Pytest caches and the disposable
 `--basetemp` were empty for the cold attempt; dependency and admission time were excluded.
 
-## Runtime attempt and limitation
+## Hosted runtime baseline
+
+GitHub Actions [run 34601219310](https://github.com/joshmarcus/context-garden/actions/runs/34601219310)
+measured the exact accepted source twice in one Ubuntu 24.04 hosted job. Workflow source
+`340f01f4a7f1be85f6948db5b963d61036a42089` verified the application source was
+`41ff4de3d273afb2c4ad642856e2ff893ee7db31` before testing. Both serial runs used CPython
+3.12.14, pinned prepared dependencies, four logical CPUs (affinity 0-3), 120-second
+per-test and 900-second session limits, and no ambient `PYTEST_ADDOPTS`. Each passed 2,876,
+skipped 4, and deselected 8. Pytest execution wall time was **611.673106438 seconds cold**
+and **623.780750659 seconds warm**. The cold run cleared pytest caches and test-created
+temporary state; the warm run immediately followed with dependencies and runner unchanged.
+Queue/admission and dependency installation were outside both measurements.
+
+The candidate targets are therefore at most 1,728 ordinary cases, 367.003863863 seconds
+cold, and 374.268450395 seconds warm.
+
+## Earlier runtime attempt and limitation
 
 GitHub Actions subsequently completed the repository's ordinary CI command at the exact
 accepted source in [run 34592989538](https://github.com/joshmarcus/context-garden/actions/runs/34592989538).
@@ -70,3 +86,24 @@ The closest complete historical result remains the CG-453 AWS profile at source
 deselected in 424.93 seconds cold and 432.31 seconds warm on Linux/Python 3.12.14. It is useful
 context but is neither the current source nor a valid denominator for CG-624's required
 before/after comparison.
+
+## Candidate consolidation
+
+The candidate replaces five Cartesian products with representative pairings. These axes
+reach the same assertion path independently, so their cross-product repeated behavior rather
+than protecting an interaction. Every axis value remains directly collected:
+
+| Removed combinations | Protected behavior and retained coverage |
+| ---: | --- |
+| 8 | Every canonical consumer claims its checkout before Git operations; all four consumers and all three unsafe states remain represented. |
+| 6 | Recovery references do not match shorter run IDs; both modern and legacy punctuation plus all six reference encodings remain represented. |
+| 3 | Shell read operands are not mistaken for writes; both transcript harnesses and all three redirect/copy forms remain represented. |
+| 4 | Runtime metadata and lease files reject foreign and non-regular `fstat` results; every file class and both non-regular modes remain represented. |
+| 4 | Pre-created hostile runtime files are rejected; every lease class and both symlink and FIFO attacks remain represented. |
+
+At the candidate source, ordinary collection is **2,855 selected** and the full expanded
+inventory is **2,863**, with the same 8 opt-in cases. This is a 25-case (**0.87%**) ordinary
+reduction, leaving a gap of 1,127 cases to the 1,728 target. The 21 retained representative
+cases pass in 2.35 seconds on the prepared Linux development worker. No comparable hosted
+candidate cold/warm measurement has run, so the runtime reduction and remaining runtime gap
+are not yet established. macOS, native Windows, and Windows-through-WSL were not tested.
