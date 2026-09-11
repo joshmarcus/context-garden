@@ -14,6 +14,7 @@ from typing import Any
 
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*#*$")
 _CHECK_RE = re.compile(r"^\s*[-*]\s+\[[ xX]\]\s+(.*\S)\s*$")
+_CONTINUATION_RE = re.compile(r"^\s+\S.*$")
 _VERIFICATION_HEADING_RE = re.compile(r"(?im)^#{1,6}\s+verification\b.*$")
 _PERSONA_REQUIREMENT_RE = re.compile(r"\bpersona-review\b.*?\s-p\s+([a-z0-9][a-z0-9-]*)\b", re.I)
 _CHECK_REQUIREMENT_RE = re.compile(r"\bcheck\s*:\s*`?([a-z0-9][a-z0-9_-]*)`?", re.I)
@@ -72,20 +73,48 @@ def required_evidence_rows(requirements: list[dict[str, str]], state: Any) -> li
     return rows
 
 
+def _criterion_ranges(lines: list[str]) -> list[tuple[int, int]]:
+    """The (start, end) inclusive line numbers of each checklist item under an 'Acceptance
+    criteria' heading, `end` extended over any indented continuation lines that wrap the
+    item's text. A blank line, a new checklist item, or a heading ends the item."""
+    ranges: list[tuple[int, int]] = []
+    in_section = False
+    start: int | None = None
+    for n, line in enumerate(lines):
+        heading = _HEADING_RE.match(line)
+        if heading:
+            if start is not None:
+                ranges.append((start, n - 1))
+            in_section = heading.group(1).strip().lower().startswith("acceptance criteria")
+            start = None
+            continue
+        if not in_section:
+            continue
+        if _CHECK_RE.match(line):
+            if start is not None:
+                ranges.append((start, n - 1))
+            start = n
+            continue
+        if start is not None and _CONTINUATION_RE.match(line):
+            continue
+        if start is not None:
+            ranges.append((start, n - 1))
+            start = None
+    if start is not None:
+        ranges.append((start, len(lines) - 1))
+    return ranges
+
+
 def parse_criteria(body: str) -> list[str]:
     """The acceptance-criteria bullets from a task body: the `- [ ]` checklist items under a
-    heading whose text starts with 'Acceptance criteria'. Empty when the task has none."""
-    out: list[str] = []
-    in_section = False
-    for line in body.splitlines():
-        m = _HEADING_RE.match(line)
-        if m:
-            in_section = m.group(1).strip().lower().startswith("acceptance criteria")
-            continue
-        if in_section:
-            cm = _CHECK_RE.match(line)
-            if cm:
-                out.append(cm.group(1).strip())
+    heading whose text starts with 'Acceptance criteria', normalized to their complete text
+    when an item wraps onto indented continuation lines. Empty when the task has none."""
+    lines = body.splitlines()
+    out = []
+    for start, end in _criterion_ranges(lines):
+        cm = _CHECK_RE.match(lines[start])
+        parts = [cm.group(1).strip()] + [lines[i].strip() for i in range(start + 1, end + 1)]
+        out.append(" ".join(parts))
     return out
 
 
@@ -94,34 +123,31 @@ def amend_criteria(body: str, amendments: Any) -> tuple[str, list[dict[str, Any]
 
     Indexes are zero-based, matching the result's ordered ``verified`` list.  Invalid
     entries are ignored: a worker result must never be able to rewrite arbitrary task
-    prose by supplying an out-of-range index.
+    prose by supplying an out-of-range index. When a criterion wraps onto indented
+    continuation lines, the amendment replaces the whole item: the continuation lines are
+    removed so no stale text survives alongside the replacement.
     """
     if not isinstance(amendments, list):
         return body, []
     lines = body.splitlines()
-    criterion_lines: list[int] = []
-    in_section = False
-    for n, line in enumerate(lines):
-        heading = _HEADING_RE.match(line)
-        if heading:
-            in_section = heading.group(1).strip().lower().startswith("acceptance criteria")
-            continue
-        if in_section and _CHECK_RE.match(line):
-            criterion_lines.append(n)
+    ranges = _criterion_ranges(lines)
     applied: list[dict[str, Any]] = []
+    drop: set[int] = set()
     for item in amendments:
         if not isinstance(item, dict) or not isinstance(item.get("index"), int):
             continue
         index = item["index"]
         text, reason = str(item.get("text") or "").strip(), str(item.get("reason") or "").strip()
-        if not (0 <= index < len(criterion_lines) and text and reason):
+        if not (0 <= index < len(ranges) and text and reason):
             continue
-        line_no = criterion_lines[index]
-        prefix = re.match(r"^(\s*[-*]\s+\[[ xX]\]\s+)", lines[line_no])
+        start, end = ranges[index]
+        prefix = re.match(r"^(\s*[-*]\s+\[[ xX]\]\s+)", lines[start])
         if prefix is None:
             continue
-        lines[line_no] = prefix.group(1) + text
+        lines[start] = prefix.group(1) + text
+        drop.update(range(start + 1, end + 1))
         applied.append({"index": index, "text": text, "reason": reason})
+    lines = [line for n, line in enumerate(lines) if n not in drop]
     return "\n".join(lines) + ("\n" if body.endswith("\n") else ""), applied
 
 
