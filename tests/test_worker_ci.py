@@ -321,6 +321,69 @@ def test_validation_policies_load(garden, validation):
     )
 
 
+def test_scheduler_run_command_policy_selects_the_controller_side_provider(garden):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["validation"] = {
+        "provider": "command", "run_by": "scheduler", "command": "./ci/head-status",
+        "timeout_seconds": 45,
+    }
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+
+    class Scheduler:
+        cfg = store.config
+
+    assert store.config.product_ci_policy("demo") == {
+        "status_provider": "command", "required": True,
+        "command": {"command": "./ci/head-status", "timeout_seconds": 45.0},
+    }
+    # The controller asks CI itself, so the worker is neither told to run this command nor
+    # given permission to publish anything for it to observe.
+    assert all(spec["command"] != "./ci/head-status"
+               for spec in ReapMixin._pre_pr_specs(Scheduler(), store.task("DM-001")))
+    assert "Do NOT push and do NOT open" in build_brief(store, store.task("DM-001")).text
+
+
+def test_command_validation_defaults_to_the_worker_receipt(garden):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["validation"] = {"provider": "command", "command": "pytest -q"}
+    path.write_text(yaml.safe_dump(config))
+    store = Store(garden)
+    assert store.config.product_validation("demo")["run_by"] == "worker"
+    assert store.config.product_ci_policy("demo") == {
+        "status_provider": "worker_check", "required": True,
+        "worker_check": {"command": "pytest -q"},
+    }
+
+
+@pytest.mark.parametrize("validation", [
+    {"provider": "command", "command": "./ci/head-status", "run_by": "controller"},
+    {"provider": "command", "command": "./ci/head-status", "run_by": ""},
+    {"provider": "status", "run_by": "scheduler"},
+    {"provider": "command", "command": "./ci/head-status", "timeout_seconds": 30},
+    {"provider": "actions", "timeout_seconds": 30},
+    {"provider": "command", "command": "./ci/head-status", "run_by": "scheduler",
+     "timeout_seconds": 0},
+    {"provider": "command", "command": "./ci/head-status", "run_by": "scheduler",
+     "timeout_seconds": 4000},
+    {"provider": "command", "command": "./ci/head-status", "run_by": "scheduler",
+     "timeout_seconds": "soon"},
+    {"provider": "command", "command": "./ci/head-status", "run_by": "scheduler",
+     "timeout_seconds": True},
+])
+def test_unusable_validation_command_policies_are_refused_at_load(garden, validation):
+    """A policy that cannot produce a bounded exact-head answer must fail at load, not at
+    the merge gate."""
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["products"]["demo"]["validation"] = validation
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError):
+        Store(garden)
+
+
 def _uses_push_ci_gate(event: str, head_repo: str, repository: str, head_branch: str) -> bool:
     """Mirror the event selection for the lightweight required-check gate."""
     return event == "pull_request" and head_repo == repository and head_branch.startswith("garden/")
