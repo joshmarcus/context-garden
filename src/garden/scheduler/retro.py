@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,7 @@ from ..runs import Run
 from .report import TickReport
 
 _RUN_FOOTER_RE = re.compile(r"_garden persona run (\S+)_\s*$")
+_SOURCE_FOOTER_RE = re.compile(r"(?m)^_garden phase source ([0-9a-f]{40})_$")
 _SAFE_RUN_ID_RE = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
@@ -68,6 +71,354 @@ class RetroMixin:
 
     def _retro_remove(self, entry: dict[str, Any]) -> None:
         self.state.get("_retro")["runs"] = [e for e in self._retro_list() if e is not entry]
+
+    def _closing_review_policy(self, phase: Phase) -> dict[str, Any]:
+        """Evaluate the current automatic closing-review gates for ``phase``."""
+        enabled = bool(phase.meta.get("auto_closing_review", self.cfg.get("retro.auto_start", False)))
+        personas = phase.meta.get("closing_review_personas") or self.cfg.get("retro.personas") or self.retro_default_personas()
+        configured = self.cfg.get("retro.prerequisites") or {}
+        prerequisites = phase.meta.get("closing_review_prerequisites") or configured.get(phase.key, [])
+        reasons: list[str] = []
+        if not enabled:
+            reasons.append("automatic closing review is disabled")
+        if phase.closed:
+            reasons.append(f"phase closed {phase.closed}")
+        if not phase.tasks:
+            reasons.append("phase has no tasks")
+        nonterminal = [t.id for t in phase.tasks if not t.status.terminal]
+        if nonterminal:
+            reasons.append("non-terminal tasks: " + ", ".join(nonterminal))
+        if phase.frozen and not bool(self.cfg.get("retro.allow_frozen", False)):
+            reasons.append(f"phase frozen {phase.frozen}")
+        for key in prerequisites:
+            try:
+                product, name = str(key).split("/", 1)
+                prerequisite = self.store.phase(product, name)
+            except (KeyError, ValueError):
+                reasons.append(f"prerequisite {key} is missing")
+            else:
+                if not prerequisite.closed:
+                    reasons.append(f"prerequisite {key} is not closed")
+        if self.cfg.get("retro.require_owner_approval", False) and not phase.meta.get("closing_review_approved"):
+            reasons.append("owner approval is required (set closing_review_approved in phase frontmatter)")
+        evidence_identity = ""
+        try:
+            from ..stabilization import gate, load_evidence
+
+            evidence = load_evidence(phase)
+            evidence_identity = str(evidence.get("build_sha") or "")
+            accepted, missing = gate(phase)
+            if not accepted:
+                reasons.append("stabilization evidence is unaccepted: " + "; ".join(missing))
+        except (OSError, ValueError) as exc:
+            reasons.append(f"stabilization evidence could not be read: {exc}")
+        return {"eligible": not reasons, "personas": list(personas),
+                "evidence": evidence_identity, "reason": "; ".join(reasons)}
+
+    def closing_review_status(self, phase: Phase) -> dict[str, Any]:
+        """Return the durable/operator-facing automatic closing-review state and policy.
+
+        Phase frontmatter may override the global switch with ``auto_closing_review`` and
+        records an owner gate with ``closing_review_approved``. Stabilization remains the
+        existing authoritative evidence gate; live canaries are intentionally not added.
+        """
+        active = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+        policy = self._closing_review_policy(phase)
+        if active:
+            reason = str(active.get("waiting_reason") or "")
+            if active.get("automatic") and not policy["eligible"]:
+                reason = policy["reason"]
+            return {"eligible": False, "stage": str(active.get("stage") or "queued"),
+                    "queued": True, "personas": list(active.get("personas") or policy["personas"]),
+                    "source": str(active.get("source") or ""),
+                    "evidence": str(active.get("evidence") or policy["evidence"]),
+                    "reason": reason}
+        return {**policy, "stage": "eligible" if policy["eligible"] else "waiting",
+                "queued": False, "source": ""}
+
+    def queue_eligible_closing_reviews(self, rep: TickReport) -> None:
+        """Persist one idempotent request per newly eligible phase; admission happens later."""
+        for product in self.store.products():
+            for phase in product.phases:
+                status = self.closing_review_status(phase)
+                if not status["eligible"]:
+                    continue
+                entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+                         "personas": status["personas"], "skip_personas": False,
+                         "next_phase": next_phase_name(phase.name), "self_product": self._self_product() or "",
+                         "stage": "queued", "persona_runs": {}, "automatic": True,
+                         "requested_at": now_iso(), "request_id": uuid.uuid4().hex, "source": "",
+                         "evidence": status["evidence"], "no_file": False}
+                self._retro_list().append(entry)
+                self.events.emit("retro_queued", "", phase=phase.key, source=entry["source"],
+                                 evidence=entry["evidence"])
+                rep.transitions.append(f"retro {phase.key} queued")
+                self.state.save()
+
+    def _current_phase_source(self, phase: Phase) -> str:
+        probe = Task(path=self.store.root, id=f"_{phase.product}-{phase.name}", title="",
+                     product=phase.product, phase=phase.name)
+        base = self.final_base_for(probe)
+        try:
+            repo = self.repo_for(probe)
+            return gitops.rev_parse(repo, gitops.base_ref(repo, base))
+        except gitops.GitError:
+            return ""
+
+    def dispatch_queued_closing_reviews(self, rep: TickReport) -> None:
+        """Claim one queued request; its potentially slow preparation runs after the tick lock."""
+        for entry in self._retro_list():
+            if entry.get("stage") not in {"queued", "preparing", "dispatching"}:
+                continue
+            owner_pid = int(entry.get("preparation_pid") or 0)
+            if entry.get("stage") != "queued" and owner_pid:
+                try:
+                    os.kill(owner_pid, 0)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    continue
+                else:
+                    continue
+            try:
+                if len(self.review_runs_active()) >= self.review_parallel_limit():
+                    raise RuntimeError(
+                        f"waiting for review capacity ({len(self.review_runs_active())}/"
+                        f"{self.review_parallel_limit()} running)"
+                    )
+                claim = uuid.uuid4().hex
+                entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
+                entry.pop("waiting_reason", None)
+                entry["preparation_action"] = "start"
+                self._closing_review_claims.append((str(entry["request_id"]), claim, "start"))
+            except RuntimeError as exc:
+                entry["waiting_reason"] = str(exc)
+            self.state.save()
+            break
+
+    def prepare_claimed_closing_reviews(self, rep: TickReport) -> None:
+        """Prepare requests claimed by this tick without holding the scheduler mutation lock.
+
+        The durable claim prevents another tick or a simultaneous manual start from launching
+        the same request.  Reconciliation under the lock checks both identities again before
+        the normal retro launcher is allowed to create model jobs.
+        """
+        for request_id, claim, action in self._closing_review_claims:
+            try:
+                expected_stage = "preparing" if action == "start" else f"preparing_{action}"
+                with self._controller_lock():
+                    entry = next((item for item in self._retro_list()
+                                  if item.get("request_id") == request_id), None)
+                    if (entry is None or entry.get("stage") != expected_stage
+                            or entry.get("preparation_claim") != claim):
+                        continue
+                    phase = self.store.phase(entry["product"], entry["phase_name"])
+                    if action == "start" and entry.get("automatic"):
+                        policy = self._closing_review_policy(phase)
+                        current_evidence = str(policy.get("evidence") or "")
+                        if not policy["eligible"] or str(entry.get("evidence") or "") != current_evidence:
+                            reason = (policy.get("reason") or
+                                      "accepted stabilization evidence changed; re-preparing")
+                            entry.update(stage="queued", source="", evidence=current_evidence,
+                                         waiting_reason=reason)
+                            self._clear_retro_preparation(entry)
+                            self.state.save()
+                            continue
+                if action != "start" and entry.get("automatic"):
+                    current_source = self._current_phase_source(phase)
+                    with self._controller_lock():
+                        entry = next((item for item in self._retro_list()
+                                      if item.get("request_id") == request_id), None)
+                        if (entry is None or entry.get("stage") != expected_stage
+                                or entry.get("preparation_claim") != claim):
+                            continue
+                        phase = self.store.phase(entry["product"], entry["phase_name"])
+                        policy = self._closing_review_policy(phase)
+                        identity_changed = (
+                            str(entry.get("evidence") or "") != str(policy.get("evidence") or "")
+                            or str(entry.get("source") or "") != current_source
+                        )
+                        if not policy["eligible"] or identity_changed:
+                            reason = policy.get("reason") or "accepted source or evidence changed"
+                            entry.update(stage="queued", source="", evidence=policy.get("evidence") or "",
+                                         waiting_reason=reason)
+                            self._clear_retro_preparation(entry)
+                            self.state.save()
+                            continue
+                if action == "personas":
+                    names = list(entry.get("preparation_names") or [])
+                    source = str(entry.get("source") or "")
+                    prepared = self._prepare_deferred_retro_personas(
+                        phase, entry, names, source
+                    )
+                    with self._controller_lock():
+                        self.state = type(self.state)(self.state.path)
+                        entry = next((item for item in self._retro_list()
+                                      if item.get("request_id") == request_id), None)
+                        if (entry is None or entry.get("stage") != expected_stage
+                                or entry.get("preparation_claim") != claim):
+                            self._discard_prepared_retro_personas(
+                                prepared, "persona preparation claim was superseded"
+                            )
+                            continue
+                        phase = self.store.phase(entry["product"], entry["phase_name"])
+                        if entry.get("automatic"):
+                            policy = self._closing_review_policy(phase)
+                            current_source = self._current_phase_source(phase)
+                            identity_changed = (
+                                source != current_source
+                                or str(entry.get("source") or "") != source
+                                or str(entry.get("evidence") or "")
+                                != str(policy.get("evidence") or "")
+                            )
+                            if not policy["eligible"] or identity_changed:
+                                reason = policy.get("reason") or (
+                                    "accepted source or stabilization evidence changed during "
+                                    "persona preparation; re-preparing"
+                                )
+                                entry.update(stage="queued", source="",
+                                             evidence=str(policy.get("evidence") or ""),
+                                             waiting_reason=reason)
+                                self._clear_retro_preparation(entry)
+                                self.state.save()
+                                self._discard_prepared_retro_personas(prepared, reason)
+                                continue
+                        admitted = self._commit_prepared_retro_personas(entry, prepared)
+                        entry["stage"] = "personas"
+                        self._clear_retro_preparation(entry)
+                        self.state.save()
+                    self._launch_prepared_retro_personas(admitted)
+                    continue
+                if action == "reconcile":
+                    prepared = self._prepare_reconcile(
+                        entry, run_id=str(entry["reconcile_launch_run_id"])
+                    )
+                    with self._controller_lock():
+                        # Preparation may include Git operations and remote PR metadata. Reload
+                        # the durable claim after that work so a concurrent policy/evidence
+                        # update cannot launch a reconciliation for stale accepted inputs.
+                        self.state = type(self.state)(self.state.path)
+                        entry = next((item for item in self._retro_list()
+                                      if item.get("request_id") == request_id), None)
+                        if (entry is None or entry.get("stage") != expected_stage
+                                or entry.get("preparation_claim") != claim):
+                            self._discard_prepared_reconcile(
+                                prepared, "reconciliation preparation claim was superseded"
+                            )
+                            continue
+                        phase = self.store.phase(entry["product"], entry["phase_name"])
+                        if entry.get("automatic"):
+                            policy = self._closing_review_policy(phase)
+                            current_source = self._current_phase_source(phase)
+                            identity_changed = (
+                                str(entry.get("source") or "") != current_source
+                                or str(entry.get("evidence") or "")
+                                != str(policy.get("evidence") or "")
+                            )
+                            if not policy["eligible"] or identity_changed:
+                                reason = policy.get("reason") or (
+                                    "accepted source or stabilization evidence changed during "
+                                    "reconciliation preparation; re-preparing"
+                                )
+                                entry.update(stage="queued", source="",
+                                             evidence=str(policy.get("evidence") or ""),
+                                             waiting_reason=reason)
+                                self._clear_retro_preparation(entry)
+                                self.state.save()
+                                self._discard_prepared_reconcile(prepared, reason)
+                                continue
+                        self._commit_prepared_reconcile(entry, prepared)
+                        self._clear_retro_preparation(entry)
+                        self.state.save()
+                    self._launch_prepared_reconcile(prepared)
+                    with self._controller_lock():
+                        self.state = type(self.state)(self.state.path)
+                        entry = next((item for item in self._retro_list()
+                                      if item.get("request_id") == request_id), None)
+                        if entry and entry.get("recon_run_id") == prepared["run"].run_id:
+                            entry["stage"] = "reconciling"
+                            self.state.save()
+                    continue
+                source = self._current_phase_source(phase) if entry.get("automatic") else ""
+                if entry.get("automatic") and not source:
+                    raise RuntimeError("waiting for the accepted phase source identity")
+                prepared = self._prepare_retro_start(phase, entry, source)
+                with self._controller_lock():
+                    # Walkthrough, Git/worktree setup and persona brief construction may all
+                    # be slow. Reload the claim and accepted identities after that work, then
+                    # publish the exact prepared role runs before any worker can start.
+                    self.state = type(self.state)(self.state.path)
+                    entry = next((item for item in self._retro_list()
+                                  if item.get("request_id") == request_id), None)
+                    if (entry is None or entry.get("stage") != "preparing"
+                            or entry.get("preparation_claim") != claim):
+                        self._discard_prepared_retro_start(
+                            prepared, "closing-review preparation claim was superseded"
+                        )
+                        continue
+                    phase = self.store.phase(entry["product"], entry["phase_name"])
+                    if entry.get("automatic"):
+                        policy = self._closing_review_policy(phase)
+                        if not policy["eligible"]:
+                            entry.update(stage="queued", waiting_reason=policy["reason"])
+                            self._clear_retro_preparation(entry)
+                            self.state.save()
+                            self._discard_prepared_retro_start(prepared, policy["reason"])
+                            continue
+                        current_evidence = str(policy.get("evidence") or "")
+                        if str(entry.get("evidence") or "") != current_evidence:
+                            entry.update(stage="queued", evidence=current_evidence, source="",
+                                         waiting_reason="accepted stabilization evidence changed; re-preparing")
+                            self._clear_retro_preparation(entry)
+                            self.state.save()
+                            self._discard_prepared_retro_start(
+                                prepared, "accepted stabilization evidence changed"
+                            )
+                            continue
+                    if entry.get("automatic") and self._current_phase_source(phase) != source:
+                        reason = "accepted phase source changed during preparation"
+                        entry.update(stage="queued", source="", waiting_reason=reason)
+                        self._clear_retro_preparation(entry)
+                        self.state.save()
+                        self._discard_prepared_retro_start(prepared, reason)
+                        continue
+                    entry["source"] = source
+                    self._commit_prepared_retro_start(entry, prepared)
+                    self._clear_retro_preparation(entry)
+                    self.state.save()
+                self._launch_prepared_retro_start(prepared)
+                if not entry.get("automatic") and not prepared["missing"]:
+                    try:
+                        self._dispatch_reconcile(entry)
+                    except RuntimeError as exc:
+                        entry.update(stage="queued", waiting_reason=str(exc))
+                        self.state.save()
+                        raise
+                rep.transitions.append(f"retro {phase.key} started")
+            except RuntimeError as exc:
+                self.log(f"retro preparation {request_id} deferred: {exc}")
+                if action == "reconcile":
+                    probe_id = f"_retro-{entry['product']}-{entry['phase_name']}"
+                    run_id = str(entry.get("reconcile_launch_run_id") or "")
+                    run = next((candidate for candidate in self.runs.runs_for(probe_id)
+                                if candidate.run_id == run_id), None)
+                    if run is not None and run.pid is None and not run.finished_at:
+                        run.status = "failed"
+                        run.error = f"reconciliation preparation failed: {exc}"
+                        run.finished_at = now_iso()
+                        run.preparer_pid = None
+                        run.save()
+                with self._controller_lock():
+                    entry = next((item for item in self._retro_list()
+                                  if item.get("request_id") == request_id), None)
+                    if entry and entry.get("preparation_claim") == claim:
+                        retry_stage = "queued" if action == "start" else "personas"
+                        if action == "reconcile" and entry.get("recon_run_id"):
+                            retry_stage = "reconciling"
+                        entry.update(stage=retry_stage, waiting_reason=str(exc))
+                        self._clear_retro_preparation(entry)
+                        self.state.save()
+        self._closing_review_claims.clear()
 
     def _persona_revs(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """The parsed marker verdict behind each persona's on-disk report: the rendered markdown
@@ -99,6 +450,21 @@ class RetroMixin:
                 continue
             out[name] = parse_persona(final_path.read_text())
         return out
+
+    def _reports_for_entry(self, phase: Phase, entry: dict[str, Any]) -> dict[str, Path]:
+        reports = persona_reports(phase, entry["personas"])
+        source = str(entry.get("source") or "")
+        if not source or not entry.get("automatic"):
+            return reports
+        fresh: dict[str, Path] = {}
+        for name, path in reports.items():
+            try:
+                match = _SOURCE_FOOTER_RE.search(path.read_text())
+            except OSError:
+                continue
+            if match and match.group(1) == source:
+                fresh[name] = path
+        return fresh
 
     def _persona_findings(self, phase: Phase, reports: dict[str, Path]) -> dict[str, list[dict[str, Any]]]:
         """One draft task per finding needs severity/area/suggestion (CG-187); pull them from
@@ -173,7 +539,14 @@ class RetroMixin:
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
         self.require_maintenance_running()
-        self_prod = self._self_product()
+        # A queued automatic request already contains the configuration identity needed to
+        # finish it.  Load that durable identity before consulting current configuration:
+        # the self product may have been removed after queueing, and manual invocation is
+        # also the supported retry/convergence path for that existing request.
+        with self._controller_lock():
+            self.state = type(self.state)(self.state.path)
+            existing = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+        self_prod = str(existing.get("self_product") or "") if existing else self._self_product()
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
                                "open the retro PR; see docs/architecture.md")
@@ -199,24 +572,277 @@ class RetroMixin:
             raise RuntimeError("garden retro --skip-personas found no persona reports on disk for "
                                f"{', '.join(names)}; run without --skip-personas, or reuse only "
                                "personas that already have a report under docs/reviews/")
-        entry: dict[str, Any] = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
-                                 "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
-                                 "self_product": self_prod, "stage": "personas", "persona_runs": {},
-                                 "no_file": bool(no_file)}
-        missing = [] if skip_personas else [n for n in names if n not in have]
-        self._retro_list().append(entry)
-        if not missing:
-            self._dispatch_reconcile(entry)
-        else:
-            for n in missing:
-                run = self.dispatch_persona_phase(phase, n)
-                entry["persona_runs"][n] = run.run_id
-            self.events.emit("retro_started", "", phase=phase.key, personas=",".join(names),
-                             running=",".join(missing), reuse=",".join(n for n in names if n in have))
-        self.state.save()
-        return entry
 
-    def _dispatch_reconcile(self, entry: dict[str, Any]) -> None:
+        # Reload and persist under the same lock used by ticks. A fresh Scheduler may otherwise
+        # hold a stale State snapshot while an automatic tick queues this phase during manual
+        # validation, producing two requests before either preparation notices the other.
+        with self._controller_lock():
+            self.state = type(self.state)(self.state.path)
+            entry = next((e for e in self._retro_list() if e.get("phase") == phase.key), None)
+            if entry is None:
+                if not self_prod:
+                    raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
+                                       "open the retro PR; see docs/architecture.md")
+                entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+                         "personas": names, "skip_personas": bool(skip_personas), "next_phase": nxt,
+                         "self_product": self_prod, "stage": "queued", "persona_runs": {},
+                         "no_file": bool(no_file), "request_id": uuid.uuid4().hex}
+                self._retro_list().append(entry)
+            elif (entry.get("automatic") and entry.get("stage") in {"queued", "preparing", "dispatching"}
+                  and not self._closing_review_policy(phase)["eligible"]):
+                # An explicit manual start is the supported policy override for a durable
+                # automatic request that is waiting on a newly introduced gate.
+                entry["automatic"] = False
+                entry.pop("waiting_reason", None)
+            if entry.get("stage") not in {"queued", "preparing", "dispatching"}:
+                failed = list((entry.get("persona_failures") or {}).keys())
+                if entry.get("stage") != "personas" or not failed:
+                    return entry
+                for name in failed:
+                    entry.get("persona_runs", {}).pop(name, None)
+                entry.pop("persona_failures", None)
+                entry["stage"] = "queued"
+            owner_pid = int(entry.get("preparation_pid") or 0)
+            if entry.get("stage") != "queued" and owner_pid:
+                try:
+                    os.kill(owner_pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                else:
+                    return entry
+            request_id = str(entry.setdefault("request_id", uuid.uuid4().hex))
+            claim = uuid.uuid4().hex
+            entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
+            self.state.save()
+        entry["preparation_action"] = "start"
+        self._closing_review_claims.append((request_id, claim, "start"))
+        self.prepare_claimed_closing_reviews(TickReport())
+        return next(item for item in self._retro_list() if item.get("request_id") == request_id)
+
+    def _prepare_retro_start(self, phase: Phase, entry: dict[str, Any],
+                             source: str) -> dict[str, Any]:
+        """Prepare initial persona inputs without publishing or launching model jobs."""
+        self.require_maintenance_running()
+        if not entry.get("self_product"):
+            raise RuntimeError("garden retro needs a product with `self: true`")
+        from datetime import date
+
+        from ..walkthrough import capture
+
+        walkthrough_dir = phase.path / "docs" / "walkthrough" / date.today().isoformat()
+        capture(self.store, phase, walkthrough_dir, screenshots=False, log=self.log)
+        names = list(entry["personas"])
+        have = self._reports_for_entry(phase, {**entry, "source": source})
+        missing = [] if entry.get("skip_personas") else [name for name in names if name not in have]
+        probe = self._phase_persona_probe(phase)
+        available = self.review_slots_free_for(probe)
+        if self.runner_for(probe).name != "remote":
+            available = min(available, self.local_slots_free(probe.id))
+        prepared: list[tuple[str, dict[str, Any]]] = []
+        for name in missing[:max(0, available)]:
+            run_id = f"retro-persona-{uuid.uuid4().hex}"
+            payload = self.prepare_persona_phase(phase, name, run_id=run_id, source=source)
+            prepared.append((name, payload))
+        waiting = ""
+        if len(prepared) < len(missing):
+            waiting = (f"waiting for review capacity ({len(self.review_runs_active())}/"
+                       f"{self.review_parallel_limit()} running)")
+        return {"personas": prepared, "missing": missing, "have": have, "waiting": waiting}
+
+    def _commit_prepared_retro_start(self, entry: dict[str, Any], prepared: dict[str, Any]) -> None:
+        """Publish exact initial persona run identities while holding ``tick.lock``."""
+        roles = prepared["personas"]
+        for name, payload in roles:
+            run_id = payload["run"].run_id
+            entry.setdefault("persona_runs", {})[name] = run_id
+            entry.setdefault("persona_launch_claims", {})[name] = {
+                "run_id": run_id, "claimed_at": now_iso(),
+            }
+            self._commit_prepared_aux(payload)
+        entry["stage"] = "personas"
+        if prepared["waiting"]:
+            entry["waiting_reason"] = prepared["waiting"]
+        else:
+            entry.pop("waiting_reason", None)
+        if not prepared["missing"] and entry.get("automatic"):
+            self._claim_retro_preparation(entry, "reconcile")
+
+    def _launch_prepared_retro_start(self, prepared: dict[str, Any]) -> None:
+        """Launch the initial persona payloads whose identities are already durable."""
+        for _name, payload in prepared["personas"]:
+            self._launch_prepared_aux(payload)
+
+    def _discard_prepared_retro_start(self, prepared: dict[str, Any], reason: str) -> None:
+        for _name, payload in prepared["personas"]:
+            self._discard_prepared_aux(payload, reason)
+
+    def _phase_persona_probe(self, phase: Phase) -> Task:
+        return Task(path=self.store.root, id=f"_{phase.product}-{phase.name}", title="",
+                    product=phase.product, phase=phase.name)
+
+    def _reconcile_phase_persona_run(self, phase: Phase, entry: dict[str, Any], name: str) -> bool:
+        """Reconnect a persisted role reservation to the durable run/aux records.
+
+        The retro request is saved before launch. If the controller exits after the run is
+        created, the same run id is adopted here instead of starting a second model job.
+        """
+        run_id = str((entry.get("persona_runs") or {}).get(name) or "")
+        if not run_id:
+            return False
+        probe = self._phase_persona_probe(phase)
+        run = next((candidate for candidate in self.runs.runs_for(probe.id)
+                    if candidate.run_id == run_id), None)
+        if run is None:
+            return False
+        if not any(aux.get("run_id") == run_id for aux in self._aux_list()):
+            self._aux_list().append({
+                "run_id": run_id, "task": probe.id, "kind": "persona", "id": probe.id,
+                "product": phase.product, "phase": phase.name, "persona": name,
+                "target": "phase", "file_tasks": False, "min_severity": "low",
+            })
+            self.state.save()
+        return True
+
+    def _dispatch_retro_personas(self, phase: Phase, entry: dict[str, Any], names: list[str]) -> list[str]:
+        """Fill currently admitted review slots, durably reserving each role before launch."""
+        launched: list[str] = []
+        probe = self._phase_persona_probe(phase)
+        for name in names:
+            if self._reconcile_phase_persona_run(phase, entry, name):
+                continue
+            if self.review_slots_free_for(probe) <= 0:
+                entry["waiting_reason"] = (
+                    f"waiting for review capacity ({len(self.review_runs_active())}/"
+                    f"{self.review_parallel_limit()} running)"
+                )
+                break
+            runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
+            if runner_name == "local" and self.local_slots_free(probe.id) <= 0:
+                entry["waiting_reason"] = "waiting for local execution capacity"
+                break
+            run_id = f"retro-persona-{uuid.uuid4().hex}"
+            entry.setdefault("persona_runs", {})[name] = run_id
+            entry.setdefault("persona_launch_claims", {})[name] = {
+                "run_id": run_id, "claimed_at": now_iso(),
+            }
+            self.state.save()
+            try:
+                run = self.dispatch_persona_phase(phase, name, run_id=run_id)
+            except Exception as exc:  # launch races are durable waiting state, not a lost retro
+                # The durable role remains reserved. A later tick either adopts the run
+                # record created by the failed launch or retries the same run identity.
+                if not self._reconcile_phase_persona_run(phase, entry, name):
+                    entry["persona_runs"].pop(name, None)
+                    entry.get("persona_launch_claims", {}).pop(name, None)
+                entry["waiting_reason"] = f"persona `{name}` launch deferred: {exc}"
+                self.state.save()
+                break
+            entry["persona_runs"][name] = run.run_id
+            entry.get("persona_launch_claims", {}).pop(name, None)
+            entry.pop("waiting_reason", None)
+            self.state.save()
+            launched.append(name)
+        return launched
+
+    def _prepare_deferred_retro_personas(
+        self, phase: Phase, entry: dict[str, Any], names: list[str], source: str
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Build exact source-bound payloads for missing later-stage persona roles."""
+        prepared: list[tuple[str, dict[str, Any]]] = []
+        probe = self._phase_persona_probe(phase)
+        available = self.review_slots_free_for(probe)
+        if self.runner_for(probe).name != "remote":
+            available = min(available, self.local_slots_free(probe.id))
+        for name in names[:max(0, available)]:
+            if (entry.get("persona_runs") or {}).get(name):
+                continue
+            run_id = f"retro-persona-{uuid.uuid4().hex}"
+            payload = self.prepare_persona_phase(
+                phase, name, run_id=run_id, source=source
+            )
+            prepared.append((name, payload))
+        return prepared
+
+    def _commit_prepared_retro_personas(
+        self, entry: dict[str, Any], prepared: list[tuple[str, dict[str, Any]]]
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Admit and publish deferred roles while holding ``tick.lock``."""
+        phase = self.store.phase(entry["product"], entry["phase_name"])
+        probe = self._phase_persona_probe(phase)
+        # Preparing an aux payload creates its not-yet-launched run record. Admission helpers
+        # therefore already count these exact reservations; add only those reservations back
+        # before applying the current limit so concurrent unrelated work still reduces slots.
+        prepared_ids = {payload["run"].run_id for _name, payload in prepared}
+        reserved = sum(run.run_id in prepared_ids for run in self.review_runs_active())
+        available = self.review_slots_free_for(probe) + reserved
+        if self.runner_for(probe).name != "remote":
+            available = min(available, self.local_slots_free(probe.id) + len(prepared))
+        admitted = prepared[:max(0, available)]
+        deferred = prepared[len(admitted):]
+        for name, payload in admitted:
+            run_id = payload["run"].run_id
+            entry.setdefault("persona_runs", {})[name] = run_id
+            entry.setdefault("persona_launch_claims", {})[name] = {
+                "run_id": run_id, "claimed_at": now_iso(),
+            }
+            self._commit_prepared_aux(payload)
+        if deferred:
+            entry["waiting_reason"] = (
+                f"waiting for review capacity ({len(self.review_runs_active())}/"
+                f"{self.review_parallel_limit()} running)"
+            )
+            self._discard_prepared_retro_personas(
+                deferred, "persona preparation exceeded current review capacity"
+            )
+        else:
+            entry.pop("waiting_reason", None)
+        return admitted
+
+    def _launch_prepared_retro_personas(
+        self, prepared: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        for _name, payload in prepared:
+            self._launch_prepared_aux(payload)
+
+    def _discard_prepared_retro_personas(
+        self, prepared: list[tuple[str, dict[str, Any]]], reason: str
+    ) -> None:
+        for _name, payload in prepared:
+            self._discard_prepared_aux(payload, reason)
+
+    def _record_retro_persona_failure(self, run: Run, name: str, detail: str) -> bool:
+        """Attach a failed phase-persona run to its owning retro request, if any."""
+        for entry in self._retro_list():
+            if entry.get("stage") != "personas":
+                continue
+            if (entry.get("persona_runs") or {}).get(name) != run.run_id:
+                continue
+            reason = f"persona `{name}` failed: {detail}"
+            failures = entry.setdefault("persona_failures", {})
+            failures[name] = reason
+            entry["waiting_reason"] = "; ".join(failures.values()) + \
+                f"; retry with `garden retro {entry['phase']}`"
+            self.state.save()
+            return True
+        return False
+
+    def _clear_retro_persona_failure(self, run: Run, name: str) -> None:
+        for entry in self._retro_list():
+            if (entry.get("persona_runs") or {}).get(name) != run.run_id:
+                continue
+            failures = entry.get("persona_failures") or {}
+            failures.pop(name, None)
+            if failures:
+                entry["waiting_reason"] = "; ".join(failures.values()) + \
+                    f"; retry with `garden retro {entry['phase']}`"
+            else:
+                entry.pop("persona_failures", None)
+                entry.pop("waiting_reason", None)
+            self.state.save()
+            return
+
+    def _prepare_reconcile(self, entry: dict[str, Any], run_id: str = "") -> dict[str, Any]:
+        """Build one immutable reconciliation launch payload outside ``tick.lock``."""
         self.require_maintenance_running()
         phase = self.store.phase(entry["product"], entry["phase_name"])
         admission_probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}",
@@ -229,6 +855,7 @@ class RetroMixin:
         difficulty = str(self.effective("retro.difficulty") or "hard")
         run = self._new_local_run(
             probe.id, "retro", "retro",
+            run_id=run_id,
             resource_weight=self.cfg.product_resource_weight(probe.product),
         )
         run.model = self.retro_model_for(runner) or self.model_for(probe, runner, difficulty)
@@ -253,15 +880,67 @@ class RetroMixin:
         write_reference_files(run.path, references, self.cfg.data)
         run.worktree = str(wt)
         run.brief_tokens = max(1, len(text) // 4)
+        return {"run": run, "runner": runner, "worktree": wt, "text": text,
+                "phase": phase, "probe": probe, "branch": branch, "base": base}
+
+    def _commit_prepared_reconcile(self, entry: dict[str, Any], prepared: dict[str, Any]) -> None:
+        """Persist the exact prepared launch identity while holding ``tick.lock``."""
+        run = prepared["run"]
+        entry.update({"recon_run_id": run.run_id, "recon_task": prepared["probe"].id,
+                      "branch": prepared["branch"], "worktree": str(prepared["worktree"]),
+                      "base": prepared["base"], "slug": self.slug_for(prepared["probe"]) or "",
+                      "stage": "launching_reconcile"})
         run.save()
-        runner.start(run, wt, text)
+
+    def _discard_prepared_reconcile(self, prepared: dict[str, Any], reason: str) -> None:
+        """Close an admitted run whose prepared input lost its durable launch claim."""
+        run = prepared["run"]
+        run.status = "failed"
+        run.error = reason
+        run.finished_at = now_iso()
+        run.preparer_pid = None
+        run.save()
+
+    def _launch_prepared_reconcile(self, prepared: dict[str, Any]) -> None:
+        """Launch exactly the payload whose identity was durably committed under the lock."""
+        run = prepared["run"]
+        runner = prepared["runner"]
+        phase = prepared["phase"]
+        probe = prepared["probe"]
+        runner.start(run, prepared["worktree"], prepared["text"])
         self.events.emit("dispatch", run.task_id, run=run.run_id, mode="retro", model=run.model,
                          harness=run.harness, phase=probe.phase)
-        entry.update({"stage": "reconciling", "recon_run_id": run.run_id, "recon_task": probe.id,
-                      "branch": branch, "worktree": str(wt), "base": base, "slug": self.slug_for(probe) or ""})
-        self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id, branch=branch)
+        self.events.emit("retro_reconcile", "", phase=phase.key, run=run.run_id,
+                         branch=prepared["branch"])
 
-    def retro_pending(self, phase_key: str) -> dict[str, int] | None:
+    def _dispatch_reconcile(self, entry: dict[str, Any], run_id: str = "") -> None:
+        """Synchronous/manual compatibility path for reconciliation dispatch."""
+        prepared = self._prepare_reconcile(entry, run_id=run_id)
+        self._commit_prepared_reconcile(entry, prepared)
+        self.state.save()
+        self._launch_prepared_reconcile(prepared)
+        entry["stage"] = "reconciling"
+        self.state.save()
+
+    @staticmethod
+    def _clear_retro_preparation(entry: dict[str, Any]) -> None:
+        for key in ("preparation_claim", "preparation_pid", "preparation_action", "preparation_names"):
+            entry.pop(key, None)
+
+    def _claim_retro_preparation(self, entry: dict[str, Any], action: str,
+                                 names: list[str] | None = None) -> None:
+        """Persist a later-stage launch claim for execution after ``tick.lock`` is released."""
+        claim = uuid.uuid4().hex
+        request_id = str(entry.setdefault("request_id", uuid.uuid4().hex))
+        entry.update(stage=f"preparing_{action}", preparation_claim=claim,
+                     preparation_pid=os.getpid(), preparation_action=action)
+        if names is not None:
+            entry["preparation_names"] = names
+        if action == "reconcile":
+            entry.setdefault("reconcile_launch_run_id", f"retro-reconcile-{uuid.uuid4().hex}")
+        self._closing_review_claims.append((request_id, claim, action))
+
+    def retro_pending(self, phase_key: str) -> dict[str, Any] | None:
         """The persona-wait state of the phase's active retro, if any is stuck waiting: `{"done":
         n, "total": m}`. For `garden status` and the phase page. None once every requested
         report is in (the reconciliation dispatches) or if no retro is running for the phase."""
@@ -269,21 +948,77 @@ class RetroMixin:
             if entry.get("phase") != phase_key or entry.get("stage") != "personas":
                 continue
             phase = self.store.phase(entry["product"], entry["phase_name"])
-            have = persona_reports(phase, entry["personas"])
-            return {"done": len(have), "total": len(entry["personas"])}
+            have = self._reports_for_entry(phase, entry)
+            pending: dict[str, Any] = {"done": len(have), "total": len(entry["personas"])}
+            if len(have) < len(entry["personas"]) and entry.get("waiting_reason"):
+                pending["reason"] = str(entry["waiting_reason"])
+            return pending
         return None
 
     def reap_retro(self, rep: TickReport) -> None:
         for entry in list(self._retro_list()):
             try:
+                if entry.get("stage") == "launching_reconcile":
+                    run_id = str(entry.get("recon_run_id") or "")
+                    probe_id = str(entry.get("recon_task") or "")
+                    run = next((r for r in self.runs.runs_for(probe_id)
+                                if r.run_id == run_id), None)
+                    owner_pid = int(run.preparer_pid or 0) if run else 0
+                    if owner_pid:
+                        try:
+                            os.kill(owner_pid, 0)
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            continue
+                        else:
+                            continue
+                    if run is not None and run.pid is not None and not run.finished_at:
+                        entry["stage"] = "reconciling"
+                    else:
+                        # The controller stopped after committing the launch identity but
+                        # before a worker became observable. Retire that reservation and
+                        # prepare a new exact input; never adopt it as a completed launch.
+                        if run is not None and not run.finished_at:
+                            run.status = "failed"
+                            run.error = "reconciliation launch interrupted before worker start"
+                            run.finished_at = now_iso()
+                            run.preparer_pid = None
+                            run.save()
+                        entry["stage"] = "personas"
+                        entry.pop("reconcile_launch_run_id", None)
+                    self.state.save()
+                if entry.get("stage") in {"preparing_personas", "preparing_reconcile"}:
+                    owner_pid = int(entry.get("preparation_pid") or 0)
+                    if owner_pid:
+                        try:
+                            os.kill(owner_pid, 0)
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            continue
+                        else:
+                            continue
+                    action = str(entry.get("preparation_action") or "")
+                    self._clear_retro_preparation(entry)
+                    entry["stage"] = "personas"
+                    if action == "reconcile" and entry.get("reconcile_launch_run_id"):
+                        run_id = str(entry["reconcile_launch_run_id"])
+                        probe_id = f"_retro-{entry['product']}-{entry['phase_name']}"
+                        run = next((r for r in self.runs.runs_for(probe_id) if r.run_id == run_id), None)
+                        if run is not None:
+                            entry.update(stage="reconciling", recon_run_id=run_id, recon_task=probe_id)
+                            continue
                 if entry.get("stage") == "personas":
                     # Gated on reports actually on disk, not on whether a run is still active:
                     # a concurrent tick reading state mid-dispatch (start_retro saves after each
                     # persona it kicks off) must not mistake "no run recorded yet" for "done"
                     # and reconcile before every persona has even started.
                     phase = self.store.phase(entry["product"], entry["phase_name"])
-                    have = persona_reports(phase, entry["personas"])
+                    have = self._reports_for_entry(phase, entry)
                     if len(have) < len(entry["personas"]):
+                        missing = [name for name in entry["personas"] if name not in have]
+                        self._claim_retro_preparation(entry, "personas", missing)
                         continue
                     admission_probe = Task(
                         path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
@@ -297,6 +1032,7 @@ class RetroMixin:
                             )
                         continue
                     entry.pop("reconcile_phase_wait", None)
+                    entry.pop("waiting_reason", None)
                     probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                                 product=entry["self_product"], phase="")
                     harness_name = self.resolved_harness_name(probe, str(self.cfg.get("review.harness") or ""))
@@ -309,7 +1045,7 @@ class RetroMixin:
                             rep.transitions.append(f"retro {entry['phase']} reconcile deferred ({harness_name} paused)")
                         continue
                     entry.pop("reconcile_paused", None)
-                    self._dispatch_reconcile(entry)
+                    self._claim_retro_preparation(entry, "reconcile")
                     continue
                 if entry.get("stage") != "reconciling":
                     continue
@@ -346,6 +1082,7 @@ class RetroMixin:
                     # an unparsed final.md as a failed retro and dropping the entry for good.
                     self._pause_for_env_error(run, collected)
                     entry["stage"] = "personas"
+                    entry.pop("reconcile_launch_run_id", None)
                     entry["reconcile_paused"] = True
                     rep.transitions.append(f"retro {entry['phase']} reconcile paused (env_error)")
                     continue

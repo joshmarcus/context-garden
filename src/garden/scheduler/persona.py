@@ -48,7 +48,17 @@ class PersonaMixin:
             rows.append({"id": t.id, "title": title, "status": t.status.value, "pr": t.pr, "body": body})
         return rows
 
-    def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False, min_severity: str = "low") -> Run:
+    def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
+                               min_severity: str = "low", run_id: str = "") -> Run:
+        prepared = self.prepare_persona_phase(phase, name, file_tasks, min_severity, run_id)
+        self._commit_prepared_aux(prepared)
+        self._launch_prepared_aux(prepared)
+        return prepared["run"]
+
+    def prepare_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
+                              min_severity: str = "low", run_id: str = "",
+                              source: str = "") -> dict[str, Any]:
+        """Prepare a phase persona's exact worktree and brief without launching its worker."""
         valid_name(name)
         product = phase.product
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
@@ -56,8 +66,9 @@ class PersonaMixin:
         # be filed forward, but it must still respect sequential phase ownership.
         if refusal := self.sequential_phase_refusal(probe):
             raise RuntimeError(refusal)
+        harness_name = str(self.cfg.get("review.harness") or "")
         repo = self.repo_for(probe)
-        base = self.final_base_for(probe)
+        base = source or self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_phase-{product}-{phase.name}")
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
         prepared_run = None
@@ -96,11 +107,20 @@ class PersonaMixin:
                     gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
         references: dict[str, str] = {}
         text = phase_brief(self.store, phase, name, base, self.phase_prs(phase), references)
-        return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
-                                                             "persona": name, "target": "phase", "file_tasks": file_tasks,
-                                                             "min_severity": min_severity},
-                                 harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"),
-                                 prepared_run=prepared_run, reference_files=references)
+        prepared = self._prepare_aux(
+            "persona", None, text, wt,
+            {"id": probe.id, "product": product, "phase": phase.name,
+             "persona": name, "target": "phase", "file_tasks": file_tasks,
+             "min_severity": min_severity},
+            harness_name=harness_name,
+            difficulty=str(self.effective("retro.difficulty") or "hard"),
+            reference_files=references,
+            run_id=run_id,
+        )
+        if source:
+            prepared["run"].branch = source
+            prepared["run"].base = source
+        return prepared
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
                             required_evidence: bool = False,
@@ -207,18 +227,30 @@ class PersonaMixin:
         rev = parse_persona(final)
         name = str(entry.get("persona"))
         if not rev:
+            detail = run.error[:120] or "no parseable verdict"
             self.events.emit("persona", entry["task"], persona=name, status="no_verdict", target=entry.get("target"))
             rep.errors.append(f"persona {name}: no verdict ({run.error[:100] or 'see final.md'})")
+            if entry.get("target") == "phase":
+                self._record_retro_persona_failure(run, name, detail)
             if entry.get("required_evidence"):
                 task = self.store.task(entry["task"])
-                self._required_persona_failed(task, name, run.error[:120] or "no parseable verdict", rep)
+                self._required_persona_failed(task, name, detail, rep)
             return
         self.events.emit("persona", entry["task"], persona=name, target=entry.get("target"), score=rev.get("score"),
                          high=sum(1 for f in rev.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "high"))
         if entry.get("target") == "phase":
+            self._clear_retro_persona_failure(run, name)
             phase = self.store.phase(str(entry["product"]), str(entry["phase"]))
             path = report_path(phase, name)
-            path.write_text(report_markdown(rev, f"{name} review of {phase.key}", run.run_id))
+            report = report_markdown(rev, f"{name} review of {phase.key}", run.run_id)
+            try:
+                source = gitops.head_sha(Path(run.worktree))
+            except gitops.GitError:
+                source = ""
+            if source:
+                footer = f"_garden persona run {run.run_id}_"
+                report = report.replace(footer, f"_garden phase source {source}_\n\n{footer}")
+            path.write_text(report)
             self.log(f"persona {name}: report written to {self.store.rel(path)}")
             rep.transitions.append(f"persona {name} report -> {self.store.rel(path)}")
             if entry.get("file_tasks"):

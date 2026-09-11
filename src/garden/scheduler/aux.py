@@ -18,7 +18,20 @@ class AuxMixin:
     def dispatch_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path, meta: dict[str, Any],
                      harness_name: str = "", difficulty: str = "", prepared_run: Run | None = None,
                      model_override: str | None = None, pool_member: str = "",
-                     reference_files: dict[str, str] | None = None) -> Run:
+                     reference_files: dict[str, str] | None = None, run_id: str = "") -> Run:
+        prepared = self._prepare_aux(kind, task, brief_text, worktree, meta, harness_name,
+                                     difficulty, prepared_run, model_override, pool_member,
+                                     reference_files, run_id)
+        self._commit_prepared_aux(prepared)
+        self._launch_prepared_aux(prepared)
+        return prepared["run"]
+
+    def _prepare_aux(self, kind: str, task: Task | None, brief_text: str, worktree: Path,
+                     meta: dict[str, Any], harness_name: str = "", difficulty: str = "",
+                     prepared_run: Run | None = None, model_override: str | None = None,
+                     pool_member: str = "", reference_files: dict[str, str] | None = None,
+                     run_id: str = "") -> dict[str, Any]:
+        """Build an immutable auxiliary launch payload without starting or publishing it."""
         self.require_maintenance_running()
         probe = task or Task(path=self.store.root, id=str(meta.get("id", "_aux")), title="", product=str(meta.get("product", "")), phase=str(meta.get("phase", "")))
         runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
@@ -29,9 +42,9 @@ class AuxMixin:
         # overwrite one another.
         run_task_id = probe.id if task or kind == "persona" else f"_{kind}"
         resource_weight = self.cfg.product_resource_weight(probe.product)
-        run = prepared_run or (self.runs.new_run(run_task_id, runner_name, mode=kind)
+        run = prepared_run or (self.runs.new_run(run_task_id, runner_name, mode=kind, run_id=run_id)
                                if runner_name == "remote" else self._new_local_run(
-                                   run_task_id, kind, kind, resource_weight=resource_weight))
+                                   run_task_id, kind, kind, run_id=run_id, resource_weight=resource_weight))
         run.branch = task.branch or task.default_branch() if task else self.final_base_for(probe)
         run.base = self.base_for(task) if task else self.final_base_for(probe)
         run.env_snapshot.update({"product": probe.product,
@@ -60,14 +73,36 @@ class AuxMixin:
         if canonical is not None:
             worktree = canonical
             run.worktree = str(canonical)
+        return {"run": run, "runner": runner, "worktree": worktree, "text": brief_text,
+                "kind": kind, "meta": meta}
+
+    def _commit_prepared_aux(self, prepared: dict[str, Any]) -> None:
+        """Persist an auxiliary run and its reap identity before its worker is launched."""
+        run = prepared["run"]
+        kind = prepared["kind"]
+        meta = prepared["meta"]
         run.save()
-        runner.start(run, worktree, brief_text)
         self._aux_list().append({"run_id": run.run_id, "task": run.task_id, "kind": kind, **meta})
+        self.state.save()
+
+    def _launch_prepared_aux(self, prepared: dict[str, Any]) -> None:
+        """Start exactly the auxiliary payload prepared and durably committed earlier."""
+        run = prepared["run"]
+        kind = prepared["kind"]
+        meta = prepared["meta"]
+        prepared["runner"].start(run, prepared["worktree"], prepared["text"])
         self.events.emit("dispatch", run.task_id, run=run.run_id, mode=kind, model=run.model,
                          harness=run.harness, pool_member=run.pool_member,
                          **{k: v for k, v in meta.items() if isinstance(v, (str, int, float, bool))})
-        self.state.save()
-        return run
+
+    def _discard_prepared_aux(self, prepared: dict[str, Any], reason: str) -> None:
+        """Retire a prepared run whose guarded launch identity became stale."""
+        run = prepared["run"]
+        run.status = "failed"
+        run.error = reason
+        run.finished_at = now_iso()
+        run.preparer_pid = None
+        run.save()
 
     def reap_aux(self, rep: TickReport) -> None:
         remaining = []
@@ -157,5 +192,7 @@ class AuxMixin:
             self.store.save(task)
             rep.transitions.append(f"{task.id} compare paused (env_error)")
             return
-        self.log(f"{entry.get('task')}: {note} (not requeued: no per-task queue for a phase-level review)")
-        rep.transitions.append(f"{entry.get('task')} {kind} paused (env_error, not retried)")
+        if kind == "persona" and entry.get("target") == "phase":
+            self._record_retro_persona_failure(run, str(entry.get("persona") or ""), note)
+        self.log(f"{entry.get('task')}: {note} (waiting for an explicit phase-review retry)")
+        rep.transitions.append(f"{entry.get('task')} {kind} paused (env_error, retry available)")

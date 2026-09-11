@@ -8,7 +8,9 @@ from __future__ import annotations
 import os
 import subprocess
 import textwrap
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -22,7 +24,7 @@ from garden.retro import (
     render_retro_doc,
     resolve_features,
 )
-from garden.scheduler import Scheduler
+from garden.scheduler import Scheduler, State, TickReport
 from garden.store import Store
 from tests.conftest import FAKE_CLAUDE
 
@@ -776,9 +778,14 @@ def test_retro_waits_for_every_persona_report_before_reconciling(tmp_path, fake_
     for name in names:
         assert f"evidence/personas/{name}.md" in refs
 
-    rep = sched.tick()  # every report is in now -> the reconciliation dispatches
-    assert not rep.errors, rep.errors
-    entry = sched._retro_list()[0]
+    # The persona workers admitted on the previous tick may still own all local slots.
+    # Subsequent ticks reap them and automatically resume the queued reconciliation.
+    for _ in range(3):
+        rep = sched.tick()
+        assert not rep.errors, rep.errors
+        entry = sched._retro_list()[0]
+        if entry["stage"] == "reconciling":
+            break
     assert entry["stage"] == "reconciling"
     rep = sched.tick()
     assert not rep.errors, rep.errors
@@ -917,6 +924,609 @@ def _retro_entry(sched: Scheduler, phase_key: str) -> dict:
     return next(e for e in sched._retro_list() if e["phase"] == phase_key)
 
 
+def test_auto_closing_review_waits_for_terminal_tasks_and_is_idempotently_queued(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    sched.cfg.data["retro"]["auto_start"] = True
+    status = sched.closing_review_status(phase)
+    assert not status["eligible"] and "non-terminal tasks" in status["reason"]
+
+    for task in phase.tasks:
+        task.status = task.status.CANCELLED
+        sched.store.save(task)
+    sched.store.invalidate_tasks()
+    phase = sched.store.phase("demo", "p1")
+    monkeypatch.setattr(sched, "_self_product", lambda: "demo")
+    rep = TickReport()
+    sched.queue_eligible_closing_reviews(rep)
+    sched.queue_eligible_closing_reviews(rep)
+
+    entries = [entry for entry in sched._retro_list() if entry["phase"] == phase.key]
+    assert len(entries) == 1
+    assert entries[0]["stage"] == "queued"
+    assert entries[0]["request_id"]
+    assert entries[0]["source"] == ""
+    assert rep.transitions == ["retro demo/p1 queued"]
+
+
+def test_auto_closing_review_exposes_freeze_prerequisite_and_owner_holds(sched):
+    phase = sched.store.phase("demo", "p1")
+    sched.cfg.data["retro"].update({
+        "auto_start": True,
+        "prerequisites": {"demo/p1": ["demo/p2"]},
+        "require_owner_approval": True,
+    })
+    sched.store.set_phase_frozen(phase, "owner hold")
+    phase = sched.store.phase("demo", "p1")
+    status = sched.closing_review_status(phase)
+    assert not status["eligible"]
+    assert "phase frozen" in status["reason"]
+    assert "prerequisite demo/p2 is missing" in status["reason"]
+    assert "owner approval is required" in status["reason"]
+
+
+def test_manual_start_claims_an_automatically_queued_review(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {}, "no_file": False}
+    sched._retro_list().append(entry)
+    sched.state.save()
+    started = []
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, queued, source: {"request": queued, "personas": [],
+                                                    "missing": ["designer"], "waiting": ""})
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda queued, prepared: queued.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: started.append((phase.key, prepared["request"])))
+    returned = sched.start_retro(phase)
+    assert returned["request_id"]
+    assert [(key, queued["request_id"]) for key, queued in started] == [
+        (phase.key, returned["request_id"])
+    ]
+
+
+def test_fresh_manual_start_adopts_request_queued_during_validation(sched, monkeypatch):
+    """The manual command must reload under the tick lock before creating its request."""
+    phase = sched.store.phase("demo", "p1")
+    queued = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+              "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+              "self_product": "demo", "stage": "queued", "persona_runs": {},
+              "no_file": False, "automatic": True, "request_id": "automatic-request"}
+
+    def queue_while_manual_start_is_validating():
+        concurrent = State(sched.state.path)
+        concurrent.get("_retro").setdefault("runs", []).append(queued)
+        concurrent.save()
+        return "demo"
+
+    started = []
+    monkeypatch.setattr(sched, "_self_product", queue_while_manual_start_is_validating)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, entry, source: {"request_id": entry["request_id"],
+                                                   "personas": [], "missing": ["designer"],
+                                                   "waiting": ""})
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda entry, prepared: entry.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: started.append(prepared["request_id"]))
+
+    returned = sched.start_retro(phase, ["designer"])
+
+    assert returned["request_id"] == "automatic-request"
+    assert [entry["request_id"] for entry in sched._retro_list()] == ["automatic-request"]
+    assert started == ["automatic-request"]
+
+
+def test_closing_review_preparation_runs_after_tick_releases_controller_lock(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {},
+             "no_file": False, "automatic": True, "request_id": "request-one"}
+    sched._retro_list().append(entry)
+    held = False
+    original_lock = sched._controller_lock
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def tracked_lock():
+        nonlocal held
+        with original_lock():
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+    monkeypatch.setattr(sched, "_controller_lock", tracked_lock)
+    monkeypatch.setattr(sched, "_closing_review_policy", lambda ph: {"eligible": True})
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, queued, source: ({"personas": [], "missing": ["designer"],
+                                                    "waiting": ""}
+                                                   if not held else pytest.fail("lock held")))
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda queued, prepared: queued.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: None if not held else pytest.fail("lock held"))
+    sched._closing_review_claims = []
+    sched.dispatch_queued_closing_reviews(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "personas"
+    assert "preparation_claim" not in current
+
+
+def test_queued_automatic_review_rechecks_a_new_freeze_before_dispatch(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    sched.cfg.data["retro"]["auto_start"] = True
+    for task in phase.tasks:
+        task.status = task.status.CANCELLED
+        sched.store.save(task)
+    sched.store.invalidate_tasks()
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {},
+             "no_file": False, "automatic": True, "request_id": "request-held"}
+    sched._retro_list().append(entry)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    started = []
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start", lambda prepared: started.append(prepared))
+
+    sched.dispatch_queued_closing_reviews(TickReport())
+    sched.store.set_phase_frozen(phase, "new owner hold")
+    sched.prepare_claimed_closing_reviews(TickReport())
+
+    assert entry["stage"] == "queued"
+    assert "phase frozen" in entry["waiting_reason"]
+    assert started == []
+    assert "phase frozen" in sched.closing_review_status(
+        sched.store.phase("demo", "p1")
+    )["reason"]
+
+
+def test_failed_retro_persona_is_visible_and_manual_retry_claims_only_that_role(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer", "security"], "skip_personas": False,
+             "next_phase": "p2", "self_product": "demo", "stage": "personas",
+             "persona_runs": {"designer": "run-ok", "security": "run-failed"},
+             "request_id": "request-retry"}
+    sched._retro_list().append(entry)
+    run = sched.runs.new_run("_demo-p1", "local", mode="persona")
+    run.run_id = "run-failed"
+
+    rep = TickReport()
+    sched._finish_persona({"task": "_demo-p1", "target": "phase", "product": "demo",
+                           "phase": "p1", "persona": "security"}, run, "not a verdict", rep)
+    assert any("no verdict" in error for error in rep.errors)
+    pending = sched.retro_pending(phase.key)
+    assert pending and "garden retro demo/p1" in pending["reason"]
+
+    prepared = []
+    monkeypatch.setattr(sched, "prepare_claimed_closing_reviews", lambda rep: prepared.extend(sched._closing_review_claims))
+    returned = sched.start_retro(phase)
+
+    assert returned["stage"] == "preparing"
+    assert returned["persona_runs"] == {"designer": "run-ok"}
+    assert "persona_failures" not in returned
+    assert len(prepared) == 1
+
+    sched.start_retro(phase)
+    assert len(prepared) == 1
+
+
+def test_restart_reclaims_an_interrupted_closing_review_preparation(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "preparing", "persona_runs": {},
+             "no_file": False, "automatic": True, "request_id": "request-one",
+             "preparation_claim": "abandoned", "preparation_pid": 99999999}
+    sched._retro_list().append(entry)
+    monkeypatch.setattr(sched, "_closing_review_policy", lambda ph: {"eligible": True})
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    started = []
+    monkeypatch.setattr(sched, "_prepare_retro_start",
+                        lambda ph, queued, source: {"request_id": queued["request_id"],
+                                                    "personas": [], "missing": ["designer"],
+                                                    "waiting": ""})
+    monkeypatch.setattr(sched, "_commit_prepared_retro_start",
+                        lambda queued, prepared: queued.update(stage="personas"))
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start",
+                        lambda prepared: started.append(prepared["request_id"]))
+    sched._closing_review_claims = []
+
+    sched.dispatch_queued_closing_reviews(TickReport())
+    assert entry["preparation_claim"] != "abandoned"
+    sched.prepare_claimed_closing_reviews(TickReport())
+
+    assert started == ["request-one"]
+
+
+def test_later_tick_persona_and_reconcile_launches_run_outside_controller_lock(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    held = False
+    original_lock = sched._controller_lock
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def tracked_lock():
+        nonlocal held
+        with original_lock():
+            held = True
+            try:
+                yield
+            finally:
+                held = False
+
+    monkeypatch.setattr(sched, "_controller_lock", tracked_lock)
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["security"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "personas", "persona_runs": {},
+             "request_id": "later-persona"}
+    sched._retro_list().append(entry)
+    sched.state.save()
+    calls = []
+
+    def prepare_personas(ph, queued, names, source):
+        assert not held
+        calls.append(("personas", names))
+        return [("security", {"run": SimpleNamespace(run_id="security-run")})]
+
+    def commit_personas(queued, prepared):
+        assert held
+        return prepared
+
+    def launch_personas(prepared):
+        assert not held
+
+    monkeypatch.setattr(sched, "_prepare_deferred_retro_personas", prepare_personas)
+    monkeypatch.setattr(sched, "_commit_prepared_retro_personas", commit_personas)
+    monkeypatch.setattr(sched, "_launch_prepared_retro_personas", launch_personas)
+    sched.tick()
+    assert calls == [("personas", ["security"])]
+
+    entry = _retro_entry(sched, phase.key)
+    reviews = phase.path / "docs" / "reviews"
+    reviews.mkdir(parents=True, exist_ok=True)
+    (reviews / "designer-2026-09-10.md").write_text("complete")
+    entry["personas"] = ["designer"]
+    entry["stage"] = "personas"
+
+    prepared_run = SimpleNamespace(run_id="")
+
+    def prepare_reconcile(queued, run_id=""):
+        assert not held
+        calls.append(("reconcile", run_id))
+        prepared_run.run_id = run_id
+        return {"run": prepared_run}
+
+    def commit_reconcile(queued, prepared):
+        assert held
+        queued.update(stage="launching_reconcile", recon_run_id=prepared["run"].run_id,
+                      recon_task="_retro-demo-p1")
+
+    def launch_reconcile(prepared):
+        assert not held
+
+    monkeypatch.setattr(sched, "_prepare_reconcile", prepare_reconcile)
+    monkeypatch.setattr(sched, "_commit_prepared_reconcile", commit_reconcile)
+    monkeypatch.setattr(sched, "_launch_prepared_reconcile", launch_reconcile)
+    sched.state.save()
+    sched.tick()
+    assert calls[-1][0] == "reconcile"
+    assert calls[-1][1].startswith("retro-reconcile-")
+
+
+def test_reconcile_preparation_requeues_when_accepted_identity_changes_at_barrier(sched, monkeypatch):
+    """A source/evidence update while the brief is built must fence the prepared launch."""
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "personas", "persona_runs": {},
+             "automatic": True, "request_id": "identity-barrier", "source": "a" * 40,
+             "evidence": "evidence-a"}
+    sched._retro_list().append(entry)
+    sched._claim_retro_preparation(entry, "reconcile")
+    sched.state.save()
+
+    identity = {"source": "a" * 40, "evidence": "evidence-a"}
+    barrier = threading.Barrier(2)
+    prepared_run = SimpleNamespace(run_id=entry["reconcile_launch_run_id"], status="preparing",
+                                   error="", finished_at="", preparer_pid=os.getpid(),
+                                   save=lambda: None)
+
+    def prepare(_entry, run_id=""):
+        assert run_id == prepared_run.run_id
+        barrier.wait()
+        barrier.wait()
+        return {"run": prepared_run}
+
+    def change_identity():
+        barrier.wait()
+        identity.update(source="b" * 40, evidence="evidence-b")
+        barrier.wait()
+
+    updater = threading.Thread(target=change_identity)
+    updater.start()
+    launched = []
+    monkeypatch.setattr(sched, "_prepare_reconcile", prepare)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: identity["source"])
+    monkeypatch.setattr(sched, "_closing_review_policy", lambda ph: {
+        "eligible": True, "evidence": identity["evidence"], "reason": "",
+    })
+    monkeypatch.setattr(sched, "_launch_prepared_reconcile", lambda prepared: launched.append(prepared))
+
+    sched.prepare_claimed_closing_reviews(TickReport())
+    updater.join()
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "queued"
+    assert current["source"] == ""
+    assert current["evidence"] == "evidence-b"
+    assert "changed during reconciliation preparation" in current["waiting_reason"]
+    assert prepared_run.status == "failed"
+    assert launched == []
+
+
+def test_initial_persona_preparation_requeues_when_accepted_source_changes(sched, monkeypatch):
+    """Prepared initial roles cannot launch after their accepted source becomes stale."""
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {},
+             "automatic": True, "request_id": "initial-source-race", "evidence": "evidence-a"}
+    sched._retro_list().append(entry)
+    identity = {"source": "a" * 40}
+    barrier = threading.Barrier(2)
+    prepared = {"personas": [], "missing": ["designer"], "waiting": ""}
+
+    def prepare(ph, queued, source):
+        assert source == "a" * 40
+        barrier.wait()
+        barrier.wait()
+        return prepared
+
+    def change_source():
+        barrier.wait()
+        identity["source"] = "b" * 40
+        barrier.wait()
+
+    updater = threading.Thread(target=change_source)
+    updater.start()
+    launched = []
+    discarded = []
+    monkeypatch.setattr(sched, "_closing_review_policy",
+                        lambda ph: {"eligible": True, "evidence": "evidence-a", "reason": ""})
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: identity["source"])
+    monkeypatch.setattr(sched, "_prepare_retro_start", prepare)
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start", lambda payload: launched.append(payload))
+    monkeypatch.setattr(sched, "_discard_prepared_retro_start",
+                        lambda payload, reason: discarded.append(reason))
+
+    sched.dispatch_queued_closing_reviews(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+    updater.join()
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "queued"
+    assert current["source"] == ""
+    assert "source changed during preparation" in current["waiting_reason"]
+    assert launched == []
+    assert discarded == ["accepted phase source changed during preparation"]
+
+    # Repeated readiness detection sees the durable request and cannot add another one.
+    sched.queue_eligible_closing_reviews(TickReport())
+    assert len([item for item in sched._retro_list() if item["phase"] == phase.key]) == 1
+
+
+def test_deferred_persona_preparation_requeues_when_accepted_source_changes(sched, monkeypatch):
+    """A later persona payload cannot launch after its accepted source becomes stale."""
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["security"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "personas", "persona_runs": {},
+             "automatic": True, "request_id": "deferred-source-race",
+             "source": "a" * 40, "evidence": "evidence-a"}
+    sched._retro_list().append(entry)
+    identity = {"source": "a" * 40}
+    barrier = threading.Barrier(2)
+    payload = [("security", {"run": SimpleNamespace(run_id="prepared-security")})]
+
+    def prepare(ph, queued, names, source):
+        assert source == "a" * 40
+        barrier.wait()
+        barrier.wait()
+        return payload
+
+    def change_source():
+        barrier.wait()
+        identity["source"] = "b" * 40
+        barrier.wait()
+
+    updater = threading.Thread(target=change_source)
+    updater.start()
+    launched = []
+    discarded = []
+    monkeypatch.setattr(sched, "_reports_for_entry", lambda ph, queued: {})
+    monkeypatch.setattr(sched, "_closing_review_policy",
+                        lambda ph: {"eligible": True, "evidence": "evidence-a", "reason": ""})
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: identity["source"])
+    monkeypatch.setattr(sched, "_prepare_deferred_retro_personas", prepare)
+    monkeypatch.setattr(sched, "_launch_prepared_retro_personas",
+                        lambda prepared: launched.extend(prepared))
+    monkeypatch.setattr(sched, "_discard_prepared_retro_personas",
+                        lambda prepared, reason: discarded.append(reason))
+
+    sched.reap_retro(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+    updater.join()
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "queued"
+    assert current["source"] == ""
+    assert "changed during persona preparation" in current["waiting_reason"]
+    assert current["persona_runs"] == {}
+    assert launched == []
+    assert discarded == [
+        "accepted source or stabilization evidence changed during persona preparation; "
+        "re-preparing"
+    ]
+
+
+def test_restart_reprepares_a_committed_reconcile_that_never_launched(sched):
+    phase = sched.store.phase("demo", "p1")
+    run = sched.runs.new_run("_retro-demo-p1", "local", mode="retro",
+                             run_id="interrupted-reconcile")
+    run.preparer_pid = 99999999
+    run.save()
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": [], "next_phase": "p2", "self_product": "demo",
+             "stage": "launching_reconcile", "persona_runs": {},
+             "request_id": "restart-reconcile", "recon_run_id": run.run_id,
+             "recon_task": run.task_id, "reconcile_launch_run_id": run.run_id}
+    sched._retro_list().append(entry)
+
+    sched.reap_retro(TickReport())
+
+    current = _retro_entry(sched, phase.key)
+    assert current["stage"] == "preparing_reconcile"
+    assert current["reconcile_launch_run_id"] != run.run_id
+    assert sched.runs.latest(run.task_id).status == "failed"
+
+
+def test_restart_resumes_one_deferred_persona_job_with_its_reserved_identity(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["security"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "preparing_personas", "persona_runs": {},
+             "request_id": "later-restart", "preparation_action": "personas",
+             "preparation_names": ["security"], "preparation_claim": "dead",
+             "preparation_pid": 99999999}
+    sched._retro_list().append(entry)
+    sched.state.save()
+    monkeypatch.setattr(sched, "review_slots_free_for", lambda task: 1)
+    monkeypatch.setattr(sched, "local_slots_free", lambda task_id="": 1)
+    launched = []
+
+    def prepare(ph, name, **kwargs):
+        run = sched.runs.new_run(f"_{ph.product}-{ph.name}", "local", mode="persona",
+                                 run_id=kwargs["run_id"])
+        return {"run": run}
+
+    monkeypatch.setattr(sched, "prepare_persona_phase", prepare)
+    monkeypatch.setattr(sched, "_commit_prepared_aux", lambda payload: payload["run"].save())
+    monkeypatch.setattr(sched, "_launch_prepared_aux",
+                        lambda payload: launched.append(payload["run"].run_id))
+    sched.tick()
+    sched.tick()
+
+    assert len(launched) == 1
+    assert _retro_entry(sched, phase.key)["persona_runs"]["security"] == launched[0]
+
+
+def test_retro_personas_fill_only_current_review_capacity(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer", "security"], "stage": "personas",
+             "persona_runs": {}, "request_id": "capacity-request"}
+    slots = iter([1, 0])
+    monkeypatch.setattr(sched, "review_slots_free_for", lambda task: next(slots))
+    monkeypatch.setattr(sched, "local_slots_free", lambda task_id="": 1)
+    launched = []
+
+    def dispatch(ph, name, **kwargs):
+        launched.append((name, kwargs["run_id"]))
+        return SimpleNamespace(run_id=kwargs["run_id"])
+
+    monkeypatch.setattr(sched, "dispatch_persona_phase", dispatch)
+    sched._dispatch_retro_personas(phase, entry, entry["personas"])
+
+    assert [name for name, _ in launched] == ["designer"]
+    assert set(entry["persona_runs"]) == {"designer"}
+    assert "waiting for review capacity" in entry["waiting_reason"]
+
+
+def test_phase_persona_counts_against_its_project_review_capacity(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    probe = sched._phase_persona_probe(phase)
+    run = sched.runs.new_run(probe.id, "local", mode="persona")
+    run.env_snapshot["product"] = phase.product
+    run.save()
+    monkeypatch.setattr(sched, "review_slots_free", lambda: 5)
+    monkeypatch.setattr(sched, "review_parallel_limit_for", lambda task: 1)
+
+    assert sched.review_slots_free_for(probe) == 0
+
+
+def test_interrupted_persona_launch_reconciles_durable_run_without_duplicate(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "stage": "personas", "persona_runs": {},
+             "request_id": "launch-request"}
+    monkeypatch.setattr(sched, "review_slots_free_for", lambda task: 1)
+    monkeypatch.setattr(sched, "local_slots_free", lambda task_id="": 1)
+    calls = 0
+
+    def interrupted(ph, name, **kwargs):
+        nonlocal calls
+        calls += 1
+        sched.runs.new_run(f"_{ph.product}-{ph.name}", "local", mode="persona",
+                           run_id=kwargs["run_id"])
+        raise RuntimeError("controller exited after durable run creation")
+
+    monkeypatch.setattr(sched, "dispatch_persona_phase", interrupted)
+    sched._dispatch_retro_personas(phase, entry, ["designer"])
+    sched._dispatch_retro_personas(phase, entry, ["designer"])
+
+    assert calls == 1
+    assert any(aux["run_id"] == entry["persona_runs"]["designer"]
+               for aux in sched._aux_list())
+
+
+def test_queued_review_rebinds_changed_accepted_evidence_before_dispatch(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+             "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+             "self_product": "demo", "stage": "queued", "persona_runs": {},
+             "automatic": True, "request_id": "evidence-request", "evidence": "old"}
+    sched._retro_list().append(entry)
+    monkeypatch.setattr(sched, "_current_phase_source", lambda ph: "a" * 40)
+    monkeypatch.setattr(sched, "_closing_review_policy",
+                        lambda ph: {"eligible": True, "evidence": "new"})
+    started = []
+    monkeypatch.setattr(sched, "_launch_prepared_retro_start", lambda prepared: started.append(prepared))
+
+    sched.dispatch_queued_closing_reviews(TickReport())
+    sched.prepare_claimed_closing_reviews(TickReport())
+
+    assert entry["stage"] == "queued"
+    assert entry["evidence"] == "new"
+    assert entry["source"] == ""
+    assert "re-preparing" in entry["waiting_reason"]
+    assert started == []
+
+
+def test_automatic_review_reuses_only_reports_for_its_accepted_source(sched):
+    phase = sched.store.phase("demo", "p1")
+    reviews = phase.path / "docs" / "reviews"
+    reviews.mkdir(parents=True, exist_ok=True)
+    report = reviews / "designer-2026-09-10.md"
+    report.write_text("review\n\n_garden phase source " + "a" * 40 + "_\n\n_garden persona run run-one_\n")
+    entry = {"personas": ["designer"], "automatic": True, "source": "b" * 40}
+    assert sched._reports_for_entry(phase, entry) == {}
+    entry["source"] = "a" * 40
+    assert sched._reports_for_entry(phase, entry) == {"designer": report}
+
+
 # ---- quota/pause handling in the retro flow (CG-227) --------------------------------------
 # The retro's own reconcile dispatch (`_dispatch_retro_run`, used by `_dispatch_reconcile`) sat
 # outside the paused-harness gate every other aux dispatch (review, persona, compare) already
@@ -938,8 +1548,9 @@ def test_reconcile_dispatch_refuses_a_paused_harness(tmp_path, fake_github, monk
 
     sched.pause_harness("claude", "quota limit hit on claude")
     ph = store.phase("gdn", "p1")
-    with pytest.raises(RuntimeError, match="paused"):
-        sched.start_retro(ph, ["designer"], skip_personas=True)
+    entry = sched.start_retro(ph, ["designer"], skip_personas=True)
+    assert entry["stage"] == "queued"
+    assert "paused" in entry["waiting_reason"]
     assert not fake_github.created
 
 

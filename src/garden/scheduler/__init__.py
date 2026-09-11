@@ -150,6 +150,7 @@ class Scheduler(
         self.state = State(self.cfg.garden_dir / "state.json")
         self.events = EventLog(self.cfg.garden_dir / "events.jsonl")
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
+        self._closing_review_claims: list[tuple[str, str, str]] = []
         self.log = log or (lambda msg: None)
         if not read_only:
             self._restore_operational_history()
@@ -658,8 +659,9 @@ class Scheduler(
         tasks = self.store.tasks()
         project_active = sum(
             1 for run in self.review_runs_active()
-            if (active_task := tasks.get(run.task_id)) is not None
-            and active_task.product == task.product
+            if ((active_task := tasks.get(run.task_id)) is not None
+                and active_task.product == task.product)
+            or (active_task is None and run.env_snapshot.get("product") == task.product)
         )
         return max(0, min(self.review_slots_free(),
                           self.review_parallel_limit_for(task) - project_active))
@@ -885,8 +887,11 @@ class Scheduler(
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
         """Run one controller-owned pass, serialised across processes for this garden."""
+        self._closing_review_claims.clear()
         with self._controller_lock():
-            return self._tick_locked(dispatch)
+            rep = self._tick_locked(dispatch)
+        self.prepare_claimed_closing_reviews(rep)
+        return rep
 
     @contextmanager
     def _controller_lock(self) -> Iterator[None]:
@@ -985,6 +990,8 @@ class Scheduler(
             self._guard(rep, "merge queue", lambda: self._run_merge_queue(rep))
         with self._step(rep, "retro_close"):
             self._guard(rep, "retro close", lambda: self.close_accepted_reopens(rep))
+        with self._step(rep, "retro_ready"):
+            self._guard(rep, "retro readiness", lambda: self.queue_eligible_closing_reviews(rep))
         with self._step(rep, "harness_probe"):
             self._guard(rep, "harness probe", lambda: self.probe_paused_harnesses(rep))
         with self._step(rep, "tool_update"):
@@ -1005,6 +1012,7 @@ class Scheduler(
             dispatch = False
         if dispatch:
             with self._step(rep, "dispatch"):
+                self._guard(rep, "dispatch closing reviews", lambda: self.dispatch_queued_closing_reviews(rep))
                 self._guard(rep, "dispatch edits", lambda: self.dispatch_edits(rep))
                 self._guard(rep, "dispatch ready", lambda: self.dispatch_ready(rep))
         with self._step(rep, "audit"):
