@@ -16,6 +16,7 @@ from garden.preflight import PREFLIGHT_ITEMS
 from garden.review import review_brief
 from garden.runner.base import run_setup, setup_marker
 from garden.runner.manual import ManualRunner
+from garden.runs import Run
 from garden.scheduler.report import TickReport
 from garden.scheduler.resources import ResourcePressureError
 from garden.scheduler.snapshot import write_snapshot
@@ -759,6 +760,89 @@ def test_empty_collected_check_parks_once_without_fabricating_success(sched):
     for _ in range(3):
         assert sched.reap_check(sched.store.task(task.id), TickReport()) is False
     assert len(sched.events.read(task_id=task.id, kinds=["needs_human"])) == event_count == 1
+
+
+def test_check_collection_waits_for_newer_completion_to_be_durably_finalized(
+    sched, monkeypatch,
+):
+    """A stale collector cannot continue from output that lost the Run persistence race."""
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    (run.path / "checks.json").write_text(json.dumps([
+        {"name": "unit", "status": "pass", "summary": "stale collector output"},
+    ]))
+    (run.path / "exit_code").write_text("0")
+    sched.state.get(task.id)["check_run"] = {
+        "run_id": run.run_id, "stage": "ci", "cont": {}, "specs": [],
+    }
+    sched.state.save()
+    handled: list[list[dict[str, str]]] = []
+    monkeypatch.setattr(sched, "_after_ci_check", lambda _t, _r, results, _c, _rep: handled.append(results))
+    original_save = Run.save
+    raced = False
+
+    def save_with_newer_completion(candidate: Run):
+        nonlocal raced
+        if candidate.run_id == run.run_id and candidate.status == "done" and not raced:
+            raced = True
+            current = Run.load(candidate.path)
+            current.final_received_at = "2026-09-11T03:00:00+00:00"
+            current.lease_updated_at = "2026-09-11T02:59:59+00:00"
+            current.result = {"status": "done", "summary": "original worker result"}
+            current.usage = {"input_tokens": 17}
+            current.cost_usd = 0.25
+            original_save(current)
+        return original_save(candidate)
+
+    monkeypatch.setattr(Run, "save", save_with_newer_completion)
+    assert sched.reap_check(task, TickReport()) is False
+    assert handled == []
+    assert sched.state.get(task.id)["check_run"]["run_id"] == run.run_id
+    assert not sched.events.read(task_id=task.id, kinds=["run_finished", "check"])
+    retained = Run.load(run.path)
+    assert retained.status == "running"
+    assert retained.result == {"status": "done", "summary": "original worker result"}
+    assert retained.usage == {"input_tokens": 17} and retained.cost_usd == 0.25
+
+    assert sched.reap_check(task, TickReport()) is True
+    assert len(handled) == 1
+    assert not sched.state.get(task.id).get("check_run")
+    assert len(sched.events.read(task_id=task.id, kinds=["run_finished"])) == 1
+
+
+def test_terminal_check_keeps_pointer_until_newer_completion_is_finalized(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    (run.path / "checks.json").write_text("[]")
+    (run.path / "exit_code").write_text("0")
+    pointer = {"run_id": run.run_id, "stage": "base_probe", "cont": {}, "specs": []}
+    sched.state.get(task.id)["check_run"] = pointer
+    task.status = Status.DONE
+    sched.store.save(task)
+    sched.state.save()
+    original_save = Run.save
+    raced = False
+
+    def save_with_newer_completion(candidate: Run):
+        nonlocal raced
+        if candidate.run_id == run.run_id and candidate.status == "done" and not raced:
+            raced = True
+            current = Run.load(candidate.path)
+            current.final_received_at = "2026-09-11T03:00:00+00:00"
+            current.result = {"status": "cancelled", "summary": "newer final"}
+            current.cost_usd = 0.5
+            original_save(current)
+        return original_save(candidate)
+
+    monkeypatch.setattr(Run, "save", save_with_newer_completion)
+    assert sched.reap_check(task, TickReport()) is False
+    assert sched.state.get(task.id)["check_run"] == pointer
+    assert Run.load(run.path).result == {"status": "cancelled", "summary": "newer final"}
+
+    assert sched.reap_check(task, TickReport()) is True
+    assert not sched.state.get(task.id).get("check_run")
+    assert sched.store.task(task.id).status == Status.DONE
+    assert len(sched.events.read(task_id=task.id, kinds=["run_finished"])) == 1
 
 
 def test_only_a_generated_ui_check_treats_a_renderer_protocol_mismatch_as_recovery(sched):

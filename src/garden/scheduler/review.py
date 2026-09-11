@@ -31,7 +31,7 @@ from ..review import (
     validation_plan,
     visual_source_digest,
 )
-from ..runs import Run
+from ..runs import Run, RunSaveOutcome
 from .feedback import merge_pending_feedback, remember_pending_feedback
 from .report import TickReport
 from .resources import ResourcePressureError
@@ -1108,6 +1108,7 @@ class ReviewMixin:
         run.model = str(collected.get("model") or run.model)
         run.error = ((collected.get("error") or run.error) if run.status == "timeout"
                      else (collected.get("error") or ""))
+        final = collected.get("final_text") or ""
         if collected.get("env_error"):
             # The reviewer's own account, not the PR: pause the harness, give back the
             # round this dispatch counted (see dispatch_review's count_round, snapshotted
@@ -1116,11 +1117,15 @@ class ReviewMixin:
             # other missing verdicts. The harness pause remains the admission gate, so
             # the queued retry cannot start until the environment can progress; its
             # successful probe supplies the delay, so no second recovery timer is needed.
-            pending_triage = bool(st.pop("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
+            pending_triage = bool(st.get("pending_triage_notify", False)) and task.status == Status.AWAITING_TRIAGE
             counted = bool((run.env_snapshot or {}).get("count_round", True))
-            self._pause_for_env_error(run, collected)
             run.status = "env_error"
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                return False
+            if final and not (run.path / "final.md").exists():
+                (run.path / "final.md").write_text(final)
+            self._pause_for_env_error(run, collected)
+            st.pop("pending_triage_notify", None)
             self.events.emit("run_finished", task.id, run=run.run_id, mode="review", harness=run.harness,
                              model=run.model, pool_member=run.pool_member, status="env_error",
                              cost_usd=collected.get("cost_usd"), usage=collected.get("usage") or {})
@@ -1133,12 +1138,12 @@ class ReviewMixin:
                 task, run, note, rep, started=True, count_round=counted,
                 refund_round=True, backoff=False,
             )
-        final = collected.get("final_text") or ""
-        if final and not (run.path / "final.md").exists():
-            (run.path / "final.md").write_text(final)
         review = enforce_criteria_verdict(parse_review(final))
         if run.status == "timeout" and not review:
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                return False
+            if final and not (run.path / "final.md").exists():
+                (run.path / "final.md").write_text(final)
             return self._queue_review_recovery(
                 task, run, run.error or "timed out", rep, started=True,
                 count_round=bool((run.env_snapshot or {}).get("count_round", True)),
@@ -1183,7 +1188,10 @@ class ReviewMixin:
             if self._manual_reserved(task):
                 run.result = review
                 run.status = "done" if review else "failed"
-                run.save()
+                if run.save() is RunSaveOutcome.SUPERSEDED:
+                    return False
+                if final and not (run.path / "final.md").exists():
+                    (run.path / "final.md").write_text(final)
                 return True
             if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
                 # Preserve the original report, but spend one reviewer continuation to
@@ -1192,7 +1200,10 @@ class ReviewMixin:
                 run.result = review
                 run.status = "done"
                 run.env_snapshot["clarification_pending"] = ambiguous
-                run.save()
+                if run.save() is RunSaveOutcome.SUPERSEDED:
+                    return False
+                if final and not (run.path / "final.md").exists():
+                    (run.path / "final.md").write_text(final)
                 task.log("automated review clarification requested for ambiguous unverified observations")
                 self.store.save(task)
                 return self._resume_review_clarification(task, run, ambiguous, rep)
@@ -1202,7 +1213,10 @@ class ReviewMixin:
                 run.result = review
                 run.status = "failed"
                 run.error = reason
-                run.save()
+                if run.save() is RunSaveOutcome.SUPERSEDED:
+                    return False
+                if final and not (run.path / "final.md").exists():
+                    (run.path / "final.md").write_text(final)
                 st["review_run"] = ""
                 self._set_needs_human(task, "review_clarification", reason,
                                       run=run.run_id, entries=ambiguous, owner="reviewer")
@@ -1240,7 +1254,10 @@ class ReviewMixin:
                 })
             run.result = review
             run.status = "done" if review else "failed"
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                return False
+            if final and not (run.path / "final.md").exists():
+                (run.path / "final.md").write_text(final)
         if self._manual_reserved(task):
             return True
         return self._apply_review(task, run, review, rep, emitted=False)
@@ -1256,6 +1273,7 @@ class ReviewMixin:
     def _close_obsolete_review(self, task: Task, run: Run, rep: TickReport) -> bool:
         """Collect a completed review for accounting without applying an obsolete verdict."""
         st = self.state.get(task.id)
+        collected_now = False
         if run.status == "running":
             runner = self.runner_for(task, run.runner, run.harness)
             if not self._finished_or_timed_out(run, runner):
@@ -1269,15 +1287,18 @@ class ReviewMixin:
                 run.model = str(collected.get("model") or run.model)
                 run.error = collected.get("error") or ""
                 run.status = "done" if run.exit_code in (0, None) else "failed"
+            collected_now = True
+        note = "review verdict discarded because the task or reviewed head moved on"
+        run.error = f"{run.error} ({note})" if run.error else note
+        if run.save() is RunSaveOutcome.SUPERSEDED:
+            return False
+        if collected_now:
             self.events.emit("run_finished", task.id, run=run.run_id, mode="review",
                              cost_usd=run.cost_usd, usage=run.usage, status=run.status,
                              obsolete=True)
         st["review_run"] = ""
         st.pop("review_recovery", None)
         st.pop("pending_reviews", None)
-        note = "review verdict discarded because the task or reviewed head moved on"
-        run.error = f"{run.error} ({note})" if run.error else note
-        run.save()
         self.state.save()
         self.log(f"{task.id}: review run {run.run_id} closed; {note}")
         rep.transitions.append(f"{task.id} review run {run.run_id} closed (obsolete)")
@@ -1597,7 +1618,8 @@ class ReviewMixin:
                 run.status = "done" if run.exit_code in (0, None) else "failed"
             note = "closed by orphan sweep: task moved on before this run's verdict was read"
             run.error = f"{run.error} ({note})" if run.error else note
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                continue
             self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode, harness=run.harness,
                              model=run.model, pool_member=run.pool_member, cost_usd=run.cost_usd,
                              usage=run.usage, status=run.status, orphaned=True)

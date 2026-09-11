@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -107,6 +108,13 @@ class RecoveryLaunchConflict(RuntimeError):
 
 class RunMutationConflict(RuntimeError):
     """A writer attempted to commit an obsolete worker claim generation."""
+
+
+class RunSaveOutcome(Enum):
+    """Whether a Run mutation became the durable record."""
+
+    COMMITTED = "committed"
+    SUPERSEDED = "superseded"
 
 
 @dataclass(frozen=True)
@@ -232,7 +240,7 @@ class Run:
         """Stable control-plane state; terminal result variants collapse to finished."""
         return self.status if self.status in ("requested", "preparing", "running") else "finished"
 
-    def save(self) -> None:
+    def save(self) -> RunSaveOutcome:
         self.path.mkdir(parents=True, exist_ok=True)
         record = self.path / "run.json"
         # Run metadata has two independent writers in a split-controller deployment:
@@ -241,19 +249,21 @@ class Run:
         # read before that request. Lock order is run-mutation.lock, then run.json; callers
         # must not acquire the scheduler tick lock while holding this lock.
         with _run_file_lock(self.path.parents[2] / "run-mutation.lock"):
-            self.save_locked(record)
+            outcome = self.save_locked(record)
         # A metadata rewrite does not change the parent directory mtime by itself.  Touch
         # the task bucket so other processes can detect this one changed without statting
         # every run.json in it.
         self.path.parent.touch()
         _invalidate_index(self.path.parents[1], self.task_id)
+        return outcome
 
-    def save_locked(self, record: Path | None = None) -> None:
+    def save_locked(self, record: Path | None = None) -> RunSaveOutcome:
         """Commit while the garden run-mutation lock is already held."""
+        outcome = RunSaveOutcome.COMMITTED
         record = record or self.path / "run.json"
         if record.exists():
             current = Run.load(self.path)
-            self._merge_concurrent_record(current)
+            outcome = self._merge_concurrent_record(current)
             self.record_version = current.record_version + 1
         else:
             self.record_version = 1
@@ -265,12 +275,13 @@ class Run:
             staged_path = Path(staged.name)
         os.replace(staged_path, record)
         self._loaded_fields = deepcopy(asdict(self))
+        return outcome
 
-    def _merge_concurrent_record(self, current: Run) -> None:
+    def _merge_concurrent_record(self, current: Run) -> RunSaveOutcome:
         """Three-way merge disjoint changes, rejecting competing lifecycle writes."""
         baseline = getattr(self, "_loaded_fields", None)
         if baseline is None or current.record_version == self.record_version:
-            return
+            return RunSaveOutcome.COMMITTED
         current_fields = asdict(current)
         if self.lease_token != baseline["lease_token"]:
             # Claim/reclaim and revocation are generation changes. They are valid only
@@ -292,7 +303,7 @@ class Run:
             for name, durable in current_fields.items():
                 if name != "dir":
                     setattr(self, name, deepcopy(durable))
-            return
+            return RunSaveOutcome.SUPERSEDED
         for name, original in baseline.items():
             if name in {"dir", "record_version"}:
                 continue
@@ -302,6 +313,7 @@ class Run:
                 setattr(self, name, deepcopy(durable))
             elif durable != original and proposed != durable:
                 raise RunMutationConflict(f"run field {name} changed concurrently")
+        return RunSaveOutcome.COMMITTED
 
     @classmethod
     @contextmanager
