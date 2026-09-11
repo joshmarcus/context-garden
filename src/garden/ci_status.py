@@ -6,11 +6,15 @@ immutable revision passed; analysers may still turn a known failure into useful 
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import math
 import re
+import shlex
+import subprocess
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -188,6 +192,167 @@ def worker_check_status(garden_dir: Path, task_id: str, sha: str,
     return CIStatus(state, sha, stale=mismatched, provider="worker_check")
 
 
+COMMAND_STATES = ("success", "failure", "pending", "missing", "unavailable")
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 120.0
+_MAX_COMMAND_OUTPUT_BYTES = 64_000
+_COMMIT_ID = re.compile(r"[0-9a-f]{7,64}")
+
+_COMMAND_QUERIES: ContextVar[dict[tuple[str, ...], CIStatus] | None] = ContextVar(
+    "garden_ci_command_queries", default=None,
+)
+
+
+def command_timeout(value: Any) -> float:
+    """The bounded budget for one query: the default when unset, otherwise exactly what was
+    configured. An unusable value becomes 0, which no query accepts, so a mistyped budget
+    fails closed instead of silently borrowing the default."""
+    if value is None:
+        return DEFAULT_COMMAND_TIMEOUT_SECONDS
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@contextlib.contextmanager
+def tick_query_cache():
+    """Ask each configured validation command at most once per commit per scheduler tick.
+
+    A tick is one coherent observation: polling, the review gate and the merge gate all ask
+    about the same head, and a build does not become more current by being queried three
+    times in one pass. The context boundary keeps the answers out of CLI operations and out
+    of the next tick, so the next tick still sees a build that finished meanwhile.
+    """
+    token = _COMMAND_QUERIES.set({})
+    try:
+        yield
+    finally:
+        _COMMAND_QUERIES.reset(token)
+
+
+def command_status(sha: str, policy: dict[str, Any]) -> CIStatus:
+    """Ask a configured controller-side command whether one exact commit passed CI.
+
+    The command is the whole provider boundary. It receives the candidate commit as its
+    final argument -- never a branch name -- and prints one JSON object on stdout:
+
+        {"sha": "<the commit it was asked about>",
+         "state": "success" | "failure" | "pending" | "missing" | "unavailable",
+         "exists_for_sha": true, "stale": false,
+         "evidence_url": "<optional>", "failures": ["<optional short reasons>"]}
+
+    A pass must echo the queried commit and state ``exists_for_sha`` and ``stale``
+    explicitly, so an answer about another commit, a superseded result or a build that
+    never ran for this head can never become this head's evidence. Nonzero exit,
+    unparsable or oversized output, an unknown state, a timeout and an unexecutable
+    command all fail closed. CI vocabulary, hosts and credentials stay inside the
+    operator's own wrapper; only this contract is public.
+    """
+    argv = shlex.split(str(policy.get("command") or ""))
+    timeout = command_timeout(policy.get("timeout_seconds"))
+    if not argv or not 0 < timeout <= 3600 or not _COMMIT_ID.fullmatch(sha):
+        # A policy that cannot be executed, or a head that is not a commit id, is not an
+        # observation: nothing may pass on it.
+        return CIStatus("malformed", sha, provider="command")
+    key = (sha, *argv)
+    cache = _COMMAND_QUERIES.get()
+    if cache is not None and key in cache:
+        return cache[key]
+    status = _command_answer(argv, sha, timeout)
+    if cache is not None:
+        cache[key] = status
+    return status
+
+
+def _command_answer(argv: list[str], sha: str, timeout: float) -> CIStatus:
+    try:
+        completed = subprocess.run(
+            [*argv, sha], capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return CIStatus("timeout", sha, provider="command")
+    except (OSError, UnicodeDecodeError):
+        return CIStatus("unavailable", sha, provider="command",
+                        failures=["validation command could not be run"])
+    if completed.returncode != 0:
+        # The command's own diagnostics can carry internal detail; keep the shape only.
+        return CIStatus("unavailable", sha, provider="command",
+                        failures=[f"validation command exited {completed.returncode}"])
+    return _command_result(completed.stdout, sha)
+
+
+def _command_result(stdout: str, sha: str) -> CIStatus:
+    from .deepdives import redact_secrets
+
+    malformed = CIStatus("malformed", sha, provider="command")
+    if len(stdout.encode("utf-8", "replace")) > _MAX_COMMAND_OUTPUT_BYTES:
+        return malformed
+    try:
+        row = json.loads(stdout)
+    except json.JSONDecodeError:
+        return malformed
+    if not isinstance(row, dict) or str(row.get("sha") or "") != sha:
+        return malformed
+    if row.get("state") not in COMMAND_STATES:
+        return malformed
+    state = str(row["state"])
+    facts: dict[str, bool] = {}
+    for name in ("stale", "exists_for_sha"):
+        value = row.get(name, False)
+        if not isinstance(value, bool):
+            return malformed
+        facts[name] = value
+    if state == "success" and not {"stale", "exists_for_sha"} <= set(row):
+        # A pass has to bind itself to this commit and claim a current result out loud.
+        return malformed
+    failures = row.get("failures", [])
+    url = row.get("evidence_url", "")
+    if (not isinstance(failures, list) or not isinstance(url, str)
+            or not all(isinstance(item, str) for item in failures)):
+        return malformed
+    return CIStatus(state, sha, stale=facts["stale"], exists_for_sha=facts["exists_for_sha"],
+                    evidence_url=redact_secrets(url[:500]),
+                    failures=[redact_secrets(item[:200]) for item in failures[:5]],
+                    provider="command")
+
+
+_UNAVAILABLE_STATES = frozenset({"unavailable", "malformed", "timeout", "unknown"})
+_PROVIDER_LABELS = {"github": "github checks", "worker_check": "worker validation",
+                    "command": "the configured validation command"}
+
+
+def status_disposition(status: CIStatus) -> str:
+    """Classify one exact-head answer by the action it calls for.
+
+    ``green`` and ``failure`` are decisions. ``waiting`` is a result still being produced,
+    ``absent`` means no result is bound to this head (never ran, superseded or stale), and
+    ``unavailable`` means the provider could not answer at all. Only the last two need a
+    person: waiting resolves itself, and a failure routes into the ordinary revision path.
+    """
+    if status.green or status.state == "not_required":
+        return "green"
+    if status.state in _UNAVAILABLE_STATES:
+        return "unavailable"
+    if status.stale or not status.exists_for_sha:
+        return "absent"
+    if status.state == "failure":
+        return "failure"
+    return "waiting" if status.state == "pending" else "absent"
+
+
+def status_diagnostic(status: CIStatus) -> str:
+    """One actionable sentence for an exact-head answer nobody can act on yet."""
+    label = _PROVIDER_LABELS.get(status.provider, f"{status.provider} CI")
+    head = status.queried_sha[:12] or "this PR head"
+    if status_disposition(status) == "unavailable":
+        return (f"{label} could not report a status for {head} ({status.state}); check the "
+                "command, its access to CI and its timeout")
+    return (f"{label} reports no current result for {head} ({status.state}); validation is "
+            "bound to the exact commit, so an earlier or superseded result is not evidence")
+
+
 def status_reason(status: CIStatus) -> str:
     if status.green:
         return ""
@@ -208,9 +373,14 @@ def _worker_provider(garden_dir: Path, task_id: str, pr: Any, policy: dict[str, 
                                dict(policy.get("worker_check") or {}))
 
 
+def _command_provider(_garden_dir: Path, _task_id: str, pr: Any, policy: dict[str, Any]) -> CIStatus:
+    return command_status(str(pr.head_sha or ""), dict(policy.get("command") or {}))
+
+
 STATUS_PROVIDERS: dict[str, StatusProvider] = {
     "github": _github_provider,
     "worker_check": _worker_provider,
+    "command": _command_provider,
 }
 
 
