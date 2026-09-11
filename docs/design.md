@@ -2,8 +2,10 @@
 
 This is the high-level design: the idea and the loop. `docs/architecture.md` describes how
 the pieces fit and `docs/worker-protocol.md` how the scheduler and a worker communicate.
-The [specification index](../specs/README.md) identifies current product contracts and
-historical phase specifications; the roadmap is `docs/roadmap.md`.
+The [ontology](../ONTOLOGY.md) is the canonical reference for identities, cardinalities,
+lifecycles, authority, and persistence. The [specification index](../specs/README.md)
+identifies current product contracts and historical phase specifications; the roadmap is
+`docs/roadmap.md`.
 
 ## The idea
 
@@ -30,10 +32,13 @@ attention and tokens. So:
 | **garden** | a repository of context: `principles/`, one directory per product, `garden.yaml` |
 | **product** | something being built; has a code repo and an overview |
 | **phase** | a sprint-sized slice of a product: goals, specs, docs, tasks |
-| **task** | one markdown file; one agent session; one pull request |
+| **task** | one persisted work item; it can have many runs and normally zero or one delivery PR (model trials may create contender PRs) |
 | **brief** | the exact prompt a worker receives, assembled from the garden |
 | **trellis** | the dependency and stacking structure the work climbs along (`garden trellis`) |
-| **runner** | where a worker runs: `local`, `ssh`, `manual` |
+| **run** | one bounded execution or token-free scheduler operation associated with a task or auxiliary scope |
+| **runner** | the transport/execution adapter: `local`, `ssh`, `remote`, or `manual` |
+| **worker** | the process or independent consumer executing a run; not the host it executes on |
+| **host** | a configured or provisioned execution location with its own capacity and admission lifecycle |
 | **harness** | how an agent CLI is invoked and parsed: `claude`, `codex`, custom |
 | **tick** | one deterministic scheduler pass: reap, poll, dispatch |
 | **persona** | a named reviewer viewpoint applied to a PR or a phase's body of work |
@@ -42,6 +47,9 @@ attention and tokens. So:
 | **inbox** | the one list of everything that needs a person, with the action for each |
 | **plant, plate** | every phase's emblem, drawn as a pressed specimen and numbered like a plate in a flora |
 | **stage** | the growth-stage drawing shown beside each task state (seed, sprout, leaf, bud, flower, fruit) |
+
+This table is an orientation aid. The ontology defines edge cases such as phase-scoped persona
+runs, derived blocked state, stacked delivery, and the several qualified kinds of lease.
 
 ## Architecture
 

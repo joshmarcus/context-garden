@@ -1,14 +1,22 @@
 # Ontology specification
 
-This is Garden's canonical domain-model reference. The ontologist persona authored the
-specification from the accepted source identity recorded below; maintainers integrated it
-without rewriting its substantive model. The [source brief](docs/ontology/ontologist-brief.md)
-and [raw persona output](docs/ontology/ontologist-output.md) preserve the input, structured
-findings, and authored output used here.
+This is Garden's canonical domain-model reference. Use it for precise definitions; use
+[design](docs/design.md) for the short product overview and [architecture](docs/architecture.md)
+for implementation detail.
+
+The ontologist persona authored the original specification from the accepted source identity
+recorded in the [authorship record](docs/ontology/README.md). Its
+[source brief](docs/ontology/ontologist-brief.md) and
+[raw output](docs/ontology/ontologist-output.md) remain unchanged. Maintainers have since
+corrected and simplified this reference against later accepted source; those edits are not
+attributed to the original persona run.
 
 ## Status and interpretive rule
 
-I specify the canonical Garden ontology as implemented by commit `bcc8419c2dde10ff022621a8a73d37bebdb8d1bc` on branch `garden/cg-532-have-the-ontologist-author-a-top-level-ontology`.
+The original ontologist run reviewed commit
+`bcc8419c2dde10ff022621a8a73d37bebdb8d1bc`. This maintained edition describes accepted
+source commit `41ff4de3d273afb2c4ad642856e2ff893ee7db31`; the authorship record preserves the
+original run identity rather than implying that the persona reviewed later changes.
 
 I treat executable source as authoritative for current mechanics, explicit product specifications as authoritative for intended contracts, and documentation as explanatory. When these representations disagree, I preserve the disagreement below instead of inventing a unified meaning. The principal sources are `src/garden/model.py`, `store.py`, `graph.py`, `brief.py`, `runs.py`, `events.py`, `config.py`, `checks.py`, `harness.py`, `remote_worker.py`, `managed_worker.py`, `workload_identity.py`, `review.py`, `validation.py`, `src/garden/scheduler/`, `src/garden/hosts/`, `docs/architecture.md`, `docs/design.md`, `docs/worker-protocol.md`, `docs/host-lifecycle.md`, and `specs/README.md`.
 
@@ -21,7 +29,7 @@ Four representations divide authority (`docs/architecture.md`, “Where state li
 | Representation | Authority | Persistence and retention |
 |---|---|---|
 | Product, phase, and task Markdown | Current declarative context and task state | Git-tracked; retained according to repository history |
-| `.garden/state.json` | Scheduler controls and reconstructible bookkeeping | Atomic JSON side store; documented as deletable and rebuildable, although deletion loses some controls until reconciliation |
+| `.garden/state.json` | Scheduler controls, continuations, and partly reconstructible bookkeeping | Atomic JSON side store; some provider facts can be reconciled, but deleting it can lose pending control state |
 | `.garden/runs/<task>/<run>/` | Per-execution audit evidence and token/cost ledger | Mutable while active; terminal runs may move to `.garden/run-archive/` |
 | `.garden/events.jsonl` | Historical event stream | Append-only except the explicit run-cost backfill rewrite in `EventLog.patch_run_costs` |
 
@@ -213,7 +221,13 @@ An **Attempt** is not a separate persisted entity. `Task.attempts` is a count in
 
 Run files may include `run.json`, `brief.md`, raw harness output, stderr, `final.md`, `exit_code`, execution/validation receipts, snapshots, and recovery artifacts (`docs/architecture.md`, run-directory table; `docs/worker-protocol.md`). Writes are process-safe and use `record_version` to reject obsolete claim generations (`src/garden/runs.py`, `Run.save`, `RunMutationConflict`).
 
-Terminal runs with a finish time may be archived. Archive `index.json` remains the compact ledger used for run lists and costs; missing/corrupt archive indexes cause “history unavailable,” not silent partial totals. Storage cleanup is separately bounded and audited (`src/garden/runs.py`; `src/garden/scheduler/cleanup.py`; `docs/architecture.md`, run archive and storage cleanup).
+Eligible finished runs may be archived. Version 2 uses a top-level index of task-bucket
+fingerprints, per-task metadata indexes, and checksum-verified compressed content-addressed
+blobs; legacy ledgers remain readable. Missing, corrupt, or incomplete archive metadata causes
+“history unavailable,” not silent partial totals. Archival eligibility is the narrower status
+set described above, not every value projected as `finished`. Storage cleanup is separately
+bounded and audited (`src/garden/runs.py`; `src/garden/scheduler/cleanup.py`;
+`docs/architecture.md`, run archive and storage cleanup).
 
 ## Brief, harness, model, and profile
 
@@ -445,11 +459,10 @@ Define the canonical ontology.
    (`src/garden/workload_identity.py`; `docs/worker-protocol.md`).
 8. Derived projections—blocked state, readiness, validation plans, lifecycle-state collapse, costs, and UI cards—must not be written back as competing authorities.
 
-## Discrepancies and findings
+## Known source-contract discrepancies
 
-### High — “Task” is documented as one session and one PR, but implemented as many runs
-
-`docs/design.md` defines a task as “one markdown file; one agent session; one pull request.” `Run.mode`, resume, revisions, reviews, personas, checks, rebases, trials, and investigations permit many sessions and sometimes multiple contender PRs for one task (`src/garden/runs.py`; `src/garden/scheduler/trials.py`). Maintainers should rely on task-as-work-item, with zero or one canonical delivery PR at a time and zero-to-many runs. The vocabulary document should stop asserting one session and qualify the PR cardinality.
+These are current implementation inconsistencies, not proposed features. Supporting documents
+should link here rather than restating them.
 
 ### Medium — Priority has two incompatible stated scales
 
@@ -458,19 +471,3 @@ Define the canonical ontology.
 ### Medium — Terminal semantics and mutation guard disagree
 
 `Status.terminal` includes `wont_do`, but `ensure_open` refuses mutation only for `done` and `cancelled` (`src/garden/model.py`). Either `wont_do` is terminal and requires the same explicit reopen/force boundary, or it is a resolved-but-reopenable state and should not satisfy `terminal`.
-
-### Medium — “state.json is rebuildable” overstates recoverability
-
-`docs/architecture.md` says `.garden/state.json` is safe to delete and rebuild from GitHub, but it also contains pending feedback, question/session resume coordinates, review identities, retro verdicts, continuation allowances, and other controls that are not necessarily reconstructible from GitHub alone (`src/garden/scheduler/state.py`, `human.py`, `review.py`, `retro.py`). The specification should distinguish reconstructible cache keys from durable control records and provide a recovery contract.
-
-### Medium — Artifact is an overloaded role without canonical identity
-
-Review captures, manifests, receipts, recovery stashes, rebase conflicts, snapshots, archives, and cleanup audits are all called artifacts but have unrelated schemas and retention (`src/garden/review.py`; `src/garden/scheduler/reap.py`, `rebase.py`, `snapshot.py`, `cleanup.py`). Introduce a small artifact reference envelope—kind, owner run/operation, location or content identity, created time, media type, retention class—without forcing payloads into one schema.
-
-### Low — “Append-only events” has an intentional mutation exception
-
-Architecture calls `events.jsonl` append-only, while `EventLog.patch_run_costs` rewrites historical `run_finished` records (`docs/architecture.md`; `src/garden/events.py`). Documentation should say “append-only except explicit versioned repair,” and repair receipts should make the exception auditable.
-
-### Low — Lease is not one concept
-
-Remote claim leases, host-admission leases, canonical-checkout leases, watcher leases, and git force-with-lease share terminology but have different subjects, issuers, fencing tokens, renewal rules, and release semantics (`src/garden/runs.py`; `src/garden/hosts/`; `src/garden/scheduler/fence.py`; `docs/architecture.md`). Names should always be qualified in APIs and documentation.
