@@ -323,8 +323,20 @@ def github_actions_failures(ctx: dict[str, Any], spec: dict[str, Any]) -> dict[s
                 "summary": f"GitHub Actions diagnostics unavailable: {kind}", "details": ""}
     runs = json.loads(proc.stdout or "[]")
     head = ctx.get("head_sha", "")
-    failed = [r for r in runs if r.get("conclusion") in ("failure", "timed_out", "cancelled") and (not head or r.get("headSha") == head)]
+    matching = [r for r in runs if not head or r.get("headSha") == head]
+    failed = [r for r in matching if r.get("conclusion") in ("failure", "timed_out")]
+    cancelled = [r for r in matching if r.get("conclusion") == "cancelled"]
     if not failed:
+        if cancelled:
+            return {
+                "status": "fail",
+                "failure_category": "infrastructure",
+                "summary": (
+                    f"{len(cancelled)} workflow run(s) cancelled without an actionable "
+                    "source failure"
+                ),
+                "details": "",
+            }
         return {"status": "pass", "summary": "no failed workflow runs on this head", "details": ""}
     details: list[str] = []
     flaky_ids: list[int] = []
