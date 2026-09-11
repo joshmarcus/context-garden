@@ -14,6 +14,11 @@ retaining the prior runtime and must implement host-local observation, staging, 
 health, rollback, and fencing. Its attestations are treated as evidence, not inferred from a
 process merely existing.
 
+`CommandWorkerRolloutBackend` connects the API to existing fleet tooling. It executes a fixed,
+operator-approved argv with a bounded timeout, sends each action as JSON on stdin, and reads one
+JSON attestation from stdout. It never invokes a shell or places candidate/worker facts in argv;
+credentials remain in the command's preconfigured environment or host-local files.
+
 Inventory is a sequence of existing `WorkerTarget` records. Those records preserve the stable
 worker and host identities, service ownership/configuration, resource caps, absolute deadline,
 and enrollment and secret boundaries. The plan additionally records the aggregate budget and

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -74,6 +75,64 @@ class WorkerRolloutBackend(Protocol):
     def rollback(self, worker: WorkerTarget, prior_runtime: str,
                  idle_generation: str) -> Mapping[str, Any]: ...
     def fence(self, worker: WorkerTarget, reason: str) -> None: ...
+
+
+class CommandWorkerRolloutBackend:
+    """Bounded JSON-over-stdio boundary for approved host control tooling."""
+
+    def __init__(self, command: Sequence[str], *, timeout: float = 120,
+                 env: Mapping[str, str] | None = None):
+        if not command or timeout <= 0:
+            raise ValueError("rollout backend requires a command and positive timeout")
+        self.command, self.timeout = tuple(command), timeout
+        self.env = dict(env) if env is not None else None
+
+    def _call(self, action: str, worker: WorkerTarget, **values: Any) -> dict[str, Any]:
+        request = {"contract": ROLLOUT_CONTRACT, "action": action,
+                   "worker": {**asdict(worker), "resource_caps": dict(worker.resource_caps)},
+                   **values}
+        try:
+            result = subprocess.run(self.command, input=json.dumps(request), text=True,
+                                    capture_output=True, timeout=self.timeout, env=self.env)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"worker {worker.worker_id} {action} timed out") from exc
+        if result.returncode:
+            raise RuntimeError(f"worker {worker.worker_id} {action} failed with exit "
+                               f"{result.returncode}: {result.stderr.strip()[-1000:]}")
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"worker {worker.worker_id} {action} returned invalid JSON") from exc
+        if not isinstance(response, dict):
+            raise RuntimeError(f"worker {worker.worker_id} {action} returned a non-object response")
+        return response
+
+    @staticmethod
+    def _release(candidate: PublishedVersion) -> dict[str, Any]:
+        return {**asdict(candidate), "manifest": dict(candidate.manifest)}
+
+    def observe(self, worker: WorkerTarget) -> Mapping[str, Any]:
+        return self._call("observe", worker)
+
+    def stage(self, worker: WorkerTarget, candidate: PublishedVersion) -> Mapping[str, Any]:
+        return self._call("stage", worker, candidate=self._release(candidate))
+
+    def activate(self, worker: WorkerTarget, candidate: PublishedVersion,
+                 idle_generation: str) -> Mapping[str, Any]:
+        return self._call("activate", worker, candidate=self._release(candidate),
+                          idle_generation=idle_generation)
+
+    def health(self, worker: WorkerTarget, candidate: PublishedVersion) -> Mapping[str, Any]:
+        return self._call("health", worker, candidate=self._release(candidate))
+
+    def rollback(self, worker: WorkerTarget, prior_runtime: str,
+                 idle_generation: str) -> Mapping[str, Any]:
+        return self._call("rollback", worker, prior_runtime=prior_runtime,
+                          idle_generation=idle_generation)
+
+    def fence(self, worker: WorkerTarget, reason: str) -> None:
+        if not self._call("fence", worker, reason=reason).get("ok"):
+            raise RuntimeError(f"worker {worker.worker_id} could not be fenced")
 
 
 class RolloutStore:

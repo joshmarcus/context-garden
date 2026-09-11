@@ -1,6 +1,14 @@
+import sys
+
 import pytest
 
-from garden.worker_rollout import PublishedVersion, RolloutStore, WorkerRollout, WorkerTarget
+from garden.worker_rollout import (
+    CommandWorkerRolloutBackend,
+    PublishedVersion,
+    RolloutStore,
+    WorkerRollout,
+    WorkerTarget,
+)
 
 
 def candidate(**changes):
@@ -215,3 +223,22 @@ def test_abort_is_durable_and_prevents_mutation(tmp_path):
     assert rollout.abort()["status"] == "aborted"
     assert rollout.resume()["status"] == "aborted"
     assert backend.stages == 0
+
+
+def test_disposable_command_backend_drives_bounded_protocol_journey(tmp_path):
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text("""
+import json, sys
+r = json.load(sys.stdin); w = r["worker"]; c = r.get("candidate", {}); action = r["action"]
+responses = {
+ "observe": {"busy": False, "pending_collection": False, "claim_generation": "idle-1", "runtime": "/old"},
+ "stage": {"runtime": "/new", "version": c.get("version"), "direct_url_commit": c.get("source_commit"), "manifest": c.get("manifest"), "executable": "/new/garden", "tools_ok": True},
+ "activate": {"runtime": "/new", "version": c.get("version"), "source_commit": c.get("source_commit"), "direct_url_commit": c.get("source_commit"), "manifest": c.get("manifest"), "config_path": w["config_path"], "owner": w["owner"], "group": w["group"], "unit_mode": w["unit_mode"], "unit_source": w["unit_source"], "pid": 22, "prior_pid": 11, "frozen": False, "ready": True, "executable": "/new/garden", "runtime_executable": "/new/garden"},
+ "health": {"authenticated": True, "claim_probe": True, "heartbeat_probe": True, "finish_probe": True, "ready": True, "restarted": False, "resource_failure": False, "version": c.get("version"), "source_commit": c.get("source_commit")}}
+json.dump(responses[action], sys.stdout)
+""")
+    backend = CommandWorkerRolloutBackend([sys.executable, str(adapter)], timeout=2)
+    rollout = WorkerRollout(RolloutStore(tmp_path / "journey.json"), backend,
+                            health_samples=2, health_interval=0, sleep=lambda _: None)
+    rollout.plan(candidate(), [worker()])
+    assert rollout.start()["status"] == "complete"
