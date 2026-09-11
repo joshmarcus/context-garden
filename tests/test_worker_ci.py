@@ -282,7 +282,7 @@ def test_non_actions_policy_never_briefs_or_runs_publishing_helper(garden):
     path.write_text(yaml.safe_dump(config))
     store = Store(garden)
 
-    class Scheduler:
+    class Scheduler(ReapMixin):
         cfg = store.config
 
     brief = build_brief(store, store.task("DM-001")).text
@@ -300,7 +300,7 @@ def test_command_validation_is_not_duplicated_as_a_pre_pr_check(garden):
     path.write_text(yaml.safe_dump(config))
     store = Store(garden)
 
-    class Scheduler:
+    class Scheduler(ReapMixin):
         cfg = store.config
 
     assert {"name": "validation", "command": "./ci/validate-head"} not in ReapMixin._pre_pr_specs(
