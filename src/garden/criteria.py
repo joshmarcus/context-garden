@@ -214,10 +214,52 @@ def reconcile(criteria: list[str], verified: Any = None, review_criteria: Any = 
     return rows
 
 
-def verification_markdown(rows: list[dict[str, Any]]) -> str:
+def unmatched_worker_entries(criteria: list[str], verified: Any) -> list[dict[str, Any]]:
+    """Worker `verified` entries that quote a `criterion` not found (by normalised text) among
+    the frozen criteria: likely wording drift on the worker's part, not a skipped criterion.
+    These entries carry real evidence that `reconcile` could not place against any row; surface
+    them so a mismatch gets diagnosed rather than silently discarded."""
+    ws = _dicts(verified)
+    if not any(_norm(e.get("criterion", "")) for e in ws):
+        return []
+    known = {_norm(c) for c in criteria}
+    return [e for e in ws if _norm(e.get("criterion", "")) and _norm(e.get("criterion", "")) not in known]
+
+
+def evidence_gaps(criteria: list[str], verified: Any) -> list[str]:
+    """Criteria whose reconciled row has neither evidence nor a `not_done` reason.
+
+    Unmatched worker entries do not satisfy a frozen criterion: they are preserved separately by
+    `unmatched_worker_entries` and described by `evidence_gap_diagnosis`, but publication remains
+    blocked until the worker reconciles them or explicitly explains why evidence is unavailable.
+    """
+    return [row["criterion"] for row in reconcile(criteria, verified)
+            if not row["not_done"] and not row["evidence"]]
+
+
+def evidence_gap_diagnosis(criteria: list[str], verified: Any, run_id: str = "") -> str:
+    """Actionable detail for an evidence-gap failure, retaining unmatched worker statements."""
+    gaps = evidence_gaps(criteria, verified)
+    if not gaps:
+        return ""
+    scope = f"Run {run_id}" if run_id else "The worker result"
+    lines = [scope + " left these frozen criteria without reconciled evidence or an explicit reason: "
+             + "; ".join(gaps) + "."]
+    for entry in unmatched_worker_entries(criteria, verified):
+        quoted = str(entry.get("criterion") or "").strip()
+        detail = str(entry.get("evidence") or entry.get("reason") or "no further detail given").strip()
+        lines.append(
+            f'It also supplied unmatched evidence for "{quoted}": {detail}. Re-submit it using '
+            "the exact frozen criterion text, or mark that criterion not_done with a reason."
+        )
+    return "\n".join(lines)
+
+
+def verification_markdown(rows: list[dict[str, Any]], unmatched: list[dict[str, Any]] | None = None) -> str:
     """A `## Verification` section built from reconciled rows, or '' when there is nothing to
     say. One bullet per criterion: ✅ with evidence, 🚧 for a criterion the worker did not do,
-    ⚠️ for one with no evidence."""
+    ⚠️ for one with no evidence. `unmatched` (from `unmatched_worker_entries`), when given and
+    non-empty, adds a Reconciliation notes section instead of letting the evidence vanish."""
     if not rows:
         return ""
     lines = ["## Verification", ""]
@@ -228,6 +270,18 @@ def verification_markdown(rows: list[dict[str, Any]]) -> str:
             lines.append(f"- ✅ **{row['criterion']}** — {row['evidence']}")
         else:
             lines.append(f"- ⚠️ **{row['criterion']}** — no evidence given")
+    if unmatched:
+        lines.append("")
+        lines.append("### Reconciliation notes")
+        lines.append("")
+        for e in unmatched:
+            text = str(e.get("criterion") or "").strip()
+            detail = str(e.get("evidence") or e.get("reason") or "").strip()
+            lines.append(
+                f"- Evidence was given for \"{text}\", which does not match any acceptance "
+                f"criterion verbatim: {detail or 'no further detail given'}. Check whether this "
+                "covers one of the ⚠️ rows above before treating it as missing."
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -249,7 +303,7 @@ def apply_verification(body: str, criteria: list[str], verified: Any) -> str:
     criteria (and older results) are unaffected."""
     if not _dicts(verified):
         return body
-    section = verification_markdown(reconcile(criteria, verified))
+    section = verification_markdown(reconcile(criteria, verified), unmatched_worker_entries(criteria, verified))
     if not section:
         return body
     stripped = _strip_verification(body).rstrip()

@@ -36,6 +36,8 @@ Modes: done (default) | nocommit | blocked | crash | stall (never finishes: no o
        | escape-config (rewrites the live garden.yaml's notify.command; commits normally otherwise)
        | edit (returns a revised task body folding in the ## Suggestions from the edit brief)
        | skip-criterion (done, but the `verified` list silently omits the first acceptance criterion)
+       | not-done-criterion (done, but the first criterion is reported `not_done` with a reason
+         instead of evidence)
        | qa (the `garden qa` agent: every flow ok, or FAKE_CLAUDE_QA_FAIL's flow failed, plus one finding)
 Records the model it was given in model.txt (cwd) and the brief in FAKE_CLAUDE_BRIEF_COPY;
 with FAKE_CLAUDE_ENV_DUMP set it also writes its own environment there (used to assert on the
@@ -588,6 +590,16 @@ def skip_a_criterion(call: Call, result: dict) -> None:
     result["verified"] = verified_for(call, skip=True)
 
 
+def not_done_a_criterion(call: Call, result: dict) -> None:
+    """Like `skip_a_criterion`, but explicitly marks the omitted criterion `not_done` with a
+    reason instead of leaving it out silently, satisfying the evidence-or-explanation contract."""
+    out = verified_for(call, skip=True)
+    crits = brief_criteria(call.context)
+    if crits:
+        out.insert(0, {"criterion": crits[0], "not_done": True, "reason": "ran out of time"})
+    result["verified"] = out
+
+
 def amend_a_criterion(call: Call, result: dict) -> None:
     result["criteria_amended"] = [{
         "index": 0,
@@ -624,6 +636,7 @@ WORKERS: dict[str, Worker] = {
     "escape": Worker(prepare=escape_worktree, tweak=note_escape),
     "escape-config": Worker(prepare=escape_config_notify, tweak=note_escape),
     "skip-criterion": Worker(tweak=skip_a_criterion),
+    "not-done-criterion": Worker(tweak=not_done_a_criterion),
     "criteria-amend": Worker(tweak=amend_a_criterion),
     "omit-preflight": Worker(tweak=omit_preflight),
 }

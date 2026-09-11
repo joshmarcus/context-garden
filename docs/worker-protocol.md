@@ -845,6 +845,33 @@ reported honestly; this policy does not manufacture a performed test or interact
 Final current-head checks and CI remain required. Reviewers should reuse inspectable
 passing evidence and identify the concrete defect or unmet outcome behind a send-back.
 
+### What scopes a run's checks
+
+Five things can speak to what a run validates, in this order:
+
+1. **Owner direction.** An owner note (a triage reply, an inbox answer, a Config change)
+   overrides everything below it for that run.
+2. **Task criteria and `requires:`.** Acceptance criteria set the required outcomes; a
+   task's `requires:` frontmatter (`persona-review`, `captures`, `check: <name>`, see
+   above) adds specific evidence or a specific named `checks.pre_pr` entry on top of the
+   product default.
+3. **The frozen validation plan.** `dispatch` computes it once per run from the changed
+   paths and the task, and it travels with the run (`env_snapshot.validation_plan`). It
+   names the pages, interaction/scalability evidence, and checks this run requires; it does
+   not expand later even if the diff or task body changes underneath it (see "criteria
+   changed after dispatch" above for the criteria case).
+4. **Product `checks.pre_pr`.** The command list the mechanical check runner actually
+   executes for every run of that product, absent a narrower `requires: check:` selection.
+5. **External CI.** Runs after the PR exists and is never a substitute for 1-4; a red run
+   here still blocks independent of what the pre-PR checks reported.
+
+The worker's brief and the reviewer's brief both render checks 2-4 as one instruction set,
+computed from the same `checks.pre_pr` specs the mechanical runner uses — never a
+separately-derived guess. Once a run's plan is frozen, a targeted selection is authoritative
+for that run: the worker must not additionally run an unlisted broad or browser-backed
+suite, and the reviewer may reuse those checks or add a narrower focused one but must not
+broaden into a suite outside that recorded scope. Owner direction (1) is the only thing
+that can widen it.
 
 ### Remote model validation supervision
 

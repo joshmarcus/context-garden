@@ -123,6 +123,44 @@ def test_mechanical_preflight_does_not_require_captures_for_json_api_changes(gar
     assert next(row for row in results if row["name"] == "UI captures")["status"] == "pass"
 
 
+def test_mechanical_preflight_evidence_gate_distinguishes_gaps_from_explanations(garden, monkeypatch):
+    """CGS-012 criterion 8: complete evidence and an explicit not-done reason pass. Wording drift
+    and silence both fail with an actionable diagnosis, so neither produces an apparently-clean
+    publication."""
+    worktree = garden / "criteria-gate"
+    worktree.mkdir()
+    from garden import gitops
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs: "+VALUE = 1\n" if "--name-only" not in args else "good.py\n")
+    criteria = ["A renders.", "B returns 200.", "C is not done yet."]
+    kwargs = dict(require_description=True, ui_changed=False, captures=[], criteria=criteria,
+                  run_id="run-123")
+
+    complete = [{"criterion": "A renders.", "evidence": "test_a"},
+                {"criterion": "B returns 200.", "evidence": "test_b"},
+                {"criterion": "C is not done yet.", "not_done": True, "reason": "blocked on X"}]
+    results = mechanical_results(worktree, "main", "Description", verified=complete, **kwargs)
+    assert next(r for r in results if r["name"] == "acceptance criteria evidence")["status"] == "pass"
+
+    drifted = [{"criterion": "A shows up on the page.", "evidence": "test_a"},
+               {"criterion": "B returns 200.", "evidence": "test_b"},
+               {"criterion": "C is not done yet.", "not_done": True, "reason": "blocked on X"}]
+    results = mechanical_results(worktree, "main", "Description", verified=drifted, **kwargs)
+    drift_gate = next(r for r in results if r["name"] == "acceptance criteria evidence")
+    assert drift_gate["status"] == "fail"
+    assert "run-123" in drift_gate["details"]
+    assert "A shows up on the page." in drift_gate["details"] and "test_a" in drift_gate["details"]
+
+    silent_gap = [{"criterion": "A renders.", "evidence": "test_a"},
+                  {"criterion": "C is not done yet.", "not_done": True, "reason": "blocked on X"}]
+    results = mechanical_results(worktree, "main", "Description", verified=silent_gap, **kwargs)
+    gate = next(r for r in results if r["name"] == "acceptance criteria evidence")
+    assert gate["status"] == "fail"
+    assert "B returns 200." in gate["summary"]
+    assert "A renders." not in gate["summary"] and "C is not done yet." not in gate["summary"]
+
+
 def test_capture_infrastructure_policy_defaults_required_and_validates(sched):
     assert sched.cfg.capture_infrastructure_policy() == "require"
     sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"

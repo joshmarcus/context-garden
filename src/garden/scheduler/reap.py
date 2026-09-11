@@ -12,7 +12,13 @@ from typing import Any
 from .. import gitops
 from ..canonical import CanonicalCheckoutError, configured_root
 from ..checks import to_feedback
-from ..criteria import amend_criteria, apply_verification, parse_criteria
+from ..criteria import (
+    amend_criteria,
+    apply_verification,
+    evidence_gap_diagnosis,
+    evidence_gaps,
+    parse_criteria,
+)
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
@@ -1068,6 +1074,15 @@ class ReapMixin:
         snapshot = run.env_snapshot or {}
         criteria = list(snapshot["criteria"]) if "criteria" in snapshot else parse_criteria(task.body)
         verified = result.get("verified")
+        gaps = evidence_gaps(criteria, verified)
+        if gaps:
+            self._start_check_revise(task, [{
+                "name": "acceptance criteria evidence",
+                "status": "fail",
+                "summary": "no evidence or reason given for: " + "; ".join(gaps),
+                "details": evidence_gap_diagnosis(criteria, verified, run.run_id),
+            }], rep, cost)
+            return
         st = self.state.get(task.id)
         if run.pool_member:
             st["pr_pool_member"] = run.pool_member

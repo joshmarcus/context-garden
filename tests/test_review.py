@@ -1043,6 +1043,32 @@ def test_implementation_review_category_selects_the_objective_signal():
     assert review_implementation_failure_signal(finding) == "verification_rejected"
 
 
+def test_review_rules_restrict_the_reviewer_to_the_recorded_check_scope(garden):
+    store = Store(garden)
+    t = store.task("DM-001")
+    text = review_brief(store, t, branch="b", base="main", pr_title="T", pr_body="B", diff="+a",
+                        max_diff_chars=1000, plan={"checks": [{"item": "test", "reason": "configured"}]},
+                        checks=[{"name": "test", "status": "pass"}])
+    assert "the same allowed check scope the pre-PR check runner used for" in text
+    assert "do not broaden into a broader or browser-backed suite" in text
+    assert "## Validation plan" in text and "## Pre-review checks" in text
+
+
+def test_review_brief_names_only_the_runs_recorded_checks_not_a_broader_default(garden):
+    """CGS-012 criterion 7: the review brief's plan and pre-review-checks sections are built
+    entirely from what this run actually recorded — a targeted run never surfaces an
+    unconfigured bare `pytest -q` or Playwright command for the reviewer to (mis)run."""
+    store = Store(garden)
+    t = store.task("DM-001")
+    text = review_brief(store, t, branch="b", base="main", pr_title="T", pr_body="B", diff="+a",
+                        max_diff_chars=1000,
+                        plan={"checks": [{"item": "focused", "reason": "configured pre-PR checks"}]},
+                        checks=[{"name": "focused", "status": "pass"}])
+    assert "focused" in text
+    assert "pytest -q" not in text
+    assert "playwright test" not in text.lower()
+
+
 @pytest.mark.parametrize("interaction", [{}, {"unverified": None}, {"unverified": []}])
 def test_review_comment_accepts_omitted_optional_observations(interaction):
     review = {"verdict": "approve", "summary": "Verified behavior", "interaction": interaction}

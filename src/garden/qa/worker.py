@@ -25,6 +25,10 @@ from pathlib import Path
 
 MARKER = re.compile(r"^qa-worker:\s*([a-z_]+)\s*$", re.M)
 ESCAPE = re.compile(r"^qa-escape:\s*(.+)$", re.M)
+FROZEN_CRITERIA = re.compile(
+    r"^#{1,2} Criteria frozen for this dispatch\s*$\n(?P<body>.*?)(?=^# |\Z)",
+    re.M | re.S,
+)
 
 PREFLIGHT_ITEMS = (
     "A test or stated reason for every acceptance criterion",
@@ -53,6 +57,18 @@ def commit(message: str) -> None:
     subprocess.run(["git", "add", "-A"], check=True)
     subprocess.run(["git", "-c", "user.email=qa-worker@example.com", "-c", "user.name=qa-worker",
                     "commit", "-q", "-m", message], check=True)
+
+
+def verified_for(brief: str) -> list[dict[str, str]]:
+    """Echo the dispatch's frozen criteria with evidence, like a real worker must."""
+    section = FROZEN_CRITERIA.search(brief)
+    if not section:
+        return []
+    return [
+        {"criterion": line[2:].strip(), "evidence": "QA worker exercised the scripted flow"}
+        for line in section.group("body").splitlines()
+        if line.startswith("- ")
+    ]
 
 
 def main() -> None:
@@ -104,6 +120,7 @@ def main() -> None:
              "evidence": "QA worker clean check"}
             for item in PREFLIGHT_ITEMS
         ],
+        "verified": verified_for(brief),
         "notes": "",
     }
     emit("All done.\nGARDEN_RESULT: " + json.dumps(result), 0.05)

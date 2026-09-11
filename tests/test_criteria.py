@@ -5,9 +5,12 @@ from garden.criteria import (
     apply_verification,
     browser_capture_authorized,
     criteria_counts,
+    evidence_gap_diagnosis,
+    evidence_gaps,
     parse_criteria,
     reconcile,
     required_evidence,
+    unmatched_worker_entries,
     verification_markdown,
     worker_verified,
 )
@@ -178,6 +181,52 @@ def test_apply_verification_injects_and_replaces():
     assert apply_verification(body, criteria, []) == body
 
 
+def test_unmatched_worker_entries_finds_paraphrased_criteria():
+    criteria = ["A renders.", "B returns 200."]
+    # the worker's wording for "A renders." drifted; reconcile can't line it up positionally
+    # once every entry quotes a criterion, so this entry's evidence would otherwise vanish
+    verified = [{"criterion": "A shows up on the page.", "evidence": "test_a"},
+                {"criterion": "B returns 200.", "evidence": "test_b"}]
+    unmatched = unmatched_worker_entries(criteria, verified)
+    assert len(unmatched) == 1
+    assert unmatched[0]["evidence"] == "test_a"
+    # a purely positional list (no entry quotes a criterion) has nothing to call unmatched
+    assert unmatched_worker_entries(criteria, [{"evidence": "test_a"}, {"evidence": "test_b"}]) == []
+
+
+def test_evidence_gaps_require_wording_drift_to_be_reconciled():
+    criteria = ["A renders.", "B returns 200."]
+    # a genuine, unexplained gap: no evidence anywhere that could cover "B returns 200."
+    assert evidence_gaps(criteria, [{"criterion": "A renders.", "evidence": "test_a"}]) == ["B returns 200."]
+    # The worker's evidence for B used different wording. Preserve it as unmatched, but keep the
+    # exact frozen criterion blocked until the worker reconciles the statement.
+    verified = [{"criterion": "A renders.", "evidence": "test_a"},
+                {"criterion": "B returns two hundred.", "evidence": "test_b"}]
+    assert evidence_gaps(criteria, verified) == ["B returns 200."]
+    diagnosis = evidence_gap_diagnosis(criteria, verified, "run-123")
+    assert "run-123" in diagnosis
+    assert "B returns 200." in diagnosis
+    assert "B returns two hundred." in diagnosis and "test_b" in diagnosis
+    # not_done with a reason is not a gap at all
+    verified2 = [{"criterion": "A renders.", "evidence": "test_a"},
+                 {"criterion": "B returns 200.", "not_done": True, "reason": "blocked"}]
+    assert evidence_gaps(criteria, verified2) == []
+
+
+def test_verification_markdown_surfaces_reconciliation_notes():
+    criteria = ["A renders.", "B returns 200."]
+    verified = [{"criterion": "A renders.", "evidence": "test_a"},
+                {"criterion": "B returns two hundred.", "evidence": "test_b"}]
+    rows = reconcile(criteria, verified)
+    unmatched = unmatched_worker_entries(criteria, verified)
+    md = verification_markdown(rows, unmatched)
+    assert "- ⚠️ **B returns 200.** — no evidence given" in md
+    assert "### Reconciliation notes" in md
+    assert "test_b" in md
+    # default (no unmatched passed) stays exactly as before
+    assert "### Reconciliation notes" not in verification_markdown(rows)
+
+
 def test_criteria_counts():
     assert criteria_counts([{"met": True}, {"met": False}, {"met": True}]) == (2, 3)
     assert criteria_counts(None) == (0, 0)
@@ -217,6 +266,23 @@ def test_review_brief_shows_the_authors_verification(garden):
     assert "The API returns 200 for a valid request.** — author gave no evidence" in text
 
 
+def test_review_brief_surfaces_reconciliation_notes_for_wording_drift(garden):
+    store = Store(garden)
+    t = store.task("DM-001")
+    t.body = CRITERIA_BODY
+    store.save(t)
+    store.invalidate()
+    # the worker's wording for the first criterion drifted; its evidence would otherwise
+    # look like a silent gap on "The widget renders on the home page."
+    verified = [{"criterion": "The widget shows up on the home page.", "evidence": "test_widget"},
+                {"criterion": "The API returns 200 for a valid request.", "evidence": "test_api"}]
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T",
+                        pr_body="B", diff="+a", max_diff_chars=1000, verified=verified)
+    assert "The widget renders on the home page.** — author gave no evidence" in text
+    assert "### Reconciliation notes" in text
+    assert "The widget shows up on the home page." in text and "test_widget" in text
+
+
 def test_review_markdown_lists_criteria():
     rev = {"verdict": "request_changes", "summary": "s",
            "criteria": [{"criterion": "A renders.", "met": True, "reason": "test_a"},
@@ -227,20 +293,66 @@ def test_review_markdown_lists_criteria():
     assert "- ❌ B returns 200. — no test" in md
 
 
-def test_skipped_criterion_flows_through_pr_body_review_and_metrics(sched, fake_github, monkeypatch):
-    """End to end: a worker that skips a criterion leaves a ⚠️ in the generated Verification
-    section, the reviewer marks it not met, and metrics report criteria met on the first review."""
+def test_silently_skipped_criterion_blocks_pr_and_requests_revision(sched, fake_github, monkeypatch):
+    """A worker that silently omits a criterion (no evidence, no reason) must not get an
+    apparently valid PR out of it: the pre-PR gate rejects the unexplained gap and sends the
+    worker back for a revise round instead of opening the PR."""
     sched.cfg.data["stack"] = False
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     _give_criteria(sched)
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "skip-criterion")
 
     sched.tick()  # dispatch work
+    sched.tick()  # reap work -> gate rejects the silent gap -> revise dispatched, no PR
+
+    assert fake_github.created == []
+    revise_run = sched.runs.latest("DM-001")
+    revise_brief = (revise_run.path / "brief.md").read_text()
+    assert "## Revision round" in revise_brief
+    findings = (revise_run.path / "references" / "context" / "review-findings.md").read_text()
+    assert "acceptance criteria evidence" in findings
+    assert "The widget renders on the home page." in findings
+
+
+def test_targeted_check_evidence_opens_pr_without_full_suite_finding(sched, fake_github, monkeypatch):
+    """CGS-012 criterion 4: a narrow configured pre-PR check plus per-criterion evidence for the
+    current head is enough to open the PR — nothing is reported missing just because an
+    unlisted full-suite or browser-backed run never happened, and the mechanical gate only
+    reports the checks that actually ran."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "focused", "command": "true"}], "ci": []}
+    _give_criteria(sched)
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)  # default "done" worker: full evidence
+
+    for _ in range(6):
+        sched.tick()
+        if fake_github.created:
+            break
+    assert fake_github.created, "PR did not open"
+
+    check_run = sched.runs.latest("DM-001")
+    results = check_run.result["checks"]
+    names = {r["name"] for r in results}
+    assert "focused" in names
+    assert not any(name for name in names if "full" in name or "suite" in name)
+    assert all(r["status"] in ("pass", "advisory") for r in results)
+
+
+def test_not_done_criterion_with_reason_still_opens_pr_and_flows_to_review(sched, fake_github, monkeypatch):
+    """A worker that explicitly reports a criterion `not_done` with a reason (rather than
+    silence) satisfies the evidence-or-explanation contract: the PR opens with a 🚧 row, and the
+    reviewer marks it not met."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    _give_criteria(sched)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "not-done-criterion")
+
+    sched.tick()  # dispatch work
     sched.tick()  # reap work -> PR opened with generated Verification -> review dispatched
 
     body = fake_github.created[-1]["body"]
     assert "## Verification" in body
-    assert "- ⚠️ **The widget renders on the home page.** — no evidence given" in body
+    assert "- 🚧 **The widget renders on the home page.** — not done: ran out of time" in body
     assert "- ✅ **The API returns 200 for a valid request.** — proved by test_criterion_1" in body
 
     review_brief_text = (sched.runs.latest("DM-001").path / "brief.md").read_text()

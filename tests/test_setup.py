@@ -450,6 +450,20 @@ def test_brief_env_rule_without_commands(garden):
     assert "already prepared" in b.text  # still tells the worker not to install, even with no commands
 
 
+def test_targeted_checks_never_leak_the_products_unconfigured_full_suite_command(garden):
+    """CGS-012 criterion 7: whether this is an initial work brief or a revision (review_feedback
+    set), the run's actual checks are what gets named — never the product's own broader
+    setup.test/lint, and never a browser-backed command that isn't one of those checks."""
+    store = _garden_with_setup(garden, {"test": "pytest -q", "lint": "npx playwright test"})
+    targeted = [{"name": "focused", "command": "pytest tests/test_widget.py -q"}]
+    for review_feedback in ("", "tighten the widget test"):
+        b = build_brief(store, store.task("DM-001"), branch="garden/x", base="main",
+                        review_feedback=review_feedback, checks=targeted)
+        assert "`pytest tests/test_widget.py -q` (focused)" in b.text
+        assert "pytest -q" not in b.text
+        assert "npx playwright test" not in b.text
+
+
 @pytest.mark.needs_remote_clone
 def test_ssh_runner_runs_setup_on_host(garden, fake_github):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
