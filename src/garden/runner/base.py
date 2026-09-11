@@ -153,6 +153,11 @@ CONFIG_CREDENTIAL_FILES: dict[str, str] = {
 }
 
 
+def harness_state_paths(env: dict[str, str]) -> list[Path]:
+    """Resolved writable config/state directories exported to built-in harnesses."""
+    return [Path(env[name]) for name in CONFIG_CREDENTIAL_FILES if env.get(name)]
+
+
 def config_dir_env(config: dict[str, Any] | None) -> dict[str, str]:
     """The `CLAUDE_CONFIG_DIR` / `CODEX_HOME` defaults `scrubbed_env` applies — each built-in
     harness's config-dir variable, defaulting to the *operator's* real home, overridden by
@@ -380,8 +385,8 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         policy = SandboxPolicy.from_config(config)
         scratch_writes = [Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP") if env.get(name)]
         argv, mechanism = policy.command_argv(
-            command, worktree, additional_writable_roots=scratch_writes,
-            readable_roots=[worktree, *[Path(env[name]) for name in CONFIG_CREDENTIAL_FILES if env.get(name)]],
+            command, worktree, additional_writable_roots=[*scratch_writes, *harness_state_paths(env)],
+            readable_roots=[worktree, Path(worker_credentials_dir(worktree))],
         )
         env.update(policy.report_env(mechanism))
         proc = subprocess.Popen(
