@@ -19,6 +19,7 @@ protocol pages describe internals and are linked from those guides instead of re
 Feature-specific references describe narrower supported workflows:
 
 - [Release and rollback protocol](release-protocol.md)
+- [Publishing releases to PyPI](pypi-release.md)
 - [Local and remote worker lifecycle](worker-protocol.md#variants-of-the-transport)
 - [Host lifecycle](host-lifecycle.md) and [host identity boundary](host-identity-boundary.md)
 - [GitHub Enterprise configuration](operations.md#github-enterprise)
