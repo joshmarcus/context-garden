@@ -35,7 +35,7 @@ def test_codex_command():
     cmd = h.command("gpt-x", Path("/tmp/f.md"))
     assert cmd[:3] == ["codex", "exec", "--json"] and 'sandbox_mode="workspace-write"' in cmd
     assert cmd[cmd.index("-m") + 1] == "gpt-x" and cmd[-1] == "-"
-    assert "--output-last-message" in cmd
+    assert "--output-last-message" not in cmd
     assert [h.model_for(t) for t in ("easy", "medium", "hard")] == [
         "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"
     ]

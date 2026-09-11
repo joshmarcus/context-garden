@@ -216,6 +216,8 @@ class LocalRunner(Runner):
         inner = self.harness_shell(run, worktree, raw_final)
         timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
         env = dict(env)
+        env.pop("GARDEN_RAW_FINAL_PATH", None)
+        env.pop("GARDEN_FINAL_PATH", None)
         if timeout_min:
             # GNU ``timeout`` is not part of macOS. The Python supervisor owns the same
             # monotonic deadline on every supported POSIX host and can terminate the whole

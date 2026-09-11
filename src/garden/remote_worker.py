@@ -1140,6 +1140,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 **check_data, "setup": check_setup,
             }))
             execution_env = dict(env)
+            execution_env.pop("GARDEN_RAW_FINAL_PATH", None)
+            execution_env.pop("GARDEN_FINAL_PATH", None)
             for key in ("GARDEN_EXECUTION_OWNER", "GARDEN_EXECUTION_RUN_DIR",
                         "GARDEN_VALIDATION_RUNNER", "GARDEN_OWNER_SCOPED"):
                 execution_env.pop(key, None)
@@ -1175,6 +1177,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             runs_dir.mkdir(parents=True, exist_ok=True)
             execution_dir = Path(tempfile.mkdtemp(prefix="claim-", dir=runs_dir))
             execution_env = dict(env)
+            execution_env.pop("GARDEN_RAW_FINAL_PATH", None)
+            execution_env.pop("GARDEN_FINAL_PATH", None)
             from .reference_snapshot import materialize_remote_references
 
             reference_dir = materialize_remote_references(execution_dir, run.get("references"))

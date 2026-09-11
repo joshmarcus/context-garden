@@ -261,8 +261,10 @@ class Harness:
             if model:
                 provider_model = model.removeprefix("openrouter/") if self.name == "openrouter" else model
                 cmd += ["-m", provider_model]
-            if final_path is not None:
-                cmd += ["--output-last-message", str(final_path)]
+            # JSONL already carries the final assistant message, usage, errors, and
+            # session identity.  Keep that redacted stdout stream authoritative instead
+            # of asking Codex to persist a second, raw copy outside the supervisor's
+            # output boundary.
             cmd += [str(a) for a in (self.cfg.get("extra_args") or [])]
             cmd.append("-")  # prompt from stdin
             if self.name == "openrouter":

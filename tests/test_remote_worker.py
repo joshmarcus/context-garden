@@ -2818,6 +2818,8 @@ def test_remote_harness_receives_working_owned_validation(
         "assert os.environ['GARDEN_VALIDATION_RUNNER'] != '/missing/controller/python'\n"
         "assert os.environ['GARDEN_VALIDATION_TIMEOUT_SECONDS'] == '900'\n"
         "assert 'GARDEN_EXECUTION_TIMEOUT_SECONDS' not in os.environ\n"
+        "assert 'GARDEN_RAW_FINAL_PATH' not in os.environ\n"
+        "assert 'GARDEN_FINAL_PATH' not in os.environ\n"
         "command = [os.environ['GARDEN_VALIDATION_RUNNER'], '-m', 'garden.validation', '--', "
         f"sys.executable, '-m', 'pytest', {str(target)!r}, '-q']\n"
         "result = subprocess.run(command, capture_output=True, text=True, timeout=10)\n"
@@ -2834,6 +2836,8 @@ def test_remote_harness_receives_working_owned_validation(
                        "GARDEN_EXECUTION_RUN_DIR": str(tmp_path / "wrong-run"),
                        "GARDEN_VALIDATION_RUNNER": "/missing/controller/python",
                        "GARDEN_EXECUTION_TIMEOUT_SECONDS": "0.01",
+                       "GARDEN_RAW_FINAL_PATH": str(tmp_path / "outer-raw"),
+                       "GARDEN_FINAL_PATH": str(tmp_path / "outer-final"),
                        "GARDEN_HEAVY_EXECUTION": "1", "GARDEN_OWNER_SCOPED": "1"}.items():
         monkeypatch.setenv(key, value)
     isolated_execution_runtime(tmp_path, monkeypatch)
