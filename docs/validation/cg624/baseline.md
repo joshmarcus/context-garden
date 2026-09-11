@@ -16,6 +16,13 @@ The counts were obtained with `PYTEST_ADDOPTS` removed because the supervised wo
 environment supplied three temporary node deselections. This makes the inventory match the
 repository command rather than allowing an ambient selection override to lower the baseline:
 
+```text
+PYTEST_ADDOPTS=--deselect=tests/test_web.py::test_initial_pages_stay_bounded_with_large_run_history --deselect=tests/test_web.py::test_retained_history_journey_stays_responsive_with_running_and_waiting_pytest --deselect=tests/test_web.py::test_served_incident_controls_retry_and_restart_during_overload
+```
+
+Those nodes are ordinary tests at the frozen source. They remain in the 2,880-case ordinary
+inventory and are not treated as opt-in, removed, skipped, or otherwise outside the target.
+
 ```sh
 env -u PYTEST_ADDOPTS .venv/bin/python -m pytest --collect-only -q
 env -u PYTEST_ADDOPTS .venv/bin/python -m pytest --run-stress -m stress --collect-only -q
