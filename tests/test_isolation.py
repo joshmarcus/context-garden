@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -254,9 +255,9 @@ def test_scrubbed_env_keeps_the_allowlist_and_drops_the_rest(monkeypatch):
     assert env["HOME"] == os.environ["HOME"]
 
 
-def test_scrubbed_env_builds_fresh_credential_only_harness_dirs(tmp_path, monkeypatch):
-    """A dispatch gets private harness homes, containing only its copied login files."""
-    from garden.runner.base import scrubbed_env
+def test_scrubbed_env_builds_fresh_writable_harness_state(tmp_path, monkeypatch):
+    """A dispatch gets writable state copied from credential-only protected staging."""
+    from garden.runner.base import scrubbed_env, worker_credentials_dir
 
     source = tmp_path / "operator"
     (source / ".claude").mkdir(parents=True)
@@ -276,8 +277,10 @@ def test_scrubbed_env_builds_fresh_credential_only_harness_dirs(tmp_path, monkey
     assert Path(env["CLAUDE_CONFIG_DIR"]).parent == Path(env["CODEX_HOME"]).parent
     assert {p.name for p in Path(env["CLAUDE_CONFIG_DIR"]).iterdir()} == {".credentials.json"}
     assert {p.name for p in Path(env["CODEX_HOME"]).iterdir()} == {"auth.json"}
-    with pytest.raises(PermissionError):
-        (Path(env["CLAUDE_CONFIG_DIR"]) / "worker-settings.json").write_text("must be denied")
+    (Path(env["CLAUDE_CONFIG_DIR"]) / "worker-settings.json").write_text("disposable")
+    staged = Path(worker_credentials_dir(worktree))
+    assert stat.S_IMODE((staged / ".claude").stat().st_mode) == 0o500
+    assert stat.S_IMODE((staged / ".claude" / ".credentials.json").stat().st_mode) == 0o400
     refreshed = scrubbed_env({}, worktree=worktree)
     assert {p.name for p in Path(refreshed["CLAUDE_CONFIG_DIR"]).iterdir()} == {".credentials.json"}
 
@@ -294,6 +297,19 @@ def test_scrubbed_env_builds_fresh_credential_only_harness_dirs(tmp_path, monkey
     assert Path(env["CLAUDE_CONFIG_DIR"]).parent != Path(env["HOME"])
     assert Path(env["CODEX_HOME"]).parent != Path(env["HOME"])
     assert env["MY_HARNESS_HOME"] == "/opt/my-harness"  # a custom harness's own documented key
+
+
+def test_scrubbed_env_rejects_symlink_harness_state(tmp_path):
+    from garden.runner.base import RunnerError, scrubbed_env, worker_home
+
+    worktree = tmp_path / "worktrees" / "T-1"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    state = Path(worker_home(worktree)).parent / f"{Path(worker_home(worktree)).name}-harness-r1"
+    state.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RunnerError, match="harness state is a symlink"):
+        scrubbed_env({}, worktree=worktree, run_id="r1")
 
 
 def test_scrubbed_env_copies_only_named_config_files_and_revokes_them(tmp_path, monkeypatch):

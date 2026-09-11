@@ -364,8 +364,9 @@ DEFAULTS: dict[str, Any] = {
                                   # for full inheritance.
         "config_dirs": {},        # override credential *sources*, keyed by the environment
                                   # variable the harness reads. Claude's .credentials.json and
-                                  # Codex's auth.json are copied into a fresh private directory
-                                  # per dispatch; custom variables pass through unchanged.
+                                  # Codex's auth.json are copied into fresh writable harness
+                                  # state per dispatch; source files remain protected and
+                                  # custom variables pass through unchanged.
         "config_files": {},       # explicitly named {source, destination, required} files;
                                   # destinations are relative to the isolated worker HOME.
     },
