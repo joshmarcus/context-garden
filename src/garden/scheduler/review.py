@@ -1139,6 +1139,20 @@ class ReviewMixin:
                 refund_round=True, backoff=False,
             )
         review = enforce_criteria_verdict(parse_review(final))
+
+        def record_scope_expansions() -> None:
+            expansions = review.get("scope_expansions") if isinstance(review, dict) else None
+            if not isinstance(expansions, list) or self._manual_reserved(task):
+                return
+            for expansion in expansions:
+                if not isinstance(expansion, dict):
+                    continue
+                item = str(expansion.get("item") or "").strip()
+                reason = str(expansion.get("reason") or "").strip()
+                if item and reason:
+                    task.log(f"review validation scope expansion: {item} — {reason}")
+                    self.store.save(task)
+
         if run.status == "timeout" and not review:
             if run.save() is RunSaveOutcome.SUPERSEDED:
                 return False
@@ -1150,15 +1164,6 @@ class ReviewMixin:
             )
         if review:
             expansions = review.get("scope_expansions") if isinstance(review, dict) else None
-            if isinstance(expansions, list) and not self._manual_reserved(task):
-                for expansion in expansions:
-                    if not isinstance(expansion, dict):
-                        continue
-                    item = str(expansion.get("item") or "").strip()
-                    reason = str(expansion.get("reason") or "").strip()
-                    if item and reason:
-                        task.log(f"review validation scope expansion: {item} — {reason}")
-                        self.store.save(task)
             metadata_warnings: list[str] = []
             expected = set((run.env_snapshot or {}).get("capture_pages") or [])
             seen = set(review.get("pages_seen") or [])
@@ -1192,6 +1197,7 @@ class ReviewMixin:
                     return False
                 if final and not (run.path / "final.md").exists():
                     (run.path / "final.md").write_text(final)
+                record_scope_expansions()
                 return True
             if ambiguous and not bool((run.env_snapshot or {}).get("clarify_unverified")):
                 # Preserve the original report, but spend one reviewer continuation to
@@ -1204,6 +1210,7 @@ class ReviewMixin:
                     return False
                 if final and not (run.path / "final.md").exists():
                     (run.path / "final.md").write_text(final)
+                record_scope_expansions()
                 task.log("automated review clarification requested for ambiguous unverified observations")
                 self.store.save(task)
                 return self._resume_review_clarification(task, run, ambiguous, rep)
@@ -1217,6 +1224,7 @@ class ReviewMixin:
                     return False
                 if final and not (run.path / "final.md").exists():
                     (run.path / "final.md").write_text(final)
+                record_scope_expansions()
                 st["review_run"] = ""
                 self._set_needs_human(task, "review_clarification", reason,
                                       run=run.run_id, entries=ambiguous, owner="reviewer")
@@ -1258,6 +1266,7 @@ class ReviewMixin:
                 return False
             if final and not (run.path / "final.md").exists():
                 (run.path / "final.md").write_text(final)
+            record_scope_expansions()
         if self._manual_reserved(task):
             return True
         return self._apply_review(task, run, review, rep, emitted=False)
