@@ -7,6 +7,25 @@ No macOS or native Windows runtime was available. All proposed paths keep `pathl
 existing GitHub provider interface, and configurable repository paths; none retires an
 optional platform or provider.
 
+## Current follow-through (CG-625)
+
+Current source was reconciled at `b921ce586b6191edc955e185a07c5931ef2bb5de`. The four
+implementation follow-ups below have landed: incremental feedback polling (CG-521), copy-on-write
+web discovery (CG-522), size-safe benchmark fixtures (CG-523), and consolidated historical
+captures (CG-524). The remaining current candidates, in priority order, are:
+
+| Priority | Candidate and current consumers | Smaller alternative and benefit | Compatibility constraints / outcome |
+|---|---|---|---|
+| 1 | `Store.discovery_snapshot` (`src/garden/store.py`, formerly lines 58-70) deep-copied discovery after CG-522; only two tests still called it. | Remove the obsolete method and test discovery retry behavior through its current owners, `products`, `tasks`, and `refresh_tasks_if_changed`; eliminates a misleading mutation-isolation path and the production `deepcopy` dependency. | No CLI, API, plugin, configuration, or documented entry point uses it. Web reads share an immutable generation and actions still receive an isolated `Store`; retry bounds remain covered. Implemented here. |
+| 2 | Optional brief-input readers in `src/garden/kickoff.py`, `src/garden/retro.py`, and `src/garden/personas.py` repeated the same stripped-text/OSError policy. | Keep one `read_optional_text` helper in `src/garden/brief.py`; removes three policy copies while preserving empty input for absent/unreadable files. | Internal brief construction only; output whitespace and error fallback are unchanged. Implemented here. |
+| 3 | Duplicate module-map rows in `docs/architecture.md` retained older lists beside their superseding lists. | Keep only the complete current rows; readers see one owner map for each module group. | Documentation-only, with no runtime or compatibility effect. Implemented here. |
+
+The retained findings below remain retained. In particular, config adoption, duplicate-ID
+quarantine/reservations, bounded control lookup, dynamic registrations, recovery journals, and
+automerge gates still enforce current security, concurrency, recovery, provider, or operator
+contracts. Historical capture scripts are no longer candidates because CG-524 replaced them with
+reproducible evidence checks and removed the obsolete scripts.
+
 ## Scope and method
 
 The audit followed the scheduler tick through task discovery and GitHub polling, then checked

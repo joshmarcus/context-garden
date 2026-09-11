@@ -24,6 +24,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from .brief import read_optional_text
 from .model import Phase, now_iso, slugify
 from .store import Store
 
@@ -131,13 +132,6 @@ def next_phase_name(name: str) -> str:
     return f"{prefix}{int(num) + 1:0{width}d}"
 
 
-def _read(p: Path | None) -> str:
-    try:
-        return p.read_text().strip() if p and p.exists() else ""
-    except OSError:
-        return ""
-
-
 def persona_reports(phase: Phase, names: list[str]) -> dict[str, Path]:
     """The latest report file on disk for each named persona, from <phase>/docs/reviews/.
     Reports are named `<persona-slug>-<date>[-n].md` (see personas.report_path)."""
@@ -163,9 +157,9 @@ def reconcile_brief(store: Store, phase: Phase, base: str, friction: list[tuple[
     refs = reference_files if reference_files is not None else {}
     digest = store.root / str(cfg.get("principles_digest"))
     if digest.exists():
-        refs["context/principles.md"] = _read(digest) + "\n"
+        refs["context/principles.md"] = read_optional_text(digest) + "\n"
     if phase.goals_path:
-        refs["context/phase-goals.md"] = _read(phase.goals_path) + "\n"
+        refs["context/phase-goals.md"] = read_optional_text(phase.goals_path) + "\n"
 
     if friction:
         lines = []
@@ -194,7 +188,7 @@ def reconcile_brief(store: Store, phase: Phase, base: str, friction: list[tuple[
     if reports:
         lines = []
         for name, path in reports.items():
-            refs[f"evidence/personas/{name}.md"] = _read(path) + "\n"
+            refs[f"evidence/personas/{name}.md"] = read_optional_text(path) + "\n"
     else:
         refs["evidence/personas/README.md"] = "No persona reports were available for this snapshot.\n"
 
