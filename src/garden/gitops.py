@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
-from .github import repo_slug_from_remote
+from .github import RepositorySlug, repository_slug_from_remote
 
 
 class GitError(Exception):
@@ -205,9 +205,9 @@ def remote_url(repo: Path, remote: str = "origin") -> str:
     return result
 
 
-def slug(repo: Path) -> str | None:
+def slug(repo: Path) -> RepositorySlug | None:
     url = remote_url(repo)
-    return repo_slug_from_remote(url) if url else None
+    return repository_slug_from_remote(url) if url else None
 
 
 def ensure_repo(repo: Path | str, clone_dir: Path, git_name: str = "", git_email: str = "") -> Path:

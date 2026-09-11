@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -112,18 +113,26 @@ class Feedback:
         return "\n\n".join(out)
 
 
-def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
-    """Return an ``owner/repo`` only for an unambiguous remote on ``host``.
+class RepositorySlug(str):
+    """A repository slug that carries its configured GitHub host for routing."""
 
-    Enterprise remotes occur in HTTPS, SSH URL, and conventional SCP forms.  Rejecting
-    credential-bearing URLs and unexpected hosts keeps a configured product from
-    borrowing a credential or API route intended for another server. SSH transport
-    usernames and explicit SSH ports remain part of the repository URL.
-    """
-    expected = host.lower().rstrip(".")
+    def __new__(cls, slug: str, host: str):
+        value = super().__new__(cls, slug)
+        value.host = host.lower().rstrip(".")
+        value.provider = "github"
+        return value
+
+    def __getnewargs__(self) -> tuple[str, str]:
+        # State snapshots copy values before flushing them; preserve the route when
+        # copy/deepcopy or pickle reconstruct this immutable string subclass.
+        return str(self), self.host
+
+
+def repository_slug_from_remote(url: str) -> RepositorySlug | None:
+    """Return the repository and host identified by an unambiguous GitHub remote."""
     value = url.strip()
     github_ssh_prefix = "ssh://git@ssh.github.com:443/"
-    if expected == "github.com" and value.lower().startswith(github_ssh_prefix):
+    if value.lower().startswith(github_ssh_prefix):
         value = "ssh://git@github.com/" + value[len(github_ssh_prefix):]
     patterns = (
         r"https://(?P<host>[^/@:]+)(?::443)?/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?/?$",
@@ -140,18 +149,28 @@ def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
             if len(port_number) > 5 or not 0 < int(port_number) <= 65535:
                 continue
         remote_host = match["host"].lower().rstrip(".")
-        if pattern.startswith("ssh://") and expected == "github.com":
-            # GitHub documents ssh.github.com:443 for networks where port 22 is
-            # blocked. It is the public github.com route, not a separate host.
-            valid_host = (
-                remote_host == "github.com" and (not port or port == ":22")
-            ) or (remote_host == "ssh.github.com" and port == ":443")
-        else:
-            # The documented public SSH alias is never an enterprise API host.
-            valid_host = remote_host == expected and remote_host != "ssh.github.com"
-        if valid_host:
-            return f"{match['owner']}/{match['repo']}"
+        if remote_host == "ssh.github.com":
+            if not pattern.startswith("ssh://") or port != ":443":
+                continue
+            remote_host = "github.com"
+            port = None
+        if pattern.startswith("ssh://") and remote_host == "github.com" and port not in (None, ":22"):
+            continue
+        return RepositorySlug(f"{match['owner']}/{match['repo']}", remote_host)
     return None
+
+
+def repo_slug_from_remote(url: str, host: str = "github.com") -> str | None:
+    """Return an ``owner/repo`` only for an unambiguous remote on ``host``.
+
+    Enterprise remotes occur in HTTPS, SSH URL, and conventional SCP forms.  Rejecting
+    credential-bearing URLs and unexpected hosts keeps a configured product from
+    borrowing a credential or API route intended for another server. SSH transport
+    usernames and explicit SSH ports remain part of the repository URL.
+    """
+    identity = repository_slug_from_remote(url)
+    expected = host.lower().rstrip(".")
+    return str(identity) if identity is not None and identity.host == expected else None
 
 
 def is_git_remote_url(value: str) -> bool:
@@ -307,6 +326,7 @@ class GitHub:
         api_base: str = "",
         token_env: str = "",
         connection_policy: ConnectionPolicy | None = None,
+        allow_ambient_token: bool = True,
     ):
         self.host = host.lower().rstrip(".")
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", self.host):
@@ -328,7 +348,11 @@ class GitHub:
             raise ValueError("connection policy authority does not match github api_base")
         # A product that names a token environment has deliberately scoped its
         # credential. Do not fall through to a public/default token if it is missing.
-        self.token = token or (os.environ.get(token_env) if token_env else (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")))
+        self.token = token or (
+            os.environ.get(token_env) if token_env
+            else (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+            if allow_ambient_token else None
+        )
         self.gh = shutil.which("gh") if use_gh else None
         self.bot_logins = set(bot_logins or [])
         self.bot_notice_patterns = [
@@ -385,7 +409,7 @@ class GitHub:
             )
         except httpx.ProxyError as exc:
             raise ProxyFailure("source-control proxy connection failed") from exc
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        except httpx.TransportError as exc:
             message = str(exc).lower()
             if "certificate" in message or "ssl" in message:
                 raise CertificateFailure("source-control certificate verification failed") from exc
@@ -1281,21 +1305,6 @@ class GitHub:
             self._rest("POST", f"/repos/{slug}/issues/{number}/comments", json={"body": body})
 
 
-class RepositorySlug(str):
-    """A repository slug that carries its configured GitHub host for routing."""
-
-    def __new__(cls, slug: str, host: str):
-        value = super().__new__(cls, slug)
-        value.host = host.lower().rstrip(".")
-        value.provider = "github"
-        return value
-
-    def __getnewargs__(self) -> tuple[str, str]:
-        # State snapshots copy values before flushing them; preserve the route when
-        # copy/deepcopy or pickle reconstruct this immutable string subclass.
-        return str(self), self.host
-
-
 class GitHubRouter:
     """Route repository operations to the configured source-control client.
 
@@ -1304,7 +1313,8 @@ class GitHubRouter:
     back to whichever host happens to be active in ``gh``.
     """
 
-    def __init__(self, default: GitHub, routes: dict[tuple[str, str] | str, Any]):
+    def __init__(self, default: GitHub, routes: dict[tuple[str, str] | str, Any], *,
+                 route_factory: Callable[[str], GitHub] | None = None):
         self.default = default
         self.routes = {
             ((key[0] if isinstance(key, tuple) else client.host).lower().rstrip("."),
@@ -1316,6 +1326,8 @@ class GitHubRouter:
             for slug, clients in self._routes_by_slug().items()
             if len(clients) == 1
         }
+        self.route_factory = route_factory
+        self._inferred_routes: dict[str, GitHub] = {}
 
     def _routes_by_slug(self) -> dict[str, list[GitHub]]:
         grouped: dict[str, list[GitHub]] = {}
@@ -1353,6 +1365,12 @@ class GitHubRouter:
                 client = self.routes.get((route_key, key))
                 if client is None and host == getattr(self.default, "host", "github.com"):
                     client = self.default
+                if (client is None and host and provider in ("", "github")
+                        and self.route_factory is not None):
+                    client = self._inferred_routes.get(host)
+                    if client is None:
+                        client = self.route_factory(host)
+                        self._inferred_routes[host] = client
                 if client is None:
                     label = f"host {host!r}" if host else f"provider {provider!r}"
                     raise ProviderUnavailable(f"no source-control adapter configured for {label}")
