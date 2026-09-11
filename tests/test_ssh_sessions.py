@@ -250,7 +250,7 @@ def test_acknowledged_run_directories_are_pruned_and_live_work_is_kept(sched, tm
     _runner, second = start(sched, tmp_path,
                             f"touch {shlex.quote(str(marker))}; sleep 2", retain_runs=1)
     wait_for(marker.exists)
-    second_dir = Path(state(second)["directory"])
+    second_dir = Path(wait_for(lambda: state(second).get("directory")))
     assert first_dir.exists() and second_dir.exists()  # nothing is pruned while a run is live
     wait_for(second.process_finished)
     assert not first_dir.exists()  # the older acknowledged run aged out
