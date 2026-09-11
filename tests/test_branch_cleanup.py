@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import random
 import subprocess
+import time
 
 import pytest
 
 from garden import gitops
-from garden.branch_cleanup import BranchDisposition, delete_disposition
+from garden.branch_cleanup import (
+    BranchDisposition,
+    _has_run_reference,
+    _run_references,
+    delete_disposition,
+)
 from garden.model import Status
 
 
@@ -142,6 +149,105 @@ def test_recovery_reference_does_not_match_a_shorter_run_id(sched, reference_kin
     assert rows[first.branch].classification == "removable", rows[first.branch]
     assert rows[second.branch].classification == "needed", rows[second.branch]
     assert "recovery state" in rows[second.branch].reason
+
+
+def test_one_pass_reference_index_matches_literal_regex_semantics():
+    randomizer = random.Random(622)
+    alphabet = "abcXYZ019-._+[]()?é漢"
+    run_ids = {
+        "20260911T000000Z-work",
+        "20260911T000000Z-work-2",
+        "legacy.run+work",
+        "punctuation[1](?).+",
+        "unicode-é漢",
+    }
+    run_ids.update(
+        "".join(randomizer.choice(alphabet) for _ in range(randomizer.randint(1, 28)))
+        for _ in range(300)
+    )
+    fragments = []
+    for run_id in sorted(run_ids):
+        before = randomizer.choice(["", " ", "/", ":", ".", "x", "é", "-"])
+        after = randomizer.choice(["", " ", "/", ":", ".json", "x", "漢", "-"])
+        fragments.append(f"{before}{run_id}{after}")
+    state_text = " | ".join(fragments)
+
+    expected = {run_id for run_id in run_ids if _has_run_reference(state_text, run_id)}
+
+    assert _run_references(state_text, run_ids) == expected
+
+
+def test_reference_index_is_fresh_for_each_mutable_snapshot():
+    run_ids = {"20260911T000000Z-work", "20260911T000000Z-work-2"}
+
+    assert _run_references('{"run": "20260911T000000Z-work"}', run_ids) == {
+        "20260911T000000Z-work",
+    }
+    assert _run_references('{"run": "20260911T000000Z-work-2"}', run_ids) == {
+        "20260911T000000Z-work-2",
+    }
+
+
+def test_reference_index_walks_state_once_for_5000_runs():
+    class CountingText(str):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return super().__iter__()
+
+    run_ids = {f"20260911T{i:06d}Z-work" for i in range(5000)}
+    referenced = "20260911T004999Z-work"
+    state_text = CountingText(f'{{"recovery":"backup/{referenced}.json"}}')
+
+    assert _run_references(state_text, run_ids) == {referenced}
+    assert state_text.iterations == 1
+
+
+def test_single_branch_recheck_indexes_only_relevant_recovery_runs(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.DONE
+    sched.store.save(task)
+    _make_branch(sched.repo_for(task), "garden/selected")
+    selected = _record_branch(sched, task.id, "garden/selected")
+    other = _record_branch(sched, task.id, "garden/other", active=True)
+    other.base = "garden/selected"
+    other.save()
+    observed = []
+
+    def has_reference(_state_text, run_id):
+        observed.append(run_id)
+        return False
+
+    monkeypatch.setattr("garden.branch_cleanup._has_run_reference", has_reference)
+
+    rows = sched.branch_cleanup_inventory(only_remote_branch=selected.branch)
+
+    assert observed == [selected.run_id]
+    row = next(row for row in rows if row.branch == selected.branch)
+    assert row.classification == "needed"
+    assert "stack base" in row.reason
+
+
+@pytest.mark.stress
+def test_reference_index_benchmark_at_scheduler_state_scale():
+    run_ids = {f"20260911T{i:06d}Z-work" for i in range(5000)}
+    referenced = sorted(run_ids)[::499]
+    references = "".join(f'{{"artifact":"backup/{run_id}.json"}}' for run_id in referenced)
+    state_text = references + ("x" * ((13 * 1024 * 1024) - len(references)))
+
+    started = time.perf_counter()
+    expected = {run_id for run_id in run_ids if _has_run_reference(state_text, run_id)}
+    previous_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    actual = _run_references(state_text, run_ids)
+    indexed_seconds = time.perf_counter() - started
+
+    assert len(state_text) == 13 * 1024 * 1024
+    assert len(run_ids) == 5000
+    assert actual == expected == set(referenced)
+    assert indexed_seconds < previous_seconds
+    print(f"previous={previous_seconds:.6f}s indexed={indexed_seconds:.6f}s")
 
 
 def test_superseded_attempt_branch_is_removable_after_task_completes_when_preserved(sched):
