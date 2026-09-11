@@ -3,9 +3,11 @@
 from garden.criteria import (
     amend_criteria,
     apply_verification,
+    browser_capture_authorized,
     criteria_counts,
     parse_criteria,
     reconcile,
+    required_evidence,
     verification_markdown,
     worker_verified,
 )
@@ -89,6 +91,24 @@ def test_amend_criteria_replaces_a_wrapped_criterion_with_no_stale_text():
     assert "- [ ] Keep this one." in updated
     assert parse_criteria(updated) == ["Replacement criterion.", "Keep this one."]
     assert applied == [{"index": 0, "text": "Replacement criterion.", "reason": "Old one was wrong."}]
+
+
+def test_browser_capture_authority_requires_an_explicit_signal():
+    assert browser_capture_authorized("", ["captures"])
+    assert browser_capture_authorized(
+        "## Acceptance criteria\n\n- [ ] UI captures are required at 390px and 1280px.\n"
+    )
+    assert browser_capture_authorized(
+        "## Acceptance criteria\n\n- [ ] Provide light and dark browser captures.\n"
+    )
+    incidental = (
+        "## Acceptance criteria\n\n"
+        "- [ ] Automatic UI/capture checks do not launch Playwright.\n"
+        "- [ ] Captures must not run in unsupported environments.\n"
+        "- [ ] Documentation explains why captures are optional.\n"
+    )
+    assert not browser_capture_authorized(incidental)
+    assert not any(item["kind"] == "capture" for item in required_evidence(incidental))
 
 
 def test_reconcile_aligns_worker_and_reviewer_by_quoted_criterion():

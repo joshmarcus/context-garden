@@ -195,6 +195,33 @@ def test_project_browser_authority_does_not_gate_non_browser_tasks(sched, monkey
     assert "infrastructure_hold" not in sched.state.get(task.id)
 
 
+def test_incidental_or_negative_capture_criteria_do_not_probe_browser(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.body = """## Acceptance criteria
+
+- [ ] Automatic capture checks do not launch Playwright by default.
+- [ ] Captures must not run when browser support is unavailable.
+"""
+    monkeypatch.setattr(
+        "garden.scheduler.browser.probe_browser_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("criterion prose must not authorize a browser probe")
+        ),
+    )
+    dispatched = []
+
+    def dispatch(candidate, **_kwargs):
+        dispatched.append(candidate.id)
+        candidate.status = Status.RUNNING
+
+    monkeypatch.setattr(sched, "dispatch", dispatch)
+    sched.dispatch_ready(TickReport())
+
+    assert task.id in dispatched
+    assert not sched.browser_authorized(task)
+    assert not sched.capture_required(task)
+
+
 def test_timeout_failure_cache_survives_scheduler_restart(sched, fake_github, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["requires"] = ["captures"]
