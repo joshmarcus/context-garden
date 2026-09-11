@@ -5,9 +5,11 @@ from garden.criteria import (
     apply_verification,
     browser_capture_authorized,
     criteria_counts,
+    evidence_gaps,
     parse_criteria,
     reconcile,
     required_evidence,
+    unmatched_worker_entries,
     verification_markdown,
     worker_verified,
 )
@@ -176,6 +178,48 @@ def test_apply_verification_injects_and_replaces():
     # no verified data leaves the body untouched
     assert apply_verification(body, criteria, None) == body
     assert apply_verification(body, criteria, []) == body
+
+
+def test_unmatched_worker_entries_finds_paraphrased_criteria():
+    criteria = ["A renders.", "B returns 200."]
+    # the worker's wording for "A renders." drifted; reconcile can't line it up positionally
+    # once every entry quotes a criterion, so this entry's evidence would otherwise vanish
+    verified = [{"criterion": "A shows up on the page.", "evidence": "test_a"},
+                {"criterion": "B returns 200.", "evidence": "test_b"}]
+    unmatched = unmatched_worker_entries(criteria, verified)
+    assert len(unmatched) == 1
+    assert unmatched[0]["evidence"] == "test_a"
+    # a purely positional list (no entry quotes a criterion) has nothing to call unmatched
+    assert unmatched_worker_entries(criteria, [{"evidence": "test_a"}, {"evidence": "test_b"}]) == []
+
+
+def test_evidence_gaps_distinguishes_silence_from_wording_drift():
+    criteria = ["A renders.", "B returns 200."]
+    # a genuine, unexplained gap: no evidence anywhere that could cover "B returns 200."
+    assert evidence_gaps(criteria, [{"criterion": "A renders.", "evidence": "test_a"}]) == ["B returns 200."]
+    # explainable: the worker's evidence for B just used different wording, so it shows up as an
+    # unmatched entry rather than a silent gap
+    verified = [{"criterion": "A renders.", "evidence": "test_a"},
+                {"criterion": "B returns two hundred.", "evidence": "test_b"}]
+    assert evidence_gaps(criteria, verified) == []
+    # not_done with a reason is not a gap at all
+    verified2 = [{"criterion": "A renders.", "evidence": "test_a"},
+                 {"criterion": "B returns 200.", "not_done": True, "reason": "blocked"}]
+    assert evidence_gaps(criteria, verified2) == []
+
+
+def test_verification_markdown_surfaces_reconciliation_notes():
+    criteria = ["A renders.", "B returns 200."]
+    verified = [{"criterion": "A renders.", "evidence": "test_a"},
+                {"criterion": "B returns two hundred.", "evidence": "test_b"}]
+    rows = reconcile(criteria, verified)
+    unmatched = unmatched_worker_entries(criteria, verified)
+    md = verification_markdown(rows, unmatched)
+    assert "- ⚠️ **B returns 200.** — no evidence given" in md
+    assert "### Reconciliation notes" in md
+    assert "test_b" in md
+    # default (no unmatched passed) stays exactly as before
+    assert "### Reconciliation notes" not in verification_markdown(rows)
 
 
 def test_criteria_counts():
