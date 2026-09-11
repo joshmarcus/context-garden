@@ -53,9 +53,9 @@ def _is_ui_path(path: str) -> bool:
             or path.endswith((".css", ".scss")))
 
 
-def preflight_section(capture_infrastructure_policy: str = "require") -> str:
+def preflight_section(capture_infrastructure_policy: str = "require", *, browser_enabled: bool = True) -> str:
     policy = _capture_policy(capture_infrastructure_policy)
-    if policy == "advisory":
+    if browser_enabled and policy == "advisory":
         capture_policy = (
             "\nCapture infrastructure policy for this run: `advisory`. If the trusted UI check "
             "cannot launch its browser, reach its capture path, or return its result, report that "
@@ -67,8 +67,11 @@ def preflight_section(capture_infrastructure_policy: str = "require") -> str:
         )
     else:
         capture_policy = ""
+    items = PREFLIGHT_ITEMS if browser_enabled else tuple(
+        item for item in PREFLIGHT_ITEMS if not item.startswith("UI changes have")
+    )
     return PREFLIGHT_RULES.format(
-        items="\n".join(f"- {item}" for item in PREFLIGHT_ITEMS),
+        items="\n".join(f"- {item}" for item in items),
         capture_policy=capture_policy,
     )
 

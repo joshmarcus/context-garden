@@ -167,6 +167,7 @@ def test_narrow_frame_uses_a_390px_content_viewport():
     assert measurements == {"clientWidth": 390, "scrollWidth": 390}
 
 
+@pytest.mark.browser
 def test_narrow_frame_executes_measurement_in_chromium():
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as p:
@@ -577,7 +578,7 @@ def test_ui_check_prefers_execution_checkout_over_serialized_controller_path(tmp
     assert seen["argv"][4] == str(execution_dir / "ui")
 
 
-def test_browser_is_prepared_automatically(monkeypatch):
+def test_missing_browser_is_reported_without_automatic_install(monkeypatch):
     class Chromium:
         def launch(self):
             raise RuntimeError("browser executable missing")
@@ -600,14 +601,17 @@ def test_browser_is_prepared_automatically(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
     monkeypatch.setattr("garden.walkthrough.subprocess.run", lambda argv, **_kwargs: (
         calls.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")))
-    assert _prepare_browser() is None
-    assert calls == [[sys.executable, "-m", "playwright", "install", "chromium"]]
+    result = _prepare_browser()
+    assert result is not None
+    assert result["kind"] == "missing_executable"
+    assert calls == []
 
 
 def test_scheduler_leaves_ui_verification_to_reviewer_and_preserves_explicit_checks(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.title = "Tighten inbox layout"
     task.extra["visual_scope"] = {"behavior": "Tighter inbox layout"}
+    task.extra["requires"] = ["captures"]
     worktree = sched.worktree_for(task)
     worktree.mkdir(parents=True, exist_ok=True)
     captured = []
@@ -651,6 +655,18 @@ def test_explicit_empty_ui_capture_selection_captures_no_pages(garden, tmp_path)
     result = capture(store, store.phase("demo", "p1"), tmp_path, screenshots=False, pages=[])
 
     assert result.pages == []
+
+
+def test_capture_default_does_not_probe_or_launch_browser(garden, tmp_path, monkeypatch):
+    store = Store(garden)
+    monkeypatch.setattr(
+        "garden.walkthrough._prepare_browser",
+        lambda: (_ for _ in ()).throw(AssertionError("default capture must be browser-free")),
+    )
+
+    result = capture(store, store.phase("demo", "p1"), tmp_path, pages=[])
+
+    assert result.screenshots is False
 
 
 def test_html_to_text_strips_tags_and_scripts():

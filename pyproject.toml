@@ -17,7 +17,6 @@ dependencies = [
     "markdown>=3.5",
     "textual>=0.60",
     "python-multipart>=0.0.9",
-    "playwright>=1.40",
 ]
 
 [project.scripts]
@@ -43,6 +42,7 @@ timeout_method = "signal"
 session_timeout = 900
 markers = [
     "stress: explicit opt-in load, scale, resource-pressure, or latency experiments",
+    "browser: explicit opt-in test that launches a browser",
     "needs_remote_clone: test executes an SSH worker against the remote-host checkout",
 ]
 

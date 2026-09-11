@@ -4,9 +4,9 @@ and what to look at.
 
 A persona review reads the code, PR bodies and task files but never sees a page; this
 captures the real UI so a designer, usability expert or user persona can judge it, and a
-person can follow the index as a QA script. Screenshots use Playwright's Chromium when it
-is available; with no browser the capture falls back to HTML and plain text only and says
-so in the index.
+person can follow the index as a QA script. Screenshots use Playwright's Chromium only when
+explicitly requested; the default produces HTML and plain text without probing, installing
+or launching a browser.
 
 The web app itself is untouched: pages are fetched from an in-process test client (or a
 running server given its URL), so nothing here needs a port or a browser to produce the
@@ -681,12 +681,7 @@ def _screenshot(base_url: str, specs: list[PageSpec], out_dir: Path, log: Log) -
 
 
 def _prepare_browser() -> dict[str, object] | None:
-    """Install Playwright's Chromium when its package is present but the browser is not.
-
-    The browser is machine-local rather than a wheel payload. Both walkthroughs and PR UI
-    checks come through this helper, so a prepared product environment needs no separate
-    operator step. Return the installer's diagnostic when preparation fails.
-    """
+    """Verify an explicitly requested browser without installing machine-local software."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -698,16 +693,7 @@ def _prepare_browser() -> dict[str, object] | None:
         return None
     except Exception as exc:  # noqa: BLE001 - a missing executable is the expected first-run case
         kind, _action = classify_browser_failure(str(exc))
-        if kind != "missing_executable":
-            return browser_failure(kind, str(exc))
-        proc = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            capture_output=True, text=True, timeout=300, check=False,
-        )
-        if proc.returncode:
-            detail = (proc.stderr or proc.stdout or "Chromium installation failed").strip()[-1000:]
-            return browser_failure("missing_executable", detail)
-        return None
+        return browser_failure(kind, str(exc))
 
 
 def _serve(store: Store) -> tuple[str, Callable[[], None]]:
@@ -741,7 +727,7 @@ def _serve(store: Store) -> tuple[str, Callable[[], None]]:
     return f"http://127.0.0.1:{port}", stop
 
 
-def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = True,
+def capture(store: Store, phase: Phase, out_dir: Path, screenshots: bool = False,
             base_url: str = "", log: Log | None = None, include_stderr: bool = False,
             pages: list[str] | None = None) -> WalkthroughResult:
     """Write `<slug>.html`, `<slug>.txt` (and `<slug>.png` when a browser is available) for

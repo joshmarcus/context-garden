@@ -295,3 +295,17 @@ def test_cli_saved_project_edit_and_locked_bypass_use_shared_boundary(garden, mo
     assert result.exit_code == 1
     assert "capacity policy" in result.output
     assert Config.load(garden).setting("max_parallel", "demo").value == 3
+
+def test_browser_execution_defaults_off_and_supports_project_opt_in(tmp_path):
+    (tmp_path / "garden.yaml").write_text("products:\n  web:\n    configuration:\n      overrides:\n        browser.enabled: true\n")
+
+    config = Config.load(tmp_path)
+
+    assert config.browser_enabled() is False
+    assert config.browser_enabled("web") is True
+
+
+def test_existing_config_without_browser_authority_stays_disabled(tmp_path):
+    (tmp_path / "garden.yaml").write_text("name: existing\nproducts:\n  app: {}\n")
+
+    assert Config.load(tmp_path).browser_enabled("app") is False

@@ -18,17 +18,22 @@ _CONTINUATION_RE = re.compile(r"^\s+\S.*$")
 _VERIFICATION_HEADING_RE = re.compile(r"(?im)^#{1,6}\s+verification\b.*$")
 _PERSONA_REQUIREMENT_RE = re.compile(r"\bpersona-review\b.*?\s-p\s+([a-z0-9][a-z0-9-]*)\b", re.I)
 _CHECK_REQUIREMENT_RE = re.compile(r"\bcheck\s*:\s*`?([a-z0-9][a-z0-9_-]*)`?", re.I)
+_LEGACY_CAPTURE_REQUIREMENT_RE = re.compile(
+    r"(?:\brequires?\s*:?\s*(?:ui\s+)?captures?\b|"
+    r"\b(?:ui\s+)?captures?\s+(?:are\s+)?required\b|"
+    r"^\s*(?:provide|attach|take|record|produce|create|generate)\b[^.]{0,80}\bcaptures?\b)",
+    re.I,
+)
 
 
 def required_evidence(body: str, requires: Any = None) -> list[dict[str, str]]:
     """Evidence the task explicitly asks the scheduler to produce.
 
     The portable frontmatter form is ``requires: ["persona-review -p designer",
-    "captures", "check: unit"]``.  The same concise forms in an acceptance criterion work
-    for author-written tasks.  A named check refers to a configured pre-PR check; task text
-    never supplies a shell command.
+    "captures", "check: unit"]``. The same concise persona/check forms and explicit legacy
+    capture requests in an acceptance criterion work for author-written tasks. A named check
+    refers to a configured pre-PR check; task text never supplies a shell command.
     """
-    text = "\n".join(parse_criteria(body))
     values = requires if isinstance(requires, list) else []
     out: list[dict[str, str]] = []
 
@@ -37,7 +42,7 @@ def required_evidence(body: str, requires: Any = None) -> list[dict[str, str]]:
         if item not in out:
             out.append(item)
 
-    def parse(value: Any) -> None:
+    def parse(value: Any, *, structured: bool) -> None:
         if isinstance(value, dict):
             if value.get("persona"):
                 add("persona", str(value["persona"]))
@@ -49,15 +54,28 @@ def required_evidence(body: str, requires: Any = None) -> list[dict[str, str]]:
         value = str(value)
         for name in _PERSONA_REQUIREMENT_RE.findall(value):
             add("persona", name)
-        if re.search(r"\bcaptures?\b", value, re.I):
+        if ((structured and re.search(r"\bcaptures?\b", value, re.I))
+                or (not structured and _LEGACY_CAPTURE_REQUIREMENT_RE.search(value))):
             add("capture")
         for name in _CHECK_REQUIREMENT_RE.findall(value):
             add("check", name)
 
-    parse(text)
+    for criterion in parse_criteria(body):
+        parse(criterion, structured=False)
     for value in values:
-        parse(value)
+        parse(value, structured=True)
     return out
+
+
+def browser_capture_authorized(body: str, requires: Any = None) -> bool:
+    """Return whether a task deliberately opts in to browser capture work.
+
+    Structured ``requires`` values are unambiguous. For compatibility with older tasks,
+    acceptance criteria count only when they explicitly require captures or use a direct
+    capture-producing imperative. Merely discussing captures (including saying not to run
+    them) is not execution authority.
+    """
+    return any(item["kind"] == "capture" for item in required_evidence(body, requires))
 
 
 def required_evidence_rows(requirements: list[dict[str, str]], state: Any) -> list[dict[str, str]]:

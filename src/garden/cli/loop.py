@@ -942,14 +942,14 @@ def walkthrough(
     target: str = typer.Argument(..., help="product/phase"),
     out: Path | None = typer.Option(None, "--out", help="Output directory (default: <phase>/docs/walkthrough/<date>)"),
     url: str = typer.Option("", "--url", help="Base URL of a running app to capture (default: an in-process test app)"),
-    screenshots: bool = typer.Option(True, "--screenshots/--no-screenshots", help="Capture PNGs with Playwright's Chromium when it is available"),
+    screenshots: bool = typer.Option(False, "--screenshots/--no-screenshots", help="Explicitly capture PNGs with a preinstalled Playwright Chromium runtime"),
     include_stderr: bool = typer.Option(False, "--include-stderr", help="Include the run page's raw stderr (omitted by default: it can carry secrets or local paths, and this capture is committed to the garden repo)"),
 ):
     """Render the live web app's pages to screenshots, HTML and text, with an index.md that
     says what each page is for and what to look at — a persona review can then judge the real
-    UI and a person can follow it as a QA script. Needs Playwright's Chromium for screenshots
-    (the first capture prepares Chromium automatically); with no
-    browser it captures HTML and text only and notes it in the index. Absolute home-directory
+    UI and a person can follow it as a QA script. Screenshots require an explicit
+    --screenshots option and a preinstalled Playwright Chromium runtime; by default no browser
+    is probed or launched. Absolute home-directory
     paths are redacted and the run page's stderr is omitted unless --include-stderr is given,
     since this capture is committed to the garden repo."""
     from datetime import date

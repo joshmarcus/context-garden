@@ -132,7 +132,8 @@ def interaction_requirement(changed: list[str], *review_context: str) -> tuple[b
 def validation_plan(changed: list[str], *review_context: str, head: str = "",
                     check_specs: list[dict[str, Any]] | None = None,
                     visual_scope: Any = None,
-                    capture_infrastructure_policy: str = "require") -> dict[str, Any]:
+                    capture_infrastructure_policy: str = "require",
+                    browser_enabled: bool = True) -> dict[str, Any]:
     """Return the head-bound functional and visual evidence decision for a change.
 
     A screenshot is evidence for a named visible behaviour, never a side effect of touching
@@ -198,12 +199,16 @@ def validation_plan(changed: list[str], *review_context: str, head: str = "",
               else [{"item": "configured pre-PR checks", "reason": check_reason}])
     if not reasons:
         reasons.append({"item": "no rendered evidence", "reason": "no rendered or lifecycle behavior changed"})
+    if not browser_enabled:
+        pages.clear()
+        reasons.append({"item": "browser validation not required",
+                        "reason": "browser execution is not enabled for this project; use applicable non-browser checks"})
     return {"head": head, "pages": sorted(pages), "interaction": interaction,
             "scalability": scalability, "unknown_ui": unknown, "checks": checks, "reasons": reasons,
             "visual_paths": sorted(visual_paths),
             "capture_infrastructure_policy": (
                 "advisory" if capture_infrastructure_policy == "advisory" else "require"
-            )}
+            ), "browser_enabled": browser_enabled}
 
 
 def interaction_evidence_gaps(review: dict[str, Any], *, required: bool, scalability: bool,
@@ -556,7 +561,10 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         f"# Review: PR for task {task.id} ({task.title})\n",
         REVIEW_RULES.format(branch=branch, base=base, marker=REVIEW_MARKER),
         EVIDENCE_GUIDANCE,
-        preflight_section(str((plan or {}).get("capture_infrastructure_policy") or "require")),
+        preflight_section(
+            str((plan or {}).get("capture_infrastructure_policy") or "require"),
+            browser_enabled=bool((plan or {}).get("browser_enabled")),
+        ),
         "## Task contract\n\nOpen the task and immutable context references in the launch note below.\n\n" + task_brief.text,
         f"## PR title\n\n{pr_title}\n\n## PR description\n\n{pr_body.strip() or '(empty)'}\n",
     ]

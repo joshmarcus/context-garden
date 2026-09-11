@@ -375,7 +375,8 @@ def test_exact_push_gate_rejects_stale_pending_and_failed_runs(run, passes):
 
 def test_repository_ci_runs_before_pr_and_keeps_full_suite():
     # BaseLoader preserves the YAML key 'on' under both YAML 1.1 and 1.2.
-    cfg = yaml.load((Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
+    workflow = (Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text()
+    cfg = yaml.load(workflow, Loader=yaml.BaseLoader)
     assert set(cfg["on"]["push"]["branches"]) >= {"garden/**", "codex/**", "main"}
     assert "pull_request" in cfg["on"]
     assert "if" not in cfg["jobs"]["test"]
@@ -391,3 +392,5 @@ def test_repository_ci_runs_before_pr_and_keeps_full_suite():
         s.get("run") == "pytest -q --durations=40 --timeout=120 --timeout-method=thread"
         for s in steps
     )
+    assert "playwright install" not in workflow
+    assert "chromium" not in workflow.lower()

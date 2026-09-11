@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .criteria import parse_criteria
+from .criteria import browser_capture_authorized, parse_criteria
 from .host_identity import scrub_shared_text
 from .model import Task, estimate_tokens, goals_text
 from .preflight import preflight_section
@@ -480,7 +480,10 @@ def build_brief(
         criteria_text = "# Criteria frozen for this dispatch\n\n" + "\n".join(f"- {item}" for item in frozen) + "\n"
         sections.append(("criteria_ref", f"## Frozen contract\n\nUse `{snapshot('criteria.md', criteria_text)}`; it remains the contract if the live task later changes.\n"))
     if include_rules:
-        sections.append(("pre_flight", preflight_section(cfg.capture_infrastructure_policy())))
+        sections.append(("pre_flight", preflight_section(
+            cfg.capture_infrastructure_policy(), browser_enabled=cfg.browser_enabled(task.product)
+            or browser_capture_authorized(task.body, task.extra.get("requires")),
+        )))
 
     # Reading list: inline what fits, reference the rest.
     reading_parts: list[str] = []

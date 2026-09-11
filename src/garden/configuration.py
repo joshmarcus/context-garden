@@ -80,6 +80,7 @@ CONFIG_FIELDS: dict[str, ConfigField] = {f.key: f for f in (
     _field("phase_execution", "string", "concurrent", "Controls whether each project admits model work from all open phases or only its earliest open phase.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT), choices=("concurrent", "sequential")),
     _field("auto_revise", "boolean", True, "Automatically starts another paid worker round after review requests changes.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT)),
     _field("stack", "boolean", True, "Starts dependent work on an open dependency branch.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT)),
+    _field("browser.enabled", "boolean", False, "Allows browser-dependent tasks and visual validation where Playwright is supported.", scopes=(ConfigScope.GLOBAL, ConfigScope.PROJECT)),
     _field("operating_profile", "string", "", "Selects a named bundle of worker, review, model and observation settings.", apply=ApplyMode.RUNTIME),
     _field("models", "mapping", {}, "Maps work tiers to a model or weighted worker pool; an active operating profile supplies this map unless a live override is set.", apply=ApplyMode.RUNTIME),
     _field("observe.profile", "string", "", "Selects the observation feed preset.", apply=ApplyMode.RUNTIME),
