@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -169,6 +171,138 @@ def test_fence_recovery_refuses_to_replace_corrupt_state(tmp_path):
         state.restore_other_task_keys({"CG-002": {"lease": "old"}}, "CG-001", {"CG-001", "CG-002"})
 
     assert path.read_bytes() == corrupt
+
+
+def test_completed_state_history_is_compressed_exact_and_restorable(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    feedback = [{"body": "same detailed finding " * 200, "round": n} for n in range(20)]
+    state.get("CG-001")["review_feedback_history"] = feedback
+    state.get("CG-001")["head_sha"] = "abc123"
+    state.save()
+    before = path.stat().st_size
+
+    report = state.archive_completed({"CG-001"}, limit=1)
+    compact = State(path)
+
+    assert report["tasks"] == 1
+    assert report["stored_bytes"] < report["logical_bytes"]
+    assert path.stat().st_size < before / 10
+    assert compact.get("CG-001")["head_sha"] == "abc123"
+    assert "review_feedback_history" not in compact.get("CG-001")
+    assert compact.historical("CG-001")["review_feedback_history"] == feedback
+    assert compact.restore_operational({"CG-001"}) == 1
+    compact.save()
+    assert State(path).get("CG-001")["review_feedback_history"] == feedback
+
+
+def test_state_history_commit_skips_payload_changed_after_preparation(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    state.get("CG-001")["review_feedback_history"] = [{"body": "original" * 1000}]
+    state.save()
+    prepared = state.prepare_completed({"CG-001"}, limit=1)
+
+    state.get("CG-001")["review_feedback_history"].append({"body": "new finding"})
+    report = state.commit_completed(prepared, {"CG-001"})
+
+    assert report["tasks"] == 0
+    assert "_history_ref" not in state.get("CG-001")
+    assert len(state.get("CG-001")["review_feedback_history"]) == 2
+
+
+def test_state_history_commit_skips_independent_writer_update(tmp_path):
+    path = tmp_path / "state.json"
+    archiver = State(path)
+    archiver.get("CG-001")["review_feedback_history"] = [{"body": "original" * 1000}]
+    archiver.get("CG-001")["head_sha"] = "original-head"
+    archiver.save()
+    prepared = archiver.prepare_completed({"CG-001"}, limit=1)
+
+    writer_loaded = threading.Event()
+    writer_saved = threading.Event()
+
+    def update_from_independent_state() -> None:
+        writer = State(path)
+        writer_loaded.set()
+        writer.get("CG-001")["review_feedback_history"].append({"body": "new finding"})
+        writer.get("CG-001")["unrelated_control"] = {"owner": "manual"}
+        writer.save()
+        writer_saved.set()
+
+    thread = threading.Thread(target=update_from_independent_state)
+    thread.start()
+    assert writer_loaded.wait(timeout=2)
+    assert writer_saved.wait(timeout=2)
+
+    report = archiver.commit_completed(prepared, {"CG-001"})
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+    fresh = State(path)
+    assert report["tasks"] == 0
+    assert "_history_ref" not in fresh.get("CG-001")
+    assert fresh.get("CG-001")["review_feedback_history"][-1] == {"body": "new finding"}
+    assert fresh.get("CG-001")["head_sha"] == "original-head"
+    assert fresh.get("CG-001")["unrelated_control"] == {"owner": "manual"}
+
+
+def test_state_history_preparation_respects_target_volume_headroom(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    state = State(path)
+    state.get("CG-001")["review_feedback_history"] = [{"body": "original" * 1000}]
+
+    class Usage:
+        free = 1024
+
+    monkeypatch.setattr("garden.scheduler.state.shutil.disk_usage", lambda _path: Usage())
+
+    with pytest.raises(OSError, match="reserved headroom"):
+        state.prepare_completed({"CG-001"}, limit=1, min_free_bytes=2048)
+
+    assert "_history_ref" not in state.get("CG-001")
+
+
+def test_state_history_crash_before_compact_state_commit_keeps_original(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    state = State(path)
+    payload = [{"body": "important failure"}]
+    state.get("CG-001")["review_feedback_history"] = payload
+    state.save()
+    original_durable_bytes = state._durable_bytes
+
+    def interrupted_write(target, data):
+        if target == path:
+            raise OSError("simulated state commit failure")
+        original_durable_bytes(target, data)
+
+    monkeypatch.setattr(state, "_durable_bytes", interrupted_write)
+    with pytest.raises(OSError, match="state commit failure"):
+        state.archive_completed({"CG-001"}, limit=1)
+
+    assert State(path).get("CG-001")["review_feedback_history"] == payload
+
+
+def test_state_history_rejects_corrupt_existing_blob_without_compacting(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(path)
+    payload = [{"body": "important failure"}]
+    state.get("CG-001")["review_feedback_history"] = payload
+    state.save()
+    raw = json.dumps(
+        {"review_feedback_history": payload}, sort_keys=True, separators=(",", ":")
+    ).encode()
+    sha = hashlib.sha256(raw).hexdigest()
+    blob = state.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"corrupt")
+
+    with pytest.raises(StateCorruptionError, match="verification failed"):
+        state.archive_completed({"CG-001"}, limit=1)
+
+    fresh = State(path)
+    assert fresh.get("CG-001")["review_feedback_history"] == payload
+    assert "_history_ref" not in fresh.get("CG-001")
 
 
 # ── concurrent-write tests ─────────────────────────────────────────────────────

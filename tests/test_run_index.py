@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -304,6 +305,222 @@ def test_archive_round_trip_preserves_summary_and_artifacts(tmp_path: Path):
     assert rs.totals()["runs"] == 1
 
 
+def test_interrupted_restore_is_repaired_without_duplicate_cost(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "20260101T000000Z-work", 3.25)
+    (run.path / "final.md").write_text("review evidence")
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 1
+    original = rs._write_archive_index
+
+    def fail_index_publish():
+        raise OSError("simulated index publication failure")
+
+    monkeypatch.setattr(rs, "_write_archive_index", fail_index_publish)
+    with pytest.raises(OSError, match="index publication failure"):
+        rs.restore_archived(run.task_id, run.run_id)
+
+    interrupted = RunStore(tmp_path)
+    with pytest.raises(HistoryUnavailable, match="migration is incomplete"):
+        interrupted.all_runs()
+    monkeypatch.setattr(rs, "_write_archive_index", original)
+    assert interrupted.repair_pending_archive()
+
+    fresh = RunStore(tmp_path)
+    records = fresh.all_runs()
+    assert [(record.run_id, record.cost_usd) for record in records] == [(run.run_id, 3.25)]
+    assert records[0].path == fresh.dir / run.task_id / run.run_id
+    assert records[0].read_text("final.md") == "review evidence"
+    assert fresh.totals()["runs"] == 1
+    assert fresh.totals()["cost_usd"] == 3.25
+
+
+def test_archive_compresses_and_deduplicates_large_artifacts_byte_exactly(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    payload = (b"historical fence state\n" * 1000) + bytes(range(256))
+    runs = [_finished(rs, "CG-001", f"run-{n}", 1.0) for n in range(2)]
+    for run in runs:
+        (run.path / "fence_guard").mkdir()
+        (run.path / "fence_guard" / ".garden__state.json").write_bytes(payload)
+
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 2
+    blobs = list((rs.archive_dir / "blobs").glob("*/*.gz"))
+    assert len(blobs) == 1
+    report = rs.archive_report()
+    assert report["logical_blob_bytes"] == len(payload) * 2
+    assert report["stored_blob_bytes"] == blobs[0].stat().st_size
+    assert report["actual_savings_bytes"] > 0
+    archived = rs.runs_for("CG-001")
+    for run in archived:
+        assert run.read_bytes("fence_guard/.garden__state.json") == payload
+        assert not (run.path / "fence_guard" / ".garden__state.json").exists()
+    assert rs.restore_archived("CG-001", "run-0")
+    assert (rs.dir / "CG-001" / "run-0" / "fence_guard" / ".garden__state.json").read_bytes() == payload
+
+
+def test_archive_preparation_retains_source_until_revalidated_commit(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 2.0)
+    payload = b"large immutable output" * 1000
+    (run.path / "stdout.json").write_bytes(payload)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+
+    prepared = rs.prepare_terminal_archive(before, limit=1)
+
+    assert len(prepared) == 1
+    assert (run.path / "stdout.json").read_bytes() == payload
+    assert rs.commit_terminal_archive(prepared, before) == 1
+    rs.retire_prepared_archive(prepared)
+    archived = RunStore(tmp_path).all_runs()[0]
+    assert archived.read_bytes("stdout.json") == payload
+
+
+def test_archive_commit_rejects_source_changed_during_preparation(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 2.0)
+    artifact = run.path / "stdout.json"
+    artifact.write_bytes(b"original" * 1000)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+    prepared = rs.prepare_terminal_archive(before, limit=1)
+
+    artifact.write_bytes(b"updated concurrently" * 1000)
+
+    assert rs.commit_terminal_archive(prepared, before) == 0
+    assert run.path.exists()
+    assert artifact.read_bytes() == b"updated concurrently" * 1000
+
+
+@pytest.mark.parametrize("boundary", ["move", "index", "marker"])
+def test_archive_commit_recovers_visibility_at_every_durable_boundary(
+    tmp_path: Path, monkeypatch, boundary: str,
+):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    (run.path / "stdout.json").write_bytes(b"preserved transcript" * 1000)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+    prepared = rs.prepare_terminal_archive(before, limit=1)
+    method_name = {
+        "move": "_durable_move",
+        "index": "_write_archive_index",
+        "marker": "_clear_archive_pending",
+    }[boundary]
+    original = getattr(rs, method_name)
+
+    def interrupt_after(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError(f"interrupted after {boundary}")
+
+    monkeypatch.setattr(rs, method_name, interrupt_after)
+    with pytest.raises(RuntimeError, match=f"after {boundary}"):
+        rs.commit_terminal_archive(prepared, before)
+
+    fresh = RunStore(tmp_path)
+    if (fresh.archive_dir / "pending.json").exists():
+        assert fresh.repair_pending_archive()
+        fresh = RunStore(tmp_path)
+    archived = fresh.all_runs()
+    assert [(item.run_id, item.cost_usd) for item in archived] == [("run-1", 7.0)]
+    assert archived[0].read_bytes("stdout.json") == b"preserved transcript" * 1000
+
+
+def test_each_archive_move_is_indexed_before_its_marker_is_retired(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    for number in range(2):
+        run = _finished(rs, f"CG-00{number}", f"run-{number}", number + 1.0)
+        (run.path / "stdout.json").write_bytes(bytes([number]) * 5000)
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+    prepared = rs.prepare_terminal_archive(before)
+    original = rs._clear_archive_pending
+    clears = 0
+
+    def interrupt_second_marker():
+        nonlocal clears
+        clears += 1
+        if clears == 2:
+            raise RuntimeError("interrupted before second marker retirement")
+        original()
+
+    monkeypatch.setattr(rs, "_clear_archive_pending", interrupt_second_marker)
+    with pytest.raises(RuntimeError, match="second marker"):
+        rs.commit_terminal_archive(prepared, before)
+
+    fresh = RunStore(tmp_path)
+    assert fresh.repair_pending_archive()
+    assert [(run.run_id, run.cost_usd) for run in RunStore(tmp_path).all_runs()] == [
+        ("run-0", 1.0),
+        ("run-1", 2.0),
+    ]
+
+
+def test_archive_preparation_respects_target_volume_headroom(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 2.0)
+    (run.path / "stdout.json").write_bytes(b"x" * 5000)
+
+    class Usage:
+        free = 1024
+
+    monkeypatch.setattr("garden.runs.shutil.disk_usage", lambda _path: Usage())
+    before = dt.datetime(2026, 2, 1, tzinfo=dt.UTC)
+
+    with pytest.raises(OSError, match="reserved headroom"):
+        rs.prepare_terminal_archive(before, limit=1, min_free_bytes=2048)
+
+    assert run.path.exists()
+    assert not list(rs.archive_dir.glob("blobs/*/*.gz"))
+
+
+def test_archive_report_measures_representative_multi_run_storage(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    payloads = []
+    for number in range(12):
+        # Repeated prefixes model state snapshots while distinct tails prevent the
+        # measurement from assuming that every run deduplicates to one object.
+        payload = (b'{"shared scheduler state":' + b"x" * 12_000
+                   + f',"generation":{number}}}'.encode())
+        payloads.append(payload)
+        run = _finished(rs, f"CG-{number:03}", f"run-{number}", number / 10)
+        (run.path / "fence_guard").mkdir()
+        (run.path / "fence_guard" / ".garden__state.json").write_bytes(payload)
+
+    assert rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 12
+    report = rs.archive_report()
+
+    assert report["logical_blob_bytes"] == sum(map(len, payloads))
+    assert report["unique_blobs"] == len(payloads)
+    assert report["stored_blob_bytes"] == sum(
+        path.stat().st_size for path in (rs.archive_dir / "blobs").glob("*/*.gz")
+    )
+    assert report["actual_savings_bytes"] == (
+        report["logical_blob_bytes"] - report["stored_blob_bytes"]
+    )
+
+
+def test_corrupt_archive_blob_fails_closed_without_hiding_accounting(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    (run.path / "stdout.json").write_bytes(b"x" * 5000)
+    rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC))
+    next((rs.archive_dir / "blobs").glob("*/*.gz")).write_bytes(b"corrupt")
+
+    assert RunStore(tmp_path).totals()["cost_usd"] == 7.0
+    with pytest.raises(HistoryUnavailable, match="unavailable"):
+        RunStore(tmp_path).all_runs()[0].stdout_text()
+
+
+def test_new_run_id_does_not_collide_with_archived_history(tmp_path: Path, monkeypatch):
+    rs = RunStore(tmp_path)
+    _finished(rs, "CG-001", "20260101T000000Z-work")
+    rs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC))
+
+    class FixedDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 1, tzinfo=dt.UTC)
+
+    monkeypatch.setattr("garden.runs.dt.datetime", FixedDateTime)
+    assert rs.next_run_id("CG-002", "work") == "20260101T000000Z-work-2"
+
+
 def test_archive_retains_active_and_recovery_referenced_runs(tmp_path: Path):
     rs = RunStore(tmp_path)
     protected = _finished(rs, "CG-001", "20260101T000000Z-work")
@@ -340,6 +557,49 @@ def test_legacy_archive_ledger_remains_readable(tmp_path: Path):
 
     assert fresh.totals()["cost_usd"] == 3.25
     assert fresh.all_runs()[0].run_id == run.run_id
+
+def test_incomplete_archive_migration_never_silently_omits_history(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    rs.archive_dir.mkdir()
+    (rs.archive_dir / "index.json").write_text('{"version": 2, "runs": []}')
+    (rs.archive_dir / "pending.json").write_text('{"run_id": "run-1"}')
+
+    assert "incomplete" in rs.archive_health()
+    with pytest.raises(HistoryUnavailable, match="incomplete"):
+        rs.all_runs()
+
+
+def test_pending_archive_after_move_is_repaired_before_history_reads(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    payload = b"original transcript" * 1000
+    (run.path / "stdout.json").write_bytes(payload)
+    target = rs.archive_dir / run.task_id / run.run_id
+    target.parent.mkdir(parents=True)
+    pending = {"version": rs.ARCHIVE_VERSION, "task_id": run.task_id, "run_id": run.run_id,
+               "source": str(run.path), "target": str(target)}
+    rs._durable_replace(rs.archive_dir / "pending.json", json.dumps(pending).encode())
+    os.replace(run.path, target)
+
+    assert rs.repair_pending_archive()
+    assert not (rs.archive_dir / "pending.json").exists()
+    archived = RunStore(tmp_path).all_runs()[0]
+    assert archived.cost_usd == 7.0
+    assert archived.read_bytes("stdout.json") == payload
+
+
+def test_pending_archive_before_move_aborts_without_moving_live_run(tmp_path: Path):
+    rs = RunStore(tmp_path)
+    run = _finished(rs, "CG-001", "run-1", 7.0)
+    target = rs.archive_dir / run.task_id / run.run_id
+    pending = {"version": rs.ARCHIVE_VERSION, "task_id": run.task_id, "run_id": run.run_id,
+               "source": str(run.path), "target": str(target)}
+    rs._durable_replace(rs.archive_dir / "pending.json", json.dumps(pending).encode())
+
+    assert rs.repair_pending_archive()
+    assert run.path.exists()
+    assert not target.exists()
+    assert RunStore(tmp_path).all_runs()[0].cost_usd == 7.0
 
 
 def test_archive_rebuild_refuses_to_hide_a_corrupt_record(tmp_path: Path):

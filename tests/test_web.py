@@ -2659,6 +2659,40 @@ def test_check_run_page_shows_command_source_and_passed_outcome(garden):
     assert "pytest tests/test_web.py -q" in body and "No action required." in body
 
 
+def test_archived_check_run_keeps_the_same_view_after_artifact_retirement(garden):
+    """Archived check configuration remains visible through the production run page."""
+    import datetime as dt
+    import json
+
+    from garden.runs import RunStore
+    from garden.store import Store
+
+    store = Store(garden)
+    runs = RunStore(store.config.garden_dir)
+    run = runs.new_run("DM-001", "local", "check")
+    run.status, run.source_head, run.exit_code = "done", "abc123def", 0
+    run.started_at = run.finished_at = "2026-01-01T00:00:00+00:00"
+    run.branch, run.base = "garden/dm-001", "main"
+    run.result = {"checks": [{"name": "unit", "status": "pass", "summary": "3 passed"}]}
+    run.save()
+    checks_input = {
+        "specs": [{"name": "unit", "command": "pytest tests/test_web.py -q"}],
+        "ctx": {"head_sha": run.source_head, "archival_padding": "x" * 5000},
+    }
+    (run.path / "checks_input.json").write_text(json.dumps(checks_input))
+
+    before_view = run.check_view()
+    assert runs.archive_terminal(dt.datetime(2026, 2, 1, tzinfo=dt.UTC)) == 1
+    archived = RunStore(store.config.garden_dir).runs_for("DM-001")[0]
+    assert not (archived.path / "checks_input.json").exists()
+    assert archived.check_view() == before_view
+
+    body = client(garden).get(f"/runs/DM-001/{run.run_id}").text
+    assert "Check outcome" in body and "passed" in body
+    assert "pytest tests/test_web.py -q" in body and "3 passed" in body
+    assert "abc123def" in body and "No action required." in body
+
+
 def test_check_run_page_keeps_failure_and_missing_results_distinct(garden):
     """Failed commands and an ended runner with no accepted result suggest different recovery."""
     from garden.runs import RunStore

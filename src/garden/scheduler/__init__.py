@@ -125,6 +125,12 @@ class Scheduler(
     `_transition()`; everything else lives in the mixin whose phase it belongs to, so two
     features in different parts of the loop edit different files."""
 
+    def _restore_operational_history(self) -> None:
+        """Terminal history becomes ordinary state again before a task can run."""
+        operational = {task.id for task in self.store.tasks().values() if not task.status.terminal}
+        if self.state.restore_operational(operational):
+            self.state.save()
+
     def __init__(
         self,
         store: Store,
@@ -146,6 +152,7 @@ class Scheduler(
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         self.log = log or (lambda msg: None)
         if not read_only:
+            self._restore_operational_history()
             self._migrate_fence_bookkeeping()
             # A new CLI process has no old Store instance to compare against.  Check active
             # dispatch manifests before constructing anything that could use garden.yaml.
@@ -840,6 +847,7 @@ class Scheduler(
         started = time.monotonic()
         self.store.invalidate_tasks()
         self.state = State(self.state.path)
+        self._restore_operational_history()
         self._migrate_fence_bookkeeping()
         self.confirm_restarted_upgrade()
         with self._step(rep, "reap"):
@@ -876,6 +884,7 @@ class Scheduler(
         started = time.monotonic()
         self.store.invalidate_tasks()  # re-reads task files; garden.yaml goes through the reload gate below
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
+        self._restore_operational_history()
         self._migrate_fence_bookkeeping()
         self.confirm_restarted_upgrade()
         if self.maintenance_requested():

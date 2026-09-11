@@ -87,34 +87,111 @@ def set_validation_capacity(
 @app.command("archive-runs", rich_help_panel=PANEL_DIAG)
 def archive_runs(
     older_than_days: int = typer.Option(30, min=1, help="Archive terminal runs finished before this many days ago."),
+    apply: bool = typer.Option(False, "--apply", help="Apply the previewed archive migration."),
+    limit: int = typer.Option(100, min=1, help="Maximum runs to move or resume per invocation."),
 ):
-    """Move old terminal runs to .garden/run-archive and keep a compact history index.
+    """Preview or compact old terminal runs into the lossless history archive.
 
     Running, unreaped, and run ids still referenced by recovery state are always retained.
     The operation is atomic per run and safe to retry; its index is rebuilt and verified
     on every invocation.
     """
-    from ..runs import RunStore
+    from ..runs import HistoryUnavailable, RunStore
+    from ..scheduler import StateCorruptionError
 
     store = _store()
-    state_path = store.config.garden_dir / "state.json"
-    try:
-        state_text = json.dumps(json.loads(state_path.read_text())) if state_path.exists() else ""
-    except (OSError, json.JSONDecodeError):
-        err.print("[red]state.json is unreadable; refusing to archive recovery evidence[/red]")
-        raise typer.Exit(2) from None
     rs = RunStore(store.config.garden_dir)
-    protected = {r.run_id for r in rs.all_runs() if r.run_id in state_text}
+    # Scheduler construction reads run history, which deliberately fails closed while
+    # an interrupted transaction is pending. Repair that single transaction first so
+    # the documented apply command can reach the normal locked reference analysis.
+    if apply:
+        try:
+            rs.repair_pending_archive()
+        except (OSError, ValueError, HistoryUnavailable) as exc:
+            err.print(f"[red]archive maintenance stopped safely: {exc}[/red]")
+            raise typer.Exit(2) from None
+    scheduler = _scheduler(store)
     before = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
+
+    def reference_analysis():
+        store.invalidate_tasks()
+        current_tasks = store.tasks()
+        scheduler.state = type(scheduler.state)(scheduler.state.path)
+        state_text = json.dumps(scheduler.state.data)
+        current_records = rs.all_runs()
+        current_protected = {run.run_id for run in current_records if run.run_id in state_text}
+        current_protected.update(scheduler.unreaped_run_ids())
+        current_protected.update(
+            run.run_id for run in current_records
+            if run.task_id in current_tasks and not current_tasks[run.task_id].status.terminal
+        )
+        return current_tasks, current_protected
+
+    with scheduler.tick_lock():
+        # Freeze task finalization for the reference snapshot used by the preview.
+        try:
+            tasks, protected = reference_analysis()
+            preview = rs.archive_preview(before, protected, limit=limit)
+            fence_report = scheduler.fence_history_report(apply=False, limit=limit)
+        except (OSError, ValueError, json.JSONDecodeError, HistoryUnavailable,
+                StateCorruptionError) as exc:
+            err.print(f"[red]archive reference analysis failed; nothing deleted: {exc}[/red]")
+            raise typer.Exit(2) from None
+        console.print(
+            f"eligible: {preview['eligible_runs']} run(s), {preview['eligible_bytes']} logical bytes; "
+            f"estimated stored bytes: {preview['estimated_stored_bytes']}; "
+            f"skipped: {preview['skipped']}"
+        )
+        console.print(f"fence history: {fence_report}")
+        if not apply:
+            console.print("preview only; pass --apply to archive and compact these runs")
+            return
+        # A first migration creates CAS directories during unlocked preparation. Publish
+        # the valid empty ledger first so concurrent history readers never mistake those
+        # prepared (but not yet referenced) blobs for an index-less archive.
+        if not (rs.archive_dir / "index.json").exists():
+            rs.rebuild_archive_index()
+
+    # Hashing, gzip compression, fsync and byte verification can be lengthy. They retain
+    # the live originals and deliberately run without the scheduler tick lock. The actual
+    # move below compares all source identities and repeats the authoritative reference
+    # analysis while the scheduler is briefly stopped.
+    min_free_mb = int(store.config.get("doctor.min_free_mb", 2048) or 0)
     try:
-        moved = rs.archive_terminal(before, protected)
-    except ValueError as exc:
-        err.print(f"[red]{exc}[/red]")
+        prepared = rs.prepare_terminal_archive(
+            before, protected, limit=limit, min_free_bytes=min_free_mb * 1024 * 1024
+        )
+        prepared_state = scheduler.state.prepare_completed(
+            {task.id for task in tasks.values() if task.status.terminal},
+            limit=limit,
+            min_free_bytes=min_free_mb * 1024 * 1024,
+        )
+    except (OSError, ValueError, HistoryUnavailable) as exc:
+        err.print(f"[red]archive preparation stopped safely: {exc}[/red]")
+        raise typer.Exit(2) from None
+
+    with scheduler.tick_lock():
+        try:
+            tasks, protected = reference_analysis()
+            moved = rs.commit_terminal_archive(prepared, before, protected)
+            state_report = scheduler.state.commit_completed(
+                prepared_state, {task.id for task in tasks.values() if task.status.terminal}
+            )
+            fence_report = scheduler.fence_history_report(apply=True, limit=limit)
+        except (OSError, ValueError, HistoryUnavailable, StateCorruptionError) as exc:
+            err.print(f"[red]archive maintenance stopped safely: {exc}[/red]")
+            raise typer.Exit(2) from None
+    try:
+        rs.retire_prepared_archive(prepared)
+    except (OSError, ValueError, HistoryUnavailable) as exc:
+        err.print(f"[red]archive verification stopped safely; originals retained: {exc}[/red]")
         raise typer.Exit(2) from None
     console.print(
         f"archived {moved} terminal run(s) finished before {before.isoformat()} to "
         f"{rs.archive_dir}; retained {len(protected)} recovery-referenced run(s)"
     )
+    console.print(f"archive storage: {rs.archive_report()}")
+    console.print(f"scheduler state history: {state_report}; fence history: {fence_report}")
 
 
 @app.command("cleanup-branches", rich_help_panel=PANEL_DIAG)
@@ -198,10 +275,10 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         err.print("no runs")
         raise typer.Exit(1) from None
     console.print(f"[bold]{r.run_id}[/bold] status={r.status} dir={r.dir}")
-    final = r.path / "final.md"
-    if final.exists():
+    final = r.read_text("final.md")
+    if final:
         console.print("[bold]final message:[/bold]")
-        print("\n".join(final.read_text().splitlines()[-lines:]))
+        print("\n".join(final.splitlines()[-lines:]))
     stderr = r.stderr_text()
     if stderr.strip():
         console.print("[bold]stderr:[/bold]")

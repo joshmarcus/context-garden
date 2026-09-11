@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import gzip
+import hashlib
 import json
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +210,214 @@ class State:
             self.data[task_id] = ts
             return ts
         return existing
+
+    # These values grow with review history but are not control-plane inputs once a task is
+    # terminal.  They remain losslessly available through ``historical`` and are restored
+    # before a task is allowed to become operational again.
+    HISTORICAL_KEYS = frozenset({
+        "feedback_ignored", "persona_reviews", "rebase_artifacts", "review_feedback_history",
+        "review_heads", "stashes", "verification_advisories",
+    })
+
+    @property
+    def history_dir(self) -> Path:
+        return self.path.parent / "state-history"
+
+    def _history_index(self) -> dict[str, Any]:
+        path = self.history_dir / "index.json"
+        if not path.exists():
+            return {"version": 1, "tasks": {}}
+        value = json.loads(path.read_text())
+        if value.get("version") != 1 or not isinstance(value.get("tasks"), dict):
+            raise StateCorruptionError(f"scheduler state history index is corrupt: {path}")
+        return value
+
+    def historical(self, task_id: str) -> _TaskState:
+        """Return one task's complete state without scanning other historical payloads."""
+        current = dict(self.get(task_id))
+        reference = current.get("_history_ref")
+        if not isinstance(reference, dict):
+            return _TaskState(current)
+        sha = str(reference.get("sha256") or "")
+        blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+        try:
+            raw = gzip.decompress(blob.read_bytes())
+        except (OSError, EOFError, gzip.BadGzipFile) as exc:
+            raise StateCorruptionError(f"scheduler state history blob is unavailable: {sha}") from exc
+        if hashlib.sha256(raw).hexdigest() != sha:
+            raise StateCorruptionError(f"scheduler state history checksum mismatch: {sha}")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise StateCorruptionError(f"scheduler state history payload is corrupt: {sha}")
+        return _TaskState({**payload, **current})
+
+    def restore_operational(self, task_ids: set[str]) -> int:
+        """Rehydrate archived fields for tasks that may participate in scheduling again."""
+        restored = 0
+        for task_id in task_ids:
+            current = self.get(task_id)
+            if "_history_ref" not in current:
+                continue
+            complete = self.historical(task_id)
+            current.pop("_history_ref", None)
+            current.update({key: value for key, value in complete.items() if key in self.HISTORICAL_KEYS})
+            restored += 1
+        return restored
+
+    def prepare_completed(
+        self, task_ids: set[str], *, limit: int, min_free_bytes: int = 0
+    ) -> dict[str, dict[str, Any]]:
+        """Compress and verify bounded historical payloads without changing hot state."""
+        prepared: dict[str, dict[str, Any]] = {}
+        for task_id in sorted(task_ids):
+            if len(prepared) >= limit:
+                break
+            current = self.get(task_id)
+            payload = {key: current[key] for key in self.HISTORICAL_KEYS if key in current}
+            if not payload:
+                continue
+            raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            sha = hashlib.sha256(raw).hexdigest()
+            blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            created = False
+            if not blob.exists():
+                free = shutil.disk_usage(blob.parent).free
+                required = len(raw) + 1024 * 1024 + min_free_bytes
+                if free < required:
+                    raise OSError(
+                        f"state archive volume has {free} free bytes; {required} required "
+                        f"({min_free_bytes} bytes reserved headroom)"
+                    )
+                self._durable_bytes(blob, gzip.compress(raw, mtime=0))
+                created = True
+            try:
+                reconstructed = gzip.decompress(blob.read_bytes())
+            except (OSError, EOFError, gzip.BadGzipFile) as exc:
+                raise StateCorruptionError(
+                    f"scheduler state history verification failed: {sha}"
+                ) from exc
+            if reconstructed != raw or hashlib.sha256(reconstructed).hexdigest() != sha:
+                raise StateCorruptionError(f"scheduler state history verification failed: {sha}")
+            prepared[task_id] = {
+                "sha256": sha,
+                "keys": sorted(payload),
+                "logical_bytes": len(raw),
+                "stored_bytes": blob.stat().st_size if created else 0,
+                "blob_identity": (blob.stat().st_size, blob.stat().st_mtime_ns),
+            }
+        return prepared
+
+    def commit_completed(
+        self, prepared: dict[str, dict[str, Any]], task_ids: set[str]
+    ) -> dict[str, int]:
+        """Publish prepared references only when durable payloads still match.
+
+        Preparation intentionally happens without the state write lock.  At commit, re-read
+        and compact ``state.json`` while holding that lock so an independent State writer
+        cannot have its newer historical payload replaced by this instance's stale view.
+        """
+        report = {"tasks": 0, "logical_bytes": 0, "stored_bytes": 0}
+        if not prepared:
+            return report
+        history_lock_path = self.path.parent / "state-history.lock"
+        state_lock_path = self.path.parent / (self.path.name + ".lock")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(history_lock_path, "a") as history_lock:
+            fcntl.flock(history_lock, fcntl.LOCK_EX)
+            index = self._history_index()
+            with open(state_lock_path, "a") as state_lock:
+                fcntl.flock(state_lock, fcntl.LOCK_EX)
+                disk = _read_state(self.path) if self.path.exists() else {}
+                committed: dict[str, tuple[dict[str, Any], set[str]]] = {}
+                for task_id, plan in prepared.items():
+                    if task_id not in task_ids:
+                        continue
+                    current = self.get(task_id)
+                    current_payload = {
+                        key: current[key] for key in self.HISTORICAL_KEYS if key in current
+                    }
+                    current_raw = json.dumps(
+                        current_payload, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                    if (
+                        hashlib.sha256(current_raw).hexdigest() != plan["sha256"]
+                        or sorted(current_payload) != plan["keys"]
+                    ):
+                        continue
+                    durable = disk.get(task_id)
+                    if not isinstance(durable, dict):
+                        continue
+                    payload = {
+                        key: durable[key] for key in self.HISTORICAL_KEYS if key in durable
+                    }
+                    if not payload:
+                        continue
+                    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+                    sha = hashlib.sha256(raw).hexdigest()
+                    if sha != plan["sha256"] or sorted(payload) != plan["keys"]:
+                        continue
+                    blob = self.history_dir / "blobs" / sha[:2] / f"{sha}.json.gz"
+                    try:
+                        blob_stat = blob.stat()
+                    except FileNotFoundError:
+                        raise StateCorruptionError(
+                            f"scheduler state history blob is unavailable: {sha}"
+                        ) from None
+                    if (blob_stat.st_size, blob_stat.st_mtime_ns) != tuple(
+                        plan["blob_identity"]
+                    ):
+                        raise StateCorruptionError(
+                            f"scheduler state history blob changed: {sha}"
+                        )
+                    reference = {"sha256": sha, "keys": plan["keys"]}
+                    index["tasks"][task_id] = reference
+                    # Keep the archive/index durable before replacing its source bytes.
+                    self._durable_bytes(
+                        self.history_dir / "index.json",
+                        (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
+                    )
+                    durable["_history_ref"] = reference
+                    for key in payload:
+                        durable.pop(key, None)
+                    committed[task_id] = (reference, set(payload))
+                    report["tasks"] += 1
+                    report["logical_bytes"] += int(plan["logical_bytes"])
+                    report["stored_bytes"] += int(plan["stored_bytes"])
+                if committed:
+                    self._durable_bytes(
+                        self.path,
+                        json.dumps(disk, indent=2, sort_keys=True).encode(),
+                    )
+                    for task_id, (reference, keys) in committed.items():
+                        current = self.get(task_id)
+                        current["_history_ref"] = reference
+                        for key in keys:
+                            current.pop(key, None)
+                        current.flushed(keys | {"_history_ref"})
+        return report
+
+    def archive_completed(self, task_ids: set[str], *, limit: int) -> dict[str, int]:
+        """Prepare and commit state history; retained for non-scheduler callers."""
+        return self.commit_completed(self.prepare_completed(task_ids, limit=limit), task_ids)
+
+    @staticmethod
+    def _durable_bytes(path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}-", delete=False) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+            staged = Path(stream.name)
+        os.replace(staged, path)
+        try:
+            descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            pass
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

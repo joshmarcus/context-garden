@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -8,6 +9,7 @@ import yaml
 from typer.testing import CliRunner
 
 from garden.cli import app
+from garden.runs import RunStore
 from garden.store import Store
 
 runner = CliRunner()
@@ -35,6 +37,33 @@ def test_status_ls_graph_validate(garden):
     r = run(garden, "graph", "--format", "mermaid")
     assert "DM_001 --> DM_002" in r.output
     assert run(garden, "validate").exit_code == 0
+
+
+def test_archive_runs_apply_repairs_pending_move_before_history_analysis(garden):
+    rs = RunStore(garden / ".garden")
+    archived = rs.new_run("DM-001", "local", run_id="20260101T000000Z-work")
+    archived.status = "done"
+    archived.finished_at = "2026-01-01T00:00:00+00:00"
+    archived.cost_usd = 2.5
+    archived.save()
+    (archived.path / "stdout.json").write_bytes(b"transcript" * 1000)
+    target = rs.archive_dir / archived.task_id / archived.run_id
+    target.parent.mkdir(parents=True)
+    pending = {
+        "version": rs.ARCHIVE_VERSION,
+        "task_id": archived.task_id,
+        "run_id": archived.run_id,
+        "source": str(archived.path),
+        "target": str(target),
+    }
+    rs._durable_replace(rs.archive_dir / "pending.json", json.dumps(pending).encode())
+    os.replace(archived.path, target)
+
+    result = run(garden, "archive-runs", "--apply", "--older-than-days", "1")
+
+    assert result.exit_code == 0, result.output
+    assert not (rs.archive_dir / "pending.json").exists()
+    assert RunStore(garden / ".garden").totals()["cost_usd"] == 2.5
 
 
 def test_persona_review_help_lists_the_ontologist(garden):
