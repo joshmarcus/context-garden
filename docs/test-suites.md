@@ -5,6 +5,24 @@ responsibility; `python3 scripts/check_ci.py` remains the full ordinary-suite re
 for the final committed branch. Stress/load experiments are excluded from both ordinary
 pytest commands and routine CI.
 
+GitHub CI divides the ordinary Linux suite into three deterministic file shards that run as
+separate jobs, with at most three test jobs active at once. The file-size balancing keeps a
+module and all of its parameterized cases in one process while spreading costly fixture-heavy
+modules. A quality job runs Ruff once and compares a fresh ordinary pytest collection with all
+three shard collections, failing on an empty, missing, or overlapping inventory. Conventionally
+named new test modules are assigned automatically.
+
+To reproduce or debug one CI shard locally, list its modules and pass the same list to pytest:
+
+```bash
+.venv/bin/python scripts/pytest_shards.py files --count 3 --index 1
+mapfile -t files < <(.venv/bin/python scripts/pytest_shards.py files --count 3 --index 1)
+.venv/bin/python -m pytest -q --durations=40 --timeout=120 --timeout-method=thread "${files[@]}"
+```
+
+`mapfile` requires Bash. The complete suite remains the ordinary serial `pytest -q` invocation
+documented below; local focused iteration is not sharded.
+
 Tests marked `browser` launch an installed browser and are excluded from ordinary pytest
 and CI on Linux, macOS, and Windows through WSL. Run them only in an environment whose
 project policy explicitly authorizes browser work and whose browser runtime is already

@@ -379,18 +379,27 @@ def test_repository_ci_runs_before_pr_and_keeps_full_suite():
     cfg = yaml.load(workflow, Loader=yaml.BaseLoader)
     assert set(cfg["on"]["push"]["branches"]) >= {"garden/**", "codex/**", "main"}
     assert "pull_request" in cfg["on"]
-    assert "if" not in cfg["jobs"]["test"]
-    steps = cfg["jobs"]["test"]["steps"]
+    assert cfg["jobs"]["test"]["if"] == "always()"
+    assert set(cfg["jobs"]["test"]["needs"]) == {"quality", "test-shard", "exact-head-push"}
+    steps = cfg["jobs"]["exact-head-push"]["steps"]
     gate = next(step for step in steps if step.get("name") == "Verify exact-head push CI")
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in gate["if"]
-    assert "startsWith(github.event.pull_request.head.ref, 'garden/')" in gate["if"]
+    gate_condition = cfg["jobs"]["exact-head-push"]["if"]
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in gate_condition
+    assert "startsWith(github.event.pull_request.head.ref, 'garden/')" in gate_condition
     assert "--event push" in gate["run"]
     assert "CI_HEAD_SHA" in gate["run"] and "CI_HEAD_BRANCH" in gate["run"]
     assert "did not register or finish" in gate["run"]
     assert "actions" in cfg["permissions"]
-    assert any(
-        s.get("run") == "pytest -q --durations=40 --timeout=120 --timeout-method=thread"
-        for s in steps
-    )
+    shard = cfg["jobs"]["test-shard"]
+    assert shard["strategy"]["max-parallel"] == "3"
+    assert shard["strategy"]["matrix"]["shard"] == ["1", "2", "3"]
+    shard_run = next(s["run"] for s in shard["steps"] if s.get("name", "").startswith("Run ordinary"))
+    assert "pytest -q --durations=40 --timeout=120 --timeout-method=thread" in shard_run
+    assert "pytest_shards.py files --count 3" in shard_run
+    quality_runs = [step.get("run", "") for step in cfg["jobs"]["quality"]["steps"]]
+    assert quality_runs.count("ruff check src tests scripts") == 1
+    assert "python scripts/pytest_shards.py verify --count 3" in quality_runs
+    aggregate = cfg["jobs"]["test"]["steps"][0]["run"]
+    assert "SHARD_RESULT" in aggregate and "QUALITY_RESULT" in aggregate
     assert "playwright install" not in workflow
     assert "chromium" not in workflow.lower()
