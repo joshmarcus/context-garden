@@ -401,5 +401,9 @@ def test_repository_ci_runs_before_pr_and_keeps_full_suite():
     assert "python scripts/pytest_shards.py verify --count 3" in quality_runs
     aggregate = cfg["jobs"]["test"]["steps"][0]["run"]
     assert "SHARD_RESULT" in aggregate and "QUALITY_RESULT" in aggregate
+    assert '"$PUSH_RESULT" == success' in aggregate
+    assert '"$PUSH_RESULT" == skipped' in aggregate
+    assert '"$QUALITY_RESULT" == success' in aggregate
+    assert '"$SHARD_RESULT" == success' in aggregate
     assert "playwright install" not in workflow
     assert "chromium" not in workflow.lower()
