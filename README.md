@@ -112,6 +112,28 @@ Edit and version the context in your usual editor. Use garden commands or the UI
 
 You need **Python 3.11+**, **git**, a logged-in **Claude Code or Codex CLI**, and GitHub access through authenticated `gh` or `GITHUB_TOKEN`. Linux and macOS are supported; **on Windows, run garden inside WSL**. Your product repository needs a committed base branch, a GitHub remote you can push to, and a configured git author identity.
 
+Install the released command and library from PyPI:
+
+```bash
+python -m pip install context-garden
+garden --help
+```
+
+The supported library surface currently consists of the documented modules under `garden`.
+For example, task-document tools can parse and render the YAML frontmatter used by a garden:
+
+```python
+from garden import __version__
+from garden.model import join_frontmatter, split_frontmatter
+
+document = join_frontmatter({"id": "CG-1", "status": "ready"}, "## Goal\n\nShip it.")
+metadata, body = split_frontmatter(document)
+print(__version__, metadata["id"], body.strip())
+```
+
+Other modules are implementation details unless they are documented here or in the linked
+guides. Source contributors can instead use an editable checkout:
+
 ```bash
 git clone https://github.com/joshmarcus/context-garden
 cd context-garden

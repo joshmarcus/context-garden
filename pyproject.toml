@@ -1,11 +1,22 @@
 [project]
 name = "context-garden"
-version = "0.1.0"
+version = "0.3.1"
 description = "Drive agent development from a repository of context files: principles, products, phases, tasks."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "Josh Marcus" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "pyyaml>=6.0",
     "typer>=0.12",
@@ -22,6 +33,12 @@ dependencies = [
 [project.scripts]
 garden = "garden.cli:app"
 
+[project.urls]
+Homepage = "https://github.com/joshmarcus/context-garden"
+Documentation = "https://github.com/joshmarcus/context-garden/tree/main/docs"
+Issues = "https://github.com/joshmarcus/context-garden/issues"
+Source = "https://github.com/joshmarcus/context-garden"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-timeout==2.4.0", "ruff>=0.4"]
 aws = ["boto3>=1.34"]
@@ -34,6 +51,14 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/garden"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+    "/src/garden",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
