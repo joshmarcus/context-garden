@@ -54,8 +54,6 @@ OPERATING_RULES = """\
 - Do NOT run `garden` commands: `GARDEN_ROOT` is set to a non-existent path so any `garden` invocation will refuse with a clear error.
 {env_rule}- This is a launch note, not the full context. Start with the authoritative task under `$GARDEN_CONTEXT_DIR`, then choose the referenced and checkout material relevant to the work. Do not inspect unrelated controller or product data.
 - Follow the referenced principles. If the task conflicts with a principle or a spec, say so in your final report and take the most conservative reasonable path.
-- During iteration run focused tests only. Before finishing, run the project's checks sequentially
-  (tests, lint, typecheck); full CI remains the merge gate. Fix what you broke.
 - In a supervised local run, launch each potentially heavy pytest validation as
   `"$GARDEN_VALIDATION_RUNNER" -m garden.validation -- <direct pytest command>` so competing
   validations inside this run queue within its execution budget. The policy wrapper rejects opaque
@@ -217,34 +215,57 @@ def _push_rule(setup: dict, validation: dict | None = None,
     return rule
 
 
-def _env_rule(setup: dict, validation: dict | None = None) -> str:
+def _env_rule(setup: dict, validation: dict | None = None, *,
+              checks: list[dict[str, Any]] | None = None) -> str:
     """The operating rule about the working environment: it is already prepared, so the worker
-    must not install packages or make a virtualenv, and here are the exact commands to run its
-    checks (from the product's `setup.test`/`setup.lint`). Nothing here names pip, uv or a venv
-    unless the product's own config does. Ends with a newline so it slots between rule lines."""
+    must not install packages or make a virtualenv. When the caller has the run's actual pre-PR
+    check specs (the same list `_pre_pr_specs` computes and the mechanical check pipeline runs),
+    render the instruction from those, so the brief can never name a broader or different suite
+    than what is actually enforced, and a targeted plan can say so explicitly (no unlisted broad
+    or browser-backed suite). Without them (a brief built outside dispatch, e.g. for preview),
+    fall back to deriving from the product's own `setup.test`/`setup.lint`. Ends with a newline
+    so it slots between rule lines."""
     prepared = (
         "- Your working environment is already prepared: do not install packages, create a "
         "virtualenv, or run a package manager (the runner did any setup before you started)."
     )
     from .checks import is_publishing_ci_helper
-    test = str((setup or {}).get("test") or "")
-    publishing_helper_needs_permission = (
-        is_publishing_ci_helper(test) and (
-            setup.get("worker_push") is not True
-            or str((validation or {}).get("provider") or "legacy") not in ("legacy", "actions")
+    if checks is not None:
+        specs = checks
+    else:
+        test = str((setup or {}).get("test") or "")
+        publishing_helper_needs_permission = (
+            is_publishing_ci_helper(test) and (
+                setup.get("worker_push") is not True
+                or str((validation or {}).get("provider") or "legacy") not in ("legacy", "actions")
+            )
         )
-    )
-    checks = []
-    for label, key in (("tests", "test"), ("lint", "lint")):
-        cmd = str((setup or {}).get(key) or "").strip()
-        if key == "test" and publishing_helper_needs_permission:
+        specs = []
+        for label, key in (("tests", "test"), ("lint", "lint")):
+            spec: dict[str, Any] = {"name": label, "command": str((setup or {}).get(key) or "").strip()}
+            if key == "test" and publishing_helper_needs_permission:
+                spec["requires_worker_push"] = True
+            specs.append(spec)
+    rendered = []
+    publishing_blocked = False
+    for spec in specs:
+        cmd = str(spec.get("command") or "").strip()
+        name = str(spec.get("name") or "check").strip()
+        if not cmd:
             continue
-        if cmd:
-            checks.append(f"`{cmd}` ({label})")
-    if checks:
-        prepared += (" During iteration run focused tests only. Before finishing, run the project's checks "
-                     "sequentially with " + " and ".join(checks) + "; full CI remains the merge gate.")
-    if publishing_helper_needs_permission:
+        if spec.get("requires_worker_push"):
+            publishing_blocked = True
+            continue
+        rendered.append(f"`{cmd}` ({name})")
+    if rendered:
+        prepared += (
+            " This run's required checks are exactly " + " and ".join(rendered) + "; they are the sole "
+            "authority for what to run before finishing — run them sequentially. You may narrow further "
+            "during iteration (a single file or case), but do not run any other broad or browser-backed "
+            "suite (e.g. an unlisted full-repo test command or a Playwright/browser run) beyond this list. "
+            "Full CI, if configured, remains the merge gate. Fix what you broke."
+        )
+    if publishing_blocked:
         prepared += (
             " The configured test publishes a branch; do not run it until the product explicitly "
             "sets setup.worker_push: true and configures Git/GitHub credentials for this worker."
@@ -405,6 +426,7 @@ def build_brief(
     validation_plan: dict[str, Any] | None = None,
     criteria_snapshot: list[str] | None = None,
     generated_context: Path | None = None,
+    checks: list[dict[str, Any]] | None = None,
 ) -> Brief:
     cfg = store.config
     total_max = int(cfg.get("brief.total_max_chars", 120000))
@@ -442,7 +464,8 @@ def build_brief(
             base=base or cfg.product_base_branch(task.product),
             marker=RESULT_MARKER,
             turn_cap_rule=turn_cap_rule,
-            env_rule=_env_rule(cfg.product_setup(task.product), cfg.product_validation(task.product)),
+            env_rule=_env_rule(cfg.product_setup(task.product), cfg.product_validation(task.product),
+                              checks=checks),
             push_rule=_push_rule(cfg.product_setup(task.product), cfg.product_validation(task.product),
                                  cfg.product_ci_policy(task.product)),
         )

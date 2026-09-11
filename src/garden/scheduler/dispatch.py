@@ -840,7 +840,7 @@ class DispatchMixin:
             brief = build_brief(self.store, task, branch=branch, base=base, review_feedback=feedback,
                                 stack=stack, qa=qa, commits_ahead=commits_ahead,
                                 criteria_snapshot=criteria_snapshot, validation_plan=plan,
-                                generated_context=generated_context)
+                                generated_context=generated_context, checks=pre_pr_specs)
             from ..reference_snapshot import write_reference_files
 
             write_reference_files(run.path, brief.files, self.cfg.data)
