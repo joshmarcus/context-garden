@@ -1,0 +1,76 @@
+name: cg624-measurement
+on:
+  push:
+    branches: [codex/cg624-baseline-measurement]
+permissions:
+  contents: read
+concurrency:
+  group: cg624-baseline-measurement
+  cancel-in-progress: false
+jobs:
+  baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 41ff4de3d273afb2c4ad642856e2ff893ee7db31
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.14'
+      - name: Prepare exact baseline environment
+        run: python -m pip install -e ".[dev]"
+      - name: Measure serial cold and warm baseline
+        shell: bash
+        env:
+          BASELINE_SHA: 41ff4de3d273afb2c4ad642856e2ff893ee7db31
+          MEASUREMENT_DIR: ${{ runner.temp }}/cg624-measurement
+        run: |
+          python - <<'PY'
+          import datetime as dt,hashlib,json,os,platform,re,shutil,subprocess,sys,time
+          from pathlib import Path
+          root=Path.cwd();out=Path(os.environ['MEASUREMENT_DIR']);out.mkdir()
+          expected=os.environ['BASELINE_SHA'];actual=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();assert actual==expected
+          env=dict(os.environ);removed=env.pop('PYTEST_ADDOPTS',None)
+          versions=subprocess.check_output([sys.executable,'-m','pip','freeze'],text=True);(out/'dependencies.txt').write_text(versions)
+          cpu=subprocess.check_output(['lscpu'],text=True);(out/'cpu.txt').write_text(cpu)
+          image={k:os.environ.get(k,'') for k in ['ImageOS','ImageVersion','RUNNER_OS','RUNNER_ARCH']}
+          record={'started_at':dt.datetime.now(dt.UTC).isoformat(),'source':actual,'python':sys.version,'platform':platform.platform(),'cpu_count':os.cpu_count(),'cpu_affinity':sorted(os.sched_getaffinity(0)) if hasattr(os,'sched_getaffinity') else None,'runner_image':image,'dependency_sha256':hashlib.sha256(versions.encode()).hexdigest(),'ambient_pytest_addopts_removed':removed,'limit_seconds_per_execution':900,'per_test_timeout_seconds':120,'runs':[],'complete':False}
+          def save(): (out/'measurement.json').write_text(json.dumps(record,indent=2)+'\n')
+          save()
+          with (out/'collection.txt').open('w') as f:
+              p=subprocess.run([sys.executable,'-m','pytest','--collect-only','-q'],stdout=f,stderr=subprocess.STDOUT,env=env,timeout=180)
+          assert p.returncode==0
+          cache=root/'.pytest_cache'
+          if cache.exists():
+              assert cache.resolve().parent==root.resolve() and cache.name=='.pytest_cache'
+              shutil.rmtree(cache)
+          for condition in ['cold','warm']:
+              args=[sys.executable,'-m','pytest','-q','--durations=40','--timeout=120','--timeout-method=thread','--basetemp',str(out/'test-state'),'--junitxml',str(out/(condition+'.xml'))]
+              if condition=='cold':args+=['--cache-clear']
+              start=time.perf_counter();began=dt.datetime.now(dt.UTC).isoformat()
+              with (out/(condition+'.log')).open('w') as log:
+                  p=subprocess.Popen(args,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                  timed_out=False
+                  try:code=p.wait(timeout=900)
+                  except subprocess.TimeoutExpired:
+                      timed_out=True
+                      import signal
+                      os.killpg(p.pid,signal.SIGTERM)
+                      try:code=p.wait(timeout=10)
+                      except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);code=p.wait(timeout=10)
+              elapsed=time.perf_counter()-start
+              raw=(out/(condition+'.log')).read_text();summaries=[line for line in raw.splitlines() if re.search(r'\b\d+ passed\b',line)]
+              row={'condition':condition,'started_at':began,'wall_seconds':elapsed,'returncode':code,'timed_out':timed_out,'argv':args,'summary':summaries[-1] if summaries else None,'log_sha256':hashlib.sha256(raw.encode()).hexdigest()};record['runs'].append(row);save()
+              print(json.dumps(row),flush=True)
+              if timed_out or code!=0:raise SystemExit(1)
+          record['complete']=True;record['finished_at']=dt.datetime.now(dt.UTC).isoformat();save()
+          PY
+      - name: Preserve all original measurement output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cg624-baseline-measurement
+          path: ${{ runner.temp }}/cg624-measurement
+          if-no-files-found: error
+          retention-days: 14
