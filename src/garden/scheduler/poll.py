@@ -13,7 +13,13 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..checks import to_feedback, worker_diagnostic_excerpt
-from ..ci_status import CIStatus, resolve_status, status_reason
+from ..ci_status import (
+    CIStatus,
+    resolve_status,
+    status_diagnostic,
+    status_disposition,
+    status_reason,
+)
 from ..github import Feedback, GitHubError, PRInfo, RepositorySlug
 from ..model import Status, Task, now_iso, phase_refusal
 from ..notify import notify
@@ -233,6 +239,17 @@ class PollMixin:
         st["mergeable"] = pr.mergeable
         st["head_sha"] = pr.head_sha
         ci_status = self._ci_status(task, pr)
+        if ci_status.provider == "command":
+            # No rollup carries this product's evidence, so the command's own answer decides
+            # whether a person is needed: a build still running resolves itself and a real
+            # failure routes into the revision path, but an answer bound to no result for
+            # this head -- or no answer at all -- is an operator problem.
+            disposition = status_disposition(ci_status)
+            st["ci_missing"] = disposition in ("absent", "unavailable")
+            if st["ci_missing"]:
+                st["ci_diagnostic"] = status_diagnostic(ci_status)
+            else:
+                st.pop("ci_diagnostic", None)
         previous_ci = st.get("ci_status") or {}
         st["ci_status"] = ci_status.to_dict()
         if previous_ci != st["ci_status"]:
@@ -339,8 +356,10 @@ class PollMixin:
                              and pr.checks == "FAILURE"
                              and not waiting_for_rerun
                              and st.get("ci_failed_at") != ci_identity)
+        # A failing result that is stale or belongs to no build for this head is not this
+        # head's failure: it must hold the merge gate, not spend a revision round.
         exact_ci_failure = (ci_status.provider != "github"
-                            and ci_status.state == "failure"
+                            and status_disposition(ci_status) == "failure"
                             and st.get("ci_failed_at") not in (failure_key, pr.updated_at)
                             and not waiting_for_rerun)
         if github_ci_failure or exact_ci_failure:

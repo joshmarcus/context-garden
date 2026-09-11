@@ -1,6 +1,10 @@
 """Poll: what GitHub says about an open PR (feedback, bot notices, the revision cap, CI, merged, closed)."""
 
 import json
+import sys
+from pathlib import Path
+
+import pytest
 
 from garden.ci_status import CIStatus
 from garden.github import Feedback, GitHubError, PRInfo
@@ -9,6 +13,35 @@ from garden.scheduler.report import TickReport
 from garden.validation import POLICY_ADDOPTS, POLICY_SOURCE_SHA, STRESS_NODES
 from tests.reference_context import agent_context
 from tests.scheduler.conftest import statuses
+
+FAKE_CI_COMMAND = Path(__file__).resolve().parents[1] / "fake_ci_command.py"
+HEAD_ONE, HEAD_TWO = "a" * 40, "d" * 40
+CI_GREEN = {"answer": {"state": "success", "exists_for_sha": True, "stale": False,
+                       "evidence_url": "https://ci.invalid/build/1"}}
+CI_ABSENT = {"answer": {"state": "missing"}}
+
+
+def write_ci_plan(plan_dir: Path, plan: dict) -> Path:
+    """What the fake CI (tests/fake_ci_command.py) answers for each candidate commit."""
+    plan_dir.mkdir(exist_ok=True)
+    path = plan_dir / "ci-plan.json"
+    path.write_text(json.dumps(plan))
+    return path
+
+
+def use_command_ci(sched, plan_dir: Path, plan: dict, **policy) -> Path:
+    """Point the demo product at a scheduler-run validation command backed by the fake CI."""
+    path = write_ci_plan(plan_dir, plan)
+    sched.cfg.data["products"]["demo"]["validation"] = {
+        "provider": "command", "run_by": "scheduler",
+        "command": f"{sys.executable} {FAKE_CI_COMMAND} {path}", **policy,
+    }
+    return path
+
+
+def ci_queries(plan_dir: Path) -> list[str]:
+    log = plan_dir / "queries.log"
+    return log.read_text().split() if log.exists() else []
 
 
 def test_required_persona_comment_precedes_automated_review_and_check_evidence(sched, fake_github):
@@ -497,6 +530,142 @@ def test_product_command_policy_selects_worker_receipt_for_exact_command(sched, 
                       "worker_check": {"command": "pytest -q"}}
     assert status.provider == "worker_check"
     assert status.state == "missing"
+
+
+def test_scheduler_run_command_binds_evidence_to_the_exact_head(sched, fake_github, tmp_path):
+    """A pass counts only for the commit it was asked about, and a rebase asks again."""
+    plan_dir = tmp_path / "ci"
+    use_command_ci(sched, plan_dir, {"default": CI_ABSENT})
+    sched.cfg.data["github"]["automerge"] = True
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.head_sha, pr.review_decision, pr.mergeable = HEAD_ONE, "APPROVED", "MERGEABLE"
+    sched.state.get(task.id).update(last_review={"verdict": "approve"}, review_rounds=1)
+
+    sched.poll(task, TickReport())
+    st = sched.state.get(task.id)
+    assert st["ci_status"]["queried_sha"] == HEAD_ONE
+    assert st["ci_status"]["state"] == "missing" and st["ci_status"]["green"] is False
+    ok, reason = sched._automerge_gate(task, pr)
+    assert not ok and "is missing" in reason
+
+    write_ci_plan(plan_dir, {"by_sha": {HEAD_ONE: CI_GREEN}, "default": CI_ABSENT})
+    sched.poll(task, TickReport())
+    st = sched.state.get(task.id)
+    assert st["ci_status"]["green"] is True and st["ci_missing"] is False
+    assert st["ci_status"]["evidence_url"] == "https://ci.invalid/build/1"
+    assert "ci_diagnostic" not in st
+    ok, reason = sched._automerge_gate(task, pr)
+    assert ok, reason
+
+    # A rebase moves the head: the pass recorded for the old commit is not this commit's
+    # evidence, and the command is asked again about the new one.
+    pr.head_sha = HEAD_TWO
+    sched.poll(task, TickReport())
+    st = sched.state.get(task.id)
+    assert st["ci_status"]["queried_sha"] == HEAD_TWO and st["ci_status"]["green"] is False
+    assert st["ci_missing"] is True and "no current result" in st["ci_diagnostic"]
+    ok, reason = sched._automerge_gate(task, pr)
+    assert not ok and HEAD_TWO[:12] in reason
+
+    write_ci_plan(plan_dir, {"by_sha": {HEAD_ONE: CI_GREEN, HEAD_TWO: CI_GREEN}})
+    sched.poll(task, TickReport())
+    st = sched.state.get(task.id)
+    assert st["ci_status"]["green"] is True and st["ci_status"]["queried_sha"] == HEAD_TWO
+    ok, reason = sched._automerge_gate(task, pr)
+    assert ok, reason
+    # Every answer came from a query about an exact commit, never about the branch.
+    assert set(ci_queries(plan_dir)) == {HEAD_ONE, HEAD_TWO}
+
+
+@pytest.mark.parametrize("row, policy, missing, phrase, title", [
+    ({"answer": {"state": "success", "exists_for_sha": True, "stale": False}},
+     {}, False, "", ""),
+    ({"answer": {"state": "pending", "exists_for_sha": True}}, {}, False, "", ""),
+    ({"answer": {"state": "missing"}}, {}, True, "no current result", "CI status missing"),
+    ({"answer": {"state": "success", "exists_for_sha": True, "stale": True}},
+     {}, True, "no current result", "CI status missing"),
+    ({"answer": {"state": "failure", "exists_for_sha": True, "stale": True}},
+     {}, True, "no current result", "CI status missing"),
+    ({"answer": {"state": "unavailable"}}, {}, True, "could not report", "CI status unavailable"),
+    ({"answer": {"state": "success", "exists_for_sha": True, "stale": False},
+      "raw_stdout": "not json"}, {}, True, "could not report", "CI status unavailable"),
+    ({"exit_code": 3, "stderr": "internal detail"}, {},
+     True, "could not report", "CI status unavailable"),
+    ({"answer": {"state": "success", "exists_for_sha": True, "stale": False},
+      "sleep_seconds": 30}, {"timeout_seconds": 0.5},
+     True, "could not report", "CI status unavailable"),
+])
+def test_command_evidence_separates_waiting_from_unanswerable(
+        sched, fake_github, tmp_path, row, policy, missing, phrase, title):
+    """Waiting for a build, and being unable to learn anything about it, need different
+    first moves; only the second (and an answer bound to no result for this head) is a
+    person's problem."""
+    from garden.inbox import build_inbox
+
+    plan_dir = tmp_path / "ci"
+    use_command_ci(sched, plan_dir, {"default": row}, **policy)
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    fake_github.prs["garden/dm-001-first-task"].head_sha = HEAD_ONE
+
+    sched.poll(task, TickReport())
+
+    st = sched.state.get(task.id)
+    assert st["ci_missing"] is missing
+    assert phrase in st.get("ci_diagnostic", "")
+    assert "internal detail" not in json.dumps(st["ci_status"])
+    cards = [item for item in build_inbox(sched.store, sched)
+             if item.get("task") == task.id and item.get("kind") == "ci_missing"]
+    assert [card["kind_title"] for card in cards] == ([title] if title else [])
+
+
+def test_command_failure_at_the_exact_head_takes_the_revision_path(sched, fake_github, tmp_path):
+    """A real failure for this commit is feedback for the author, not an operator card."""
+    from garden.inbox import build_inbox
+
+    plan_dir = tmp_path / "ci"
+    use_command_ci(sched, plan_dir, {"default": {
+        "answer": {"state": "failure", "exists_for_sha": True, "failures": ["unit"]},
+    }})
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    fake_github.prs["garden/dm-001-first-task"].head_sha = HEAD_ONE
+
+    sched.poll(task, TickReport())
+
+    st = sched.state.get(task.id)
+    assert st["ci_missing"] is False
+    assert sched.store.task(task.id).status == Status.CHANGES_REQUESTED
+    assert "failed checks: unit" in st["pending_feedback"]
+    assert not [item for item in build_inbox(sched.store, sched)
+                if item.get("kind") == "ci_missing"]
+
+
+def test_one_tick_asks_the_validation_command_once_per_commit(sched, fake_github, tmp_path):
+    """Polling, the review gate and the merge gate share one coherent observation."""
+    plan_dir = tmp_path / "ci"
+    use_command_ci(sched, plan_dir, {"by_sha": {HEAD_ONE: CI_GREEN}, "default": CI_ABSENT})
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.cfg.data["github"]["automerge"] = True
+    sched.tick()
+    sched.tick()
+    pr = fake_github.prs["garden/dm-001-first-task"]
+    pr.head_sha, pr.review_decision, pr.mergeable = HEAD_ONE, "APPROVED", "MERGEABLE"
+    plan_dir.joinpath("queries.log").unlink(missing_ok=True)
+
+    sched.tick()
+
+    # This tick polls, gates the review and gates the merge for this head; a sibling task's
+    # own head is a different commit and is asked about separately, but nothing is asked twice.
+    queries = ci_queries(plan_dir)
+    assert queries.count(HEAD_ONE) == 1
+    assert len(queries) == len(set(queries))
+    assert sched.state.get("DM-001")["ci_status"]["green"] is True
 
 
 def test_worker_check_old_green_does_not_clear_merge_gate(sched, fake_github):
