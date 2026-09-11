@@ -1,5 +1,5 @@
 {% if events %}
-<ul class="tl">
+<ul class="tl stdout">
 {% for ev in events %}
 {% set t = ev.get("type","") %}
 {% set message = ev.get("message") %}
@@ -11,10 +11,10 @@
 <li>
   <span class="faint mono">tool</span>
   <span class="k">{{ p.get("name","") }}</span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-    {%- if inp.get("command") %}{{ inp.command[:160] }}
+  <span class="mono stdout-content">
+    {%- if inp.get("command") %}{{ inp.command }}
     {%- elif inp.get("file_path") %}{{ inp.file_path }}
-    {%- else %}{{ (inp | string)[:160] }}
+    {%- else %}{{ inp | string }}
     {%- endif %}
   </span>
 </li>
@@ -22,7 +22,7 @@
 <li>
   <span class="faint mono">text</span>
   <span class="k"></span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.text[:160] }}</span>
+  <span class="mono stdout-content">{{ p.text }}</span>
 </li>
   {% endif %}
   {% endfor %}
@@ -33,8 +33,8 @@
 <li>
   <span class="faint mono">result</span>
   <span class="k"></span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-    {%- if c is string %}{{ c[:160] }}{%- elif c is sequence and c and c[0] is mapping and c[0].get("text") %}{{ (c[0].get("text") | string)[:160] }}{%- endif %}
+  <span class="mono stdout-content">
+    {%- if c is string %}{{ c }}{%- elif c is sequence and c and c[0] is mapping and c[0].get("text") %}{{ c[0].get("text") | string }}{%- endif %}
   </span>
 </li>
   {% endif %}
@@ -47,32 +47,32 @@
 <li>
   <span class="faint mono">text</span>
   <span class="k"></span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ item_text[:160] }}</span>
+  <span class="mono stdout-content">{{ item_text }}</span>
 </li>
   {% elif item_type == "command_execution" %}
 <li>
   <span class="faint mono">tool</span>
   <span class="k">command</span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (item.get("command") | string)[:160] }}</span>
+  <span class="mono stdout-content">{{ item.get("command") | string }}</span>
 </li>
     {% if item.get("aggregated_output") %}
 <li>
   <span class="faint mono">result</span>
   <span class="k"></span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (item.get("aggregated_output") | string)[:160] }}</span>
+  <span class="mono stdout-content">{{ item.get("aggregated_output") | string }}</span>
 </li>
     {% endif %}
   {% elif item_type == "file_change" %}
 <li>
   <span class="faint mono">tool</span>
   <span class="k">file change</span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ (item.get("changes") | string)[:160] }}</span>
+  <span class="mono stdout-content">{{ item.get("changes") | string }}</span>
 </li>
   {% elif item_type and (item.get("output") or item.get("text")) %}
 <li>
   <span class="faint mono">tool</span>
   <span class="k">{{ item_type }}</span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ((item.get("output") or item.get("text")) | string)[:160] }}</span>
+  <span class="mono stdout-content">{{ (item.get("output") or item.get("text")) | string }}</span>
 </li>
   {% endif %}
 {% elif t not in ("system",) %}
@@ -83,10 +83,10 @@
     {%- else %}{{ ev.get("subtype","") or "" }}
     {%- endif %}
   </span>
-  <span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+  <span class="mono stdout-content">
     {%- if t == "result" %}
-      {%- if ev.get("is_error") %}error: {{ (ev.get("result") or "")[:160] }}
-      {%- else %}{{ (ev.get("result") or "")[:160] }}
+      {%- if ev.get("is_error") %}error: {{ ev.get("result") or "" }}
+      {%- else %}{{ ev.get("result") or "" }}
       {%- endif %}
     {%- endif %}
   </span>

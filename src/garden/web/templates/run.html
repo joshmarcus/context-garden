@@ -68,7 +68,7 @@
   </div>
   <div class="tab-panel" data-tab="transcript">
     {% if is_stream %}
-    <div id="run-stdout"{% if run.status == 'running' %} data-poll="/partials/runs/{{ task_id }}/{{ run.run_id }}/stdout" data-every="3000"{% endif %}>
+    <div id="run-stdout" class="live-output" tabindex="0" aria-label="Run output"{% if run.status == 'running' %} data-poll="/partials/runs/{{ task_id }}/{{ run.run_id }}/stdout" data-every="3000" data-preserve-scroll{% endif %}>
       {% include "_stdout.html" %}
     </div>
     {% else %}

@@ -222,6 +222,11 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .tl { list-style:none; padding:0; margin:0; font-size:12.5px; }
 .tl li { display:grid; grid-template-columns: 78px 118px 1fr; gap:10px; padding:5px 0; border-bottom:1px dashed var(--line); }
 .tl .k { font:11.5px/1.6 var(--mono); color:var(--muted); }
+.live-output { max-height:min(70vh, 640px); overflow:auto; overscroll-behavior:contain; }
+.live-output .stdout { min-width:max-content; }
+.live-output .stdout li { grid-template-columns:78px 118px max-content; }
+.stdout-content { display:block; font-size:11.5px; white-space:pre; }
+@media (max-width:600px) { .live-output .stdout li { grid-template-columns:54px 88px max-content; gap:8px; } }
 .chart { display:block; overflow:visible; }
 .spark { vertical-align:middle; }
 .filters { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:14px; }
@@ -483,7 +488,23 @@ document.querySelectorAll("[data-poll]").forEach(el => {
     if (document.hidden) return;
     try {
       const r = await fetch(el.dataset.poll, {cache: "no-store"});
-      if (r.ok) el.innerHTML = await r.text();
+      if (r.ok) {
+        const content = await r.text();
+        const preserveScroll = el.hasAttribute("data-preserve-scroll");
+        let scrollTop = 0;
+        let scrollLeft = 0;
+        let followsTail = false;
+        if (preserveScroll) {
+          scrollTop = el.scrollTop;
+          scrollLeft = el.scrollLeft;
+          followsTail = el.scrollHeight - el.clientHeight - scrollTop <= 2;
+        }
+        el.innerHTML = content;
+        if (preserveScroll) {
+          el.scrollTop = followsTail ? el.scrollHeight : scrollTop;
+          el.scrollLeft = scrollLeft;
+        }
+      }
       else if (el.getAttribute("role") === "status") el.innerHTML = '<div class="warn" role="alert">Could not refresh pull requests.</div>';
     } catch (e) {
       if (el.getAttribute("role") === "status") el.innerHTML = '<div class="warn" role="alert">Could not refresh pull requests.</div>';
