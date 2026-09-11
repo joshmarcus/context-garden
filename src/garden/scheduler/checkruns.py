@@ -28,7 +28,7 @@ from ..model import Status, Task, ensure_open, now_iso
 from ..preflight import _is_ui_path as _is_preflight_ui_path
 from ..preflight import capture_infrastructure_reason, mechanical_results
 from ..review import validation_plan, visual_source_digest
-from ..runs import Run
+from ..runs import Run, RunSaveOutcome
 from ..validation import validation_timeout_result
 from .report import TickReport
 from .state import State
@@ -348,7 +348,8 @@ class CheckRunMixin:
             run.status = "cancelled"
             run.finished_at = now_iso()
             run.error = "task reached terminal status"
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                return False
             self.events.emit("run_finished", task.id, run=run.run_id, mode="check",
                              status="cancelled", cost_usd=run.cost_usd, usage=run.usage,
                              error=run.error)
@@ -359,7 +360,8 @@ class CheckRunMixin:
             run.cost_usd = 0.0
             run.result = {"checks": results}
             run.status = "done"
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                return False
             self.events.emit("run_finished", task.id, run=run.run_id, mode="check",
                              status="done", cost_usd=0.0, usage={})
             for result in results:
@@ -394,7 +396,11 @@ class CheckRunMixin:
             run.cost_usd = 0.0
             run.result = {"checks": results}
             run.status = "done" if run.status != "timeout" else "timeout"
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                # A worker completion or lease mutation arrived after this collector read
+                # the Run. Its current generation must be reloaded and finalized by a later
+                # reap before this continuation can own any scheduler state or events.
+                return False
             # Keep this continuation until its handler succeeds. In particular, a handler
             # that wants to launch the next check may be deferred by resource pressure; the
             # next tick must route these stored results again rather than lose the chain.
@@ -442,7 +448,8 @@ class CheckRunMixin:
             results.append({"name": "mechanical pre-flight", "status": "fail",
                             "summary": f"could not inspect candidate diff: {inspection_error}", "details": ""})
             run.result = {"checks": results}
-            run.save()
+            if run.save() is RunSaveOutcome.SUPERSEDED:
+                return False
         if self._check_did_not_run(run, results) and stage != "interaction_replay":
             self._retry_or_park_check(task, run, stage, cont, list(info.get("specs") or []),
                                       int(info.get("retries", 0)), rep,

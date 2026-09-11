@@ -18,7 +18,7 @@ from ..notify import notify
 from ..preflight import missing_preflight
 from ..proctree import pid_alive
 from ..runner.base import Runner, run_temp_dir
-from ..runs import Run, RunMutationConflict
+from ..runs import Run, RunMutationConflict, RunSaveOutcome
 from .human import validate_investigation_report
 from .report import TickReport
 from .resources import ResourcePressureError
@@ -368,8 +368,6 @@ class ReapMixin:
         if collected.get("missing_price"):
             self.log(f"{task.id}: no price configured for model {collected['missing_price']!r}; cost_usd left null")
         final_text = collected.get("final_text") or ""
-        if final_text and not (run.path / "final.md").exists():
-            (run.path / "final.md").write_text(final_text)
         result = run.result
         cost = f" cost=${run.cost_usd:.2f}" if run.cost_usd is not None else ""
         # Persist the collected outcome (finished_at, usage, cost, result) before the fence
@@ -379,7 +377,13 @@ class ReapMixin:
         # emitted once per run, only after this terminal save — so a kill during the fence check
         # can no longer re-emit it (CG-198). A resumed finalize skips the emit because the first
         # pass already made it, so the run's cost is never counted twice (CG-153).
-        run.save()
+        if run.save() is RunSaveOutcome.SUPERSEDED:
+            # The collector raced a newer worker completion or claim generation. Nothing
+            # derived from the stale collection may advance until a later reap finalizes
+            # the durable generation.
+            return
+        if final_text and not (run.path / "final.md").exists():
+            (run.path / "final.md").write_text(final_text)
         if not resumed:
             self.events.emit("run_finished", task.id, run=run.run_id, mode=run.mode, harness=run.harness, model=run.model, pool_member=run.pool_member,
                              status=str(result.get("status") or ("error" if run.error else "no_result")),
