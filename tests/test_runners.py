@@ -486,6 +486,59 @@ def test_local_runner_harness_shell_resolves_bin(tmp_path):
     assert cmd.startswith(str(fake))
 
 
+@pytest.mark.parametrize(("variable", "credential"), [
+    ("CODEX_HOME", "auth.json"),
+    ("CLAUDE_CONFIG_DIR", ".credentials.json"),
+])
+def test_local_harness_state_is_writable_and_credentials_are_disposable(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str, credential: str):
+    """A CLI-like non-root child can initialize state without touching credential inputs."""
+    from garden.harness import Harness
+    from garden.runner.base import worker_credentials_dir
+
+    operator = tmp_path / "operator" / variable.lower()
+    operator.mkdir(parents=True)
+    original = b'{"token":"operator-secret"}'
+    (operator / credential).write_bytes(original)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    run = Run(task_id="T-1", run_id="first", dir=str(run_dir), runner="local")
+    config = {"worker_env": {"config_dirs": {variable: str(operator)}}}
+    runner = LocalRunner(config, Harness("tiny", {"command": ["true"]}))
+
+    env = runner.worker_env(run, {}, worktree)
+    script = (
+        "import os,pathlib,sys; p=pathlib.Path(os.environ[sys.argv[1]]); "
+        "assert (p/sys.argv[2]).read_bytes()==sys.argv[3].encode(); "
+        "(p/'cache'/'startup').mkdir(parents=True); "
+        "(p/'cache'/'startup'/'ready').write_text('yes'); "
+        "(p/sys.argv[2]).write_text('refreshed')"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, variable, credential, original.decode()],
+        env=env, capture_output=True, text=True, check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    state = Path(env[variable])
+    assert (state / "cache" / "startup" / "ready").read_text() == "yes"
+    assert (operator / credential).read_bytes() == original
+    staged = Path(worker_credentials_dir(worktree)) / (".codex" if variable == "CODEX_HOME" else ".claude")
+    assert (staged / credential).read_bytes() == original
+    assert stat.S_IMODE(staged.stat().st_mode) == 0o500
+    assert stat.S_IMODE((staged / credential).stat().st_mode) == 0o400
+
+    contaminated = state / "settings.json"
+    contaminated.write_text("prior worker hook")
+    second = Run(task_id="T-1", run_id="second", dir=str(run_dir), runner="local")
+    second_env = runner.worker_env(second, {}, worktree)
+    assert Path(second_env[variable]) != state
+    assert not (Path(second_env[variable]) / "settings.json").exists()
+    assert (Path(second_env[variable]) / credential).read_bytes() == original
+
+
 def test_local_runner_probe_uses_the_minimal_login_probe_not_the_full_command(tmp_path):
     """The paused-harness probe (CG-212) must never grant edit/Bash permissions: it runs the
     same minimal, tool-less invocation `garden doctor`'s login check uses (Harness.login_probe),

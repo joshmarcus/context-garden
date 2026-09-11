@@ -10,7 +10,7 @@ import pytest
 from garden.checkrun import run_check_job
 from garden.checks import run_check
 from garden.harness import Harness
-from garden.runner.base import worker_credentials_dir
+from garden.runner.base import worker_credentials_dir, worker_harness_state_dir
 from garden.runner.local import LocalRunner
 from garden.runs import Run
 from garden.sandbox import SandboxError, SandboxPolicy
@@ -196,6 +196,9 @@ def test_sandboxed_codex_result_uses_narrow_output_root(
     assert str(run_dir) not in payload["writable_roots"]
     assert str(tmp_path / "controller") in payload["protected_roots"]
     assert str(output) not in argv
+    assert worker_harness_state_dir(worktree, run.run_id) in payload["writable_roots"]
+    assert worker_credentials_dir(worktree) in payload["readable_roots"]
+    assert worker_credentials_dir(worktree) not in payload["writable_roots"]
 
 
 def test_trusted_supervisor_publishes_sandboxed_codex_result(
