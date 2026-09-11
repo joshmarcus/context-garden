@@ -65,6 +65,26 @@ about 10% and reached only 20% before the validation supervisor terminated the p
 `garden.canary._drive`. There was no pytest summary or duration table, so this attempt is not
 represented as a wall-time baseline and a warm run was not started.
 
+### Restored Linux worker attempt
+
+The operator-authorized restored worker repeated the cold measurement once on 2026-09-11.
+The checkout still had the exact application and test source at `41ff4de3`; the only later
+commits added this report. The environment was Ubuntu AWS Linux 7.0.0-1012-aws, CPython
+3.12.3, a 300% CPU quota, 12 GiB memory limit, no swap, and an already prepared environment
+whose `pip freeze` SHA-256 was
+`78836e6ec2b963eac869c5456e8dc3aafd3136d48ae43beb672409be4851b52e`.
+Key versions were pytest 9.1.1, pytest-timeout 2.4.0, FastAPI 0.141.1, Starlette 1.6.0,
+httpx 0.28.1, PyYAML 6.0.3, and ruff 0.16.7.
+
+Ambient `PYTEST_ADDOPTS` named the three stress nodes already excluded by the ordinary
+collection policy. With an empty pytest cache and fresh `--basetemp`, the supervised command
+above advanced normally through 87% but reached the unchanged hard limit after exactly
+**900.00 seconds** (exit 124). It had reported one ordinary skip plus the three platform
+skips by 62%, no failures, and no final summary or duration table. Admission and dependency
+installation were excluded. Because this was not a complete run, no warm run was started.
+The task policy permits only one attempt per unchanged source/environment and forbids a
+deadline extension, so this result cannot supply the required paired denominator.
+
 The closest complete historical result remains the CG-453 AWS profile at source
 `3c037ca4804a9015c161bd6ecf505474bb71f2d5`: 1,713 passed, 3 skipped, and 4 stress cases
 deselected in 424.93 seconds cold and 432.31 seconds warm on Linux/Python 3.12.14. It is useful
