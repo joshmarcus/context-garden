@@ -1,6 +1,7 @@
 """CG-179: results and reviews speak to each acceptance criterion by name, with evidence."""
 
 from garden.criteria import (
+    amend_criteria,
     apply_verification,
     criteria_counts,
     parse_criteria,
@@ -39,6 +40,57 @@ def test_parse_criteria():
     assert parse_criteria(body) == ["Done one.", "Do two."]
 
 
+def test_parse_criteria_joins_wrapped_continuation_lines():
+    # CGS-011: a checklist item that wraps onto an indented continuation line is one criterion
+    body = (
+        "## Acceptance criteria\n\n"
+        "- [ ] `parse_criteria()` returns the complete normalized text of acceptance criteria\n"
+        "      that span indented continuation lines.\n"
+        "- [ ] A single-line criterion.\n"
+    )
+    assert parse_criteria(body) == [
+        "`parse_criteria()` returns the complete normalized text of acceptance criteria that span indented continuation lines.",
+        "A single-line criterion.",
+    ]
+    # a blank line ends the item even if more indented text follows
+    body_blank = (
+        "## Acceptance criteria\n\n"
+        "- [ ] First criterion.\n"
+        "      continues here.\n\n"
+        "      not part of the criterion.\n"
+        "- [ ] Second criterion.\n"
+    )
+    assert parse_criteria(body_blank) == ["First criterion. continues here.", "Second criterion."]
+
+    # a following heading also ends and preserves the current criterion without requiring
+    # a separating blank line
+    body_heading = (
+        "## Acceptance criteria\n"
+        "- [ ] Criterion before the next heading.\n"
+        "## Out of scope\n"
+    )
+    assert parse_criteria(body_heading) == ["Criterion before the next heading."]
+
+
+def test_amend_criteria_replaces_a_wrapped_criterion_with_no_stale_text():
+    # CGS-011: amending a wrapped item must drop its old continuation line, not just its head
+    body = (
+        "## Acceptance criteria\n\n"
+        "- [ ] Old criterion first line\n"
+        "      and its stale continuation.\n"
+        "- [ ] Keep this one.\n"
+    )
+    updated, applied = amend_criteria(
+        body, [{"index": 0, "text": "Replacement criterion.", "reason": "Old one was wrong."}]
+    )
+    assert "- [ ] Replacement criterion." in updated
+    assert "stale continuation" not in updated
+    assert "and its" not in updated
+    assert "- [ ] Keep this one." in updated
+    assert parse_criteria(updated) == ["Replacement criterion.", "Keep this one."]
+    assert applied == [{"index": 0, "text": "Replacement criterion.", "reason": "Old one was wrong."}]
+
+
 def test_reconcile_aligns_worker_and_reviewer_by_quoted_criterion():
     criteria = ["A renders.", "B returns 200."]
     verified = [{"criterion": "B returns 200.", "evidence": "test_b"},
@@ -57,6 +109,24 @@ def test_reconcile_flags_a_skipped_criterion_with_no_worker_entry():
     assert rows[0]["evidence"] == "test_a" and rows[0]["has_worker"]
     # B has no worker entry and no evidence: not a silent pass
     assert not rows[1]["has_worker"] and not rows[1]["evidence"] and rows[1]["met"] is None
+
+
+def test_verified_row_for_wrapped_criterion_reconciles_without_false_no_evidence():
+    # CGS-011: the worker quotes the complete wrapped text; it must match, not fall through
+    # to a false "no evidence given" row in the generated Verification section.
+    body = (
+        "## Acceptance criteria\n\n"
+        "- [ ] A criterion that wraps onto an\n"
+        "      indented continuation line.\n"
+    )
+    criteria = parse_criteria(body)
+    assert criteria == ["A criterion that wraps onto an indented continuation line."]
+    verified = [{"criterion": criteria[0], "evidence": "covered by test_x"}]
+    rows = reconcile(criteria, verified)
+    assert rows[0]["has_worker"] and rows[0]["evidence"] == "covered by test_x"
+    md = verification_markdown(rows)
+    assert "no evidence given" not in md
+    assert "- ✅ **A criterion that wraps onto an indented continuation line.** — covered by test_x" in md
 
 
 def test_verification_markdown_marks_each_row():
