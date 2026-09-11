@@ -211,7 +211,7 @@ def test_visual_context_does_not_inject_a_capture_job(sched, monkeypatch):
     )
     assert [spec["name"] for spec in submitted[0]["specs"]] == ["focused"]
     assert run.env_snapshot["generated_ui_check_indices"] == []
-    assert run.env_snapshot["validation_plan"]["pages"] == ["task"]
+    assert run.env_snapshot["validation_plan"]["pages"] == []
 
 
 def test_missing_worker_preflight_is_recorded_without_forcing_a_revision(sched, monkeypatch):

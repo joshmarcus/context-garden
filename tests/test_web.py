@@ -3454,6 +3454,7 @@ def test_operating_profile_slider_renders_a_removed_selected_stop(garden):
     assert "names an unavailable profile; using plain garden.yaml values." in home.text
 
 
+@pytest.mark.browser
 def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_path):
     """The rail control changes a real isolated app, retains its pause state, and reloads."""
     import socket

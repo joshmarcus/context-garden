@@ -5,6 +5,20 @@ responsibility; `python3 scripts/check_ci.py` remains the full ordinary-suite re
 for the final committed branch. Stress/load experiments are excluded from both ordinary
 pytest commands and routine CI.
 
+Tests marked `browser` launch an installed browser and are excluded from ordinary pytest
+and CI on Linux, macOS, and Windows through WSL. Run them only in an environment whose
+project policy explicitly authorizes browser work and whose browser runtime is already
+provisioned:
+
+```bash
+.venv/bin/python -m pytest --run-browser-tests -m browser -q
+```
+
+`--run-browser-tests` authorizes test selection; it does not install Playwright or Chromium.
+Install the optional `walkthrough` extra and provision its browser separately when the
+environment supports them. Browser-independent web rendering tests remain in the ordinary
+suite on every platform.
+
 Ordinary pytest tests have a 120-second per-test deadline from pinned `pytest-timeout`.
 The cooperative 900-second pytest session deadline improves diagnostics between tests.
 Detached local and remote check batches, plus validation commands issued through
