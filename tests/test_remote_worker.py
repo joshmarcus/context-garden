@@ -177,6 +177,7 @@ def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monk
     )
 
     assert daemon.returncode == 73
+    completed = execution_dir / "exit_code"
     deadline = time.monotonic() + 5
     while not destination_created.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -187,6 +188,7 @@ def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monk
     while not (execution_dir / "exit_code").exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert (execution_dir / "exit_code").read_text() == "0"
+    assert completed.read_text() == "0"
     assert received.read_text() == brief
     staged = execution_dir / "brief.md"
     assert staged.stat().st_mode & 0o777 == 0o600
