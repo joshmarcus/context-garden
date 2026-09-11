@@ -171,6 +171,30 @@ def test_explicit_ui_check_is_capability_gated_before_paid_work(sched, monkeypat
     assert task.attempts == 0
 
 
+def test_project_browser_authority_does_not_gate_non_browser_tasks(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    sched.cfg.data["products"]["demo"].setdefault("configuration", {})["overrides"] = {
+        "browser.enabled": True,
+    }
+    monkeypatch.setattr(
+        "garden.scheduler.browser.probe_browser_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a non-browser task must not probe browser readiness")
+        ),
+    )
+    dispatched = []
+
+    def dispatch(candidate, **_kwargs):
+        dispatched.append(candidate.id)
+        candidate.status = Status.RUNNING
+
+    monkeypatch.setattr(sched, "dispatch", dispatch)
+    sched.dispatch_ready(TickReport())
+
+    assert task.id in dispatched
+    assert "infrastructure_hold" not in sched.state.get(task.id)
+
+
 def test_timeout_failure_cache_survives_scheduler_restart(sched, fake_github, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["requires"] = ["captures"]

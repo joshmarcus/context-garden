@@ -32,7 +32,11 @@ class BrowserMixin:
     def capture_required(self, task: Task) -> bool:
         required = any(item["kind"] == "capture"
                        for item in required_evidence(task.body, task.extra.get("requires")))
-        configured = self.browser_check_authorized(task, self._pre_pr_specs(task))
+        configured = any(
+            spec.get("python") == "garden.walkthrough:ui_check"
+            or "-m garden.walkthrough --ui-check" in str(spec.get("command") or "")
+            for spec in self._pre_pr_specs(task)
+        )
         # Advisory mode still runs and records the generated UI check. It only avoids holding
         # the worker before that check can produce its preserved diagnostic/fallback artifacts.
         return (required or configured) and self.cfg.capture_infrastructure_policy() == "require"
