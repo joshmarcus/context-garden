@@ -689,6 +689,45 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch, _gh_available):
         assert "below doctor.min_free_mb=2048 MB" in r.output
 
 
+def test_doctor_probes_and_names_the_configured_enterprise_host(
+    garden, monkeypatch, _gh_available,
+):
+    import subprocess
+    from unittest import mock
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"]["demo"]["github"] = {
+        "slug": "team/repo",
+        "host": "forge-one.test",
+    }
+    config_path.write_text(yaml.safe_dump(config))
+    calls: list[tuple[str, ...]] = []
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            calls.append(tuple(cmd))
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "config" in cmd and "git" in cmd:
+                    value = "test@example.com\n" if "user.email" in cmd else "Test User\n"
+                    return subprocess.CompletedProcess(cmd, 0, stdout=value)
+                if _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                if "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
+                if "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
+
+        mock_run.side_effect = side_effect
+        result = run(garden, "doctor")
+
+    assert result.exit_code == 0, result.output
+    assert "github (demo): gh CLI (/usr/bin/gh) for forge-one.test as testuser" in result.output
+    assert any(call[-2:] == ("--hostname", "forge-one.test") for call in calls)
+
+
 def test_doctor_reports_openrouter_key_and_tier_models(garden, monkeypatch):
     cfg = yaml.safe_load((garden / "garden.yaml").read_text())
     cfg["harnesses"]["openrouter"] = {

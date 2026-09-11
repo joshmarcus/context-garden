@@ -16,7 +16,9 @@ from garden.github import (
     is_git_remote_url,
     pull_request_number,
     repo_slug_from_remote,
+    repository_slug_from_remote,
 )
+from garden.source_control import CertificateFailure
 
 
 @pytest.mark.parametrize("url", [
@@ -45,6 +47,7 @@ def test_pull_request_number_accepts_configured_host_and_repository_case_variant
     "git@github.com:team/repo.git",
     "ssh://git@github.com:22/team/repo.git",
     "ssh://git@ssh.github.com:443/team/repo.git",
+    "ssh://acct-1234@ssh.github.com:443/team/repo.git",
 ])
 def test_public_github_transports_resolve_to_one_repository(remote: str):
     assert repo_slug_from_remote(remote) == "team/repo"
@@ -65,6 +68,18 @@ def test_public_ssh_alias_is_not_an_enterprise_route():
 def test_enterprise_remote_forms_require_the_configured_host(remote: str):
     assert repo_slug_from_remote(remote, "forge-one.test") == "team/repo"
     assert repo_slug_from_remote(remote, "forge-two.test") is None
+
+
+@pytest.mark.parametrize("remote", [
+    "https://forge-one.test/team/repo.git",
+    "ssh://acct-1234@forge-one.test/team/repo.git",
+    "acct-1234@forge-one.test:team/repo.git",
+])
+def test_enterprise_remote_forms_carry_their_inferred_host(remote: str):
+    identity = repository_slug_from_remote(remote)
+
+    assert identity == "team/repo"
+    assert identity.host == "forge-one.test"
 
 
 @pytest.mark.parametrize("remote", [
@@ -123,6 +138,61 @@ def test_scheduler_accepts_case_variants_of_configured_repository(garden, monkey
 
     assert str(identity) == "Team/Repo"
     assert identity.host == "forge-one.test"
+
+
+def test_scheduler_infers_enterprise_host_for_poll_reads(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"].pop("github")
+    monkeypatch.setattr("garden.github.shutil.which", lambda _name: "/usr/bin/gh")
+    sched = Scheduler(store, read_only=True)
+    monkeypatch.setattr(sched, "repo_for", lambda _task: garden.parent / "repo")
+    monkeypatch.setattr(
+        "garden.scheduler.gitops.remote_url",
+        lambda _repo: "https://forge-one.test/team/repo.git",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(tuple(command))
+
+        class Result:
+            returncode = 0
+            stdout = "operator\n" if command[1:3] == ["api", "user"] else "[]"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("garden.github.subprocess.run", fake_run)
+
+    identity = sched.slug_for(store.task("DM-001"))
+
+    assert identity == "team/repo"
+    assert identity.host == "forge-one.test"
+    assert sched.github.list_open_prs(identity) == []
+    assert calls[0][-2:] == ("--hostname", "forge-one.test")
+    assert ("-R", "forge-one.test/team/repo") == calls[1][3:5]
+
+
+def test_explicit_repository_override_wins_over_remote_inference(garden, monkeypatch):
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    store = Store(garden)
+    store.config.data["products"]["demo"]["github"] = "configured/repository"
+    sched = Scheduler(store, read_only=True)
+    monkeypatch.setattr(sched, "repo_for", lambda _task: garden.parent / "repo")
+    monkeypatch.setattr(
+        "garden.scheduler.gitops.remote_url",
+        lambda _repo: "https://forge-one.test/team/repo.git",
+    )
+
+    identity = sched.slug_for(store.task("DM-001"))
+
+    assert identity == "configured/repository"
+    assert identity.host == "github.com"
 
 
 @pytest.mark.parametrize("remote", [
@@ -207,12 +277,41 @@ def test_router_keeps_rest_tokens_and_requests_on_their_own_hosts(monkeypatch):
     ]
 
 
+def test_rest_tls_read_failure_becomes_a_typed_diagnostic(monkeypatch):
+    import httpx
+
+    github = GitHub(use_gh=False, host="forge-one.test", token="one")
+    monkeypatch.setattr(
+        "garden.github.httpx.request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            httpx.ReadError("SSL certificate required")
+        ),
+    )
+
+    with pytest.raises(CertificateFailure, match="certificate verification failed"):
+        github.find_pr("team/repo", "branch")
+
+
 def test_missing_scoped_token_never_falls_back_to_the_ambient_token(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "public-token")
     gh = GitHub(use_gh=False, host="forge-one.test", token_env="FORGE_ONE_TOKEN")
     assert not gh.available
     with pytest.raises(GitHubError, match="no GitHub token"):
         gh.find_pr("team/repo", "branch")
+
+
+def test_inferred_enterprise_route_never_borrows_an_ambient_rest_token(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "public-token")
+    router = GitHubRouter(
+        GitHub(use_gh=False),
+        {},
+        route_factory=lambda host: GitHub(
+            use_gh=False, host=host, allow_ambient_token=False,
+        ),
+    )
+
+    with pytest.raises(GitHubError, match="no GitHub token"):
+        router.find_pr(RepositorySlug("team/repo", "forge-one.test"), "branch")
 
 
 @pytest.mark.parametrize("api_base", [

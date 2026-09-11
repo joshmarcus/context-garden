@@ -205,7 +205,13 @@ class Scheduler(
                         token_env=route.get("token_env", ""),
                         connection_policy=policy,
                     )
-            self.github = GitHubRouter(default, routes)
+            self.github = GitHubRouter(
+                default,
+                routes,
+                route_factory=lambda host: GitHub(
+                    **common, host=host, allow_ambient_token=False,
+                ),
+            )
         self._runner_factory = runner_factory
         if upgrader is None:
             from ..upgrade import Upgrader

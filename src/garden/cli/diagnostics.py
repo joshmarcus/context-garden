@@ -287,8 +287,8 @@ def doctor():
         enterprise = GitHub(use_gh=bool(store.config.get("github.use_gh", True)), host=route["host"],
                             api_base=route.get("api_base", ""), token_env=route.get("token_env", ""))
         line = f"github ({product}): {enterprise.describe()}"
-        if enterprise.available and enterprise.is_authenticated():
-            console.print(line)
+        if enterprise.available and enterprise.is_authenticated() and enterprise.me():
+            console.print(f"{line} as {enterprise.me()}")
         else:
             console.print(f"[red]{line} [NOT LOGGED IN][/red]")
             fail("github")
