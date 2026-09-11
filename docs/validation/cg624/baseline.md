@@ -35,7 +35,34 @@ pytest-timeout 2.4.0, FastAPI 0.141.1, Starlette 1.6.0, httpx 0.28.1, PyYAML 6.0
 ruff 0.16.7. Dependencies were already installed. Pytest caches and the disposable
 `--basetemp` were empty for the cold attempt; dependency and admission time were excluded.
 
-## Runtime attempt and limitation
+## Authoritative paired hosted baseline
+
+GitHub Actions [run 34601219310](https://github.com/joshmarcus/context-garden/actions/runs/34601219310)
+subsequently supplied the complete paired denominator. Measurement workflow source
+`340f01f4a7f1be85f6948db5b963d61036a42089` checked out and verified application and test
+source `41ff4de3d273afb2c4ad642856e2ff893ee7db31` before running either selection. Both runs
+selected all **2,880 ordinary cases** (2,876 passed, 4 skipped) and deselected the separately
+inventoried 8 opt-in cases.
+
+| Condition | Process wall | Pytest summary |
+| --- | ---: | --- |
+| Cold (`--cache-clear`, empty test state) | 611.673106438s | 609.33s |
+| Warm (immediate repeat, prepared dependencies) | 623.780750659s | 621.48s |
+
+The measurements used the same Ubuntu 24.04 hosted job, CPython 3.12.14, four logical CPUs
+with affinity 0-3, runner image `20260907.300.1`, a 120-second per-test limit, and a
+900-second execution limit. The dependency inventory SHA-256 was
+`e8e22bcacf51d4e76ada560155060bef46468b0dba830d807333b0f2a7b27c7c`; dependencies were
+unchanged between runs. Queue time and dependency installation were excluded. No ambient
+`PYTEST_ADDOPTS` was removed. The retained cold and warm logs have SHA-256 values
+`f845fe0ff1290a43599c4ec62bce126c5a8da07b89749be904b1645c7382a75b` and
+`177fcd5a9d7d9baacbf59f9474499a313b47de280fd3d2989b38f11ad90b442e` respectively.
+
+Therefore a qualifying candidate must collect no more than **1,728 ordinary cases**, take
+no more than **367.003863863s cold**, and take no more than **374.268450395s warm** under
+the same hosted configuration and pinned dependencies.
+
+## Earlier runtime attempts and limitations
 
 GitHub Actions subsequently completed the repository's ordinary CI command at the exact
 accepted source in [run 34592989538](https://github.com/joshmarcus/context-garden/actions/runs/34592989538).
