@@ -309,6 +309,30 @@ def test_silently_skipped_criterion_blocks_pr_and_requests_revision(sched, fake_
     assert "The widget renders on the home page." in findings
 
 
+def test_targeted_check_evidence_opens_pr_without_full_suite_finding(sched, fake_github, monkeypatch):
+    """CGS-012 criterion 4: a narrow configured pre-PR check plus per-criterion evidence for the
+    current head is enough to open the PR — nothing is reported missing just because an
+    unlisted full-suite or browser-backed run never happened, and the mechanical gate only
+    reports the checks that actually ran."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["checks"] = {"pre_pr": [{"name": "focused", "command": "true"}], "ci": []}
+    _give_criteria(sched)
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)  # default "done" worker: full evidence
+
+    for _ in range(6):
+        sched.tick()
+        if fake_github.created:
+            break
+    assert fake_github.created, "PR did not open"
+
+    check_run = sched.runs.latest("DM-001")
+    results = check_run.result["checks"]
+    names = {r["name"] for r in results}
+    assert "focused" in names
+    assert not any(name for name in names if "full" in name or "suite" in name)
+    assert all(r["status"] in ("pass", "advisory") for r in results)
+
+
 def test_not_done_criterion_with_reason_still_opens_pr_and_flows_to_review(sched, fake_github, monkeypatch):
     """A worker that explicitly reports a criterion `not_done` with a reason (rather than
     silence) satisfies the evidence-or-explanation contract: the PR opens with a 🚧 row, and the
