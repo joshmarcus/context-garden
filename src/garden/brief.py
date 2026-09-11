@@ -209,7 +209,9 @@ def _push_rule(setup: dict, validation: dict | None = None,
     if provider == "status":
         rule += " The scheduler awaits the configured external status provider; do not start or poll GitHub Actions."
     elif provider == "command":
-        rule += " The scheduler runs the configured exact-head validation command before opening or updating the PR."
+        rule += (" The scheduler asks the configured validation command about your exact final "
+                 "commit; a result for any other commit is not evidence, so do not start or "
+                 "poll GitHub Actions yourself.")
     elif provider == "none":
         rule += " This product explicitly has no external CI service; do not start or poll GitHub Actions."
     return rule

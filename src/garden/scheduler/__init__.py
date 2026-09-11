@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .. import gitops
+from .. import ci_status, gitops
 from ..events import EventLog
 from ..github import (
     GitHub,
@@ -928,7 +928,7 @@ class Scheduler(
             # confirms it (CG-242) — before anything else in this pass can act on it.
             self._reload_config_if_safe()
             retry_pending(self.cfg.data)
-            with gitops.tick_read_cache():
+            with gitops.tick_read_cache(), ci_status.tick_query_cache():
                 self._tick_body(rep, dispatch)
         finally:
             # Saved here, not just at the end of the happy path, so a phase that raises past

@@ -7,8 +7,11 @@ hosted. New configurations set `products.<name>.validation` to one of these poli
   branch-publishing Actions helper when `setup.worker_push: true` is also explicit.
 - `status` requires the exact-head GitHub checks rollup populated by another installed CI
   or check provider. Garden reads the provider-neutral rollup and never starts Actions.
-- `command` runs a configured command as a scheduler-owned pre-PR check and records its
-  pass against the exact commit. It is rerun after a scheduler rebase.
+- `command` binds validation to a configured command instead of a checks rollup. With
+  `run_by: worker` (the default) the gate is a Garden-authored exact-head validation
+  receipt for that command; with `run_by: scheduler` the controller runs the command
+  itself and reads one exact-head answer back from it. Either way the pass belongs to one
+  exact commit and is asked for again after a scheduler rebase.
 - `none` explicitly declares that there is no external CI service. Configured pre-PR
   tests, lint, review rejection, conflict detection, and atomic merge guards still apply;
   an absent external status is neither polled nor treated as evidence.
@@ -38,6 +41,58 @@ The Inbox distinguishes a missing Actions run from a missing alternate-provider 
 provider access errors remain permission/API errors, a pending rollup remains pending,
 and a failed required rollup enters the normal failure/revision path. Enterprise API
 routing and credentials come only from the product's explicit GitHub host configuration.
+
+## A validation command run by the scheduler
+
+Some CI systems publish no status Garden can read on the PR: the result lives in that
+system and has to be asked for. `run_by: scheduler` makes one configured command the whole
+provider boundary, so the CI system's vocabulary, hosts and credentials stay in the
+operator's own wrapper (or in gitignored local configuration) and never in Garden.
+
+```yaml
+products:
+  appliance:
+    validation:
+      provider: command
+      run_by: scheduler
+      command: ./ci/head-status      # a wrapper the operator owns
+      timeout_seconds: 60            # optional; default 120, must be in (0, 3600]
+```
+
+Garden appends the candidate commit as the command's final argument — never a branch name,
+because a branch moves — and expects one JSON object on stdout:
+
+```json
+{"sha": "<the commit it was asked about>",
+ "state": "success | failure | pending | missing | unavailable",
+ "exists_for_sha": true,
+ "stale": false,
+ "evidence_url": "<optional link a person can open>",
+ "failures": ["<optional short reasons>"]}
+```
+
+Only `state: success` with `exists_for_sha: true` and `stale: false`, echoing the commit it
+was asked about, is a pass. A pass must state those two facts explicitly, so a result the
+wrapper knows to be superseded, or one that belongs to no build for this head, cannot
+become this head's evidence by omission. Everything else fails closed: `failure`,
+`pending`, `missing`, `unavailable`, an answer about another commit, an unknown state,
+unparsable or oversized output, a nonzero exit, a command that cannot be run, and a query
+that exceeds its timeout. `evidence_url` and `failures` are truncated and redacted before
+they are stored, and a nonzero exit contributes only its exit status, so the command's own
+diagnostics cannot leak into Garden's state or its pages.
+
+The command is a status read, not a build: Garden never triggers or reruns anything, and
+the worker is neither asked to run this command nor given permission to publish. Within
+one scheduler tick each commit is asked about once, and the answer is not carried into the
+next tick, so a build that finishes meanwhile is seen on the next pass.
+
+For the operator the distinction that matters is between an answer and no answer. `pending`
+is quiet waiting and resolves itself; a `failure` bound to this head routes into the
+ordinary revision path; an answer bound to no current result for this head ("CI status
+missing") and a provider that could not answer at all ("CI status unavailable") both stop
+the merge and ask for a person, and the Inbox names which one it is. `tests/fake_ci_command.py`
+is a token-free stand-in that can produce every one of these outcomes, so a configuration
+can be exercised end to end before a real CI system or credential is involved.
 
 ## This repository's GitHub Actions helper
 

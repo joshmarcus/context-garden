@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from .ci_status import DEFAULT_COMMAND_TIMEOUT_SECONDS, command_timeout
 from .configuration import (
     CONFIG_FIELDS,
     ApplyMode,
@@ -781,17 +782,30 @@ class Config:
         s = self.product(name).get("setup")
         return dict(s) if isinstance(s, dict) else {}
 
-    def product_validation(self, name: str) -> dict[str, str]:
-        """Return the product's merge-validation policy."""
+    def product_validation(self, name: str) -> dict[str, Any]:
+        """Return the product's merge-validation policy.
+
+        With ``provider: command``, ``run_by`` selects who runs the configured command:
+        ``worker`` (the default, and the historical meaning) matches a Garden-authored
+        exact-head validation receipt, while ``scheduler`` runs the command itself on the
+        controller and reads one exact-head CI answer back from it.
+        """
+        base = {"provider": "legacy", "command": "", "run_by": "worker",
+                "timeout_seconds": DEFAULT_COMMAND_TIMEOUT_SECONDS}
         value = self.product(name).get("validation")
         if value is None:
-            return {"provider": "legacy", "command": ""}
+            return base
         if isinstance(value, str):
-            return {"provider": value, "command": ""}
+            return {**base, "provider": value}
         if not isinstance(value, dict):
             raise ValueError(f"products.{name}.validation must be a string or mapping")
-        return {"provider": str(value.get("provider") or ""),
-                "command": str(value.get("command") or "")}
+        # An unusable budget stays unusable here; the provider fails closed on it rather
+        # than borrowing the default (validation rejects it at load).
+        return {**base,
+                "provider": str(value.get("provider") or ""),
+                "command": str(value.get("command") or ""),
+                "run_by": str(value.get("run_by") or "worker"),
+                "timeout_seconds": command_timeout(value.get("timeout_seconds"))}
 
     def product_ci_policy(self, name: str) -> dict[str, Any]:
         """Resolve the exact-head gate from the product validation policy.
@@ -808,6 +822,13 @@ class Config:
             )
             return policy
         if provider == "command":
+            if validation["run_by"] == "scheduler":
+                return {
+                    "status_provider": "command",
+                    "required": True,
+                    "command": {"command": validation["command"],
+                                "timeout_seconds": validation["timeout_seconds"]},
+                }
             return {
                 "status_provider": "worker_check",
                 "required": True,
@@ -1032,11 +1053,14 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
             )
         validation = product.get("validation")
         if validation is not None:
+            run_by, timeout = "worker", None
             if isinstance(validation, str):
                 provider, validation_command = validation, ""
             elif isinstance(validation, dict):
                 provider = validation.get("provider")
                 validation_command = validation.get("command", "")
+                run_by = validation.get("run_by", "worker")
+                timeout = validation.get("timeout_seconds")
             else:
                 raise ValueError(f"products.{name}.validation must be a string or mapping")
             if provider not in ("actions", "status", "command", "none"):
@@ -1047,6 +1071,24 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
                 raise ValueError(f"products.{name}.validation.command is required for the command provider")
             if provider != "command" and validation_command:
                 raise ValueError(f"products.{name}.validation.command is only valid with the command provider")
+            if run_by not in ("worker", "scheduler"):
+                raise ValueError(f"products.{name}.validation.run_by must be 'worker' or 'scheduler'")
+            if provider != "command" and run_by != "worker":
+                raise ValueError(
+                    f"products.{name}.validation.run_by is only valid with the command provider"
+                )
+            if timeout is not None:
+                if provider != "command" or run_by != "scheduler":
+                    raise ValueError(
+                        f"products.{name}.validation.timeout_seconds applies only to a command "
+                        "provider run by the scheduler"
+                    )
+                if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                    raise ValueError(f"products.{name}.validation.timeout_seconds must be a number")
+                if not 0 < float(timeout) <= 3600:
+                    raise ValueError(
+                        f"products.{name}.validation.timeout_seconds must be in (0, 3600]"
+                    )
 
 
 def _validate_project_users(value: Any, dotted: str) -> None:
