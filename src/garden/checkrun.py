@@ -21,7 +21,13 @@ from typing import Any
 
 from .checks import run_checks
 from .config import no_live_garden_root
-from .runner.base import RunnerError, run_setup, scrubbed_env, worker_credentials_dir
+from .runner.base import (
+    RunnerError,
+    harness_state_paths,
+    run_setup,
+    scrubbed_env,
+    worker_credentials_dir,
+)
 from .sandbox import SandboxPolicy
 
 
@@ -88,7 +94,7 @@ def run_check_job(payload: dict[str, Any]) -> list[dict[str, Any]]:
                         str(r["retry_command"]), cwd or Path.cwd(),
                         additional_writable_roots=[Path(retry_env[name])
                                                    for name in ("HOME", "TMPDIR", "TMP", "TEMP")
-                                                   if retry_env.get(name)],
+                                                   if retry_env.get(name)] + harness_state_paths(retry_env),
                         readable_roots=[cwd or Path.cwd(), Path(worker_credentials_dir(cwd))],
                         protected_roots=protected,
                     )

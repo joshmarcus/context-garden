@@ -73,7 +73,7 @@ from typing import Any
 
 from .config import no_live_garden_root
 from .host_identity import scrub_shared_text
-from .runner.base import scrubbed_env, worker_credentials_dir
+from .runner.base import harness_state_paths, scrubbed_env, worker_credentials_dir
 from .sandbox import SandboxPolicy
 
 # Check output is persisted as recovery evidence.  Keep a generous documented ceiling for
@@ -177,7 +177,7 @@ def run_check(spec: dict[str, Any], ctx: dict[str, Any], cwd: Path | None = None
             argv, mechanism = policy.command_argv(
                 command, cwd or Path.cwd(),
                 additional_writable_roots=[Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP")
-                                           if env.get(name)],
+                                           if env.get(name)] + harness_state_paths(env),
                 readable_roots=[cwd or Path.cwd(), Path(worker_credentials_dir(cwd))],
                 protected_roots=protected,
             )

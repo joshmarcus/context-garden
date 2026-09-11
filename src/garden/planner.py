@@ -317,7 +317,7 @@ def run_planner(store: Store, prompt: str, harness_name: str = "", difficulty: s
     import tempfile
 
     from .config import no_live_garden_root
-    from .runner.base import scrubbed_env, worker_credentials_dir
+    from .runner.base import harness_state_paths, scrubbed_env, worker_credentials_dir
     from .sandbox import SandboxPolicy
 
     harness = store.config.harness(harness_name or str(store.config.get("harness") or "claude"))
@@ -335,7 +335,7 @@ def run_planner(store: Store, prompt: str, harness_name: str = "", difficulty: s
             cmd, _ = policy.command_argv(
                 shlex.join(cmd), scratch_dir,
                 additional_writable_roots=[Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP")
-                                           if env.get(name)],
+                                           if env.get(name)] + harness_state_paths(env),
                 readable_roots=[scratch_dir, Path(worker_credentials_dir(scratch_dir))],
                 protected_roots=[store.root],
             )
