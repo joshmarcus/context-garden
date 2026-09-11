@@ -69,17 +69,6 @@ jobs:
           github.event.pull_request.head.repo.full_name != github.repository ||
           !startsWith(github.event.pull_request.head.ref, 'garden/')
         run: python -m pip install -e ".[dev]"
-      - name: Ignore runner Chrome apt source for Playwright system dependencies
-        if: >-
-          github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name != github.repository ||
-          !startsWith(github.event.pull_request.head.ref, 'garden/')
-        run: sudo rm -f /etc/apt/sources.list.d/google-chrome.list
-      - if: >-
-          github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name != github.repository ||
-          !startsWith(github.event.pull_request.head.ref, 'garden/')
-        run: python -m playwright install --with-deps chromium
       - if: >-
           github.event_name != 'pull_request' ||
           github.event.pull_request.head.repo.full_name != github.repository ||
