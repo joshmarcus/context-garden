@@ -8,7 +8,6 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -54,20 +53,6 @@ class Store:
         """Invalidate cached discovery when files consumed by ``_scan`` changed."""
         if self._products is not None and self._discovery_signature() != self._discovery_sig:
             self.invalidate_tasks()
-
-    def discovery_snapshot(self) -> tuple[list[Product], dict[str, Task], dict[str, list[Path]]]:
-        """Return an isolated copy of one current task-tree scan.
-
-        Web requests may mutate tasks through actions, so they cannot safely share the
-        cached objects themselves.  Copying the parsed model is substantially cheaper than
-        reparsing every task's YAML while preserving request isolation.
-        """
-        self.refresh_tasks_if_changed()
-        self.tasks()  # populate duplicate-id quarantine before copying the product tree
-        products = deepcopy(self.products())
-        tasks = {task.id: task for product in products for phase in product.phases for task in phase.tasks
-                 if task.id not in self._duplicate_ids}
-        return products, tasks, deepcopy(self._duplicate_ids)
 
     def _discovery_signature(self) -> tuple[tuple[str, int, int], ...]:
         """Metadata fingerprint for product, phase, task, spec and phase-doc discovery."""

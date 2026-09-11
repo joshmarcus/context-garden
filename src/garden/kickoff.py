@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .brief import read_optional_text
 from .model import Phase, join_frontmatter, now_iso, split_frontmatter
 from .store import Store
 
@@ -50,13 +51,6 @@ End your final message with exactly one line:
 
 The JSON must be on one line. `tasks` and `options` may be empty lists; `spike` may be `""`.
 """
-
-
-def _read(p: Path | None) -> str:
-    try:
-        return p.read_text().strip() if p and p.exists() else ""
-    except OSError:
-        return ""
 
 
 def kickoff_doc_path(phase: Phase) -> Path:
@@ -103,10 +97,10 @@ def kickoff_brief(store: Store, phase: Phase) -> str:
              KICKOFF_RULES.format(phase=phase.name, product=phase.product, marker=KICKOFF_MARKER)]
     digest = store.root / str(cfg.get("principles_digest"))
     if digest.exists():
-        parts.append("## Principles (digest)\n\n" + _read(digest))
+        parts.append("## Principles (digest)\n\n" + read_optional_text(digest))
     prod = store.product(phase.product)
     if prod.overview_path:
-        parts.append(f"## Product: {phase.product}\n\n" + _read(prod.overview_path))
+        parts.append(f"## Product: {phase.product}\n\n" + read_optional_text(prod.overview_path))
     from .model import goals_text
 
     if phase.goals_path:
@@ -116,10 +110,10 @@ def kickoff_brief(store: Store, phase: Phase) -> str:
     if prev is not None:
         retro_doc = prev.path / "docs" / "retro.md"
         if retro_doc.exists():
-            parts.append(f"## Previous phase's retrospective ({prev.key})\n\n" + _read(retro_doc))
+            parts.append(f"## Previous phase's retrospective ({prev.key})\n\n" + read_optional_text(retro_doc))
     docs = cited_doc_paths(store, phase)
     if docs:
-        lines = [f"### {store.rel(p)}\n\n{_read(p)}\n" for p in docs]
+        lines = [f"### {store.rel(p)}\n\n{read_optional_text(p)}\n" for p in docs]
         parts.append("## Docs the tasks cite\n\n" + "\n".join(lines))
     from .walkthrough import walkthrough_section
 
@@ -273,7 +267,7 @@ def append_goal_gaps(phase: Phase, gaps: list[dict[str, Any]]) -> None:
         try:
             meta, body = split_frontmatter(goals_path.read_text())
         except (OSError, ValueError):
-            body = _read(goals_path)
+            body = read_optional_text(goals_path)
     body = body.rstrip("\n")
     existing = set()
     m = re.search(r"^## Open\s*$(.*)", body, re.MULTILINE | re.DOTALL)

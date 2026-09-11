@@ -257,6 +257,14 @@ def _read(p: Path) -> str:
         return ""
 
 
+def read_optional_text(path: Path | None) -> str:
+    """Read stripped brief input, treating a missing or unreadable file as empty."""
+    try:
+        return path.read_text().strip() if path else ""
+    except OSError:
+        return ""
+
+
 def resume_prompt(question: str, answer: str) -> str:
     return RESUME_PROMPT.format(question=question.strip(), answer=answer.strip(), marker=RESULT_MARKER)
 

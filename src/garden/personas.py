@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .brief import _parse_marked_json, build_brief
+from .brief import _parse_marked_json, build_brief, read_optional_text
 from .model import Phase, Task, now_iso, slugify, split_frontmatter
 from .store import Store
 
@@ -291,13 +291,6 @@ def write_default_personas(root: Path) -> list[Path]:
     return out
 
 
-def _read(p: Path | None) -> str:
-    try:
-        return p.read_text().strip() if p else ""
-    except OSError:
-        return ""
-
-
 def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict[str, Any]],
                 reference_files: dict[str, str] | None = None) -> str:
     cfg = store.config
@@ -309,14 +302,14 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
     digest = store.root / str(cfg.get("principles_digest"))
     refs = reference_files if reference_files is not None else {}
     if digest.exists():
-        refs["context/principles.md"] = _read(digest) + "\n"
+        refs["context/principles.md"] = read_optional_text(digest) + "\n"
     prod = store.product(phase.product)
     if prod.overview_path:
-        refs["context/product.md"] = _read(prod.overview_path) + "\n"
+        refs["context/product.md"] = read_optional_text(prod.overview_path) + "\n"
     if phase.goals_path:
-        refs["context/phase-goals.md"] = _read(phase.goals_path) + "\n"
+        refs["context/phase-goals.md"] = read_optional_text(phase.goals_path) + "\n"
     for spec in phase.specs:
-        refs[f"context/specs/{spec.name}"] = _read(spec) + "\n"
+        refs[f"context/specs/{spec.name}"] = read_optional_text(spec) + "\n"
     from .walkthrough import walkthrough_section
 
     section = walkthrough_section(phase)

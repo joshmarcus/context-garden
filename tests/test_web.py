@@ -183,7 +183,8 @@ def test_discovery_retries_when_task_changes_during_scan(garden, monkeypatch):
 
     monkeypatch.setattr(Store, "_scan", scan_with_external_edit)
 
-    products, tasks, _duplicates = store.discovery_snapshot()
+    products = store.products()
+    tasks = store.tasks()
 
     assert scans == 2
     assert tasks["DM-001"].title == "Edited during scan"
@@ -211,7 +212,8 @@ def test_discovery_bounds_retries_during_persistent_external_churn(garden, monke
     assert scans == 3
     assert store._discovery_sig != store._discovery_signature()
 
-    store.discovery_snapshot()
+    store.refresh_tasks_if_changed()
+    store.products()
 
     assert scans == 6
 
