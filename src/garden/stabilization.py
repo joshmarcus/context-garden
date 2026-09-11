@@ -8,6 +8,7 @@ artifact; its JSON sidecar retains the observations used to render it.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import shutil
 import subprocess
@@ -130,6 +131,12 @@ def matching_acceptance(phase: Phase, build_sha: str) -> dict[str, Any] | None:
         if _valid_acceptance(row, phase.key, build_sha):
             return row
     return None
+
+
+def acceptance_identity(acceptance: dict[str, Any]) -> str:
+    """Return a stable identity for every field of an acceptance decision."""
+    canonical = json.dumps(acceptance, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _valid_acceptance(row: Any, phase_key: str, build_sha: str) -> bool:

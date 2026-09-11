@@ -16,7 +16,7 @@ from garden import gitops
 from garden.cli import app
 from garden.events import EventLog
 from garden.runner.manual import ManualRunner
-from garden.scheduler import Scheduler
+from garden.scheduler import Scheduler, TickReport
 from garden.stabilization import (
     RECOVERY_EXERCISES,
     accept_limitations,
@@ -416,6 +416,49 @@ def test_acceptance_is_append_only_and_does_not_rewrite_measured_evidence(garden
     assert "Disposition: accepted with limitations by human_owner `Product Owner`" in report
     assert "independent_project: UNPROVEN" in report
     assert "### Independent Project — UNPROVEN" in report
+
+
+def test_same_second_acceptance_change_requeues_closing_review(garden, monkeypatch):
+    phase = protected_phase(garden)
+    monkeypatch.setattr("garden.stabilization.running_build_sha", lambda: "build-a")
+    scheduler = Scheduler(Store(garden))
+    scheduler.cfg.data["retro"]["auto_start"] = True
+    for task in phase.tasks:
+        task.status = task.status.CANCELLED
+        scheduler.store.save(task)
+    scheduler.store.invalidate_tasks()
+    phase = scheduler.store.phase("demo", "p1")
+    decision_at = "2026-09-11T10:11:15+00:00"
+    accept_limitations(
+        phase, "build-a", actor_type="delegated_operator", actor="Alex",
+        authority="owner delegation", rationale="first accepted scope", sources=["decision:q0"],
+        at=decision_at,
+    )
+    first_identity = scheduler._closing_review_policy(phase)["evidence"]
+    entry = {
+        "phase": phase.key, "product": phase.product, "phase_name": phase.name,
+        "personas": ["designer"], "skip_personas": False, "next_phase": "p2",
+        "self_product": "demo", "stage": "queued", "persona_runs": {},
+        "automatic": True, "request_id": "same-second-acceptance",
+        "evidence": first_identity, "source": "", "no_file": False,
+    }
+    scheduler._retro_list().append(entry)
+    scheduler.state.save()
+
+    accept_limitations(
+        phase, "build-a", actor_type="delegated_operator", actor="Alex",
+        authority="owner delegation", rationale="superseding accepted scope",
+        sources=["decision:q1"], at=decision_at,
+    )
+    second_identity = scheduler._closing_review_policy(phase)["evidence"]
+    assert second_identity != first_identity
+
+    scheduler.dispatch_queued_closing_reviews(TickReport())
+    scheduler.prepare_claimed_closing_reviews(TickReport())
+
+    assert entry["stage"] == "queued"
+    assert entry["evidence"] == second_identity
+    assert "re-preparing" in entry["waiting_reason"]
 
 
 @pytest.mark.parametrize("actor_type", ["automated_scheduler", "unknown", "operator"])
