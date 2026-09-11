@@ -271,20 +271,42 @@ def test_review_markdown_lists_criteria():
     assert "- ❌ B returns 200. — no test" in md
 
 
-def test_skipped_criterion_flows_through_pr_body_review_and_metrics(sched, fake_github, monkeypatch):
-    """End to end: a worker that skips a criterion leaves a ⚠️ in the generated Verification
-    section, the reviewer marks it not met, and metrics report criteria met on the first review."""
+def test_silently_skipped_criterion_blocks_pr_and_requests_revision(sched, fake_github, monkeypatch):
+    """A worker that silently omits a criterion (no evidence, no reason) must not get an
+    apparently valid PR out of it: the pre-PR gate rejects the unexplained gap and sends the
+    worker back for a revise round instead of opening the PR."""
     sched.cfg.data["stack"] = False
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     _give_criteria(sched)
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "skip-criterion")
 
     sched.tick()  # dispatch work
+    sched.tick()  # reap work -> gate rejects the silent gap -> revise dispatched, no PR
+
+    assert fake_github.created == []
+    revise_run = sched.runs.latest("DM-001")
+    revise_brief = (revise_run.path / "brief.md").read_text()
+    assert "## Revision round" in revise_brief
+    findings = (revise_run.path / "references" / "context" / "review-findings.md").read_text()
+    assert "acceptance criteria evidence" in findings
+    assert "The widget renders on the home page." in findings
+
+
+def test_not_done_criterion_with_reason_still_opens_pr_and_flows_to_review(sched, fake_github, monkeypatch):
+    """A worker that explicitly reports a criterion `not_done` with a reason (rather than
+    silence) satisfies the evidence-or-explanation contract: the PR opens with a 🚧 row, and the
+    reviewer marks it not met."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    _give_criteria(sched)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "not-done-criterion")
+
+    sched.tick()  # dispatch work
     sched.tick()  # reap work -> PR opened with generated Verification -> review dispatched
 
     body = fake_github.created[-1]["body"]
     assert "## Verification" in body
-    assert "- ⚠️ **The widget renders on the home page.** — no evidence given" in body
+    assert "- 🚧 **The widget renders on the home page.** — not done: ran out of time" in body
     assert "- ✅ **The API returns 200 for a valid request.** — proved by test_criterion_1" in body
 
     review_brief_text = (sched.runs.latest("DM-001").path / "brief.md").read_text()

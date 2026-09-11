@@ -23,7 +23,7 @@ from typing import Any
 
 from .. import gitops
 from ..checks import failures as check_failures
-from ..criteria import required_evidence
+from ..criteria import parse_criteria, required_evidence
 from ..github import GitHubError
 from ..model import Status, Task, ensure_open, now_iso
 from ..preflight import _is_ui_path as _is_preflight_ui_path
@@ -682,12 +682,15 @@ class CheckRunMixin:
                 run, item, index, policy=capture_policy))
         }
         capture_advisory = "\n\n".join(dict.fromkeys(capture_advisories.values()))
+        snapshot = (worker_run.env_snapshot if worker_run is not None else None) or {}
+        criteria = list(snapshot["criteria"]) if "criteria" in snapshot else parse_criteria(task.body)
         mechanical = mechanical_results(
             worktree, base, str(worker_result.get("pr_body") or ""),
             require_description=not bool(task.pr), ui_changed=False, captures=captures,
             inspection_error=str(cont.get("mechanical_inspection_error") or ""),
             required_ui=(bool(plan.get("pages")) if plan else None),
             capture_infrastructure_advisory=capture_advisory,
+            criteria=criteria, verified=worker_result.get("verified"),
         )
         results.extend(mechanical)
         run.result = {"checks": results}
