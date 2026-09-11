@@ -9,6 +9,11 @@ github:
   bot_notice_patterns: ["usage limit", "no issues", "looks good"]
   automerge: false                  # human approval and merge stay mandatory
 
+# Browser execution is disabled by default. Enable it only where workers have a separately
+# provisioned Playwright/Chromium runtime. Individual tasks may opt in with `requires: [captures]`.
+browser:
+  enabled: false
+
 products:
   service:
     repo: https://source.example.invalid/team/service.git

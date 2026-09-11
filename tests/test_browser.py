@@ -146,6 +146,31 @@ def test_advisory_capture_policy_skips_browser_hold_without_claiming_readiness(s
     assert "infrastructure_hold" not in sched.state.get(task.id)
 
 
+def test_explicit_ui_check_is_capability_gated_before_paid_work(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    sched.cfg.data["checks"] = {
+        **sched.cfg.data["checks"],
+        "pre_pr": [{"name": "ui", "python": "garden.walkthrough:ui_check"}],
+    }
+    monkeypatch.setattr("garden.scheduler.browser.probe_browser_runtime", lambda *_args, **_kwargs: {
+        "ready": False,
+        "kind": "missing_playwright",
+        "diagnostic": "install the optional walkthrough dependency on this host",
+    })
+    monkeypatch.setattr(
+        sched,
+        "dispatch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must be held before dispatch")),
+    )
+
+    sched.dispatch_ready(TickReport())
+
+    hold = sched.state.get(task.id)["infrastructure_hold"]
+    assert hold["kind"] == "missing_playwright"
+    assert "optional walkthrough dependency" in hold["diagnostic"]
+    assert task.attempts == 0
+
+
 def test_timeout_failure_cache_survives_scheduler_restart(sched, fake_github, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["requires"] = ["captures"]

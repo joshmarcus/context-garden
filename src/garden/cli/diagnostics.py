@@ -333,17 +333,22 @@ def doctor():
                       + ", ".join(connection_fields)
                       + " (use a logical alias here and put its target in ignored garden.local.yaml)[/red]")
         fail("host identities")
-    try:
-        from playwright.sync_api import sync_playwright
+    browser_authorized = store.config.browser_enabled() or any(
+        store.config.browser_enabled(product.name) for product in store.products()
+    )
+    if not browser_authorized:
+        console.print("browser: not checked (disabled by policy; set browser.enabled: true to opt in)")
+    else:
+        try:
+            from playwright.sync_api import sync_playwright
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            browser.close()
-        console.print("browser: [green]Chromium available[/green]")
-    except Exception as exc:  # noqa: BLE001 - doctor reports missing package, binary, or libs alike
-        console.print("[yellow]browser: unavailable; captures will prepare Chromium automatically, "
-                      "then fall back to HTML only if the machine lacks required system libraries"
-                      f" [{type(exc).__name__}][/yellow]")
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                browser.close()
+            console.print("browser: [green]Chromium available[/green]")
+        except Exception as exc:  # noqa: BLE001 - doctor reports missing package, binary, or libs alike
+            console.print("[yellow]browser: enabled but unavailable; provision the optional "
+                          f"walkthrough dependency and Chromium runtime [{type(exc).__name__}][/yellow]")
     gh = GitHub(use_gh=bool(store.config.get("github.use_gh", True)))
     gh_line = f"github: {gh.describe()}"
     if gh.available:

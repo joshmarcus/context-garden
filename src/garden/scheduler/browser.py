@@ -15,12 +15,27 @@ from ..model import Task, now_iso
 
 
 class BrowserMixin:
+    def browser_authorized(self, task: Task) -> bool:
+        """Project policy or explicit task evidence may authorize browser work."""
+        task_opt_in = any(item["kind"] == "capture"
+                          for item in required_evidence(task.body, task.extra.get("requires")))
+        return self.cfg.browser_enabled(task.product) or task_opt_in
+
+    def browser_check_authorized(self, task: Task, specs: list[dict[str, Any]]) -> bool:
+        """Include a deliberately configured Playwright/UI check as scoped authority."""
+        return self.browser_authorized(task) or any(
+            spec.get("python") == "garden.walkthrough:ui_check"
+            or "-m garden.walkthrough --ui-check" in str(spec.get("command") or "")
+            for spec in specs
+        )
+
     def capture_required(self, task: Task) -> bool:
         required = any(item["kind"] == "capture"
                        for item in required_evidence(task.body, task.extra.get("requires")))
+        configured = self.browser_check_authorized(task, self._pre_pr_specs(task))
         # Advisory mode still runs and records the generated UI check. It only avoids holding
         # the worker before that check can produce its preserved diagnostic/fallback artifacts.
-        return required and self.cfg.capture_infrastructure_policy() == "require"
+        return (required or configured) and self.cfg.capture_infrastructure_policy() == "require"
 
     def _browser_probe_signature(self, task: Task) -> str:
         setup = self.cfg.product_setup(task.product)
