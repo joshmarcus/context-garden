@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -40,6 +41,57 @@ def _has_run_reference(state_text: str, run_id: str) -> bool:
     return re.search(rf"(?<![\w-]){re.escape(run_id)}(?![\w-])", state_text) is not None
 
 
+def _run_references(state_text: str, run_ids: set[str]) -> set[str]:
+    """Find boundary-delimited run IDs in one pass over a fresh state snapshot."""
+    run_ids = {run_id for run_id in run_ids if run_id}
+    if not state_text or not run_ids:
+        return set()
+
+    transitions: list[dict[str, int]] = [{}]
+    failures = [0]
+    outputs: list[list[str]] = [[]]
+    for run_id in run_ids:
+        node = 0
+        for character in run_id:
+            next_node = transitions[node].get(character)
+            if next_node is None:
+                next_node = len(transitions)
+                transitions[node][character] = next_node
+                transitions.append({})
+                failures.append(0)
+                outputs.append([])
+            node = next_node
+        outputs[node].append(run_id)
+
+    pending = deque(transitions[0].values())
+    while pending:
+        node = pending.popleft()
+        for character, child in transitions[node].items():
+            pending.append(child)
+            fallback = failures[node]
+            while fallback and character not in transitions[fallback]:
+                fallback = failures[fallback]
+            failures[child] = transitions[fallback].get(character, 0)
+            outputs[child].extend(outputs[failures[child]])
+
+    referenced: set[str] = set()
+    node = 0
+    for end, character in enumerate(state_text, 1):
+        while node and character not in transitions[node]:
+            node = failures[node]
+        node = transitions[node].get(character, 0)
+        for run_id in outputs[node]:
+            start = end - len(run_id)
+            before = state_text[start - 1] if start else ""
+            after = state_text[end] if end < len(state_text) else ""
+            if (not before or re.match(r"[^\w-]", before)) and (
+                    not after or re.match(r"[^\w-]", after)):
+                referenced.add(run_id)
+        if len(referenced) == len(run_ids):
+            break
+    return referenced
+
+
 def classify_branches(
     tasks: dict[str, Task], runs: list[Run], repos: dict[str, Path], *, remote: str = "origin",
     open_pr_heads: set[tuple[str, str]] | None = None,
@@ -69,8 +121,18 @@ def classify_branches(
 
     active = {(task_product.get(run.task_id, ""), run.branch) for run in runs
               if run.lifecycle_state != "finished" and run.branch}
-    recovery = {(task_product.get(run.task_id, ""), run.branch) for run in runs
-                if run.branch and _has_run_reference(state_text, run.run_id)}
+    recovery_runs = [run for run in runs if run.branch
+                     and (branch_filter is None or run.branch in branch_filter)]
+    if branch_filter is None:
+        referenced_run_ids = _run_references(state_text, {run.run_id for run in recovery_runs})
+    else:
+        # A delete recheck normally has one run for one branch. Searching only those few
+        # IDs in the C regex engine is cheaper than rebuilding and walking the global index.
+        referenced_run_ids = {
+            run.run_id for run in recovery_runs if _has_run_reference(state_text, run.run_id)
+        }
+    recovery = {(task_product.get(run.task_id, ""), run.branch) for run in recovery_runs
+                if run.run_id in referenced_run_ids}
     stack_bases = claimed_bases | {
         (task.product, run.base) for run in runs if run.base and run.lifecycle_state != "finished"
         for task in [tasks.get(run.task_id)] if task is not None
