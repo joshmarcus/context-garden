@@ -275,6 +275,13 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         err.print("no runs")
         raise typer.Exit(1) from None
     console.print(f"[bold]{r.run_id}[/bold] status={r.status} dir={r.dir}")
+    session = r.env_snapshot.get("ssh_tmux_session")
+    if session:
+        console.print(f"On remote host {r.host}: tmux attach-session -r -t {session}")
+        state_path = r.path / "ssh-state.json"
+        if state_path.exists():
+            state = json.loads(state_path.read_text())
+            console.print(f"SSH: {state.get('status', 'unknown')} {state.get('reason', '')}")
     final = r.read_text("final.md")
     if final:
         console.print("[bold]final message:[/bold]")
@@ -285,6 +292,16 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         print("\n".join(stderr.splitlines()[-lines:]))
     if r.error:
         console.print(f"[red]error:[/red] {r.error}")
+
+
+@app.command("ssh-recover", rich_help_panel=PANEL_DIAG)
+def ssh_recover(task_id: str):
+    """Resume bounded collection of the same remote run, without launching a worker."""
+    scheduler = _scheduler(_store())
+    with scheduler.tick_lock():
+        task = scheduler.store.task(task_id)
+        scheduler.resume_ssh_collection(task)
+    console.print(f"{task_id}: resumed remote collection; no new implementation launched")
 
 
 @app.command(rich_help_panel=PANEL_DIAG)

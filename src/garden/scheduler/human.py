@@ -1072,6 +1072,8 @@ class HumanMixin:
         run = self.runs.latest(task.id)
         if run and run.status == "running":
             run.kill()
+            if run.env_snapshot.get("ssh_tmux_session") and not run.process_finished():
+                return  # retain remote ownership until cancellation is acknowledged and drained
             run.status = "cancelled"
             run.finished_at = now_iso()
             run.save()
@@ -1195,10 +1197,42 @@ class HumanMixin:
             return True
         return False
 
+    def resume_ssh_collection(self, task: Task) -> None:
+        import json
+        import time
+
+        from ..ssh_session import write_json
+
+        run = self.latest_worker_run(task.id)
+        if run is None or not run.env_snapshot.get("ssh_tmux_session"):
+            raise RuntimeError("this run has no durable SSH session; investigate its remote checkout manually")
+        if run.status != "running" or run.process_finished():
+            raise RuntimeError("SSH run is already terminal; collect its existing result")
+        path = run.path / "ssh-state.json"
+        state = json.loads(path.read_text()) if path.exists() else {}
+        if state.get("status") != "held":
+            raise RuntimeError("SSH collection is not held")
+        spec_path = run.path / "ssh-request.json"
+        spec = json.loads(spec_path.read_text())
+        spec["deadline"] = time.time() + spec["recovery_timeout_seconds"]
+        write_json(spec_path, spec)
+        write_json(path, {**state, "status": "recovering", "lost_since": time.time()})
+        st = self.state.get(task.id)
+        st.pop("ssh_recovery_hold", None)
+        if isinstance(st.get("needs_human"), dict) and st["needs_human"].get("kind") == "ssh_recovery":
+            st.pop("needs_human", None)
+        self.runner_for(task, run.runner, run.harness).reconcile(run)
+        self.events.emit("ssh_recovery_resumed", task.id, run=run.run_id)
+        self.state.save()
+
     def retry(self, task: Task, *, actor: str = "human_owner") -> None:
         ensure_open(task)
+        for active in self.runs.runs_for(task.id):
+            if active.runner == "ssh" and active.status == "running" and not active.process_finished():
+                raise RuntimeError("remote worker outcome is not terminal; use garden ssh-recover before retry")
         self.events.emit("retry", task.id, actor=self._validate_action_actor(actor), reason="continued loop")
         st = self.state.get(task.id)
+        st.pop("ssh_recovery_hold", None)
         st.pop("needs_human", None)
         if task.status == Status.CHANGES_REQUESTED or (task.pr and task.status in (Status.IN_REVIEW, Status.AWAITING_TRIAGE, Status.FAILED)):
             # let the revise loop continue: keep any PR and dispatch a revise run against the

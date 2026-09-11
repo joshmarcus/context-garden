@@ -368,6 +368,11 @@ class Run:
         return ""
 
     def process_finished(self) -> bool:
+        if (self.env_snapshot or {}).get("ssh_tmux_session"):
+            # The local PID is only a reconnectable log collector. Its death says nothing
+            # about the worker or the durable checkout lease on the remote host.
+            return ((self.path / "ssh-rejected.json").exists()
+                    or (self.path / "exit_code").exists() and (self.path / "ssh-completion.json").exists())
         if self.pid == os.getpid():
             return (self.path / "exit_code").exists()
         if self.pid is None:
@@ -612,6 +617,9 @@ class Run:
             return None
 
     def kill(self) -> None:
+        if (self.env_snapshot or {}).get("ssh_tmux_session"):
+            (self.path / "ssh-cancel").touch()
+            return  # the collector asks the remote supervisor to stop its exact descendants
         # The in-process test runner uses the scheduler process as the liveness sentinel.
         # Never let a corrupt or synthetic run record terminate the process doing the reap.
         if self.pid == os.getpid():
@@ -632,6 +640,14 @@ class Run:
         ignores it is force-killed; failure to observe its death is deliberately reported to the
         caller rather than allowing two processes to edit one worktree.
         """
+        if (self.env_snapshot or {}).get("ssh_tmux_session"):
+            self.kill()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if self.process_finished():
+                    return True
+                time.sleep(0.05)
+            return self.process_finished()
         if self.pid is None or self.pid == os.getpid():
             return False  # No safely identifiable process to terminate.
         self.kill()

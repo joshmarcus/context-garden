@@ -100,6 +100,7 @@ ATTENTION_KINDS = {
     "review_clarification": ("Reviewer clarification needs attention", "The reviewer twice returned malformed or out-of-scope requirement targets. The implementation author has not been asked to change code."),
     "deployment": ("Deployment prerequisite", "An operator must complete the named deployment or recovery step before the scheduler can continue. This is operational work, not an unanswered product question."),
     "runner_hold": ("Temporary runner hold", "An operator temporarily routed this task away from automatic dispatch. Releasing it preserves the task's feedback and any unrelated decision."),
+    "ssh_recovery": ("Remote worker needs recovery", "SSH collection stopped before its outcome could be settled. Remote work and checkout ownership remain preserved."),
     "explicit_hold": ("Owner authorization required", "An explicit hold reserves this step for the owner. The garden will not treat approval as routine operator recovery."),
     "review_recovery_exhausted": ("Automatic review recovery exhausted", "The scheduler preserved and retried the review request, but its bounded repair budget is spent. Repair review capacity or the reviewer environment, then request one more review."),
     "troubled_task": ("Troubled task", "Substantive revisions are not converging. New implementation dispatch is paused for an explicit bounded decision."),
@@ -111,6 +112,7 @@ ATTENTION_KINDS = {
 ATTENTION_OWNERS = {
     "check_did_not_run": ("Interrupted check", "operator", "Retry the interrupted check"),
     "env_error": ("Interrupted infrastructure", "operator", "Repair the environment, then retry"),
+    "ssh_recovery": ("Interrupted SSH transport", "operator", "Inspect the tmux session and reconnect to the same run"),
     "base_broken": ("Normal pending work", "scheduler", "Wait for the base branch check"),
     "deployment": ("Operational prerequisite", "operator", "Complete the named deployment step"),
     "explicit_hold": ("Explicit hold", "you", "Authorize the held step, or leave it paused"),
@@ -481,6 +483,15 @@ def attention_view(t: Task, st: Any, runs: RunStore | None = None) -> dict[str, 
             actions.append({"label": "Publish investigation report", "kind": "investigation-report",
                             "command": f'garden investigation-report {t.id} "..."',
                             "detail": "returns a durable diagnosis to the Inbox without restarting or cancelling the task"})
+    elif info["kind"] == "ssh_recovery":
+        if t.status == Status.FAILED:
+            actions.append({"label": "Retry after repair", "kind": "retry",
+                            "command": f"garden retry {t.id}",
+                            "detail": "the launcher confirmed no worker was started; resolve its prerequisite or conflicting checkout owner first"})
+        else:
+            actions.append({"label": "Reconnect to remote run", "kind": "ssh-recover",
+                            "command": f"garden ssh-recover {t.id}",
+                            "detail": "grants one bounded collection attempt for the same run; no implementation is launched"})
     elif saved_troubled_deferral:
         actions.append({"label": "Reconsider deferred work", "kind": "troubled-reconsider",
                         "command": f"garden troubled-reconsider {t.id}",

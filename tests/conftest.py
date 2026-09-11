@@ -335,7 +335,19 @@ def garden_template(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Pat
 
 
 @pytest.fixture
-def garden(tmp_path: Path, garden_template: tuple[Path, Path]) -> Path:
+def fake_tmux(tmp_path, monkeypatch):
+    binaries = tmp_path / "fake-remote-bin"
+    binaries.mkdir()
+    tmux = binaries / "tmux"
+    tmux.symlink_to(Path(__file__).parent / "fake_tmux.py")
+    sockets = tmp_path / "tmux-sessions"
+    sockets.mkdir()
+    monkeypatch.setenv("TMUX_TMPDIR", str(sockets))
+    monkeypatch.setenv("PATH", f"{binaries}:{os.environ['PATH']}")
+
+
+@pytest.fixture
+def garden(tmp_path: Path, garden_template: tuple[Path, Path], fake_tmux) -> Path:
     """A garden with independently mutable copies of one seeded Git topology."""
     root = tmp_path / "garden"
     repo = tmp_path / "repo"

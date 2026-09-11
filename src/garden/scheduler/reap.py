@@ -202,6 +202,33 @@ class ReapMixin:
             self.log(f"{task.id}: could not preserve timed-out worktree changes: {exc}")
 
     def _finished_or_timed_out(self, run: Run, runner: Runner) -> bool:
+        if run.runner == "ssh":
+            hold = runner.reconcile(run)
+            if hold:
+                task = self.store.tasks().get(run.task_id)
+                st = self.state.get(run.task_id)
+                if task is not None and st.get("ssh_recovery_hold") != hold:
+                    st["ssh_recovery_hold"] = hold
+                    self._set_needs_human(task, "ssh_recovery", hold)
+                    run.error = hold
+                    run.save()
+                    task.log(f"SSH recovery held: {hold}; remote work and checkout ownership retained")
+                    self.store.save(task)
+                    self.events.emit("ssh_recovery_held", task.id, run=run.run_id, reason=hold)
+                    if (run.path / "ssh-rejected.json").exists():
+                        # The remote launcher authoritatively refused this new run before
+                        # starting a worker. An explicit retry after repair is safe; an
+                        # uncertain or live owner never takes this path.
+                        run.status = "failed"
+                        run.finished_at = now_iso()
+                        run.save()
+                        self._transition(task, Status.FAILED, hold, needs_human=True)
+                    self.state.save()
+                return False
+            if run.env_snapshot.get("ssh_tmux_session"):
+                # Remote supervision enforces timeout and descendant cleanup. A local
+                # timeout must never invent completion while the host is unreachable.
+                return run.process_finished()
         if run.process_finished():
             return True
         if not runner.detached:
@@ -1396,6 +1423,18 @@ class ReapMixin:
         for run in self.runs.active():
             if run.runner == "manual":
                 continue
+            if run.runner == "ssh":
+                # Lost collectors remain owned remote work, including after the task's
+                # status changes. They are reconciled, never reaped as vanished workers.
+                task = tasks.get(run.task_id)
+                if task is None and not run.process_finished():
+                    continue
+                if run.preparer_pid is not None and pid_alive(run.preparer_pid):
+                    continue
+                if task is not None and not self._finished_or_timed_out(
+                    run, self.runner_for(task, run.runner, run.harness)
+                ):
+                    continue
             task = tasks.get(run.task_id)
             terminal_remote = bool(
                 run.runner == "remote" and task is not None and task.status.terminal
