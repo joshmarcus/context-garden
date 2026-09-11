@@ -510,6 +510,21 @@ class CheckRunMixin:
         return False
 
     @staticmethod
+    def _has_typed_implementation_failure(results: list[dict[str, Any]]) -> bool:
+        """Whether a failed analyser result affirmatively attributes the failure to source."""
+        return any(
+            result.get("status") in ("fail", "error")
+            and result.get("failure_category") == "implementation"
+            for result in results
+        )
+
+    @staticmethod
+    def _candidate_failure_is_implementation(results: list[dict[str, Any]]) -> bool:
+        """Respect typed attribution while preserving legacy untyped check failures."""
+        typed = any(result.get("failure_category") for result in results)
+        return (not typed) or CheckRunMixin._has_typed_implementation_failure(results)
+
+    @staticmethod
     def _trusted_generated_ui_result(run: Run, index: int) -> bool:
         """Whether this result position belongs to an exact generated ui_check spec."""
         raw = (run.env_snapshot or {}).get("generated_ui_check_indices")
@@ -657,13 +672,32 @@ class CheckRunMixin:
         if failed and not stalled:
             mechanical_failed = check_failures(mechanical)
             if mechanical_failed:
+                source_failures = [
+                    item for item in mechanical_failed
+                    if item.get("name") in {"conflict markers", "syntax"}
+                ]
+                if source_failures:
+                    identity = f"{run.run_id}:" + ",".join(
+                        sorted(str(item["name"]) for item in source_failures)
+                    )
+                    self._record_implementation_failure(
+                        task, "failed_final_verification", identity,
+                        "source-owned mechanical pre-flight verification failed",
+                    )
                 self._start_check_revise(task, failed, rep, cont["cost"])
                 return
             self._handle_failed_checks(task, worker_run, worktree, branch, base, failed, rep, cont)
             return
         self._open_pr_after_checks(task, worker_run, branch, base, cont, rep)
         if stalled and worker_run is not None:
-            self._stall(task, rep, f"revise run {worker_run.run_id} produced no change to the diff or PR description")
+            self._stall(
+                task,
+                rep,
+                f"revise run {worker_run.run_id} produced no change to the diff or PR description",
+                implementation_failure=bool(
+                    (worker_run.env_snapshot or {}).get("implementation_failure_eligible", True)
+                ),
+            )
 
     def _open_pr_after_checks(self, task: Task, worker_run: Run | None, branch: str, base: str,
                               cont: dict[str, Any], rep: TickReport) -> None:
@@ -771,6 +805,14 @@ class CheckRunMixin:
         base_failures = self._blocking_check_failures(run, results)
         if not base_failures:
             # The base is clean: this branch owns the failure.
+            if self._candidate_failure_is_implementation(failed):
+                identity = f"{worker_run.run_id if worker_run else 'unknown'}:{base_sha}:" + ",".join(
+                    sorted(str(item.get("name") or "") for item in failed)
+                )
+                self._record_implementation_failure(
+                    task, "failed_final_verification", identity,
+                    "branch-owned pre-PR verification failed",
+                )
             self._start_check_revise(task, failed, rep, cost)
             return
         names = ", ".join(str(f.get("name")) for f in base_failures)

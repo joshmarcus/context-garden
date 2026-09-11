@@ -15,6 +15,7 @@ from garden.review import (
     interaction_evidence_gaps,
     parse_review,
     review_brief,
+    review_implementation_failure_signal,
     review_item_id,
     review_to_markdown,
     validation_plan,
@@ -1008,6 +1009,40 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
+def test_review_brief_requests_typed_failure_categories(garden):
+    store = Store(garden)
+    text = review_brief(store, store.task("DM-001"), branch="b", base="main",
+                        pr_title="T", pr_body="B", diff="+x", max_diff_chars=100)
+
+    assert "failure_category" in text
+    assert "infrastructure" in text and "unavailable_evidence" in text
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["infrastructure", "admission", "stale_check", "unavailable_evidence", "owner_input", "unknown"],
+)
+def test_nonimplementation_review_categories_are_not_escalation_signals(category):
+    review = {
+        "criteria": [{"criterion": "outcome", "met": False, "failure_category": category}],
+        "findings": [{"severity": "blocking", "failure_category": category}],
+    }
+
+    assert review_implementation_failure_signal(review) == ""
+
+
+def test_implementation_review_category_selects_the_objective_signal():
+    criterion = {"criteria": [{
+        "criterion": "outcome", "met": False, "failure_category": "implementation",
+    }]}
+    finding = {"findings": [{
+        "severity": "blocking", "failure_category": "implementation",
+    }]}
+
+    assert review_implementation_failure_signal(criterion) == "unmet_acceptance_criteria"
+    assert review_implementation_failure_signal(finding) == "verification_rejected"
+
+
 @pytest.mark.parametrize("interaction", [{}, {"unverified": None}, {"unverified": []}])
 def test_review_comment_accepts_omitted_optional_observations(interaction):
     review = {"verdict": "approve", "summary": "Verified behavior", "interaction": interaction}
@@ -1419,6 +1454,40 @@ def test_pre_pr_collection_waives_only_trusted_capture_infrastructure(
         assert opened and not blocked
 
 
+def test_source_owned_mechanical_failure_escalates_once_before_revision(sched, monkeypatch):
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    worktree = gitops.prepare_worktree(
+        sched.repo_for(task), sched.worktree_for(task), task.default_branch(), sched.base_for(task)
+    )
+    (worktree / "broken.py").write_text("def broken(:\n")
+    gitops.git("add", "broken.py", cwd=worktree)
+    gitops.git("commit", "-m", "introduce syntax defect", cwd=worktree)
+    worker = sched.runs.new_run(task.id, "local", mode="work")
+    worker.status = "done"
+    worker.result = {"pr_body": "The source change is ready for verification."}
+    worker.save()
+    check = sched.runs.new_run(task.id, "local", mode="check")
+    check.status = "done"
+    check.save()
+    revisions = []
+    monkeypatch.setattr(sched, "_start_check_revise", lambda *args: revisions.append(args))
+    cont = {
+        "worker_run_id": worker.run_id, "worktree": str(worktree),
+        "branch": task.default_branch(), "base": sched.base_for(task), "cost": "0",
+    }
+
+    sched._after_pre_pr_check(task, check, [], cont, TickReport())
+    sched._after_pre_pr_check(task, check, [], cont, TickReport())
+
+    routes = sched.state.get(task.id)["implementation_failure_escalations"]
+    assert len(routes) == 1
+    assert routes[0]["signal"] == "failed_final_verification"
+    assert "syntax" in routes[0]["identity"]
+    assert len(revisions) == 2
+
+
 def test_pre_pr_capture_advisory_is_bound_to_the_exact_generated_result(sched, monkeypatch):
     from garden import gitops
 
@@ -1688,9 +1757,8 @@ def test_review_brief_marks_an_amended_criterion(garden):
     assert "amended — The original was false." in text
 
 
-def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatch):
-    """A revise round with a blocking code finding is a real review round, so it keeps
-    the task's own tier rather than dropping to easy."""
+def test_revise_with_code_finding_escalates_task_tier(sched, fake_github, monkeypatch):
+    """A blocking code finding escalates the revision instead of dropping it to easy."""
 
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     monkeypatch.setenv("FAKE_CLAUDE_REVIEW", "review-bad")
@@ -1700,11 +1768,16 @@ def test_revise_with_code_finding_keeps_task_tier(sched, fake_github, monkeypatc
     assert "DM-001(revise)" in rep.dispatched
     run = sched.runs.latest("DM-001")
     assert run.mode == "revise"
-    assert run.model == "sonnet"  # the task's own (medium) tier
-    assert run.difficulty == "medium"
+    assert run.model == "opus"
+    assert run.difficulty == "hard"
     sched.store.invalidate()
     task = sched.store.task("DM-001")
+    assert task.difficulty == "hard"
     assert "description only; easy tier" not in task.body
+    escalation = sched.state.get("DM-001")["implementation_failure_escalations"][-1]
+    assert escalation["signal"] == "verification_rejected"
+    assert escalation["prior_tier"] == "medium" and escalation["new_tier"] == "hard"
+    assert escalation["prior_model"] == "sonnet" and escalation["model"] == "opus"
 
 
 def test_orphaned_review_run_is_closed_not_left_running(sched, fake_github):

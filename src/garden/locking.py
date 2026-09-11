@@ -1,4 +1,4 @@
-"""Portable process and thread locking for durable garden files."""
+"""Portable process and thread locking for durable Garden files."""
 
 from __future__ import annotations
 

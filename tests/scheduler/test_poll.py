@@ -2,6 +2,7 @@
 
 import json
 
+from garden.ci_status import CIStatus
 from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status
 from garden.scheduler.report import TickReport
@@ -338,6 +339,29 @@ def test_ci_failure_triggers_revise(sched, fake_github):
     rep = sched.tick()
     assert rep.dispatched == ["DM-001(revise)"]
     assert "**CI** is failing" in agent_context(sched.runs.latest("DM-001"))
+
+
+def test_exact_provider_failure_identity_is_carried_to_ci_analysis(sched, fake_github, monkeypatch):
+    sched.cfg.data["checks"] = {"pre_pr": [], "ci": [{"name": "analyse", "command": "true"}]}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    pr = fake_github.prs[task.branch]
+    pr.checks = "SUCCESS"
+    status = CIStatus(
+        "failure", pr.head_sha, exists_for_sha=True,
+        failures=["external-test"], provider="worker_check",
+    )
+    monkeypatch.setattr(sched, "_ci_status", lambda _task, _pr: status)
+
+    sched.poll(task, TickReport())
+
+    continuation = sched.state.get(task.id)["check_run"]["cont"]
+    assert json.loads(continuation["ci_failure_identity"]) == {
+        "provider": "worker_check", "head": pr.head_sha, "state": "failure",
+        "failures": ["external-test"], "evidence_url": "",
+    }
+    assert "external-test" in continuation["ci_note"]
 
 
 def test_ci_failure_without_pr_timestamp_change_triggers_one_revise(sched, fake_github):

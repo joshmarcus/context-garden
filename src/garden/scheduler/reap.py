@@ -637,6 +637,10 @@ class ReapMixin:
                 run.status = "failed"
                 run.error = "no commits pushed"
                 run.save()
+                self._record_implementation_failure(
+                    task, "missing_expected_changes", run.run_id,
+                    "remote worker finished without pushing commits",
+                )
                 self._retry_or_fail(task, run, rep, "remote worker finished without pushing commits")
                 return
             run.env_snapshot["remote_branch_promoted"] = True
@@ -693,6 +697,10 @@ class ReapMixin:
             run.status = "failed"
             run.error = "no commits"
             run.save()
+            self._record_implementation_failure(
+                task, "missing_expected_changes", run.run_id,
+                "worker finished with no commits",
+            )
             self._retry_or_fail(task, run, rep, "worker finished with no commits")
             return
         run.status = "done"
@@ -1025,7 +1033,14 @@ class ReapMixin:
             st["last_pr_body_hash"] = body_h
         self._open_or_update_pr(task, run, branch, base, result, rep, cost)
         if stalled:
-            self._stall(task, rep, f"revise run {run.run_id} produced no change to the diff or PR description")
+            self._stall(
+                task,
+                rep,
+                f"revise run {run.run_id} produced no change to the diff or PR description",
+                implementation_failure=bool(
+                    (run.env_snapshot or {}).get("implementation_failure_eligible", True)
+                ),
+            )
 
     def _open_or_update_pr(self, task: Task, run: Run, branch: str, base: str, result: dict[str, Any],
                            rep: TickReport, cost: str) -> None:
@@ -1188,6 +1203,10 @@ class ReapMixin:
         snap = run.env_snapshot or {}
         if run.mode == "revise" and task.pr:
             st["pending_feedback"] = snap.get("pending_feedback", "")
+            if "implementation_failure_eligible" in snap:
+                st["pending_feedback_implementation_failure"] = bool(
+                    snap["implementation_failure_eligible"]
+                )
             if snap.get("pending_feedback_easy"):
                 st["pending_feedback_easy"] = True
             else:
@@ -1440,7 +1459,11 @@ class ReapMixin:
             rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} closed (dangling)")
 
     # ---- stall detection ---------------------------------------------------
-    def _stall(self, task: Task, rep: TickReport, reason: str) -> None:
+    def _stall(
+        self, task: Task, rep: TickReport, reason: str, *, implementation_failure: bool = True
+    ) -> None:
+        if implementation_failure:
+            self._record_implementation_failure(task, "repeated_unchanged_attempt", reason, reason)
         self._set_needs_human(task, "stall", reason)
         self.events.emit("stall", task.id, reason=reason)
         action = f'garden triage {task.id} --changes "<feedback>" to unblock'

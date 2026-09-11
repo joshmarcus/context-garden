@@ -525,6 +525,58 @@ def test_revision_policy_protects_explicit_model_and_stops(sched):
     assert st["needs_human"]["kind"] == "troubled_task"
 
 
+def test_objective_failure_escalates_once_and_records_resolved_route(sched):
+    task = sched.store.task("DM-001")
+    task.difficulty = "easy"
+    sched.store.save(task)
+
+    changed = sched._record_implementation_failure(
+        task, "failed_final_verification", "check-1:abc", "branch-owned tests failed"
+    )
+
+    assert changed is True
+    assert task.difficulty == "medium"
+    st = sched.state.get(task.id)
+    assert st["difficulty_floor"] == "medium"
+    assert st["implementation_failure_escalations"][-1] == {
+        "signal": "failed_final_verification",
+        "identity": "check-1:abc",
+        "reason": "branch-owned tests failed",
+        "prior_tier": "easy",
+        "new_tier": "medium",
+        "prior_model": "haiku",
+        "model": "sonnet",
+        "protected_model": False,
+        "at": st["implementation_failure_escalations"][-1]["at"],
+    }
+    assert sched._record_implementation_failure(
+        task, "failed_final_verification", "check-1:abc", "branch-owned tests failed"
+    ) is False
+    assert task.difficulty == "medium"
+    assert len(st["implementation_failure_escalations"]) == 1
+
+
+def test_objective_failure_preserves_explicit_model_and_existing_floor(sched):
+    task = sched.store.task("DM-001")
+    task.difficulty = "easy"
+    task.model = "owner-model"
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["difficulty_floor"] = "hard"
+
+    changed = sched._record_implementation_failure(
+        task, "missing_expected_changes", "work-2", "worker produced no commits"
+    )
+
+    assert changed is False
+    assert task.difficulty == "easy"
+    event = st["implementation_failure_escalations"][-1]
+    assert event["prior_tier"] == event["new_tier"] == "easy"
+    assert event["prior_model"] == event["model"] == "owner-model"
+    assert event["protected_model"] is True
+    assert st["difficulty_floor"] == "hard"
+
+
 def test_investigation_is_idempotent_preserves_work_and_report_waits_for_decision(sched):
     task = sched.store.task("DM-001")
     task.status = Status.CHANGES_REQUESTED

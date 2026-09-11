@@ -86,6 +86,77 @@ def test_actions_analyser_needs_gh_context(monkeypatch):
     monkeypatch.setenv("PATH", "/nonexistent")
     out = github_actions_failures({"repo_slug": "a/b", "branch": "x"}, {})
     assert out["status"] == "error" and "gh" in out["summary"]
+    assert out["failure_category"] == "infrastructure"
+
+
+def test_actions_analyser_types_authentication_failure_as_unavailable_evidence(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "HTTP 403: authentication token rejected"
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/fake/gh")
+    monkeypatch.setattr("garden.checks.subprocess.run", lambda *_args, **_kwargs: Result())
+
+    out = github_actions_failures({"repo_slug": "a/b", "branch": "x"}, {})
+
+    assert out["status"] == "error"
+    assert out["failure_category"] == "unavailable_evidence"
+    assert out["summary"] == "GitHub Actions diagnostics unavailable: authentication failed"
+
+
+def test_actions_analyser_types_cancelled_only_run_as_infrastructure(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = (
+            '[{"databaseId": 41, "name": "test", "conclusion": "cancelled", '
+            '"headSha": "head", "attempt": 1}]'
+        )
+        stderr = ""
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/fake/gh")
+    monkeypatch.setattr("garden.checks.subprocess.run", lambda *_args, **_kwargs: Result())
+
+    out = github_actions_failures(
+        {"repo_slug": "a/b", "branch": "x", "head_sha": "head"}, {},
+    )
+
+    assert out["status"] == "fail"
+    assert out["failure_category"] == "infrastructure"
+    assert out["summary"] == "1 workflow run(s) cancelled without an actionable source failure"
+
+
+def test_actions_analyser_uses_genuine_failure_when_cancelled_run_is_also_present(monkeypatch):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = (
+                '[{"databaseId": 41, "name": "cancelled", "conclusion": "cancelled", '
+                '"headSha": "head", "attempt": 1}, '
+                '{"databaseId": 42, "name": "test", "conclusion": "failure", '
+                '"headSha": "head", "attempt": 2}]'
+                if command[2] == "list" else "FAILED tests/test_example.py::test_failure"
+            )
+
+        return Result()
+
+    monkeypatch.setattr("shutil.which", lambda _name: "/fake/gh")
+    monkeypatch.setattr("garden.checks.subprocess.run", fake_run)
+
+    out = github_actions_failures(
+        {"repo_slug": "a/b", "branch": "x", "head_sha": "head"}, {},
+    )
+
+    assert out["status"] == "fail"
+    assert out["failure_category"] == "implementation"
+    assert out["summary"] == "1 failed workflow run(s): test"
+    assert any(command[2:5] == ["view", "42", "-R"] for command in commands)
+    assert all("41" not in command for command in commands[1:])
 
 
 def test_work_dir_moves_clones_and_worktrees_out_of_the_garden(garden, tmp_path):

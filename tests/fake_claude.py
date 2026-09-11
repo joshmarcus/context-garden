@@ -286,7 +286,8 @@ REVIEWS: dict[str, dict] = {
                              "description_feedback": "Prefer a shorter heading."},
     "review-bad": {"verdict": "request_changes", "summary": "criteria not met", "description_ok": False,
                    "description_feedback": "explain why, drop 'as requested'",
-                   "findings": [{"severity": "blocking", "file": "a.py", "line": 3, "summary": "missing test",
+                   "findings": [{"severity": "blocking", "failure_category": "implementation",
+                                 "file": "a.py", "line": 3, "summary": "missing test",
                                  "fix": "Add a regression test beside the affected behavior."},
                                 {"severity": "nit", "file": "", "line": None, "summary": "naming",
                                  "fix": "Use the domain term in the helper name."}],
@@ -352,9 +353,12 @@ def review(call: Call) -> None:
         for line in re.finditer(r"(?m)^- \*\*(.+?)\*\* — (.*)$", section):
             crit, ev = line.group(1), line.group(2)
             met = "gave no evidence" not in ev and not ev.startswith("author says NOT DONE")
-            criteria.append({"criterion": crit, "met": met,
-                             "evidence": ev if met else "",
-                             "reason": "evidence checks out" if met else "no evidence for this criterion"})
+            criterion = {"criterion": crit, "met": met,
+                         "evidence": ev if met else "",
+                         "reason": "evidence checks out" if met else "no evidence for this criterion"}
+            if not met:
+                criterion["failure_category"] = "implementation"
+            criteria.append(criterion)
     rev["criteria"] = criteria
     print(result_json("Reviewed.\nGARDEN_REVIEW: " + json.dumps(rev), {"input_tokens": 2000, "output_tokens": 100}, 0.02))
 

@@ -1,7 +1,11 @@
 """Review and asynchronous CI feedback reach one complete, head-bound revise brief."""
 
+import hashlib
 import json
 
+import pytest
+
+from garden import gitops
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler import Scheduler
@@ -38,11 +42,13 @@ def _review(summary="Bounded environment recovery is incomplete", finding="Envir
         "criteria": [{
             "criterion": "Bound every started-review recovery",
             "met": False,
+            "failure_category": "implementation",
             "reason": "Started environment errors bypass the recovery limit.",
             "evidence": "six focused recovery tests fail",
         }],
         "findings": [{
             "severity": "blocking",
+            "failure_category": "implementation",
             "file": "src/garden/scheduler/review.py",
             "line": 950,
             "summary": finding,
@@ -84,16 +90,20 @@ def _ci_run(sched, task, head):
 
 
 def _failed_ci():
-    return [{"name": "actions", "status": "fail", "summary": "six focused tests failed", "details": "test recovery[0-5]"}]
+    return [{"name": "actions", "status": "fail", "failure_category": "implementation",
+             "summary": "six focused tests failed", "details": "test recovery[0-5]"}]
 
 
-def _finish_ci(sched, task, run, head, rep=None):
+def _finish_ci(sched, task, run, head, rep=None, failure_identity=""):
     rep = rep or TickReport()
+    if not failure_identity:
+        failure_identity = sched._ci_failure_identity(sched.github.prs[task.branch])
     sched._after_ci_check(
         task,
         run,
         _failed_ci(),
-        {"head": head, "ci_note": "- **CI** is failing on this branch (failed checks: test)."},
+        {"head": head, "ci_note": "- **CI** is failing on this branch (failed checks: test).",
+         "ci_failure_identity": failure_identity},
         rep,
     )
     return rep
@@ -171,9 +181,184 @@ def test_ci_reap_is_restart_safe_deduplicated_and_charges_one_revision(sched, fa
 
     assert restarted.state.get(task.id)["pending_feedback"] == rendered
     assert rendered.count("six focused tests failed") == 1
+    routes = restarted.state.get(task.id)["implementation_failure_escalations"]
+    assert len(routes) == 1
+    assert routes[0]["signal"] == "failed_final_verification"
+    assert json.loads(routes[0]["identity"])["head"] == pr.head_sha
     assert second.transitions == []
     restarted.dispatch(restarted_task, mode="revise", runner=restarted.runner_for(restarted_task))
     assert restarted.state.get(task.id)["revisions"] == 1
+
+
+def test_ci_infrastructure_failure_does_not_escalate_implementation(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    check = _ci_run(sched, task, pr.head_sha)
+    results = [{
+        "name": "actions", "status": "fail", "summary": "exit 127", "details": "",
+        "exit_code": 127, "unavailable": True,
+    }]
+
+    sched._after_ci_check(
+        task, check, results,
+        {"head": pr.head_sha, "ci_note": "- **CI** failed, but its analyser is unavailable."},
+        TickReport(),
+    )
+
+    assert not sched.state.get(task.id).get("implementation_failure_escalations")
+
+
+def test_ci_authentication_failure_does_not_escalate_without_implementation_verdict(
+    sched, fake_github,
+):
+    task, pr = _open_task(sched, fake_github)
+    check = _ci_run(sched, task, pr.head_sha)
+    results = [{
+        "name": "actions", "status": "error", "failure_category": "unavailable_evidence",
+        "summary": "GitHub Actions diagnostics unavailable: authentication failed", "details": "",
+    }]
+
+    sched._after_ci_check(
+        task, check, results,
+        {"head": pr.head_sha, "ci_note": "- **CI** failed, but diagnostics are unavailable.",
+         "ci_failure_identity": f"actions:{pr.head_sha}:failure"},
+        TickReport(),
+    )
+
+    assert not sched.state.get(task.id).get("implementation_failure_escalations")
+
+
+def test_persisted_nonimplementation_review_blockers_do_not_escalate_or_consume_attempts(
+    sched, fake_github,
+):
+    task, pr = _open_task(sched, fake_github)
+    attempts = task.attempts
+    review = _review()
+    review["criteria"] = [{
+        "criterion": "Verify behavior in the external environment",
+        "met": False,
+        "failure_category": "unavailable_evidence",
+        "reason": "The evidence service cannot be reached.",
+    }]
+    review["findings"] = [
+        {
+            "severity": "blocking",
+            "failure_category": "infrastructure",
+            "file": "",
+            "line": None,
+            "summary": "The required test runner is unavailable.",
+            "fix": "Restore the runner before evaluating the source.",
+        },
+    ]
+    reviewed = _review_run(sched, task, pr.head_sha, review)
+
+    sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+
+    state = sched.state.get(task.id)
+    assert not state.get("implementation_failure_escalations")
+    assert sched.store.task(task.id).attempts == attempts
+    assert reviewed.result["findings"] == review["findings"]
+
+    restarted = Scheduler(Store(sched.store.root), github=fake_github)
+    assert restarted.state.get(task.id)["last_review"]["findings"] == review["findings"]
+    assert not restarted.state.get(task.id).get("implementation_failure_escalations")
+    assert restarted.store.task(task.id).attempts == attempts
+
+
+@pytest.mark.parametrize("category", ["infrastructure", "admission", "unavailable_evidence"])
+def test_repeated_nonimplementation_review_blocker_stalls_without_escalating(
+    sched, fake_github, category,
+):
+    task, pr = _open_task(sched, fake_github)
+    review = _review()
+    review["criteria"] = []
+    review["findings"] = [{
+        "severity": "blocking",
+        "failure_category": category,
+        "file": "",
+        "line": None,
+        "summary": "The required test runner is unavailable.",
+        "fix": "Restore the runner before evaluating the source.",
+    }]
+
+    for _ in range(2):
+        reviewed = _review_run(sched, task, pr.head_sha, review)
+        sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+
+    state = sched.state.get(task.id)
+    assert state["needs_human"]["kind"] == "stall"
+    assert not state.get("implementation_failure_escalations")
+
+
+def test_repeated_implementation_review_blocker_records_unchanged_attempt(
+    sched, fake_github,
+):
+    task, pr = _open_task(sched, fake_github)
+    review = _review()
+    review["criteria"] = []
+
+    for _ in range(2):
+        reviewed = _review_run(sched, task, pr.head_sha, review)
+        sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+
+    signals = [
+        event["signal"]
+        for event in sched.state.get(task.id)["implementation_failure_escalations"]
+    ]
+    assert signals.count("verification_rejected") == 2
+    assert signals.count("repeated_unchanged_attempt") == 1
+
+
+@pytest.mark.parametrize(
+    ("category", "expects_unchanged_escalation"),
+    [("infrastructure", False), ("implementation", True)],
+)
+def test_review_classification_survives_dispatch_and_unchanged_revision(
+    sched, fake_github, monkeypatch, category, expects_unchanged_escalation,
+):
+    task, pr = _open_task(sched, fake_github)
+    review = _review()
+    review["criteria"] = []
+    review["findings"][0]["failure_category"] = category
+    reviewed = _review_run(sched, task, pr.head_sha, review)
+
+    sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "nochange")
+    revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
+
+    # The fake reports success without changing the existing branch or description. Seed
+    # the prior accepted identities so reap exercises the real no-change stall path.
+    worktree = sched.worktree_for(task)
+    state = sched.state.get(task.id)
+    state["last_diff_hash"] = gitops.diff_hash(worktree, revise.base)
+    state["last_pr_body_hash"] = hashlib.sha1(b"b").hexdigest()[:16]
+    sched.state.save()
+
+    sched.tick()
+
+    state = sched.state.get(task.id)
+    assert state["needs_human"]["kind"] == "stall"
+    unchanged_routes = [
+        event for event in state.get("implementation_failure_escalations") or []
+        if event["signal"] == "repeated_unchanged_attempt"
+    ]
+    assert bool(unchanged_routes) is expects_unchanged_escalation
+    assert revise.env_snapshot["implementation_failure_eligible"] is expects_unchanged_escalation
+
+
+def test_exact_provider_ci_failure_escalates_after_usable_analysis(sched, fake_github):
+    task, pr = _open_task(sched, fake_github)
+    pr.checks = "SUCCESS"
+    identity = f"worker_check:{pr.head_sha}:failure"
+
+    _finish_ci(
+        sched, task, _ci_run(sched, task, pr.head_sha), pr.head_sha,
+        failure_identity=identity,
+    )
+
+    route = sched.state.get(task.id)["implementation_failure_escalations"][-1]
+    assert route["signal"] == "failed_final_verification"
+    assert route["identity"] == identity
+    assert task.difficulty == "hard"
 
 
 def test_ci_preserves_an_operator_resolved_or_superseded_feedback_record(sched, fake_github):
@@ -340,7 +525,8 @@ def test_controller_owned_ci_diagnostic_is_head_bound_and_redacted_for_revision(
     run.env_snapshot["ci_head"] = pr.head_sha
     run.save()
     sched._after_ci_check(task, run, [{
-        "name": "actions", "status": "fail", "summary": "token=controller-secret test failure",
+        "name": "actions", "status": "fail", "failure_category": "implementation",
+        "summary": "token=controller-secret test failure",
         "details": "token=controller-secret\\nfailed test_example",
     }], check["cont"], TickReport())
     assert "test_example" in sched.state.get(task.id)["pending_feedback"]

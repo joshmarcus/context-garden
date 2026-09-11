@@ -20,6 +20,8 @@ from .store import Store
 
 REVIEW_MARKER = "GARDEN_REVIEW:"
 
+IMPLEMENTATION_FAILURE = "implementation"
+
 INTERACTION_PATHS = (
     "src/garden/browser.py", "src/garden/canary.py", "src/garden/checkrun.py",
     "src/garden/checks.py", "src/garden/gitops.py",
@@ -477,15 +479,20 @@ source revision to repackage it.
 For a material UI, CLI, or workflow change, choose a direct verification of the named
 affected behavior when needed. Say what you inspected in `attestation`, `summary`, criterion
 reasons, or any optional evidence fields you find useful. An explicitly unmet criterion
-must remain visible and blocking. Use `findings` with severity `blocking` for changes needed
-before merge and `nit` for optional improvements. A missing `fix` field does not invalidate
-an otherwise clear finding. Description feedback is always advisory and must not be the sole
-reason for `request_changes`.
+must remain visible and blocking. For every unmet criterion and blocking finding, set
+`failure_category` to exactly one of `implementation`, `infrastructure`, `admission`,
+`stale_check`, `unavailable_evidence`, or `owner_input`. Use `implementation` only when the
+reviewed source owns a defect or unmet required outcome; the other categories identify
+conditions that can still block review but must not escalate the author's model. Use
+`findings` with severity `blocking` for changes needed before merge and `nit` for optional
+improvements. A missing `fix` field does not invalidate an otherwise clear finding.
+Description feedback is always advisory and must not be the sole reason for
+`request_changes`.
 
 End your final message with exactly one line. Only `verdict` is mechanically required;
 the other fields are optional and may be omitted when they add no value:
 
-  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "attestation": "<what you tested or inspected and the result>", "criteria": [{{"criterion": "<criterion>", "met": true | false, "evidence": "<optional evidence>", "reason": "<optional reason>"}}], "findings": [{{"severity": "blocking" | "nit", "file": "<path or empty>", "line": <number or null>, "summary": "<concrete issue>", "fix": "<optional fix>"}}], "description_ok": true | false, "description_feedback": "<optional editorial advice>", "improvements": []}}
+  {marker} {{"verdict": "approve" | "request_changes", "summary": "<1-2 sentences>", "attestation": "<what you tested or inspected and the result>", "criteria": [{{"criterion": "<criterion>", "met": true | false, "failure_category": "<required when met is false>", "evidence": "<optional evidence>", "reason": "<optional reason>"}}], "findings": [{{"severity": "blocking" | "nit", "failure_category": "<required when blocking>", "file": "<path or empty>", "line": <number or null>, "summary": "<concrete issue>", "fix": "<optional fix>"}}], "description_ok": true | false, "description_feedback": "<optional editorial advice>", "improvements": []}}
 
 The JSON must be on one line.
 """
@@ -623,6 +630,23 @@ def parse_review(text: str) -> dict[str, Any]:
     return {}
 
 
+def review_implementation_failure_signal(review: dict[str, Any]) -> str:
+    """Return the escalation signal explicitly classified by the review producer.
+
+    Blocking severity controls the review outcome, not who owns the failure. Stored legacy
+    results without a valid category remain actionable but cannot raise the worker tier.
+    """
+    for item in review.get("criteria") or []:
+        if (isinstance(item, dict) and item.get("met") is False
+                and item.get("failure_category") == IMPLEMENTATION_FAILURE):
+            return "unmet_acceptance_criteria"
+    for item in review.get("findings") or []:
+        if (isinstance(item, dict) and item.get("severity") == "blocking"
+                and item.get("failure_category") == IMPLEMENTATION_FAILURE):
+            return "verification_rejected"
+    return ""
+
+
 def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
     """Honor reviewer judgment while keeping explicit defects and unmet outcomes blocking."""
     unmet = [
@@ -639,7 +663,8 @@ def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
         summary = f"Acceptance criterion is explicitly unmet: {text}"
         if summary not in existing:
             findings.append({"severity": "blocking", "file": "", "line": None, "summary": summary,
-                             "fix": "Make the intended outcome pass or explain why the task should change."})
+                             "fix": "Make the intended outcome pass or explain why the task should change.",
+                             "failure_category": criterion.get("failure_category")})
     blocking = [finding for finding in findings
                 if isinstance(finding, dict) and finding.get("severity") == "blocking"]
     if unmet or blocking:

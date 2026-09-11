@@ -24,6 +24,7 @@ from ..review import (
     interaction_evidence_gaps,
     parse_review,
     review_brief,
+    review_implementation_failure_signal,
     review_is_description_only,
     review_to_markdown,
     validation_plan,
@@ -1256,6 +1257,7 @@ class ReviewMixin:
                 review["verdict"] = "request_changes"
                 review.setdefault("findings", []).append({
                     "severity": "blocking", "file": "", "line": None,
+                    "failure_category": "stale_check",
                     "summary": "Verification contradicts the reviewed source or leaves an outcome unmet: " + "; ".join(gaps),
                     "fix": "Resolve the concrete contradiction or unmet outcome and verify it proportionately.",
                 })
@@ -1390,7 +1392,17 @@ class ReviewMixin:
         keys = sorted({f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
                        for f in review.get("findings") or [] if isinstance(f, dict) and f.get("severity") == "blocking"})
         repeated = sorted(set(keys) & set(st.get("last_findings", [])))
+        implementation_keys = sorted({
+            f"{f.get('file', '')}|{str(f.get('summary', '')).strip().lower()}"
+            for f in review.get("findings") or []
+            if (isinstance(f, dict) and f.get("severity") == "blocking"
+                and f.get("failure_category") == "implementation")
+        })
+        repeated_implementation = sorted(
+            set(implementation_keys) & set(st.get("last_implementation_findings", []))
+        )
         st["last_findings"] = keys
+        st["last_implementation_findings"] = implementation_keys
         reconciliation = st.get("no_change_reconciliation")
         if isinstance(reconciliation, dict):
             reconciled_head = str(reconciliation.get("head") or "")
@@ -1399,6 +1411,8 @@ class ReviewMixin:
                 st.pop("no_change_reconciliation", None)
         if verdict == "approve":
             merge_pending_feedback(st, review_head, "review", "")
+            if not st.get("pending_feedback"):
+                st.pop("pending_feedback_implementation_failure", None)
             if (task.status == Status.CHANGES_REQUESTED and not st.get("pending_feedback")
                     and not st.get("needs_human")):
                 self._transition(task, Status.IN_REVIEW, "current review resolved the pending review findings")
@@ -1417,6 +1431,12 @@ class ReviewMixin:
                           f"automated review: {verdict} (description rewritten){cost}", task.pr or "")
                 return True
             if verdict == "request_changes":
+                signal = review_implementation_failure_signal(review)
+                if signal:
+                    self._record_implementation_failure(
+                        task, signal, run.run_id,
+                        str(review.get("summary") or "automated review rejected the implementation"),
+                    )
                 fb = feedback_from_review(
                     review, run_id=run.run_id,
                     source_head=str(run.env_snapshot.get("review_head") or ""),
@@ -1425,13 +1445,27 @@ class ReviewMixin:
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
                 if fb:
+                    had_feedback = bool(str(st.get("pending_feedback") or "").strip())
+                    prior_eligible = st.get("pending_feedback_implementation_failure")
+                    # Existing untyped feedback retains the historical implementation-stall
+                    # behavior. A fresh typed review round is eligible only when its objective
+                    # classification identified an implementation failure.
+                    st["pending_feedback_implementation_failure"] = bool(signal) or (
+                        had_feedback and (True if prior_eligible is None else bool(prior_eligible))
+                    )
                     st.setdefault("review_feedback_history", []).append(fb)
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = review_is_description_only(review) and not already_queued
                     st.pop("pending_feedback_rebase", None)
                     st.pop("review_fix_reasked", None)
                     if repeated and bool(self.cfg.get("stall.enabled", True)):
-                        self._stall(task, rep, f"review finding repeated after a revise round: {repeated[0].split('|')[1][:80]}")
+                        repeated_key = repeated_implementation[0] if repeated_implementation else repeated[0]
+                        self._stall(
+                            task,
+                            rep,
+                            f"review finding repeated after a revise round: {repeated_key.split('|')[1][:80]}",
+                            implementation_failure=bool(repeated_implementation),
+                        )
                         return True
                     manual_handoff = not bool(self.effective("auto_revise", True, task.product))
                     if manual_handoff and not st.get("needs_human"):
@@ -1455,6 +1489,11 @@ class ReviewMixin:
                 if changed:
                     fb = (fb + "\n\n" + changed).strip()
                 if fb:
+                    had_feedback = bool(str(st.get("pending_feedback") or "").strip())
+                    prior_eligible = st.get("pending_feedback_implementation_failure")
+                    st["pending_feedback_implementation_failure"] = had_feedback and (
+                        True if prior_eligible is None else bool(prior_eligible)
+                    )
                     merge_pending_feedback(st, str(run.env_snapshot.get("review_head") or ""), "review", fb)
                     st["pending_feedback_easy"] = not already_queued
                     st.pop("pending_feedback_rebase", None)
