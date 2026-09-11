@@ -332,7 +332,7 @@ class WorkerRollout:
         else:
             activated = self._evidence(record, "activated", "activation")
 
-        error = self._verify_active(activated, worker, candidate)
+        error = self._verify_active(activated, staged, worker, candidate)
         if error:
             return self._fail(state, record, worker, error)
         if record["state"] == "activated":
@@ -370,7 +370,7 @@ class WorkerRollout:
         return ""
 
     @staticmethod
-    def _verify_active(facts: Mapping[str, Any], worker: WorkerTarget,
+    def _verify_active(facts: Mapping[str, Any], staged: Mapping[str, Any], worker: WorkerTarget,
                        candidate: PublishedVersion) -> str:
         expected = {"version": candidate.version, "source_commit": candidate.source_commit,
                     "direct_url_commit": candidate.source_commit,
@@ -379,6 +379,9 @@ class WorkerRollout:
                     "unit_mode": worker.unit_mode, "unit_source": worker.unit_source}
         if any(facts.get(key) != value for key, value in expected.items()):
             return "active service identity or configuration does not match plan"
+        if (facts.get("runtime") != staged.get("runtime")
+                or facts.get("executable") != staged.get("executable")):
+            return "active runtime or executable does not match staged attestation"
         if (not facts.get("runtime") or not facts.get("pid")
                 or facts.get("pid") == facts.get("prior_pid")
                 or facts.get("frozen") or not facts.get("ready")

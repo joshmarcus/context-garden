@@ -249,6 +249,21 @@ def test_exact_staging_and_service_attestations_fail_closed(tmp_path, where, cha
     assert result["workers"][0]["state"] == expected
 
 
+@pytest.mark.parametrize("change", [
+    {"runtime": "/opt/garden/other"},
+    {"executable": "/opt/garden/other/bin/garden",
+     "runtime_executable": "/opt/garden/other/bin/garden"},
+])
+def test_active_runtime_must_match_staged_attestation(tmp_path, change):
+    rollout, backend = operation(tmp_path)
+    backend.active_changes = change
+
+    result = rollout.start()
+
+    assert result["status"] == "failed"
+    assert result["workers"][0]["state"] == "rolled-back"
+
+
 def test_restart_loop_after_initial_success_fails_and_rolls_back(tmp_path):
     rollout, backend = operation(tmp_path)
     original = backend.health
