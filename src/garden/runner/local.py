@@ -26,6 +26,7 @@ from .base import (
     run_temp_dir,
     scrubbed_env,
     worker_credentials_dir,
+    worker_harness_state_dir,
     worker_home,
 )
 
@@ -96,7 +97,9 @@ class LocalRunner(Runner):
             output_roots = [final_path.parent] if final_path is not None else []
             cmd, _ = policy.command_argv(
                 shlex.join(cmd), worktree,
-                additional_writable_roots=[Path(worker_home(worktree)), *output_roots],
+                additional_writable_roots=[Path(worker_home(worktree)),
+                                           Path(worker_harness_state_dir(worktree, run.run_id)),
+                                           *output_roots],
                 readable_roots=[worktree, Path(worker_home(worktree)), Path(worker_credentials_dir(worktree)),
                                 *(([run.path / REFERENCE_DIR]) if (run.path / REFERENCE_DIR).is_dir() else [])],
                 protected_roots=[Path(path) for path in run.fence_paths or []],
@@ -134,7 +137,7 @@ class LocalRunner(Runner):
 
         # scrubbed_env refreshes the isolated HOME and copies approved credentials/config.
         # Construct it only after the fresh check so denial remains write-free.
-        env = scrubbed_env(self.config, setup, worktree=wt)
+        env = scrubbed_env(self.config, setup, worktree=wt, run_id=run.run_id)
         # This private supervisor input belongs only to a detached check or nested
         # garden.validation invocation. Never let an enclosing process cap a model run.
         env.pop("GARDEN_EXECUTION_TIMEOUT_SECONDS", None)

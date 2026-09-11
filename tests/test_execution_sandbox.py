@@ -10,7 +10,7 @@ import pytest
 from garden.checkrun import run_check_job
 from garden.checks import run_check
 from garden.harness import Harness
-from garden.runner.base import worker_credentials_dir
+from garden.runner.base import worker_credentials_dir, worker_harness_state_dir
 from garden.runner.local import LocalRunner
 from garden.runs import Run
 from garden.sandbox import SandboxError, SandboxPolicy
@@ -196,6 +196,9 @@ def test_sandboxed_codex_result_uses_narrow_output_root(
     assert str(run_dir) not in payload["writable_roots"]
     assert str(tmp_path / "controller") in payload["protected_roots"]
     assert str(output) not in argv
+    assert worker_harness_state_dir(worktree, run.run_id) in payload["writable_roots"]
+    assert worker_credentials_dir(worktree) in payload["readable_roots"]
+    assert worker_credentials_dir(worktree) not in payload["writable_roots"]
 
 
 def test_trusted_supervisor_publishes_sandboxed_codex_result(
@@ -250,12 +253,27 @@ def test_capability_attestation_without_enforcement_is_rejected(
 
 
 def test_sandboxed_setup_writes_cache_marker_as_trusted_bookkeeping(
-        tmp_path: Path, sandbox_wrapper: Path):
-    from garden.runner.base import run_setup, setup_marker
+        tmp_path: Path, sandbox_wrapper: Path, monkeypatch: pytest.MonkeyPatch):
+    from garden.runner.base import run_setup, scrubbed_env, setup_marker, worker_credentials_dir
 
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     config = {"sandbox": {"required": True, "command": [str(sandbox_wrapper)]}}
-    run_setup(worktree, {"command": "printf prepared > prepared.txt"}, config=config)
+    policies: list[dict[str, object]] = []
+    original = SandboxPolicy.command_argv
+
+    def captured(self: SandboxPolicy, command: str, writable_root: Path, **kwargs):
+        argv, mechanism = original(self, command, writable_root, **kwargs)
+        policies.append(json.loads(argv[argv.index("--garden-sandbox-policy") + 1]))
+        return argv, mechanism
+
+    monkeypatch.setattr(SandboxPolicy, "command_argv", captured)
+    env = scrubbed_env(config, worktree=worktree)
+    run_setup(worktree, {"command": "mkdir -p \"$CODEX_HOME/cache\"; printf prepared > prepared.txt"},
+              env=env, config=config)
     assert (worktree / "prepared.txt").read_text() == "prepared"
+    assert (Path(env["CODEX_HOME"]) / "cache").is_dir()
+    assert env["CODEX_HOME"] in policies[-1]["writable_roots"]
+    assert worker_credentials_dir(worktree) in policies[-1]["readable_roots"]
+    assert worker_credentials_dir(worktree) not in policies[-1]["writable_roots"]
     assert setup_marker(worktree).is_file()

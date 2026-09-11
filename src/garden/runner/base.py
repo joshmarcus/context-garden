@@ -113,6 +113,26 @@ def worker_credentials_dir(worktree: Path | str | None) -> str:
     return str(credentials)
 
 
+def worker_harness_state_dir(worktree: Path | str | None, run_id: str | None = None) -> str:
+    """Writable, disposable harness state kept outside the checkout.
+
+    Model CLIs use their config directory for logs, caches, and refreshed credentials, so
+    it cannot be the read-only credential staging root.  A real dispatch supplies its run
+    id; synchronous setup/check/probe callers get a freshly rebuilt compatibility root.
+    """
+    home = Path(worker_home(worktree))
+    suffix = f"-{run_id}" if run_id else ""
+    state = home.parent / f"{home.name}-harness{suffix}"
+    if state.is_symlink():
+        raise RunnerError("worker harness state is a symlink")
+    try:
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        state.chmod(0o700)
+    except OSError:
+        pass
+    return str(state)
+
+
 # The config-dir variable each built-in harness reads, and where it points by default (relative
 # to the *operator's* real home, not the worker's isolated one): CLAUDE_CONFIG_DIR is where
 # claude keeps `.credentials.json`; CODEX_HOME is codex's whole state directory. Neither is on
@@ -133,6 +153,11 @@ CONFIG_CREDENTIAL_FILES: dict[str, str] = {
 }
 
 
+def harness_state_paths(env: dict[str, str]) -> list[Path]:
+    """Resolved writable config/state directories exported to built-in harnesses."""
+    return [Path(env[name]) for name in CONFIG_CREDENTIAL_FILES if env.get(name)]
+
+
 def config_dir_env(config: dict[str, Any] | None) -> dict[str, str]:
     """The `CLAUDE_CONFIG_DIR` / `CODEX_HOME` defaults `scrubbed_env` applies — each built-in
     harness's config-dir variable, defaulting to the *operator's* real home, overridden by
@@ -149,33 +174,45 @@ def config_dir_env(config: dict[str, Any] | None) -> dict[str, str]:
     return env
 
 
-def private_config_dir_env(config: dict[str, Any] | None, credentials_root: Path | str) -> dict[str, str]:
-    """Build fresh read-only harness homes below ``credentials_root`` and copy login files.
+def private_config_dir_env(
+    config: dict[str, Any] | None,
+    credentials_root: Path | str,
+    state_root: Path | str,
+) -> dict[str, str]:
+    """Stage immutable login inputs, then build fresh writable harness homes.
 
     ``config_dir_env`` identifies the operator-side source. The returned paths are always
-    private destinations outside the writable worker HOME, including when a caller explicitly
-    passes HOME through. Rebuilding and permission-locking them for every dispatch prevents
-    settings written by one worker from reaching the next; the OS policy mounts this root
-    readable but never writable.
+    private staging destinations outside the writable worker HOME.  Each staged credential
+    is copied into a separate disposable state directory because Codex and Claude also write
+    runtime files and may refresh their private credential copy.  Rebuilding both roots for
+    every dispatch prevents settings written by one worker from reaching the next.
     """
     sources = config_dir_env(config)
-    home = Path(credentials_root)
+    credentials_home = Path(credentials_root)
+    runtime_home = Path(state_root)
     destinations: dict[str, str] = {}
     for variable, credential in CONFIG_CREDENTIAL_FILES.items():
-        destination = home / DEFAULT_CONFIG_DIRS[variable]
+        credential_dir = credentials_home / DEFAULT_CONFIG_DIRS[variable]
+        destination = runtime_home / DEFAULT_CONFIG_DIRS[variable]
         try:
-            if destination.exists():
-                destination.chmod(0o700)
-                for child in destination.iterdir():
+            if credential_dir.exists():
+                credential_dir.chmod(0o700)
+                for child in credential_dir.iterdir():
                     child.chmod(0o600)
-                shutil.rmtree(destination)
-            destination.mkdir(parents=True, exist_ok=True)
+                shutil.rmtree(credential_dir)
+            credential_dir.mkdir(parents=True, exist_ok=True)
             source = Path(sources[variable]) / credential
+            staged = credential_dir / credential
             if source.is_file():
-                shutil.copyfile(source, destination / credential)
-            for child in destination.iterdir():
+                shutil.copyfile(source, staged)
+            for child in credential_dir.iterdir():
                 child.chmod(0o400)
-            destination.chmod(0o500)
+            credential_dir.chmod(0o500)
+            destination.mkdir(parents=True, exist_ok=True)
+            if staged.is_file():
+                shutil.copyfile(staged, destination / credential)
+                (destination / credential).chmod(0o600)
+            destination.chmod(0o700)
         except OSError:
             # The harness will report a normal authentication failure if its credential cannot
             # be read; a scrubbed environment must still be available for runners and checks.
@@ -267,7 +304,7 @@ def config_file_shell(config: dict[str, Any] | None) -> str:
 
 
 def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = None, *,
-                 worktree: Path | str | None = None) -> dict[str, str]:
+                 worktree: Path | str | None = None, run_id: str | None = None) -> dict[str, str]:
     """The scrubbed environment a worker (and its setup command) runs in: `PASS_ENV` plus
     the names or globs under `config['worker_env']['pass']`, then `setup['env']` on top.
     `CLAUDECODE` is always dropped so a garden can be driven from inside a Claude Code session.
@@ -275,13 +312,11 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     scratch home (`worker_home`), so neither the worker nor a branch's own test suite can read
     the operator's gh token, git credentials or ssh keys.
 
-    The private HOME would also hide each harness's own saved login (claude's
-    `~/.claude/.credentials.json`, codex's `~/.codex`), so `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
-    are set to the operator's real home by default, unless the operator already set them (they
-    pass straight through the `CLAUDE_*` / `CODEX_*` allowlist) or `config['worker_env']
-    ['config_dirs']` overrides them — keyed by the variable name, e.g. `{CLAUDE_CONFIG_DIR:
-    /srv/claude-creds}`. A worker's isolated HOME then carries each harness's own config without
-    exposing the rest of the operator's home."""
+    The private HOME would also hide each harness's saved login. Credential files are therefore
+    copied from the operator defaults or `worker_env.config_dirs` sources, through a read-only
+    staging root, into fresh writable per-dispatch state. The CLI can create caches and refresh
+    its private login copy without seeing the rest of the operator's home or modifying source
+    credentials."""
     patterns = pass_env_patterns(config)
     env = {k: v for k, v in os.environ.items() if any(fnmatch.fnmatchcase(k, p) for p in patterns)}
     env.pop("CLAUDECODE", None)
@@ -290,7 +325,13 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     # Do not let the CLAUDE_* / CODEX_* allowlist turn into a whole-home capability: replace
     # those source paths with fresh, credential-only directories for this dispatch.
     scratch_home = worker_home(worktree)
-    env.update(private_config_dir_env(config, worker_credentials_dir(worktree)))
+    state_root = worker_harness_state_dir(worktree, run_id)
+    try:
+        shutil.rmtree(state_root, ignore_errors=True)
+        Path(state_root).mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError:
+        pass
+    env.update(private_config_dir_env(config, worker_credentials_dir(worktree), state_root))
     install_config_files(config, scratch_home)
     env.update(_no_fsmonitor_env())
     for k, v in ((setup or {}).get("env") or {}).items():
@@ -369,8 +410,8 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         policy = SandboxPolicy.from_config(config)
         scratch_writes = [Path(env[name]) for name in ("HOME", "TMPDIR", "TMP", "TEMP") if env.get(name)]
         argv, mechanism = policy.command_argv(
-            command, worktree, additional_writable_roots=scratch_writes,
-            readable_roots=[worktree, *[Path(env[name]) for name in CONFIG_CREDENTIAL_FILES if env.get(name)]],
+            command, worktree, additional_writable_roots=[*scratch_writes, *harness_state_paths(env)],
+            readable_roots=[worktree, Path(worker_credentials_dir(worktree))],
         )
         env.update(policy.report_env(mechanism))
         proc = subprocess.Popen(
