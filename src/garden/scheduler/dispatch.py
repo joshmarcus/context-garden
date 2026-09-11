@@ -802,10 +802,12 @@ class DispatchMixin:
             except gitops.GitError as exc:
                 changed = []
                 inspection_error = str(exc)
+            pre_pr_specs = self._pre_pr_specs(task)
             plan = validation_plan(changed, task.title, task.body, head=gitops.head_sha(wt) if wt is not None else "",
-                                   check_specs=self._pre_pr_specs(task),
+                                   check_specs=pre_pr_specs,
                                    visual_scope=task.extra.get("visual_scope"),
-                                   capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
+                                   capture_infrastructure_policy=self.cfg.capture_infrastructure_policy(),
+                                   browser_enabled=self.browser_check_authorized(task, pre_pr_specs))
             if inspection_error:
                 plan["inspection_error"] = inspection_error
                 plan["reasons"].append({"item": "bounded diff inspection",

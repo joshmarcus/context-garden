@@ -150,7 +150,8 @@ class CheckRunMixin:
                                    str(result.get("pr_title") or ""), str(result.get("pr_body") or ""),
                                    head=gitops.head_sha(worktree), check_specs=specs,
                                    visual_scope=task.extra.get("visual_scope"),
-                                   capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
+                                   capture_infrastructure_policy=self.cfg.capture_infrastructure_policy(),
+                                   browser_enabled=self.browser_check_authorized(task, specs))
             plan["visual_source"] = visual_source_digest(worktree, plan)
             # The plan gives the reviewer useful visual context. It does not inject a capture
             # job: the agent chooses whether screenshots, direct interaction, focused tests,

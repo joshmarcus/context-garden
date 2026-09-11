@@ -267,6 +267,7 @@ DEFAULTS: dict[str, Any] = {
     "tick_interval": 60,
     "auto_revise": True,
     "auto_dispatch": True,
+    "browser": {"enabled": False},  # explicit environment/project browser authority
     "recovery": {
         # An operator may spend one additional, scheduler-owned recovery round for a
         # stopped revision or check.  It is deliberately opt-in: this is operational
@@ -515,6 +516,13 @@ class Config:
         value = str(self.get("review.capture_infrastructure_policy", "require") or "require")
         if value not in ("require", "advisory"):
             raise ValueError("review.capture_infrastructure_policy must be 'require' or 'advisory'")
+        return value
+
+    def browser_enabled(self, product: str | None = None) -> bool:
+        """Whether the garden/project explicitly authorizes browser execution."""
+        value = self.setting("browser.enabled", product).value
+        if not isinstance(value, bool):
+            raise ValueError("browser.enabled must be true or false")
         return value
 
     def revision_policy(self) -> dict[str, int | bool]:

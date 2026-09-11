@@ -732,9 +732,11 @@ class ReviewMixin:
                 pr_title, pr_body = info.title or pr_title, info.body
             except GitHubError:
                 pass
+        pre_pr_specs = self._pre_pr_specs(task)
         plan = validation_plan(changed, task.title, task.body, pr_title, pr_body, head=review_head,
-                               check_specs=self._pre_pr_specs(task), visual_scope=task.extra.get("visual_scope"),
-                               capture_infrastructure_policy=self.cfg.capture_infrastructure_policy())
+                               check_specs=pre_pr_specs, visual_scope=task.extra.get("visual_scope"),
+                               capture_infrastructure_policy=self.cfg.capture_infrastructure_policy(),
+                               browser_enabled=self.browser_check_authorized(task, pre_pr_specs))
         plan["visual_source"] = visual_source_digest(wt, plan)
         # Stored plans and broad path classifiers from older releases may say a generic
         # replay is required. Review admission now leaves the verification method to the

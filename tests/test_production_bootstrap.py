@@ -143,19 +143,20 @@ def test_wrong_package_manifest_is_rejected_before_install(bootstrap, monkeypatc
     assert list(tmp_path.iterdir()) == []
 
 
-def test_clean_image_bootstrap_includes_full_test_environment():
+def test_clean_image_bootstrap_excludes_browser_installation_by_default():
     source = (Path(__file__).resolve().parents[1] / "scripts/managed-worker-bootstrap").read_text()
     assert source.index("verify_absolute_deadline(declaration)") < source.index('command("apt-get", "update"')
 
-    for package in ("python3-pip", "gh", "make", "libnss3", "libgbm1", "libasound2"):
+    for package in ("python3-pip", "gh", "make"):
         assert f'"{package}"' in source
-    assert '"-m", "playwright", "install", "chromium"' in source
+    for browser_item in ("libnss3", "libgbm1", "libasound2", '"-m", "playwright", "install", "chromium"'):
+        assert browser_item not in source
     assert '"runuser", "-u", "garden-worker"' in source
-    assert "p.chromium.launch(headless=True)" in source
+    assert "p.chromium.launch(headless=True)" not in source
     assert '"git", "ls-remote"' in source
     assert '"repository_access": {"ok": True' in source
     assert '"ci_provider_read": ci_read' in source
-    assert "Environment=PLAYWRIGHT_BROWSERS_PATH=/var/lib/garden-worker/browsers" in source
+    assert "PLAYWRIGHT_BROWSERS_PATH" not in source
 
 
 def test_installed_source_attestation_requires_exact_direct_url_commit(bootstrap):

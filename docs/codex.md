@@ -274,6 +274,31 @@ Codex does not supply a dollar cost here: a missing cost is unknown, and dollar-
 limits cannot reliably cap Codex spending. Use account limits and task/concurrency
 limits as appropriate; do not interpret a displayed zero-dollar rollup as free usage.
 
+### Optional browser validation
+
+Garden does not install, probe, or launch Playwright or Chromium by default. This keeps
+ordinary workers, reviews, unit tests, rendering checks and CI usable on enterprise hosts
+where browsers are unavailable. To authorize browser work for one product, configure:
+
+```yaml
+products:
+  web:
+    configuration:
+      overrides:
+        browser.enabled: true
+```
+
+Alternatively, add `requires: [captures]` to a task for a task-scoped opt-in, or configure an
+explicit `garden.walkthrough:ui_check` check. Install the `walkthrough` package extra and its
+Chromium runtime separately before enabling either path; Garden reports a typed environment
+hold when an opted-in task cannot launch it and does not install it automatically. The manual
+`garden walkthrough product/phase --screenshots` option is also an explicit opt-in; without it,
+the command produces HTML and text only.
+
+The browser-free paths are platform-neutral and covered by deterministic subprocess fakes.
+Browser execution is supported where Playwright itself is provisioned on Linux and macOS;
+Windows use is through WSL and requires a browser runtime installed inside that WSL environment.
+
 ## Operator spend migration
 
 After moving an operator session from Claude Code to Codex, record its heartbeat with

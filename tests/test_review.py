@@ -1242,6 +1242,18 @@ def test_validation_plan_does_not_infer_visual_evidence_from_nonvisual_or_genera
     assert plan["pages"] == []
 
 
+def test_validation_plan_marks_browser_work_not_required_when_disabled():
+    plan = validation_plan(
+        ["src/garden/web/templates/inbox.html"],
+        visual_scope={"behavior": "layout change"},
+        browser_enabled=False,
+    )
+
+    assert plan["pages"] == []
+    assert plan["browser_enabled"] is False
+    assert any(row["item"] == "browser validation not required" for row in plan["reasons"])
+
+
 def test_validation_plan_requires_one_page_capture_for_declared_layout_change():
     plan = validation_plan(["src/garden/web/pages/task.py"], "Tighten task layout",
                            visual_scope={"behavior": "Tighter task layout"})
@@ -1282,6 +1294,7 @@ def test_visual_source_digest_ignores_generated_capture_artifacts(tmp_path):
 def test_one_page_review_does_not_turn_available_captures_into_a_fourteen_page_demand(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    task.extra["requires"] = ["captures"]
     monkeypatch.setattr("garden.scheduler.review.gitops.diff_names",
                         lambda *_: ["src/garden/web/pages/task.py"])
     run = _review_after_completed_empty_replay(sched, task)
@@ -1506,6 +1519,7 @@ def test_review_reuses_only_successful_ui_evidence_from_source_equivalent_check(
 
     task = sched.store.task("DM-001")
     task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    task.extra["requires"] = ["captures"]
     wt = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task),
                                  task.branch or task.default_branch(), sched.base_for(task))
     plan = validation_plan(["src/garden/web/pages/task.py"], task.title, head="old-head",
@@ -1532,6 +1546,7 @@ def test_review_reuses_only_successful_ui_evidence_from_source_equivalent_check(
 def test_worker_brief_carries_the_frozen_validation_plan(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.extra["visual_scope"] = {"behavior": "Tighter task layout"}
+    task.extra["requires"] = ["captures"]
     monkeypatch.setattr("garden.scheduler.dispatch.gitops.diff_names", lambda *_: ["src/garden/web/pages/task.py"])
     monkeypatch.setattr("garden.scheduler.dispatch.gitops.head_sha", lambda *_: "head-a")
 
@@ -1958,6 +1973,7 @@ def test_shared_ui_without_a_current_check_is_not_verified(sched, monkeypatch):
                         lambda *_: ["src/garden/web/templates/base.html"])
     task = sched.store.task("DM-001")
     task.extra["visual_scope"] = {"behavior": "Updated shared rail style"}
+    task.extra["requires"] = ["captures"]
     run = _review_after_completed_empty_replay(sched, task)
     assert run.env_snapshot["validation_plan"]["pages"] == ["board", "inbox"]
     assert run.env_snapshot["validation_check_current"] is False
