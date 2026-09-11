@@ -15,6 +15,7 @@ import pytest_timeout
 import yaml
 
 from garden import runner as runner_registry
+from garden import storage
 from garden.github import Feedback, PRInfo
 from garden.runner.base import _no_fsmonitor_env
 from garden.scheduler import Scheduler
@@ -198,6 +199,12 @@ def in_process_workers(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def deterministic_native_storage(monkeypatch):
+    """Keep host WSL interop out of ordinary tests; storage tests opt back in explicitly."""
+    monkeypatch.setattr(storage, "_is_wsl", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_garden_root(monkeypatch):
     """Strip live-garden and execution identity inherited from the process environment.
 
@@ -346,6 +353,9 @@ def garden(tmp_path: Path, garden_template: tuple[Path, Path]) -> Path:
         "max_revisions": 2,
         "revision_policy": {"enabled": False, "every": 2, "decision_after": 6},
         "max_parallel": 2,
+        # Most tests are about other scheduler responsibilities. Storage-admission tests
+        # explicitly enable the production 20 GiB default with deterministic probes.
+        "resources": {"disk_reserve_bytes": 0},
         "timeout_minutes": 1,
         "review": {"enabled": False},
         "github": {"draft_pr": False},  # most tests exercise the non-draft flow; test_triage covers drafts

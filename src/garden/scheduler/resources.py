@@ -24,6 +24,7 @@ from typing import Any
 
 from ..model import now_iso
 from ..run_supervisor import _authoritative_limit, _finite_cgroup_limits
+from ..storage import StorageVolume, measure_storage
 from ..system_resources import memory_bytes
 
 _ADMISSION_LOCKS: dict[str, threading.Lock] = {}
@@ -50,6 +51,10 @@ class ResourceStatus:
     pressure_reasons: tuple[str, ...]
     reclaim: str = ""
     host_memory_available_mb: int | None = None
+    storage_volumes: tuple[StorageVolume, ...] = ()
+    disk_reserve_bytes: int = 0
+    disk_required_bytes: int = 0
+    disk_operation: str = "local operation"
 
     @property
     def capacity_full(self) -> bool:
@@ -259,7 +264,23 @@ class ResourceMixin:
         value = (run.env_snapshot or {}).get("resource_weight", 1)
         return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 1
 
-    def resource_status(self) -> ResourceStatus:
+    def _storage_status(self, *, fresh: bool,
+                        required_paths: tuple[Path, ...] = ()) -> tuple[StorageVolume, ...]:
+        """Keep passive status rendering cheap while admission always requests fresh data."""
+        cached = getattr(self, "_storage_status_cache", None)
+        if not fresh and not required_paths and cached and time.monotonic() - cached[0] < 5:
+            return cached[1]
+        volumes = measure_storage(
+            (self.cfg.garden_dir, self.cfg.work_dir, self.cfg.work_dir / "tmp", *required_paths),
+            windows_backing_path=str(self.effective("resources.windows_backing_path", "") or ""),
+        )
+        if not required_paths:
+            self._storage_status_cache = (time.monotonic(), volumes)
+        return volumes
+
+    def resource_status(self, *, include_next_disk: bool = True,
+                        fresh_storage: bool = False,
+                        required_storage_paths: tuple[Path, ...] = ()) -> ResourceStatus:
         active = sum(self.run_resource_weight(run) for run in self.local_runs_active())
         limit = self.resource_parallel_limit()
         memory_min = int(self.effective("resources.min_memory_available_mb", 0) or 0)
@@ -283,6 +304,12 @@ class ResourceMixin:
         values = [v for v in (host_memory, cgroup_memory) if v is not None]
         memory = min(values) if values else None
         temp = _free_mb(self.cfg.work_dir / "tmp")
+        disk_reserve = max(0, int(self.effective("resources.disk_reserve_bytes", 0) or 0))
+        disk_required = sum(max(0, int((run.env_snapshot or {}).get("disk_required_bytes", 0) or 0))
+                            for run in self.local_runs_active())
+        next_required = (max(0, int(self.effective("resources.operation_required_bytes", 0) or 0))
+                         if include_next_disk else 0)
+        volumes = self._storage_status(fresh=fresh_storage, required_paths=required_storage_paths)
         isolation = "not configured"
         if execution_cgroup:
             target = Path(execution_cgroup)
@@ -327,10 +354,22 @@ class ResourceMixin:
             pressure_reasons.append("execution cgroup memory events report oom pressure")
         if temp_min and temp is not None and temp < temp_min:
             pressure_reasons.append(f"temporary storage {temp} MiB free is below {temp_min} MiB")
+        for volume in volumes:
+            if not disk_reserve:
+                continue
+            if volume.free_bytes is None:
+                pressure_reasons.append(f"{volume.label} {volume.error}")
+            elif volume.free_bytes - disk_required - next_required < disk_reserve:
+                pressure_reasons.append(
+                    f"{volume.label} has {volume.free_bytes} free bytes; reserve {disk_reserve} bytes "
+                    f"plus {disk_required + next_required} reserved bytes is required"
+                )
         return ResourceStatus(active, limit, memory, memory_min, temp, temp_min, cgroup_memory,
                               cgroup_boundary, tuple(sorted(events.items())), isolation,
                               requested_heavy_limit, heavy_limit, heavy_conflict,
-                              heavy_running, heavy_waiting, tuple(pressure_reasons), self._reclaim_description(), host_memory)
+                              heavy_running, heavy_waiting, tuple(pressure_reasons), self._reclaim_description(), host_memory,
+                              volumes, disk_reserve, disk_required,
+                              str((self.control().get("resource_pressure") or {}).get("operation") or "local operation"))
 
     def _start_reclaim_if_eligible(self, status: ResourceStatus) -> bool:
         """Start one helper only when cgroup headroom is the sole remaining gate."""
@@ -409,7 +448,7 @@ class ResourceMixin:
             self.state.save()
 
     def refresh_resource_pressure(self) -> ResourceStatus:
-        status = self.resource_status()
+        status = self.resource_status(fresh_storage=True)
         self._record_resource_status(status)
         return status
 
@@ -437,10 +476,46 @@ class ResourceMixin:
                 )
             if status.pressured:
                 self._start_reclaim_if_eligible(status)
+            pressure = self.control().setdefault("resource_pressure", {"at": now_iso()})
+            pressure["operation"] = kind
+            self.state.save()
             raise ResourcePressureError(
                 f"{kind} deferred by resource pressure: {'; '.join(status.reasons)}; "
                 "pause dispatch or wait for active runs to drain, then retry"
             )
+
+    def _recheck_local_materialization(self, run: Any, operation: str,
+                                       *, required_paths: tuple[Path, ...] = ()) -> None:
+        """Freshly recheck an admitted reservation immediately before disk materialization."""
+        with self._local_admission_lock():
+            status = self.resource_status(
+                include_next_disk=False,
+                fresh_storage=True,
+                required_storage_paths=required_paths,
+            )
+            self._record_resource_status(status)
+            if status.pressured:
+                pressure = self.control().setdefault("resource_pressure", {"at": now_iso()})
+                pressure["operation"] = operation
+                self.state.save()
+                raise ResourcePressureError(
+                    f"{operation} deferred by resource pressure: {'; '.join(status.pressure_reasons)}"
+                )
+
+    @contextmanager
+    def _local_staging_admission(self, operation: str):
+        """Serialize unreserved controller staging with a fresh physical-space check."""
+        with self._local_admission_lock():
+            status = self.resource_status(fresh_storage=True)
+            self._record_resource_status(status)
+            if status.pressured:
+                pressure = self.control().setdefault("resource_pressure", {"at": now_iso()})
+                pressure["operation"] = operation
+                self.state.save()
+                raise ResourcePressureError(
+                    f"{operation} deferred by resource pressure: {'; '.join(status.pressure_reasons)}"
+                )
+            yield
 
     def _new_local_run(self, task_id: str, mode: str, kind: str, *, run_id: str = "",
                        runner_name: str = "local", resource_weight: int | None = None) -> Any:
@@ -456,5 +531,18 @@ class ResourceMixin:
             # still reclaim the reservation once this process is gone.
             run.preparer_pid = os.getpid()
             run.env_snapshot["resource_weight"] = weight
+            run.env_snapshot["disk_required_bytes"] = max(
+                0, int(self.effective("resources.operation_required_bytes", 0) or 0)
+            )
+            run.save()
+            # Setup and runtime scratch are created by a detached supervisor after this
+            # lock is released.  Preserve the aggregate that this serialized admission
+            # accepted so their fresh physical-space checks include sibling reservations.
+            # A later contender includes this run in its own aggregate, so it cannot race
+            # an older supervisor for the same estimated headroom.
+            run.env_snapshot["disk_recheck_required_bytes"] = sum(
+                max(0, int((active.env_snapshot or {}).get("disk_required_bytes", 0) or 0))
+                for active in self.local_runs_active()
+            )
             run.save()
             return run

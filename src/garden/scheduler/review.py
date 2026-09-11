@@ -687,7 +687,14 @@ class ReviewMixin:
                    if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
             run.branch, run.base = branch, base
             canonical = self.prepare_canonical_run(task, run, runner, branch, base)
-        wt = canonical or gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        if canonical is not None:
+            wt = canonical
+        elif run is not None:
+            self._recheck_local_materialization(run, "review checkout materialization")
+            wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        else:
+            with self._local_staging_admission("review checkout materialization"):
+                wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         if run is not None:
             run.worktree = str(wt)
             run.save()

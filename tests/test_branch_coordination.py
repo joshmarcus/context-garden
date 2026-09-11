@@ -14,6 +14,7 @@ from garden.events import EventLog
 from garden.github import Feedback
 from garden.model import Status
 from garden.scheduler.report import TickReport
+from garden.storage import StorageVolume
 from tests.conftest import git, write
 
 BRANCH = "garden/dm-001-first-task"
@@ -241,6 +242,29 @@ def test_stale_base_probe_skips_a_task_with_a_worker_run_in_flight(sched, fake_g
     assert acted is False
     assert not [r for r in sched.runs.runs_for("DM-001") if r.mode == "rebase"]
     assert sched.state.get("DM-001").get("needs_human", {}).get("kind") == "base_broken"
+
+
+def test_stale_base_probe_keeps_waiting_when_checkout_storage_is_blocked(sched, monkeypatch, tmp_path):
+    import garden.scheduler.resources as resources
+
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    st = sched.state.get(task.id)
+    st["needs_human"] = {"kind": "base_broken", "base": "main", "base_sha": "parked"}
+    sched.state.save()
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", 19 << 30),
+    ))
+    monkeypatch.setattr(sched, "worktree_for", lambda _task: tmp_path / "absent-worktree")
+
+    acted = sched._reprobe_base_broken(task, TickReport())
+
+    assert acted is False
+    assert not (tmp_path / "absent-worktree").exists()
+    assert sched.state.get(task.id)["needs_human"]["kind"] == "base_broken"
+    assert sched.control()["resource_pressure"]["operation"] == "base recovery checkout materialization"
 
 
 def test_no_rebase_while_a_revise_is_in_flight_across_ticks(sched, fake_github, tmp_path, monkeypatch):

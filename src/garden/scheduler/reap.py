@@ -21,6 +21,7 @@ from ..runner.base import Runner, run_temp_dir
 from ..runs import Run, RunMutationConflict
 from .human import validate_investigation_report
 from .report import TickReport
+from .resources import ResourcePressureError
 
 
 class ReapMixin:
@@ -604,7 +605,11 @@ class ReapMixin:
                 self._retry_or_fail(task, run, rep, run.error)
                 return
             try:
-                if run.pushed_ref:
+                if (run.env_snapshot or {}).get("remote_branch_promoted"):
+                    # A prior finalize pass promoted the exact accepted result, then
+                    # deferred local checkout staging for storage pressure.
+                    ahead = 1
+                elif run.pushed_ref:
                     staged = f"refs/remotes/origin/{run.pushed_ref.removeprefix('refs/heads/')}"
                     remote_head = gitops.git("rev-parse", "--verify", staged, cwd=repo).strip()
                     if not run.pushed_head or remote_head != run.pushed_head:
@@ -634,14 +639,22 @@ class ReapMixin:
                 run.save()
                 self._retry_or_fail(task, run, rep, "remote worker finished without pushing commits")
                 return
+            run.env_snapshot["remote_branch_promoted"] = True
             run.status = "done"
             run.save()
             try:
-                if wt.exists():
-                    gitops.git("fetch", "origin", cwd=wt)
-                    gitops.git("reset", "-q", "--hard", f"origin/{branch}", cwd=wt)
-                else:
-                    gitops.prepare_worktree(repo, wt, branch, base)
+                with self._local_staging_admission("remote result checkout materialization"):
+                    if wt.exists():
+                        gitops.git("fetch", "origin", cwd=wt)
+                        gitops.git("reset", "-q", "--hard", f"origin/{branch}", cwd=wt)
+                    else:
+                        gitops.prepare_worktree(repo, wt, branch, base)
+            except ResourcePressureError as e:
+                # The result and promoted branch are already durable.  Leave the task and
+                # terminal run untouched so the normal interrupted-finalize path retries
+                # this controller staging step after storage recovers.
+                self.log(f"{task.id}: {e}; completed remote result remains queued for staging")
+                return
             except gitops.GitError as e:
                 run.status = "failed"
                 run.error = f"could not materialise local worktree: {e}"
@@ -898,10 +911,14 @@ class ReapMixin:
         repo = self.repo_for(task)
         try:
             if not wt.exists():
-                gitops.prepare_worktree(repo, wt, branch, base)
+                with self._local_staging_admission("base recovery checkout materialization"):
+                    gitops.prepare_worktree(repo, wt, branch, base)
             gitops.fetch(wt)
             ref = gitops.base_ref(wt, base)
             tip = gitops.rev_parse(wt, ref)
+        except ResourcePressureError as e:
+            self.log(f"{task.id}: {e}; still waiting for `{base}`")
+            return False
         except gitops.GitError as e:
             self.log(f"{task.id}: base re-probe failed ({e}); still waiting for `{base}`")
             return False

@@ -502,16 +502,34 @@ class Scheduler(
             if item.run_id != run.run_id and item.worktree
             and Path(item.worktree).resolve() == root.resolve()
         }
+        claimed = False
         try:
+            self._recheck_local_materialization(
+                run,
+                "canonical checkout preparation",
+                required_paths=(root,),
+            )
             claim(root, run.run_id, active_ids)
+            claimed = True
             preflight(root, branch, base)
-            reconcile(root, checkout, scrubbed_env(runner.config, self.cfg.product_setup(task.product), worktree=root),
-                      run.path / "reconcile.log")
+            self._recheck_local_materialization(
+                run,
+                "canonical runtime environment materialization",
+                required_paths=(root,),
+            )
+            env = scrubbed_env(runner.config, self.cfg.product_setup(task.product), worktree=root)
+            self._recheck_local_materialization(
+                run,
+                "canonical reconciliation",
+                required_paths=(root,),
+            )
+            reconcile(root, checkout, env, run.path / "reconcile.log")
             preflight(root, branch, base)
         except Exception:
             from ..canonical import release
 
-            release(root, run.run_id)
+            if claimed:
+                release(root, run.run_id)
             run.status = "failed"
             run.finished_at = now_iso()
             run.save()

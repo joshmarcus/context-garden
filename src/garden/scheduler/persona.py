@@ -59,19 +59,48 @@ class PersonaMixin:
         repo = self.repo_for(probe)
         base = self.final_base_for(probe)
         wt = self.cfg.worktree_path(f"_phase-{product}-{phase.name}")
-        gitops.fetch(repo)
-        if wt.exists():
-            gitops.git("checkout", "-q", "--detach", gitops.base_ref(wt, base), cwd=wt)
+        runner_name = "remote" if self.runner_for(probe).name == "remote" else "local"
+        prepared_run = None
+        if runner_name == "local":
+            prepared_run = self._new_local_run(
+                probe.id,
+                "persona",
+                "phase persona",
+                resource_weight=self.cfg.product_resource_weight(product),
+            )
+            prepared_run.branch, prepared_run.base = base, base
+            prepared_run.save()
+            try:
+                self._recheck_local_materialization(prepared_run, "phase persona checkout materialization")
+                repo = self.repo_for(probe)
+                gitops.fetch(repo)
+                if wt.exists():
+                    gitops.git("checkout", "-q", "--detach", gitops.base_ref(wt, base), cwd=wt)
+                else:
+                    wt.parent.mkdir(parents=True, exist_ok=True)
+                    gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
+            except Exception:
+                # The phase action remains retryable, and this preparation reservation no
+                # longer consumes capacity after a fresh check or staging operation fails.
+                prepared_run.status = "failed"
+                prepared_run.save()
+                raise
         else:
-            wt.parent.mkdir(parents=True, exist_ok=True)
-            gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
+            with self._local_staging_admission("phase persona checkout materialization"):
+                repo = self.repo_for(probe)
+                gitops.fetch(repo)
+                if wt.exists():
+                    gitops.git("checkout", "-q", "--detach", gitops.base_ref(wt, base), cwd=wt)
+                else:
+                    wt.parent.mkdir(parents=True, exist_ok=True)
+                    gitops.git("worktree", "add", "--detach", str(wt), gitops.base_ref(repo, base), cwd=repo)
         references: dict[str, str] = {}
         text = phase_brief(self.store, phase, name, base, self.phase_prs(phase), references)
         return self.dispatch_aux("persona", None, text, wt, {"id": probe.id, "product": product, "phase": phase.name,
                                                              "persona": name, "target": "phase", "file_tasks": file_tasks,
                                                              "min_severity": min_severity},
                                  harness_name=str(self.cfg.get("review.harness") or ""), difficulty=str(self.effective("retro.difficulty") or "hard"),
-                                 reference_files=references)
+                                 prepared_run=prepared_run, reference_files=references)
 
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
                             required_evidence: bool = False,
@@ -95,7 +124,14 @@ class PersonaMixin:
                    if runner_name == "remote" else self._new_local_run(task.id, "persona", "persona"))
             run.branch, run.base = branch, base
             canonical = self.prepare_canonical_run(task, run, runner, branch, base)
-        wt = canonical or gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        if canonical is not None:
+            wt = canonical
+        elif run is not None:
+            self._recheck_local_materialization(run, "persona checkout materialization")
+            wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+        else:
+            with self._local_staging_admission("persona checkout materialization"):
+                wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
         if run is not None:
             run.worktree = str(wt)
             run.save()

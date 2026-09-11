@@ -324,10 +324,20 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
     command = str((setup or {}).get("command") or "").strip()
     if not command:
         return
+    from ..storage import StorageAdmissionError, require_storage
+
+    admission_env = env or os.environ
+    try:
+        require_storage(
+            (worktree, Path(admission_env.get("TMPDIR") or worktree)),
+            reserve_bytes=int(admission_env.get("GARDEN_DISK_RESERVE_BYTES", "0") or 0),
+            required_bytes=int(admission_env.get("GARDEN_DISK_REQUIRED_BYTES", "0") or 0),
+            windows_backing_path=admission_env.get("GARDEN_WINDOWS_BACKING_PATH", ""),
+            operation="product setup",
+        )
+    except StorageAdmissionError as exc:
+        raise RunnerError(str(exc)) from exc
     marker = setup_marker(worktree)
-    env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
-    for k, v in ((setup or {}).get("env") or {}).items():
-        env.setdefault(str(k), str(v))
     timeout = float((setup or {}).get("timeout_seconds") or 600)
     lock_path = marker.with_suffix(marker.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -339,6 +349,21 @@ def run_setup(worktree: Path, setup: dict[str, Any] | None, *, log_path: Path | 
         # observes completion instead of launching the command twice.
         if marker.exists() and marker.read_text().strip() == stamp:
             return
+        # The lock may have been contended for most of the setup timeout. Recheck after
+        # waiting and after confirming work remains, immediately before materialization.
+        try:
+            require_storage(
+                (worktree, Path(admission_env.get("TMPDIR") or worktree)),
+                reserve_bytes=int(admission_env.get("GARDEN_DISK_RESERVE_BYTES", "0") or 0),
+                required_bytes=int(admission_env.get("GARDEN_DISK_REQUIRED_BYTES", "0") or 0),
+                windows_backing_path=admission_env.get("GARDEN_WINDOWS_BACKING_PATH", ""),
+                operation="product setup",
+            )
+        except StorageAdmissionError as exc:
+            raise RunnerError(str(exc)) from exc
+        env = dict(env) if env is not None else scrubbed_env({}, setup, worktree=worktree)
+        for k, v in ((setup or {}).get("env") or {}).items():
+            env.setdefault(str(k), str(v))
         from ..sandbox import SandboxPolicy
 
         policy = SandboxPolicy.from_config(config)

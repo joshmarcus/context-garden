@@ -512,6 +512,61 @@ def test_local_runner_probe_uses_the_minimal_login_probe_not_the_full_command(tm
     assert not result.get("env_error")
 
 
+def test_local_runtime_denial_precedes_scrubbed_environment_materialization(tmp_path, monkeypatch):
+    from garden.harness import Harness
+    from garden.runner.base import RunnerError
+    from garden.runs import Run
+    from garden.storage import StorageAdmissionError
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    run = Run(task_id="T-001", run_id="r1", dir=str(run_dir), runner="local")
+    runner = LocalRunner({"resources": {"disk_reserve_bytes": 20 << 30}}, Harness("tiny", {}))
+    materialized = False
+
+    def reject_storage(*args, **kwargs):
+        raise StorageAdmissionError("local filesystem has 1 free byte")
+
+    def materialize(*args, **kwargs):
+        nonlocal materialized
+        materialized = True
+        return {}
+
+    monkeypatch.setattr("garden.runner.local.require_storage", reject_storage)
+    monkeypatch.setattr("garden.runner.local.scrubbed_env", materialize)
+
+    with pytest.raises(RunnerError, match="local filesystem has 1 free byte"):
+        runner.worker_env(run, {}, tmp_path / "worktree")
+    assert not materialized
+
+
+def test_local_probe_denial_precedes_scratch_and_environment_materialization(tmp_path, monkeypatch):
+    from garden.harness import Harness
+    from garden.storage import StorageAdmissionError
+
+    cwd = tmp_path / "probe" / "claude"
+    runner = LocalRunner({"resources": {"disk_reserve_bytes": 20 << 30}}, Harness("claude", {}))
+    materialized = False
+
+    def reject_storage(*args, **kwargs):
+        raise StorageAdmissionError("Windows backing volume has 1 free byte")
+
+    def materialize(*args, **kwargs):
+        nonlocal materialized
+        materialized = True
+        return {}
+
+    monkeypatch.setattr("garden.runner.local.require_storage", reject_storage)
+    monkeypatch.setattr("garden.runner.local.scrubbed_env", materialize)
+
+    result = runner.probe(cwd)
+
+    assert result["env_error"] is True
+    assert "Windows backing volume has 1 free byte" in result["error"]
+    assert not cwd.exists()
+    assert not materialized
+
+
 def test_local_runner_launch_flips_process_finished(tmp_path):
     """The real LocalRunner.launch shell wrapper, end to end: it starts the harness detached
     and writes exit_code when the process ends. process_finished() is False while the process

@@ -8,6 +8,10 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import garden.scheduler.resources as resources
+from garden import gitops
 from garden.kickoff import (
     KICKOFF_MARKER,
     append_goal_gaps,
@@ -19,6 +23,8 @@ from garden.kickoff import (
     render_kickoff_doc,
 )
 from garden.model import Phase, Status
+from garden.scheduler.resources import ResourcePressureError
+from garden.storage import StorageVolume
 from garden.store import Store
 from tests.conftest import write
 
@@ -156,6 +162,81 @@ def test_kickoff_refuses_a_second_dispatch_while_one_is_in_flight(sched, monkeyp
         raise AssertionError("expected a refusal")
     except RuntimeError as e:
         assert "already has a kickoff run in flight" in str(e)
+
+
+def test_kickoff_storage_denial_is_write_free_and_retries_truthfully(sched, monkeypatch):
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    free = [19 << 30]
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", free[0]),
+    ))
+    writes: list[str] = []
+    real_repo_for = sched.repo_for
+    monkeypatch.setattr(sched, "repo_for", lambda task: (writes.append("repo"), real_repo_for(task))[1])
+    monkeypatch.setattr(gitops, "fetch", lambda *_: writes.append("fetch"))
+    monkeypatch.setattr(gitops, "git", lambda *_args, **_kwargs: writes.append("git"))
+    phase = sched.store.phase("demo", "p1")
+
+    with pytest.raises(ResourcePressureError, match="local filesystem has"):
+        sched.start_kickoff(phase)
+
+    assert writes == []
+    assert sched.store.task("DM-001").attempts == 0
+    assert not sched.runs.runs_for("_kickoff-demo-p1")
+    free[0] = 30 << 30
+
+    run = sched.start_kickoff(phase)
+
+    assert writes[:2] == ["repo", "fetch"] and writes.count("git") >= 1
+    assert run.status == "running"
+    assert sched.kickoff_pending(phase.key)
+    assert sched.store.task("DM-001").attempts == 0
+
+
+def test_kickoff_reservation_accounts_for_contention(sched, monkeypatch):
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    sched.set_override("resources.operation_required_bytes", 6 << 30, by="test")
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", 31 << 30),
+    ))
+    occupied = sched._new_local_run("DM-001", "work", "work")
+
+    with pytest.raises(ResourcePressureError, match=r"plus 12884901888 reserved bytes"):
+        sched.start_kickoff(sched.store.phase("demo", "p1"))
+
+    assert not sched.runs.runs_for("_kickoff-demo-p1")
+    occupied.status = "done"
+    occupied.save()
+
+
+def test_kickoff_transfers_prepared_reservation_without_counting_it_twice(sched, monkeypatch):
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    sched.set_override("resources.operation_required_bytes", 6 << 30, by="test")
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", 26 << 30),
+    ))
+
+    run = sched.start_kickoff(sched.store.phase("demo", "p1"))
+
+    runs = sched.runs.runs_for("_kickoff-demo-p1")
+    assert [candidate.run_id for candidate in runs] == [run.run_id]
+    assert run.env_snapshot["disk_required_bytes"] == 6 << 30
+    assert run.status == "running"
+
+
+def test_kickoff_preparation_failure_releases_reservation(sched, monkeypatch):
+    sched.set_override("resources.disk_reserve_bytes", 20 << 30, by="test")
+    monkeypatch.setattr(resources, "measure_storage", lambda *args, **kwargs: (
+        StorageVolume("native", "local filesystem", 30 << 30),
+    ))
+    monkeypatch.setattr(gitops, "fetch", lambda *_: (_ for _ in ()).throw(RuntimeError("fetch failed")))
+
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        sched.start_kickoff(sched.store.phase("demo", "p1"))
+
+    run = sched.runs.latest("_kickoff-demo-p1")
+    assert run is not None and run.status == "failed"
+    assert sched.resource_status().active == 0
 
 
 def test_answer_and_dismiss_kickoff_question(sched, monkeypatch):

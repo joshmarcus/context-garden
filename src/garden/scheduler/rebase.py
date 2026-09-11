@@ -210,7 +210,8 @@ class RebaseMixin:
         artifact_dir: Path | None = None
         try:
             if not wt.exists():
-                gitops.prepare_worktree(repo, wt, branch, base)
+                with self._local_staging_admission("rebase checkout materialization"):
+                    gitops.prepare_worktree(repo, wt, branch, base)
             if skip_if_current and self._reviewed_branch_is_current(task, wt, branch, base):
                 if reason:
                     task.log(f"{reason}; reviewed remote head already contains {base}; not rebased or pushed")
