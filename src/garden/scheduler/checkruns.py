@@ -185,8 +185,8 @@ class CheckRunMixin:
             # sibling check call itself ``ui`` and borrow this trust classification.
             run.env_snapshot["generated_ui_check_indices"] = generated_ui_check_indices
         run.env_snapshot["check_execution"] = {"backend": runner_name, "provenance": provenance}
-        payload = {"specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
-                   "cwd": str(worktree), **settings,
+        payload = {**settings, "specs": specs, "ctx": self.check_ctx(task, branch, base, worktree),
+                   "cwd": str(worktree),
                    "setup_cache_key": str(cont.get("setup_cache_key") or ""),
                    **(extra or {})}
         if runner_name == "local" and provenance.startswith("controller-owned"):
