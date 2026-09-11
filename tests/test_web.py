@@ -2383,6 +2383,127 @@ def test_stdout_partial_handles_string_and_list_tool_result_content(garden):
     assert "abc1234 fake change" in r.text and "working" in r.text
 
 
+def test_live_output_keeps_complete_claude_and_codex_entries(garden):
+    """The bounded live feed keeps each displayed entry intact and safely escaped."""
+    claude_text = "Claude assistant text " + "a" * 180 + "\nsecond Claude line"
+    command = "python -c '" + "x" * 190 + "'"
+    result = "Claude result " + "b" * 190 + "\nsecond result line"
+    codex_text = "Codex assistant text " + "c" * 180 + "\nsecond Codex line"
+    codex_output = "Codex output " + "d" * 190 + "\nsecond output line <script>unsafe</script>"
+    run = RunStore(Store(garden).config.garden_dir).new_run("DM-001", "local", "work")
+    run.harness = "codex"
+    run.save()
+    run.path.joinpath("stdout.json").write_text("\n".join([
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": claude_text},
+            {"type": "tool_use", "name": "Bash", "input": {"command": command}},
+        ]}}),
+        json.dumps({"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": result},
+        ]}}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": codex_text,
+        }}),
+        json.dumps({"type": "item.completed", "item": {
+            "type": "command_execution", "command": command, "aggregated_output": codex_output,
+        }}),
+    ]) + "\n")
+
+    partial = client(garden).get("/partials/tasks/DM-001/stdout")
+
+    assert partial.status_code == 200
+    rendered = html.unescape(partial.text)
+    for text in (claude_text, command, result, codex_text):
+        assert text in rendered
+    assert "Codex output " + "d" * 190 in rendered
+    assert "&lt;script&gt;unsafe&lt;/script&gt;" in partial.text
+    assert '<ul class="tl stdout">' in partial.text
+    assert 'class="mono stdout-content"' in partial.text
+    template = (Path(__file__).parents[1] / "src/garden/web/templates/_stdout.html").read_text()
+    assert "[:160]" not in template
+
+
+def test_live_output_panel_preserves_scroll_during_refresh():
+    task_template = (Path(__file__).parents[1] / "src/garden/web/templates/task.html").read_text()
+    base = (Path(__file__).parents[1] / "src/garden/web/templates/base.html").read_text()
+
+    assert 'class="live-output"' in task_template
+    assert "data-preserve-scroll" in task_template
+    assert "overflow:auto" in base
+    assert "white-space:pre" in base
+    assert "scrollLeft = el.scrollLeft" in base
+    assert "el.scrollTop = followsTail ? el.scrollHeight : scrollTop" in base
+
+
+@pytest.mark.browser
+def test_live_output_polling_preserves_reader_position(garden, tmp_path):
+    """Refreshing live output retains a reader's place, including horizontal scroll."""
+    import socket
+
+    import uvicorn
+    from playwright.sync_api import sync_playwright
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.RUNNING
+    store.save(task)
+    run = RunStore(store.config.garden_dir).new_run("DM-001", "local", "work")
+    long_line = "unbroken-" + "x" * 300
+    run.path.joinpath("stdout.json").write_text("\n".join(
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": f"entry {index:02d}\n{long_line}"},
+        ]}})
+        for index in range(70)
+    ) + "\n")
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    server = uvicorn.Server(uvicorn.Config(
+        create_app(store, watch=False, host="127.0.0.1", port=port),
+        host="127.0.0.1", port=port, log_level="error",
+    ))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(f"http://127.0.0.1:{port}/tasks/DM-001", wait_until="networkidle")
+            output = page.locator("#live-output")
+            output.wait_for()
+            assert output.evaluate("el => el.scrollHeight > el.clientHeight")
+            assert output.evaluate("el => el.scrollWidth > el.clientWidth")
+            page.screenshot(path=str(tmp_path / "live-output-1280-light.png"), full_page=True)
+            page.emulate_media(color_scheme="dark")
+            page.screenshot(path=str(tmp_path / "live-output-1280-dark.png"), full_page=True)
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.locator("body").evaluate("el => el.scrollWidth === el.clientWidth")
+            page.screenshot(path=str(tmp_path / "live-output-390-dark.png"), full_page=True)
+            page.emulate_media(color_scheme="light")
+            page.screenshot(path=str(tmp_path / "live-output-390-light.png"), full_page=True)
+            page.set_viewport_size({"width": 1280, "height": 900})
+            output.evaluate("el => { el.scrollTop = 120; el.scrollLeft = 80; }")
+            with run.path.joinpath("stdout.json").open("a") as transcript:
+                transcript.write(json.dumps({"type": "result", "result": "new output while reading"}) + "\n")
+            page.wait_for_function(
+                "document.querySelector('#live-output').innerText.includes('new output while reading')"
+            )
+            assert output.evaluate("el => el.scrollTop") == 120
+            assert output.evaluate("el => el.scrollLeft") == 80
+            output.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+            with run.path.joinpath("stdout.json").open("a") as transcript:
+                transcript.write(json.dumps({"type": "result", "result": "new output at tail"}) + "\n")
+            page.wait_for_function(
+                "document.querySelector('#live-output').innerText.includes('new output at tail')"
+            )
+            assert output.evaluate("el => el.scrollHeight - el.clientHeight - el.scrollTop <= 2")
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
 def _record_run(garden, *, status="done", harness="claude", stdout="", brief="", final="", stderr=""):
     """Write a run directory on disk with the given recorded files and return the Run."""
     from garden.runs import RunStore

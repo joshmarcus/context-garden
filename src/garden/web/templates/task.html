@@ -211,7 +211,7 @@
     {% if usage.by_mode %}<div class="panel"><div class="eyebrow">Usage by run mode</div><table style="margin-top:6px"><tr><th>mode</th><th>runs</th><th>input</th><th>cache-read</th><th>output</th><th>cost</th></tr>{% for mode, m in usage.by_mode.items()|sort %}<tr><td>{{ mode }}</td><td>{{ m.runs }}</td><td>{{ '{:,}'.format(m.input_tokens) }}</td><td>{{ '{:,}'.format(m.cache_read_input_tokens) }}</td><td>{{ '{:,}'.format(m.output_tokens) }}</td><td>${{ '%.2f' % m.cost_usd }}</td></tr>{% endfor %}</table></div>{% endif %}
     {% if task.status.value == 'running' %}
     <div class="panel"><div class="eyebrow">Live output</div>
-      <div id="live-output" data-poll="/partials/tasks/{{ task.id }}/stdout" data-every="3000" style="margin-top:6px">
+      <div id="live-output" class="live-output" data-poll="/partials/tasks/{{ task.id }}/stdout" data-every="3000" data-preserve-scroll tabindex="0" aria-label="Live output" style="margin-top:6px">
         {% with events=initial_stdout %}{% include "_stdout.html" %}{% endwith %}
       </div>
     </div>
