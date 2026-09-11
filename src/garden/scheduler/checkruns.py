@@ -691,6 +691,7 @@ class CheckRunMixin:
             required_ui=(bool(plan.get("pages")) if plan else None),
             capture_infrastructure_advisory=capture_advisory,
             criteria=criteria, verified=worker_result.get("verified"),
+            run_id=(worker_run.run_id if worker_run is not None else ""),
         )
         results.extend(mechanical)
         run.result = {"checks": results}

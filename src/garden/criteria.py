@@ -227,17 +227,32 @@ def unmatched_worker_entries(criteria: list[str], verified: Any) -> list[dict[st
 
 
 def evidence_gaps(criteria: list[str], verified: Any) -> list[str]:
-    """Criteria whose reconciled row has neither evidence nor a `not_done` reason, excluding any
-    that a wording mismatch could plausibly explain. When at least as many worker entries went
-    unmatched (`unmatched_worker_entries`) as rows came up empty, the gap is most likely a
-    criterion-matching mismatch, not silence, so it is not reported here — but the mismatch is
-    still surfaced via `unmatched_worker_entries` for a human or reviewer to reconcile. Anything
-    still empty after that is a genuine, unexplained gap and must block PR creation."""
-    empty = [row["criterion"] for row in reconcile(criteria, verified)
-             if not row["not_done"] and not row["evidence"]]
-    if not empty or len(unmatched_worker_entries(criteria, verified)) >= len(empty):
-        return []
-    return empty
+    """Criteria whose reconciled row has neither evidence nor a `not_done` reason.
+
+    Unmatched worker entries do not satisfy a frozen criterion: they are preserved separately by
+    `unmatched_worker_entries` and described by `evidence_gap_diagnosis`, but publication remains
+    blocked until the worker reconciles them or explicitly explains why evidence is unavailable.
+    """
+    return [row["criterion"] for row in reconcile(criteria, verified)
+            if not row["not_done"] and not row["evidence"]]
+
+
+def evidence_gap_diagnosis(criteria: list[str], verified: Any, run_id: str = "") -> str:
+    """Actionable detail for an evidence-gap failure, retaining unmatched worker statements."""
+    gaps = evidence_gaps(criteria, verified)
+    if not gaps:
+        return ""
+    scope = f"Run {run_id}" if run_id else "The worker result"
+    lines = [scope + " left these frozen criteria without reconciled evidence or an explicit reason: "
+             + "; ".join(gaps) + "."]
+    for entry in unmatched_worker_entries(criteria, verified):
+        quoted = str(entry.get("criterion") or "").strip()
+        detail = str(entry.get("evidence") or entry.get("reason") or "no further detail given").strip()
+        lines.append(
+            f'It also supplied unmatched evidence for "{quoted}": {detail}. Re-submit it using '
+            "the exact frozen criterion text, or mark that criterion not_done with a reason."
+        )
+    return "\n".join(lines)
 
 
 def verification_markdown(rows: list[dict[str, Any]], unmatched: list[dict[str, Any]] | None = None) -> str:

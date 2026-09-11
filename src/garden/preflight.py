@@ -118,7 +118,8 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
                        ui_changed: bool, captures: list[str], inspection_error: str = "",
                        required_ui: bool | None = None,
                        capture_infrastructure_advisory: str = "",
-                       criteria: list[str] | None = None, verified: Any = None) -> list[dict[str, Any]]:
+                       criteria: list[str] | None = None, verified: Any = None,
+                       run_id: str = "") -> list[dict[str, Any]]:
     """Checks that never need a reviewer or model, one concise failure each."""
     if inspection_error:
         return [_fail("mechanical pre-flight", f"could not inspect candidate diff: {inspection_error}")]
@@ -173,13 +174,14 @@ def mechanical_results(worktree: Path, base: str, pr_body: str, *, require_descr
     else:
         results.append(_pass("PR description"))
     if criteria:
-        from .criteria import evidence_gaps
+        from .criteria import evidence_gap_diagnosis, evidence_gaps
 
         gaps = evidence_gaps(criteria, verified)
         if gaps:
             results.append(_fail(
                 "acceptance criteria evidence",
                 "no evidence or reason given for: " + "; ".join(gaps),
+                evidence_gap_diagnosis(criteria, verified, run_id),
             ))
         else:
             results.append(_pass("acceptance criteria evidence"))
@@ -190,8 +192,8 @@ def _pass(name: str) -> dict[str, Any]:
     return {"name": name, "status": "pass", "summary": "ok", "details": ""}
 
 
-def _fail(name: str, summary: str) -> dict[str, Any]:
-    return {"name": name, "status": "fail", "summary": summary, "details": ""}
+def _fail(name: str, summary: str, details: str = "") -> dict[str, Any]:
+    return {"name": name, "status": "fail", "summary": summary, "details": details}
 
 
 def _advisory(name: str, summary: str, details: str) -> dict[str, Any]:

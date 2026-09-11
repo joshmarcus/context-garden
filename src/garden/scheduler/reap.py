@@ -12,7 +12,13 @@ from typing import Any
 from .. import gitops
 from ..canonical import CanonicalCheckoutError, configured_root
 from ..checks import to_feedback
-from ..criteria import amend_criteria, apply_verification, evidence_gaps, parse_criteria
+from ..criteria import (
+    amend_criteria,
+    apply_verification,
+    evidence_gap_diagnosis,
+    evidence_gaps,
+    parse_criteria,
+)
 from ..github import GitHubError, mark_garden_comment
 from ..model import Status, Task, now_iso
 from ..notify import notify
@@ -1074,7 +1080,7 @@ class ReapMixin:
                 "name": "acceptance criteria evidence",
                 "status": "fail",
                 "summary": "no evidence or reason given for: " + "; ".join(gaps),
-                "details": "",
+                "details": evidence_gap_diagnosis(criteria, verified, run.run_id),
             }], rep, cost)
             return
         st = self.state.get(task.id)

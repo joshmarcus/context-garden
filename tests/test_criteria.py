@@ -5,6 +5,7 @@ from garden.criteria import (
     apply_verification,
     browser_capture_authorized,
     criteria_counts,
+    evidence_gap_diagnosis,
     evidence_gaps,
     parse_criteria,
     reconcile,
@@ -193,15 +194,19 @@ def test_unmatched_worker_entries_finds_paraphrased_criteria():
     assert unmatched_worker_entries(criteria, [{"evidence": "test_a"}, {"evidence": "test_b"}]) == []
 
 
-def test_evidence_gaps_distinguishes_silence_from_wording_drift():
+def test_evidence_gaps_require_wording_drift_to_be_reconciled():
     criteria = ["A renders.", "B returns 200."]
     # a genuine, unexplained gap: no evidence anywhere that could cover "B returns 200."
     assert evidence_gaps(criteria, [{"criterion": "A renders.", "evidence": "test_a"}]) == ["B returns 200."]
-    # explainable: the worker's evidence for B just used different wording, so it shows up as an
-    # unmatched entry rather than a silent gap
+    # The worker's evidence for B used different wording. Preserve it as unmatched, but keep the
+    # exact frozen criterion blocked until the worker reconciles the statement.
     verified = [{"criterion": "A renders.", "evidence": "test_a"},
                 {"criterion": "B returns two hundred.", "evidence": "test_b"}]
-    assert evidence_gaps(criteria, verified) == []
+    assert evidence_gaps(criteria, verified) == ["B returns 200."]
+    diagnosis = evidence_gap_diagnosis(criteria, verified, "run-123")
+    assert "run-123" in diagnosis
+    assert "B returns 200." in diagnosis
+    assert "B returns two hundred." in diagnosis and "test_b" in diagnosis
     # not_done with a reason is not a gap at all
     verified2 = [{"criterion": "A renders.", "evidence": "test_a"},
                  {"criterion": "B returns 200.", "not_done": True, "reason": "blocked"}]
