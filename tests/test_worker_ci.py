@@ -331,7 +331,7 @@ def test_scheduler_run_command_policy_selects_the_controller_side_provider(garde
     path.write_text(yaml.safe_dump(config))
     store = Store(garden)
 
-    class Scheduler:
+    class Scheduler(ReapMixin):
         cfg = store.config
 
     assert store.config.product_ci_policy("demo") == {
