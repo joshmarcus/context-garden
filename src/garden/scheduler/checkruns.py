@@ -104,6 +104,14 @@ class CheckRunMixin:
         return ("remote" if self.runner_for(task).name == "remote" else "local",
                 provenance or "portable check payload")
 
+    def _continued_check_settings(self, task: Task, cont: dict[str, Any],
+                                  stage: str = "pre_pr") -> dict[str, Any]:
+        """Return a run's snapshot, with live resolution only for legacy continuations."""
+        settings = cont.get("check_settings")
+        if isinstance(settings, dict) and isinstance(settings.get("specs"), list):
+            return deepcopy(settings)
+        return self._check_settings(task, stage)
+
     def _dispatch_check_run(self, task: Task, *, worktree: Path, branch: str, base: str,
                             specs: list[dict[str, Any]], stage: str, cont: dict[str, Any], rep: TickReport,
                             extra: dict[str, Any] | None = None, retries: int = 0,
@@ -141,7 +149,7 @@ class CheckRunMixin:
         # or deferred recovery can happen after another product (or an operator) changes
         # garden.yaml; it must validate against the settings that started this check flow.
         inherited_settings = cont.get("check_settings")
-        settings = deepcopy(inherited_settings or self._check_settings(task, stage))
+        settings = self._continued_check_settings(task, cont, stage)
         # A base probe intentionally runs only the failed subset.  Its continuation still
         # needs the complete original suite if the branch is rebased and checked again.
         if not inherited_settings:
@@ -738,7 +746,10 @@ class CheckRunMixin:
         worktree) is cheap and runs here; only the check commands go to the probe run."""
         cost = cont["cost"]
         names = {str(f.get("name")) for f in failed}
-        specs = [s for s in self._pre_pr_specs(task) if str(s.get("name")) in names]
+        # Current continuations carry the complete resolved contract from the initial
+        # dispatch.  Only legacy continuations without that snapshot may consult live config.
+        contract_specs = self._continued_check_settings(task, cont)["specs"]
+        specs = [deepcopy(s) for s in contract_specs if str(s.get("name")) in names]
         runner_name, provenance = self._check_execution(task, "base_probe", specs)
         prepared_run = None
         if runner_name == "local":
@@ -845,10 +856,12 @@ class CheckRunMixin:
             return
         if outcome.status == "error":
             return  # push failure already logged by the helper
+        settings = self._continued_check_settings(task, cont)
         self._dispatch_check_run(
-            task, worktree=worktree, branch=branch, base=base, specs=cont["check_settings"]["specs"],
+            task, worktree=worktree, branch=branch, base=base, specs=settings["specs"],
             stage="rebase_recheck", rep=rep,
-            cont={**cont, **self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
+            cont={**cont, "check_settings": settings,
+                  **self._pre_pr_cont(worker_run, worktree, branch, base, cost, cont.get("diff_h"), cont.get("body_h")),
                   "base_sha": base_sha, "names": names, "failed": failed})
 
     def _after_rebase_recheck(self, task: Task, run: Run, results: list[dict[str, Any]], cont: dict[str, Any], rep: TickReport) -> None:

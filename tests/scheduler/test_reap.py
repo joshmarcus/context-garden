@@ -419,6 +419,38 @@ def test_base_probe_low_space_denial_precedes_git_staging(sched, monkeypatch):
     assert not sched.runs.runs_for(task.id)
 
 
+def test_base_probe_uses_snapshotted_contract_after_live_config_changes(sched, monkeypatch):
+    """Failure handling selects its probe from the dispatch-time contract."""
+    task = sched.store.task("DM-001")
+    branch, base = task.default_branch(), "main"
+    worktree = gitops.prepare_worktree(sched.repo_for(task), sched.worktree_for(task), branch, base)
+    original_specs = [
+        {"name": "guard", "command": "original-guard", "env": {"MODE": "original"}},
+        {"name": "full-suite", "command": "original-suite", "env": {"MODE": "original"}},
+    ]
+    check_settings = {"specs": original_specs, "timeout": 321, "config": {"source": "snapshot"}}
+    # Simulate an operator replacing the product contract after the detached run started.
+    sched.cfg.data["products"]["demo"]["checks"] = {"pre_pr": [], "timeout_seconds": 1}
+    captured = {}
+    monkeypatch.setattr(gitops, "fetch", lambda *_args: None)
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "origin/main")
+    monkeypatch.setattr(gitops, "merge_base", lambda *_args: "a" * 40)
+    monkeypatch.setattr(gitops, "rev_parse", lambda *_args: "a" * 40)
+    monkeypatch.setattr(gitops, "remove_worktree", lambda *_args: None)
+    monkeypatch.setattr(gitops, "add_detached_worktree", lambda *_args: None)
+    monkeypatch.setattr(sched, "_dispatch_check_run", lambda *args, **kwargs: captured.update(kwargs))
+
+    sched._handle_failed_checks(
+        task, None, worktree, branch, base,
+        [{"name": "guard", "status": "fail", "summary": "exit 1", "details": ""}],
+        TickReport(), {"cost": 0.0, "diff_h": "", "body_h": "", "check_settings": check_settings},
+    )
+
+    assert captured["specs"] == [original_specs[0]]
+    assert captured["cont"]["check_settings"] == check_settings
+    assert captured["cont"]["check_settings"]["specs"] == original_specs
+
+
 def test_recreated_base_probe_reruns_setup_through_check_payload(sched, fake_github, tmp_path):
     """A real base-probe dispatch carries its materialisation key into run_check_job."""
     sched.cfg.data["stack"] = False
