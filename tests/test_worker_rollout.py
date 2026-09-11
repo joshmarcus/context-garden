@@ -42,6 +42,7 @@ class Backend:
         self.health_changes = {}
         self.observe_hook = None
         self.fenced = []
+        self.action_results = {}
 
     def observe(self, target):
         if self.observe_hook:
@@ -49,16 +50,22 @@ class Backend:
         return {"busy": self.busy, "pending_collection": self.pending,
                 "claim_generation": self.generation, "runtime": "/opt/garden/old"}
 
-    def stage(self, target, release):
+    def stage(self, target, release, action_id):
+        if action_id in self.action_results:
+            return self.action_results[action_id]
         self.stages += 1
-        return {"runtime": "/opt/garden/1.2.3", "version": release.version,
+        result = {"runtime": "/opt/garden/1.2.3", "version": release.version,
                 "direct_url_commit": release.source_commit, "manifest": dict(release.manifest),
                 "executable": "/opt/garden/1.2.3/bin/garden", "tools_ok": True,
                 **self.stage_changes}
+        self.action_results[action_id] = result
+        return result
 
-    def activate(self, target, release, idle_generation):
+    def activate(self, target, release, idle_generation, action_id):
+        if action_id in self.action_results:
+            return self.action_results[action_id]
         self.activations += 1
-        return {"version": release.version, "source_commit": release.source_commit,
+        result = {"version": release.version, "source_commit": release.source_commit,
                 "direct_url_commit": release.source_commit, "manifest": dict(release.manifest),
                 "runtime": "/opt/garden/1.2.3",
                 "config_path": target.config_path, "owner": target.owner, "group": target.group,
@@ -66,6 +73,8 @@ class Backend:
                 "prior_pid": 11, "frozen": False, "ready": True,
                 "executable": "/opt/garden/1.2.3/bin/garden",
                 "runtime_executable": "/opt/garden/1.2.3/bin/garden", **self.active_changes}
+        self.action_results[action_id] = result
+        return result
 
     def health(self, target, release):
         self.health_calls += 1
@@ -74,10 +83,10 @@ class Backend:
                 "resource_failure": False, "version": release.version,
                 "source_commit": release.source_commit, **self.health_changes}
 
-    def rollback(self, target, runtime, idle_generation):
+    def rollback(self, target, runtime, idle_generation, action_id):
         return {"ok": self.rollback_ok, "runtime": runtime, "ready": self.rollback_ok}
 
-    def fence(self, target, reason):
+    def fence(self, target, reason, action_id):
         self.fenced.append((target.worker_id, reason))
 
 
@@ -131,7 +140,7 @@ def test_interrupted_operation_resumes_from_durable_transition_log(tmp_path):
     rollout, backend = operation(tmp_path)
     original = backend.stage
 
-    def interrupted(target, release):
+    def interrupted(target, release, action_id):
         backend.stage = original
         raise RuntimeError("controller interrupted")
 
@@ -158,6 +167,27 @@ def test_resume_after_activation_does_not_repeat_switch(tmp_path):
     assert rollout.resume()["status"] == "complete"
     assert backend.stages == 1
     assert backend.activations == 1
+
+
+def test_lost_activation_response_reuses_durable_action_without_restarting(tmp_path):
+    rollout, backend = operation(tmp_path)
+    original = backend.activate
+
+    def mutate_then_interrupt(target, release, idle_generation, action_id):
+        original(target, release, idle_generation, action_id)
+        backend.activate = original
+        raise RuntimeError("activation response lost")
+
+    backend.activate = mutate_then_interrupt
+    with pytest.raises(RuntimeError, match="response lost"):
+        rollout.start()
+    record = rollout.status()["workers"][0]
+    assert record["state"] == "verified"
+    action_id = record["actions"]["activate"]["id"]
+
+    assert rollout.resume()["status"] == "complete"
+    assert backend.activations == 1
+    assert rollout.status()["workers"][0]["actions"]["activate"]["id"] == action_id
 
 
 def test_resume_during_health_keeps_durable_samples(tmp_path):
@@ -281,6 +311,8 @@ def test_disposable_command_backend_drives_bounded_protocol_journey(tmp_path):
     adapter.write_text("""
 import json, sys
 r = json.load(sys.stdin); w = r["worker"]; c = r.get("candidate", {}); action = r["action"]
+if action in {"stage", "activate", "rollback", "fence"} and not r.get("action_id"):
+    raise SystemExit("mutating action lacks idempotency key")
 responses = {
  "observe": {"busy": False, "pending_collection": False, "claim_generation": "idle-1", "runtime": "/old"},
  "stage": {"runtime": "/new", "version": c.get("version"), "direct_url_commit": c.get("source_commit"), "manifest": c.get("manifest"), "executable": "/new/garden", "tools_ok": True},

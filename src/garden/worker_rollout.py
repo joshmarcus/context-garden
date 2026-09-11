@@ -68,13 +68,14 @@ class WorkerTarget:
 
 class WorkerRolloutBackend(Protocol):
     def observe(self, worker: WorkerTarget) -> Mapping[str, Any]: ...
-    def stage(self, worker: WorkerTarget, candidate: PublishedVersion) -> Mapping[str, Any]: ...
+    def stage(self, worker: WorkerTarget, candidate: PublishedVersion,
+              action_id: str) -> Mapping[str, Any]: ...
     def activate(self, worker: WorkerTarget, candidate: PublishedVersion,
-                 idle_generation: str) -> Mapping[str, Any]: ...
+                 idle_generation: str, action_id: str) -> Mapping[str, Any]: ...
     def health(self, worker: WorkerTarget, candidate: PublishedVersion) -> Mapping[str, Any]: ...
     def rollback(self, worker: WorkerTarget, prior_runtime: str,
-                 idle_generation: str) -> Mapping[str, Any]: ...
-    def fence(self, worker: WorkerTarget, reason: str) -> None: ...
+                 idle_generation: str, action_id: str) -> Mapping[str, Any]: ...
+    def fence(self, worker: WorkerTarget, reason: str, action_id: str) -> None: ...
 
 
 class CommandWorkerRolloutBackend:
@@ -114,24 +115,25 @@ class CommandWorkerRolloutBackend:
     def observe(self, worker: WorkerTarget) -> Mapping[str, Any]:
         return self._call("observe", worker)
 
-    def stage(self, worker: WorkerTarget, candidate: PublishedVersion) -> Mapping[str, Any]:
-        return self._call("stage", worker, candidate=self._release(candidate))
+    def stage(self, worker: WorkerTarget, candidate: PublishedVersion,
+              action_id: str) -> Mapping[str, Any]:
+        return self._call("stage", worker, candidate=self._release(candidate), action_id=action_id)
 
     def activate(self, worker: WorkerTarget, candidate: PublishedVersion,
-                 idle_generation: str) -> Mapping[str, Any]:
+                 idle_generation: str, action_id: str) -> Mapping[str, Any]:
         return self._call("activate", worker, candidate=self._release(candidate),
-                          idle_generation=idle_generation)
+                          idle_generation=idle_generation, action_id=action_id)
 
     def health(self, worker: WorkerTarget, candidate: PublishedVersion) -> Mapping[str, Any]:
         return self._call("health", worker, candidate=self._release(candidate))
 
     def rollback(self, worker: WorkerTarget, prior_runtime: str,
-                 idle_generation: str) -> Mapping[str, Any]:
+                 idle_generation: str, action_id: str) -> Mapping[str, Any]:
         return self._call("rollback", worker, prior_runtime=prior_runtime,
-                          idle_generation=idle_generation)
+                          idle_generation=idle_generation, action_id=action_id)
 
-    def fence(self, worker: WorkerTarget, reason: str) -> None:
-        if not self._call("fence", worker, reason=reason).get("ok"):
+    def fence(self, worker: WorkerTarget, reason: str, action_id: str) -> None:
+        if not self._call("fence", worker, reason=reason, action_id=action_id).get("ok"):
             raise RuntimeError(f"worker {worker.worker_id} could not be fenced")
 
 
@@ -268,6 +270,15 @@ class WorkerRollout:
         state["updated_at"] = at
         self.store.write(state)
 
+    def _action_id(self, state: dict[str, Any], record: dict[str, Any], action: str) -> str:
+        """Persist an intent before a host mutation and reuse its key on every retry."""
+        actions = record.setdefault("actions", {})
+        if action not in actions:
+            actions[action] = {"id": str(uuid.uuid4()), "prepared_at": self._at()}
+            state["updated_at"] = self._at()
+            self.store.write(state)
+        return str(actions[action]["id"])
+
     @staticmethod
     def _target(record: Mapping[str, Any]) -> WorkerTarget:
         return WorkerTarget(**record["target"])
@@ -289,8 +300,9 @@ class WorkerRollout:
             if not generation:
                 return self._fail(state, record, worker, "idle observation lacks claim generation")
             self._transition(state, record, "draining", idle_generation=generation)
-            staged = dict(self.backend.stage(worker, candidate))
-            self._transition(state, record, "staged", staging=staged)
+            action_id = self._action_id(state, record, "stage")
+            staged = dict(self.backend.stage(worker, candidate, action_id))
+            self._transition(state, record, "staged", staging=staged, action_id=action_id)
         else:
             staged = self._evidence(record, "staged", "staging")
 
@@ -308,11 +320,13 @@ class WorkerRollout:
                 self._transition(state, record, "deferred",
                                  reason="claim changed at activation boundary", observation=fresh)
                 return False
-            activated = dict(self.backend.activate(worker, candidate, generation))
+            action_id = self._action_id(state, record, "activate")
+            activated = dict(self.backend.activate(worker, candidate, generation, action_id))
             if activated.get("busy"):
                 self._transition(state, record, "deferred", reason="claim won activation race")
                 return False
-            self._transition(state, record, "activated", activation=activated)
+            self._transition(state, record, "activated", activation=activated,
+                             action_id=action_id)
         else:
             activated = self._evidence(record, "activated", "activation")
 
@@ -392,18 +406,20 @@ class WorkerRollout:
         generation = str(fresh.get("claim_generation") or "")
         prior = str(record.get("prior_runtime") or "")
         if fresh.get("busy") or fresh.get("pending_collection"):
-            self.backend.fence(worker, reason)
+            self.backend.fence(worker, reason, self._action_id(state, record, "fence"))
             record["recovery"] = "worker became busy; leave fenced and collect work before recovery"
         elif prior and generation:
-            result = dict(self.backend.rollback(worker, prior, generation))
+            action_id = self._action_id(state, record, "rollback")
+            result = dict(self.backend.rollback(worker, prior, generation, action_id))
             if result.get("ok") and result.get("runtime") == prior and result.get("ready"):
-                self._transition(state, record, "rolled-back", rollback=result)
+                self._transition(state, record, "rolled-back", rollback=result,
+                                 action_id=action_id)
             else:
-                self.backend.fence(worker, reason)
+                self.backend.fence(worker, reason, self._action_id(state, record, "fence"))
                 record["recovery"] = f"rollback failed; repair retained runtime {prior} and verify before thaw"
                 self.store.write(state)
         else:
-            self.backend.fence(worker, reason)
+            self.backend.fence(worker, reason, self._action_id(state, record, "fence"))
             record["recovery"] = "no verified prior runtime or idle generation; repair while fenced"
             self.store.write(state)
         state["status"] = "failed"

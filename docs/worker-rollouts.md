@@ -18,6 +18,10 @@ process merely existing.
 operator-approved argv with a bounded timeout, sends each action as JSON on stdin, and reads one
 JSON attestation from stdout. It never invokes a shell or places candidate/worker facts in argv;
 credentials remain in the command's preconfigured environment or host-local files.
+Every mutating request (`stage`, `activate`, `rollback`, and `fence`) includes an `action_id`.
+The backend must durably deduplicate that key and return the original attestation when it is
+replayed. It must not repeat the host mutation. This is required because the controller may lose
+a successful response or exit before recording the receipt.
 
 Inventory is a sequence of existing `WorkerTarget` records. Those records preserve the stable
 worker and host identities, service ownership/configuration, resource caps, absolute deadline,
@@ -40,6 +44,10 @@ checked immediately before activation. A busy worker, pending result collection,
 generation is deferred without switching its service. Active worktrees, branches, source,
 transcripts, results, and collection remain owned by the worker protocol and are never modified
 by rollout.
+
+Before each host mutation, the journal also records its action ID. After an interruption,
+`resume` reuses that ID, allowing the backend to reconcile a completed mutation and replay its
+receipt instead of staging, switching, rolling back, or fencing twice.
 
 Staging proves the package version, direct-url commit, exact source manifest, executable, and
 required tool environment. Activation separately proves those identities plus the admitted unit
