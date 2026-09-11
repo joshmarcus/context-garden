@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,6 +25,19 @@ class BranchDisposition:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _has_run_reference(state_text: str, run_id: str) -> bool:
+    """Keep literal run references without claiming a longer ID's prefix.
+
+    Same-second runs receive -2/-3 suffixes. Boundaries also preserve IDs recorded
+    in backup paths, artifact filenames and stash names, not just bare JSON values.
+    Punctuation can delimit a reference; native run-ID suffixes continue with word
+    characters or hyphens.
+    """
+    if not run_id or run_id not in state_text:
+        return False
+    return re.search(rf"(?<![\w-]){re.escape(run_id)}(?![\w-])", state_text) is not None
 
 
 def classify_branches(
@@ -56,7 +70,7 @@ def classify_branches(
     active = {(task_product.get(run.task_id, ""), run.branch) for run in runs
               if run.lifecycle_state != "finished" and run.branch}
     recovery = {(task_product.get(run.task_id, ""), run.branch) for run in runs
-                if run.branch and run.run_id and run.run_id in state_text}
+                if run.branch and _has_run_reference(state_text, run.run_id)}
     stack_bases = claimed_bases | {
         (task.product, run.base) for run in runs if run.base and run.lifecycle_state != "finished"
         for task in [tasks.get(run.task_id)] if task is not None

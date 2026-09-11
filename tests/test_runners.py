@@ -1805,6 +1805,11 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
 
 @pytest.mark.needs_remote_clone
 def test_ssh_revision_worker_can_read_exact_findings(sched, tmp_path, monkeypatch):
+    # Both fake workers inherit the capture path. Keep this single-revision fixture
+    # from dispatching the dependent DM-002 task into the same output file.
+    dependent = sched.store.task("DM-002")
+    dependent.status = Status.DRAFT
+    sched.store.save(dependent)
     context_dump = tmp_path / "revision-context.txt"
     monkeypatch.setenv("FAKE_CLAUDE_CONTEXT_DUMP", str(context_dump))
     task = sched.store.task("DM-001")
@@ -1817,7 +1822,8 @@ def test_ssh_revision_worker_can_read_exact_findings(sched, tmp_path, monkeypatc
     sched.state.save()
 
     report = sched.tick()
-    assert "DM-001(revise)" in report.dispatched
+    assert report.dispatched == ["DM-001(revise)"]
+    assert sched.runs.latest("DM-002") is None
     run = sched.runs.latest(task.id)
     _wait_for_child(run)
     assert (run.path / "exit_code").read_text().strip() == "0", (run.path / "stderr.log").read_text()
