@@ -46,8 +46,9 @@
 </div>
 {% endif %}
 
-{% if latest_run and latest_run.env_snapshot.ssh_tmux_session %}
-<p class="muted">Watch on {{ latest_run.host }}: <code>tmux attach-session -r -t {{ latest_run.env_snapshot.ssh_tmux_session }}</code>. Detach with Ctrl-b d.</p>
+{% set ssh_tmux_session = latest_run and (latest_run.env_snapshot or {}).get('ssh_tmux_session') %}
+{% if ssh_tmux_session %}
+<p class="muted">Watch on {{ latest_run.host }}: <code>tmux attach-session -r -t {{ ssh_tmux_session }}</code>. Detach with Ctrl-b d.</p>
 {% endif %}
 
 {% if brief_gaps %}

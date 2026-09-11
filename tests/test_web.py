@@ -2283,6 +2283,30 @@ def test_task_page_names_harness_hold(garden):
     assert 'class="state s-ready"' in page
 
 
+def test_task_page_omits_the_tmux_hint_for_a_run_that_is_not_an_ssh_worker(garden):
+    """The watch hint is keyed off a run key most runs never carry; reading it must stay a
+    plain absent lookup under the app's strict Jinja environment, not a 500."""
+    from garden.runs import RunStore
+
+    store = Store(garden)
+    run = RunStore(store.config.garden_dir).new_run("DM-001", "local")
+    run.status = "running"
+    run.save()
+    assert "ssh_tmux_session" not in run.env_snapshot
+
+    page = client(garden).get("/tasks/DM-001")
+    assert page.status_code == 200
+    assert "tmux attach-session" not in page.text
+
+    run.env_snapshot["ssh_tmux_session"] = "garden-DM-001-abc123"
+    run.host = "devbox-1"
+    run.save()
+    page = client(garden).get("/tasks/DM-001")
+    assert page.status_code == 200
+    assert "tmux attach-session -r -t garden-DM-001-abc123" in page.text
+    assert "Watch on devbox-1" in page.text
+
+
 def test_failed_worker_decision_card_keeps_evidence_and_actions_separate(garden):
     """A long run id must not squeeze the decision text under an action column."""
     from garden.model import Status
