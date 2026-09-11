@@ -103,10 +103,19 @@ class RetroMixin:
             reasons.append("owner approval is required (set closing_review_approved in phase frontmatter)")
         evidence_identity = ""
         try:
-            from ..stabilization import gate, load_evidence
+            from ..stabilization import (
+                acceptance_identity,
+                gate,
+                load_evidence,
+                matching_acceptance,
+                running_build_sha,
+            )
 
             evidence = load_evidence(phase)
             evidence_identity = str(evidence.get("build_sha") or "")
+            current_build = running_build_sha()
+            if acceptance := matching_acceptance(phase, current_build):
+                evidence_identity += ":acceptance:" + acceptance_identity(acceptance)
             accepted, missing = gate(phase)
             if not accepted:
                 reasons.append("stabilization evidence is unaccepted: " + "; ".join(missing))
