@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from garden import gitops
 from garden.branch_cleanup import BranchDisposition, delete_disposition
 from garden.model import Status
@@ -105,6 +107,41 @@ def test_inventory_preserves_external_and_recovery_owned_branches(sched):
     assert "external ownership" in rows["garden/external"].reason
     assert rows["garden/recovery"].classification == "needed"
     assert "recovery state" in rows["garden/recovery"].reason
+
+
+@pytest.mark.parametrize("prefix", ["20260911T000000Z-work", "legacy.run+work"])
+@pytest.mark.parametrize("reference_kind", ["id", "nested", "backup", "stash", "artifact", "note"])
+def test_recovery_reference_does_not_match_a_shorter_run_id(sched, reference_kind, prefix):
+    first = sched.store.task("DM-001")
+    second = sched.store.task("DM-002")
+    repo = sched.repo_for(first)
+    for task, branch, run_id in (
+        (first, "garden/prefix-complete", prefix),
+        (second, "garden/suffixed-recovery", prefix + "-2"),
+    ):
+        task.status = Status.DONE
+        task.branch = branch
+        sched.store.save(task)
+        _make_branch(repo, branch)
+        run = sched.runs.new_run(task.id, "local", run_id=run_id)
+        run.branch, run.base, run.status = branch, "main", "done"
+        run.save()
+
+    referenced = prefix + "-2"
+    reference = {
+        "id": referenced,
+        "nested": {"pending": [referenced]},
+        "backup": f"backup/{referenced}",
+        "stash": f"garden:{second.id}:{referenced}:reap",
+        "artifact": f"backup/{referenced}.json",
+        "note": f"Recover {referenced}.",
+    }[reference_kind]
+    sched.state.get(second.id)["recovery"] = reference
+
+    rows = {row.branch: row for row in sched.branch_cleanup_inventory()}
+    assert rows[first.branch].classification == "removable", rows[first.branch]
+    assert rows[second.branch].classification == "needed", rows[second.branch]
+    assert "recovery state" in rows[second.branch].reason
 
 
 def test_superseded_attempt_branch_is_removable_after_task_completes_when_preserved(sched):
