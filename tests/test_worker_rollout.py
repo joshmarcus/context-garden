@@ -116,7 +116,8 @@ def test_success_requires_repeated_protocol_health_and_exact_receipt(tmp_path):
     assert result["workers"][0]["state"] == "complete"
     states = [row["state"] for row in result["workers"][0]["transitions"]]
     assert states == ["planned", "waiting-for-idle", "draining", "staged", "verified",
-                      "activated", "health-checking", "complete"]
+                      "activated", "health-checking", "health-checking", "health-checking",
+                      "health-checking", "complete"]
 
 
 def test_completed_worker_is_not_reinstalled_on_resume(tmp_path):
@@ -139,6 +140,56 @@ def test_interrupted_operation_resumes_from_durable_transition_log(tmp_path):
         rollout.start()
     assert rollout.status()["workers"][0]["state"] == "draining"
     assert rollout.resume()["status"] == "complete"
+
+
+def test_resume_after_activation_does_not_repeat_switch(tmp_path):
+    rollout, backend = operation(tmp_path)
+    original = backend.health
+
+    def interrupted(target, release):
+        backend.health = original
+        raise RuntimeError("controller interrupted after activation")
+
+    backend.health = interrupted
+    with pytest.raises(RuntimeError, match="after activation"):
+        rollout.start()
+    assert rollout.status()["workers"][0]["state"] == "health-checking"
+
+    assert rollout.resume()["status"] == "complete"
+    assert backend.stages == 1
+    assert backend.activations == 1
+
+
+def test_resume_during_health_keeps_durable_samples(tmp_path):
+    rollout, backend = operation(tmp_path)
+    original = backend.health
+
+    def interrupted(target, release):
+        if backend.health_calls == 1:
+            backend.health = original
+            raise RuntimeError("controller interrupted during health checking")
+        return original(target, release)
+
+    backend.health = interrupted
+    with pytest.raises(RuntimeError, match="during health checking"):
+        rollout.start()
+    record = rollout.status()["workers"][0]
+    assert record["state"] == "health-checking"
+    assert len(record["transitions"][-1]["health"]) == 1
+
+    assert rollout.resume()["status"] == "complete"
+    assert backend.activations == 1
+    assert backend.health_calls == 3
+
+
+def test_store_fsyncs_file_and_directory(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr("garden.worker_rollout.os.fsync", calls.append)
+
+    rollout, _ = operation(tmp_path)
+
+    assert rollout.status()["status"] == "planned"
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(("where", "change"), [

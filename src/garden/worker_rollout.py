@@ -158,8 +158,21 @@ class RolloutStore:
     def write(self, value: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(f"{self.path.suffix}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-        temporary.replace(self.path)
+        with temporary.open("w") as stream:
+            stream.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, self.path)
+        try:
+            directory = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            # Some supported filesystems cannot fsync directories. The atomically
+            # replaced, fsynced file is still the strongest portable guarantee.
+            pass
 
 
 class WorkerRollout:
@@ -262,47 +275,72 @@ class WorkerRollout:
     def _advance(self, state: dict[str, Any], record: dict[str, Any],
                  candidate: PublishedVersion) -> bool:
         worker = self._target(record)
-        observation = dict(self.backend.observe(worker))
-        self._transition(state, record, "waiting-for-idle", observation=observation)
-        if observation.get("busy") or observation.get("pending_collection"):
-            self._transition(state, record, "deferred", reason="worker is busy or has pending collection")
-            return False
-        generation = str(observation.get("claim_generation") or "")
-        if not generation:
-            return self._fail(state, record, worker, "idle observation lacks claim generation")
-        self._transition(state, record, "draining", idle_generation=generation)
-        staged = dict(self.backend.stage(worker, candidate))
-        self._transition(state, record, "staged", staging=staged)
+        phase = record["state"]
+        if phase in {"planned", "waiting-for-idle", "draining", "deferred"}:
+            observation = dict(self.backend.observe(worker))
+            self._transition(state, record, "waiting-for-idle", observation=observation)
+            if observation.get("busy") or observation.get("pending_collection"):
+                self._transition(
+                    state, record, "deferred",
+                    reason="worker is busy or has pending collection",
+                )
+                return False
+            generation = str(observation.get("claim_generation") or "")
+            if not generation:
+                return self._fail(state, record, worker, "idle observation lacks claim generation")
+            self._transition(state, record, "draining", idle_generation=generation)
+            staged = dict(self.backend.stage(worker, candidate))
+            self._transition(state, record, "staged", staging=staged)
+        else:
+            staged = self._evidence(record, "staged", "staging")
+
         error = self._verify_staged(staged, candidate)
         if error:
             return self._fail(state, record, worker, error)
-        self._transition(state, record, "verified", verification=staged)
-        fresh = dict(self.backend.observe(worker))
-        if fresh.get("busy") or fresh.get("pending_collection") or fresh.get("claim_generation") != generation:
-            self._transition(state, record, "deferred", reason="claim changed at activation boundary",
-                             observation=fresh)
-            return False
-        activated = dict(self.backend.activate(worker, candidate, generation))
-        if activated.get("busy"):
-            self._transition(state, record, "deferred", reason="claim won activation race")
-            return False
-        self._transition(state, record, "activated", activation=activated)
+        if phase == "staged" or record["state"] == "staged":
+            self._transition(state, record, "verified", verification=staged)
+
+        if record["state"] == "verified":
+            fresh = dict(self.backend.observe(worker))
+            generation = str(self._evidence(record, "draining", "idle_generation"))
+            if (fresh.get("busy") or fresh.get("pending_collection")
+                    or fresh.get("claim_generation") != generation):
+                self._transition(state, record, "deferred",
+                                 reason="claim changed at activation boundary", observation=fresh)
+                return False
+            activated = dict(self.backend.activate(worker, candidate, generation))
+            if activated.get("busy"):
+                self._transition(state, record, "deferred", reason="claim won activation race")
+                return False
+            self._transition(state, record, "activated", activation=activated)
+        else:
+            activated = self._evidence(record, "activated", "activation")
+
         error = self._verify_active(activated, worker, candidate)
         if error:
             return self._fail(state, record, worker, error)
-        self._transition(state, record, "health-checking")
-        samples = []
-        for index in range(self.health_samples):
+        if record["state"] == "activated":
+            self._transition(state, record, "health-checking", health=[])
+        samples = list(self._evidence(record, "health-checking", "health", default=[]))
+        for index in range(len(samples), self.health_samples):
+            if index:
+                self.sleep(self.health_interval)
             sample = dict(self.backend.health(worker, candidate))
             samples.append(sample)
+            self._transition(state, record, "health-checking", health=list(samples))
             if not self._healthy(sample, candidate):
                 return self._fail(state, record, worker, "live health stability check failed",
                                   health=samples)
-            if index + 1 < self.health_samples:
-                self.sleep(self.health_interval)
         self._transition(state, record, "complete", health=samples,
                          version=candidate.version, source_commit=candidate.source_commit)
         return True
+
+    @staticmethod
+    def _evidence(record: Mapping[str, Any], state: str, key: str, *, default: Any = None) -> Any:
+        for transition in reversed(record["transitions"]):
+            if transition["state"] == state and key in transition:
+                return transition[key]
+        return default
 
     @staticmethod
     def _verify_staged(facts: Mapping[str, Any], candidate: PublishedVersion) -> str:
