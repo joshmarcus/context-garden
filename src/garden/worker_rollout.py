@@ -249,6 +249,8 @@ class WorkerRollout:
             for record in state["workers"]:
                 if record["state"] == "complete":
                     continue
+                if record["state"] == "failed" and record.get("pending_recovery"):
+                    self._recover(state, record)
                 if record["state"] in {"failed", "rolled-back"}:
                     state["status"] = "failed"
                     break
@@ -406,21 +408,54 @@ class WorkerRollout:
         generation = str(fresh.get("claim_generation") or "")
         prior = str(record.get("prior_runtime") or "")
         if fresh.get("busy") or fresh.get("pending_collection"):
-            self.backend.fence(worker, reason, self._action_id(state, record, "fence"))
-            record["recovery"] = "worker became busy; leave fenced and collect work before recovery"
+            self._prepare_recovery(state, record, "fence", reason=reason,
+                                   guidance="worker became busy; leave fenced and collect work "
+                                   "before recovery")
         elif prior and generation:
-            action_id = self._action_id(state, record, "rollback")
-            result = dict(self.backend.rollback(worker, prior, generation, action_id))
-            if result.get("ok") and result.get("runtime") == prior and result.get("ready"):
-                self._transition(state, record, "rolled-back", rollback=result,
-                                 action_id=action_id)
-            else:
-                self.backend.fence(worker, reason, self._action_id(state, record, "fence"))
-                record["recovery"] = f"rollback failed; repair retained runtime {prior} and verify before thaw"
-                self.store.write(state)
+            self._prepare_recovery(state, record, "rollback", reason=reason,
+                                   prior_runtime=prior, idle_generation=generation)
         else:
-            self.backend.fence(worker, reason, self._action_id(state, record, "fence"))
-            record["recovery"] = "no verified prior runtime or idle generation; repair while fenced"
-            self.store.write(state)
+            self._prepare_recovery(state, record, "fence", reason=reason,
+                                   guidance="no verified prior runtime or idle generation; repair "
+                                   "while fenced")
+        self._recover(state, record)
         state["status"] = "failed"
         return False
+
+    def _prepare_recovery(self, state: dict[str, Any], record: dict[str, Any],
+                          action: str, **details: Any) -> None:
+        action_id = self._action_id(state, record, action)
+        record["pending_recovery"] = {"action": action, "action_id": action_id, **details}
+        state["updated_at"] = self._at()
+        self.store.write(state)
+
+    def _recover(self, state: dict[str, Any], record: dict[str, Any]) -> None:
+        """Replay a prepared recovery mutation until its receipt is durable."""
+        pending = dict(record["pending_recovery"])
+        worker = self._target(record)
+        if pending["action"] == "rollback":
+            result = dict(self.backend.rollback(
+                worker, pending["prior_runtime"], pending["idle_generation"],
+                pending["action_id"],
+            ))
+            if result.get("ok") and result.get("runtime") == pending["prior_runtime"] \
+                    and result.get("ready"):
+                self._transition(state, record, "rolled-back", rollback=result,
+                                 action_id=pending["action_id"])
+                record.pop("pending_recovery", None)
+                self.store.write(state)
+                return
+            self._prepare_recovery(
+                state, record, "fence", reason=pending["reason"],
+                guidance=f"rollback failed; repair retained runtime "
+                f"{pending['prior_runtime']} and verify before thaw",
+            )
+            pending = dict(record["pending_recovery"])
+
+        self.backend.fence(worker, pending["reason"], pending["action_id"])
+        record["recovery"] = pending["guidance"]
+        record["recovery_receipt"] = {"action": "fence", "action_id": pending["action_id"],
+                                      "completed_at": self._at()}
+        record.pop("pending_recovery", None)
+        state["updated_at"] = self._at()
+        self.store.write(state)

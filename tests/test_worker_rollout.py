@@ -36,6 +36,7 @@ class Backend:
         self.stages = 0
         self.activations = 0
         self.health_calls = 0
+        self.rollbacks = 0
         self.rollback_ok = True
         self.stage_changes = {}
         self.active_changes = {}
@@ -84,10 +85,18 @@ class Backend:
                 "source_commit": release.source_commit, **self.health_changes}
 
     def rollback(self, target, runtime, idle_generation, action_id):
-        return {"ok": self.rollback_ok, "runtime": runtime, "ready": self.rollback_ok}
+        if action_id in self.action_results:
+            return self.action_results[action_id]
+        self.rollbacks += 1
+        result = {"ok": self.rollback_ok, "runtime": runtime, "ready": self.rollback_ok}
+        self.action_results[action_id] = result
+        return result
 
     def fence(self, target, reason, action_id):
+        if action_id in self.action_results:
+            return
         self.fenced.append((target.worker_id, reason))
+        self.action_results[action_id] = {"ok": True}
 
 
 def operation(tmp_path, backend=None, **options):
@@ -297,6 +306,77 @@ def test_rollback_failure_leaves_worker_fenced_with_recovery(tmp_path):
     assert record["state"] == "failed"
     assert "repair retained runtime" in record["recovery"]
     assert backend.fenced
+
+
+def test_lost_rollback_response_is_reconciled_with_original_action(tmp_path):
+    rollout, backend = operation(tmp_path)
+    backend.active_changes = {"ready": False}
+    original = backend.rollback
+    lost_responses = 2
+
+    def mutate_then_interrupt(target, runtime, idle_generation, action_id):
+        nonlocal lost_responses
+        original(target, runtime, idle_generation, action_id)
+        if lost_responses:
+            lost_responses -= 1
+            raise RuntimeError("rollback response lost")
+        return original(target, runtime, idle_generation, action_id)
+
+    backend.rollback = mutate_then_interrupt
+    with pytest.raises(RuntimeError, match="response lost"):
+        rollout.start()
+    record = rollout.status()["workers"][0]
+    action_id = record["pending_recovery"]["action_id"]
+    assert record["state"] == "failed"
+
+    with pytest.raises(RuntimeError, match="response lost"):
+        rollout.resume()
+    assert rollout.resume()["workers"][0]["state"] == "rolled-back"
+    record = rollout.status()["workers"][0]
+    assert backend.rollbacks == 1
+    assert record["transitions"][-1]["action_id"] == action_id
+    assert "pending_recovery" not in record
+    assert rollout.resume()["workers"][0]["state"] == "rolled-back"
+
+
+def test_lost_fence_response_is_reconciled_with_original_action(tmp_path):
+    rollout, backend = operation(tmp_path)
+    backend.active_changes = {"ready": False}
+    observations = 0
+
+    def become_busy_after_activation(value):
+        nonlocal observations
+        observations += 1
+        if observations == 3:  # start idle, activation boundary, then recovery boundary
+            value.busy = True
+
+    backend.observe_hook = become_busy_after_activation
+    original = backend.fence
+    lost_responses = 2
+
+    def mutate_then_interrupt(target, reason, action_id):
+        nonlocal lost_responses
+        original(target, reason, action_id)
+        if lost_responses:
+            lost_responses -= 1
+            raise RuntimeError("fence response lost")
+
+    backend.fence = mutate_then_interrupt
+    with pytest.raises(RuntimeError, match="response lost"):
+        rollout.start()
+    record = rollout.status()["workers"][0]
+    action_id = record["pending_recovery"]["action_id"]
+    assert record["state"] == "failed"
+
+    with pytest.raises(RuntimeError, match="response lost"):
+        rollout.resume()
+    assert rollout.resume()["status"] == "failed"
+    record = rollout.status()["workers"][0]
+    assert len(backend.fenced) == 1
+    assert record["recovery_receipt"]["action_id"] == action_id
+    assert "pending_recovery" not in record
+    assert rollout.resume()["status"] == "failed"
+    assert len(backend.fenced) == 1
 
 
 def test_abort_is_durable_and_prevents_mutation(tmp_path):
