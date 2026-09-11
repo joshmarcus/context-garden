@@ -383,7 +383,7 @@ def test_ssh_dispatch_uses_an_alias_in_shared_evidence_and_keeps_target_local(ga
     assert target not in (run.path / "brief.md").read_text()
     assert target not in (garden / "demo" / "p1" / "tasks" / "DM-001-first.md").read_text()
     assert target not in (garden / ".garden" / "events.jsonl").read_text()
-    assert target in (run.path / "command.txt").read_text()  # ignored local diagnostic artifact
+    assert target in (run.path / "ssh-request.json").read_text()  # ignored local transport config
 
 
 def test_local_runner_doctor_windows():
@@ -1788,12 +1788,9 @@ def test_ssh_runner_preserves_fractional_timeout_minutes(sched, fake_github):
     task.runner = "ssh"
     sched.store.save(task)
 
-    # GNU timeout is an optional first line of defence for this controller-side SSH
-    # process. Exercise command construction without assuming the macOS host ships it.
-    with patch("garden.runner.ssh.shutil.which", return_value="/usr/bin/timeout"):
-        sched.tick()
-
-    assert "timeout 30 " in (sched.runs.latest("DM-001").path / "command.txt").read_text()
+    sched.tick()
+    spec = json.loads((sched.runs.latest("DM-001").path / "ssh-request.json").read_text())
+    assert spec["request"]["timeout_seconds"] == 30
 
 
 @pytest.mark.needs_remote_clone
@@ -1842,7 +1839,8 @@ def test_ssh_remote_worker_runs_in_scrubbed_env(sched, garden, fake_github, tmp_
     assert seen["LC_ALL"] == "C.UTF-8"  # allowlisted locale survives
     assert seen["GARDEN_TASK_ID"] == "DM-001" and seen["GARDEN_RUN_ID"] == run.run_id
     assert seen["GARDEN_ROOT"].endswith(".garden-no-live-garden")
-    assert seen["GARDEN_CONTEXT_DIR"].endswith("/.garden-run/references")
+    assert seen["GARDEN_CONTEXT_DIR"].endswith("/references")
+    assert "/.git/garden-ssh/" in seen["GARDEN_CONTEXT_DIR"]
     # The fake worker opened the transported snapshot rather than relying on launch-note text.
     explored = context_dump.read_text()
     assert "Do the first thing" in explored

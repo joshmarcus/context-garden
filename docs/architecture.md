@@ -373,7 +373,10 @@ keyed by phase (verdict, status, who accepted it and when, and the ids of the ta
 | `run.json` | scheduler | task, mode, runner, harness, model, pool member, host, pid, branch, base, timestamps, status, parsed result, usage, cost |
 | `brief.md` | runner | the exact prompt the worker received |
 | `command.txt` | local and ssh runners | the shell command that was started |
-| `remote.sh` | ssh runner | the script piped to the remote host |
+| `remote.sh` | ssh runner | credential-free script executed by the remote tmux supervisor |
+| `ssh-request.json`, `ssh-state.json` | SSH collector | private transport configuration, remote session identity and bounded recovery state |
+| `ssh-completion.json` | SSH collector | remote completion receipt, including retained work directory and exact head |
+| `transport.log` | SSH collector | connection diagnostics, kept separate from worker stderr |
 | `stdout.json`, `stderr.log` | the worker process | raw harness output |
 | `final.md` | harness or scheduler | the worker's final message (the `GARDEN_RESULT` line is its last line) |
 | `exit_code` | the shell wrapper (or `garden finish`) | the completion signal the scheduler waits for |

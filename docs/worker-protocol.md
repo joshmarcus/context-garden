@@ -719,25 +719,53 @@ blocking finding keeps the task's tier.
 
 ## Variants of the transport
 
-**ssh runner.** The scheduler generates a shell script (`remote.sh`) that embeds the brief
-in a heredoc and pipes it to `ssh <host> sh -s`. On the host, the script refreshes that
-host's clone of the product repo, creates or reuses a worktree under
-`<repo>/.garden-worktrees/<id>` on the task branch, runs the harness with the brief on
-stdin, stages and commits any dirty paths as a synthetic leftover commit, and pushes the
-branch itself (the host has push access; the scheduler's machine may not). Unlike local
-reap, the SSH transport does not record a recovery stash. The harness and the setup command run under the same
-allowlist as the local worker (`runner.base.PASS_ENV` plus `worker_env.pass` and
-`setup.env`), applied in shell: every other variable of the remote login environment is
-unset before they run, so a host's ambient tokens do not reach the worker either, and (as
-locally) `HOME` is set to an isolated scratch home so the worker cannot read the host
-login's gh token, git credentials or ssh keys — only the git fetch and push keep the login
-environment, since the host does its own pushing.
-The harness's stdout comes back over the ssh connection into
-the same `stdout.json`, and the same `exit_code` file is written locally. On reap the
-scheduler fetches the branch, requires commits ahead of the base, and materialises a
-local worktree from `origin/<branch>` so reviews and revise runs have one. The
-least-loaded host with a clone of the product and a free `max_parallel` slot is chosen at
-dispatch; a resumed session goes back to the host it started on.
+**ssh runner.** Every SSH worker runs in its own detached tmux session on the selected
+host. Remote hosts require Python 3 and tmux, in addition to Git, the harness and the
+configured development environment. `ssh.python` can select the remote Python command.
+This changes the SSH prerequisite; a missing tmux installation produces an explicit
+preparation hold rather than falling back to a worker tied to the connection.
+
+The scheduler transfers a trusted supervisor and `remote.sh` over `ssh <host> sh -s`.
+The script refreshes the product clone, creates or reuses
+`<repo>/.garden-worktrees/<id>`, and runs setup and the harness under the configured
+worker environment policy. Successful runs commit remaining changes and push the assigned
+branch. Failed or interrupted runs retain their dirty work and commits. Divergent remote
+branches require deliberate recovery and are never reset to discard local commits.
+
+The supervisor keeps logs, references and the exact terminal head under a private,
+run-specific directory in the repository's common Git directory. An atomic checkout
+lease prevents a second writer, including one launched by another controller. The lease
+is released only after Garden has collected and acknowledged completion. The supervisor
+enforces the worker timeout and stops its exact descendants before writing completion.
+On Linux, a subreaper also owns descendants that detach with `setsid`; on other platforms,
+cleanup covers the process group and descendants still linked by live parentage.
+
+SSH connections only launch or inspect that durable run. A lost connection or a dead
+local collector never counts as remote completion. The collector reconnects, resumes logs
+at their byte offsets and adopts the same result. Credentials and the fresh remote login
+environment cross a private, one-use pipe; neither is stored in the supervisor's files or
+tmux arguments. Existing `worker_env.pass` and `setup.env` policies still apply.
+
+`garden log TASK-ID` shows the logical host and a command like
+`tmux attach-session -r -t garden-TASK-ID-<run-key>`. Connect to that host first, then run
+the command to watch without sending keystrokes to the worker. Detach with **Ctrl-b d**.
+The pane displays assistant text and tool activity while the complete raw stream remains
+in the run logs. Finished sessions and run artifacts remain available for inspection;
+remove only the named finished session when done, never the shared tmux server.
+
+Recovery is bounded by `ssh.recovery_timeout_seconds` (default 300), with each SSH call
+bounded by `ssh.connect_timeout_seconds` (30) and polls spaced by
+`ssh.poll_interval_seconds` (2). A product's positive `timeout_minutes` is enforced on
+the host; a zero setting uses the SSH runner's 90-minute safety bound. When liveness or
+completion remains uncertain, Garden keeps checkout ownership and presents an operator
+hold. `garden ssh-recover TASK-ID` grants another bounded collection attempt against the
+same identity; it never starts another implementation. A definitive launch refusal can
+be explicitly retried after its prerequisite or conflicting owner is resolved. Legacy
+SSH runs without durable records require manual liveness verification after transport loss.
+
+On reap the scheduler fetches the branch, requires commits ahead of base, and materialises
+a local worktree for checks and review. The least-loaded host with a product clone and a
+free `max_parallel` slot is chosen at dispatch; resumed work returns to its original host.
 
 **manual runner.** A person is the worker. `garden take WID-003 --worktree` dispatches a
 run with no pid, prints the brief path and creates the worktree; the `garden-take` skill

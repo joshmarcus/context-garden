@@ -3,8 +3,9 @@
 Each host in `ssh.hosts` has a clone of each product repo. The runner refreshes that clone
 (`git fetch`), creates a worktree on the task branch, pipes the brief in, runs the harness,
 commits leftovers and pushes the branch. The local scheduler then fetches the branch and
-opens the PR. The remote host needs: git with push access to origin, the harness binary,
-and its API credentials.
+opens the PR. Each worker lives in an observable tmux session with a durable checkout
+lease and completion receipt. The remote host needs Python 3, tmux, git with push access
+to origin, the harness binary, and its API credentials.
 
 garden.yaml:
 
@@ -21,6 +22,7 @@ garden.yaml:
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -30,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -100,17 +103,15 @@ if [ ! -d "$WT/.git" ] && [ ! -f "$WT/.git" ]; then
 fi
 fi
 cd "$WT"
-if [ "$GARDEN_CHECKOUT_STRATEGY" != in_place ]; then git checkout -q "$BRANCH" >&2 || true; fi
+if [ "$GARDEN_CHECKOUT_STRATEGY" != in_place ] && [ "$(git rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]; then
+  echo "remote checkout branch drift; preserving existing work for recovery" >&2; exit 4
+fi
 if [ "$GARDEN_CHECKOUT_STRATEGY" != in_place ] && git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
-  if [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ] && [ "$(git rev-list --count origin/$BRANCH..HEAD)" = "0" ]; then git merge -q --ff-only "origin/$BRANCH" >&2 || true; fi
-  if [ "$(git rev-list --count origin/$BRANCH..HEAD)" != "0" ] && [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ]; then git reset -q --hard "origin/$BRANCH" >&2; fi
+  if [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ] && [ "$(git rev-list --count origin/$BRANCH..HEAD)" = "0" ]; then git merge -q --ff-only "origin/$BRANCH" >&2; fi
+  if [ "$(git rev-list --count origin/$BRANCH..HEAD)" != "0" ] && [ "$(git rev-list --count HEAD..origin/$BRANCH)" != "0" ]; then echo "remote branch diverged; preserving local commits for recovery" >&2; exit 4; fi
 fi
-if [ "$GARDEN_CHECKOUT_STRATEGY" = in_place ]; then
-  GARDEN_RUN_DIR="$REPO/.git/garden-run-{run_id}"
-else
-  GARDEN_RUN_DIR="$WT/.garden-run"
-fi
-mkdir -p "$GARDEN_RUN_DIR"
+# The tmux supervisor supplies a private directory outside the checkout, unique to this run.
+: "${{GARDEN_RUN_DIR:?missing supervised run directory}}"
 cat > "$GARDEN_RUN_DIR/brief.md" <<'GARDEN_BRIEF_EOF'
 {brief}
 GARDEN_BRIEF_EOF
@@ -221,8 +222,9 @@ else
 fi
 RC=$?
 set -e
-chmod -R u+w "$GARDEN_RUN_DIR" 2>/dev/null || :
-rm -rf "$GARDEN_RUN_DIR"
+# Preserve all artifacts for reconnect and operator inspection. Failed work is retained
+# without an automatic commit or push; the completion receipt records its exact head.
+[ "$RC" -eq 0 ] || exit "$RC"
 if [ -n "$(git status --porcelain)" ]; then git add -A >&2; git -c user.name=garden -c user.email=garden@localhost commit -q -m "{task}: leftover changes from run {run_id}" >&2 || true; fi
 if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then git push -u --force-with-lease origin "HEAD:refs/heads/$BRANCH" >&2; fi
 exit $RC
@@ -351,39 +353,93 @@ class SSHRunner(Runner):
             reference_dir=REFERENCE_DIR,
         )
         (d / "remote.sh").write_text(script)
-        ssh_bin = str(self.config.get("ssh_bin") or "ssh")
-        opts = [str(o) for o in (self.config.get("options") or ["-o", "BatchMode=yes"])]
-        remote_command = ["env"]
-        if api_key_env:
-            remote_command += ["-u", api_key_env]
-        remote_command += ["sh", "-s"]
-        ssh_cmd = " ".join(
-            shlex.quote(c) for c in [ssh_bin, *opts, str(host["host"]), *remote_command]
-        )
-        timeout_min = float(self.config.get("timeout_minutes", 90) or 0)
-        if timeout_min and shutil.which("timeout"):
-            ssh_cmd = f"timeout {timeout_min * 60:g} {ssh_cmd}"
-        feeder = " ".join(shlex.quote(c) for c in [
-            sys.executable, "-m", "garden.credential_stream", str(d / "remote.sh"),
-            "__GARDEN_HARNESS_API_KEY_VALUE__", api_key_env,
-        ])
-        wrapper = (
-            f"{feeder} | {ssh_cmd} > {shlex.quote(str(d / 'stdout.json'))} "
-            f"2> {shlex.quote(str(d / 'stderr.log'))}; echo $? > {shlex.quote(str(d / 'exit_code'))}"
-        )
-        env = dict(os.environ)
-        env.pop("CLAUDECODE", None)
-        proc = subprocess.Popen(["sh", "-c", wrapper], env=env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        run.pid = proc.pid
-        run.status = "running"
+        identity = hashlib.sha256(str(d.resolve()).encode()).hexdigest()
+        request = {
+            "identity": identity, "repo": str(repo), "task": run.task_id, "run_id": run.run_id,
+            "in_place": checkout.get("strategy") == "in_place", "script": script,
+            "timeout_seconds": float(self.config.get("timeout_minutes", 90) or 90) * 60,
+            "source": {name: (Path(__file__).parents[1] / name).read_text()
+                       for name in ("ssh_session.py", "proctree.py")},
+        }
+        recovery = self._positive_seconds("recovery_timeout_seconds", 300)
+        spec = {
+            "request": request, "api_key_env": api_key_env,
+            "ssh": [str(self.config.get("ssh_bin") or "ssh"),
+                    *[str(o) for o in (self.config.get("options") or ["-o", "BatchMode=yes"])],
+                    str(host["host"])],
+            "python": str(self.config.get("python") or "python3"),
+            "connect_timeout_seconds": self._positive_seconds("connect_timeout_seconds", 30),
+            "recovery_timeout_seconds": recovery,
+            "poll_interval_seconds": self._positive_seconds("poll_interval_seconds", 2),
+            "deadline": time.time() + request["timeout_seconds"] + recovery,
+        }
+        (d / "ssh-request.json").write_text(json.dumps(spec))
+        (d / "ssh-request.json").chmod(0o600)
+        import re
+
+        label = re.sub(r"[^a-zA-Z0-9_-]", "-", run.task_id)[:40]
+        session = "garden-" + label + "-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
+        run.env_snapshot["ssh_tmux_session"] = session
         run.harness = self.harness.name
+        run.status = "running"
+        self._start_collector(run)
+
+    def _positive_seconds(self, name: str, default: float) -> float:
+        import math
+
+        value = float(self.config.get(name, default))
+        if not math.isfinite(value) or value <= 0:
+            raise RunnerError(f"ssh.{name} must be a finite positive number")
+        return value
+
+    def _start_collector(self, run: Run) -> None:
+        # Always run the controller's trusted implementation, never a worker package.
+        # Persist the remote identity before a collector can send any launch request.
         run.save()
-        (d / "command.txt").write_text(wrapper + "\n")
+        source = Path(__file__).resolve().parents[2]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(source)
+        env.pop("CLAUDECODE", None)
+        command = [sys.executable, "-m", "garden.ssh_transport", str(run.path)]
+        with (run.path / "transport.log").open("a") as log:
+            proc = subprocess.Popen(command, cwd=source, env=env, stdin=subprocess.DEVNULL,
+                                    stdout=log, stderr=log, start_new_session=True)
+        run.pid = proc.pid
+        run.save()
+        (run.path / "command.txt").write_text(shlex.join(command) + "\n")
+
+    def reconcile(self, run: Run) -> str:
+        """Return an operator hold, or restart collection of the same durable remote run."""
+        from ..proctree import pid_alive
+
+        if not (run.path / "ssh-request.json").exists():
+            if (run.pid is None or run.process_finished()) and run.read_exit_code() != 0:
+                return "legacy SSH transport ended without remote completion; verify remote liveness before retry"
+            return ""
+        path = run.path / "ssh-state.json"
+        state = json.loads(path.read_text()) if path.exists() else {}
+        if state.get("status") == "held":
+            return str(state.get("reason") or "remote outcome uncertain")
+        if not run.process_finished() and (run.pid is None or not pid_alive(run.pid)):
+            self._start_collector(run)
+        return ""
 
     def collect(self, run: Run) -> dict[str, Any]:
         assert self.harness is not None
-        return self.harness.parse(run.stdout_text(), run.stderr_text(), None, model=run.model)
+        result = self.harness.parse(run.stdout_text(), run.stderr_text(), None, model=run.model)
+        if run.read_exit_code():
+            # Startup warnings often precede the actual fatal line. Preserve the full log,
+            # while presenting its final diagnostic rather than an unrelated first warning.
+            lines = run.stderr_text().strip().splitlines()
+            if lines:
+                result["error"] = lines[-1][-2000:]
+        receipt = run.path / "ssh-completion.json"
+        if receipt.exists():
+            saved = json.loads(receipt.read_text())
+            run.recovery_artifacts.append({"kind": "ssh", "head": saved.get("head", ""),
+                                           "directory": saved.get("directory", ""),
+                                           "session": saved.get("session", ""), "run": run.run_id})
+        return result
 
     def doctor(self) -> list[str]:
         probs = []

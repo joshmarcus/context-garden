@@ -46,6 +46,10 @@
 </div>
 {% endif %}
 
+{% if latest_run and latest_run.env_snapshot.ssh_tmux_session %}
+<p class="muted">Watch on {{ latest_run.host }}: <code>tmux attach-session -r -t {{ latest_run.env_snapshot.ssh_tmux_session }}</code>. Detach with Ctrl-b d.</p>
+{% endif %}
+
 {% if brief_gaps %}
 <div id="brief-card" class="panel" style="border-color:var(--bad);margin-bottom:14px">
   <div class="eyebrow" style="color:var(--bad)">Fix the brief before approving</div>
@@ -95,7 +99,7 @@
   </form>{% endif %}
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
   {% if not phase_hold and task.status.value in ('ready','changes_requested') and (not manual_runner or not manual_take_reason) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/{{ 'take' if manual_runner else 'dispatch' }}"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{% if manual_runner %}{{ 'Resume task' if task.status.value == 'changes_requested' else 'Take task' }}{% else %}{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}{% endif %}</button></form>{% endif %}
-  {% if task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ 'Reopen' if task.status.value == 'cancelled' else 'Continue the loop' }}</button></form>{% endif %}
+  {% if (not state.ssh_recovery_hold or task.status.value == 'failed') and (task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal)) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ 'Reopen' if task.status.value == 'cancelled' else 'Continue the loop' }}</button></form>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if not phase_hold and task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if not phase_hold and (task.pr or task.branch) %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
