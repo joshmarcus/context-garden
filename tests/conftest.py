@@ -33,6 +33,10 @@ def pytest_addoption(parser):
         help="Opt in to stress/load experiments (excluded from ordinary test runs and CI)",
     )
     parser.addoption(
+        "--run-browser-tests", action="store_true", default=False,
+        help="Opt in to tests that launch a browser (excluded from ordinary test runs and CI)",
+    )
+    parser.addoption(
         "--garden-shard-worker", action="store_true", default=False,
         help="Internal: execute one file shard of the macOS full suite",
     )
@@ -173,13 +177,15 @@ def pytest_runtest_protocol(item):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Deselect stress before fixtures run, even for explicit node or -m selections."""
-    if config.getoption("--run-stress"):
-        return
+    """Deselect opt-in tests before fixtures run, even when their nodes are named."""
+    run_stress = config.getoption("--run-stress")
+    run_browser = config.getoption("--run-browser-tests")
     selected = []
     deselected = []
     for item in items:
-        target = deselected if item.get_closest_marker("stress") is not None else selected
+        stress_disabled = item.get_closest_marker("stress") is not None and not run_stress
+        browser_disabled = item.get_closest_marker("browser") is not None and not run_browser
+        target = deselected if stress_disabled or browser_disabled else selected
         target.append(item)
     if deselected:
         items[:] = selected

@@ -167,6 +167,7 @@ def test_narrow_frame_uses_a_390px_content_viewport():
     assert measurements == {"clientWidth": 390, "scrollWidth": 390}
 
 
+@pytest.mark.browser
 def test_narrow_frame_executes_measurement_in_chromium():
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as p:
