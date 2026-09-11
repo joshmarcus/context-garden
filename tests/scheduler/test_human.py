@@ -1209,6 +1209,26 @@ def test_infrastructure_and_missing_ci_are_operator_actions_not_owner_cards(sche
     assert [card["kind"] for card in cards if card["group"] == "operator"] == ["infrastructure_hold"]
 
 
+def test_terminal_task_retires_and_hides_infrastructure_hold(sched):
+    """A stale environment notice cannot keep cancelled work in the Inbox."""
+    from garden.inbox import build_inbox
+
+    task = sched.store.task("DM-001")
+    sched.state.get(task.id)["infrastructure_hold"] = {
+        "kind": "missing_libraries", "diagnostic": "install browser libraries",
+    }
+
+    sched.set_status(task, Status.CANCELLED, "cancelled")
+
+    assert "infrastructure_hold" not in sched.state.get(task.id)
+    # Old state may predate terminal-transition cleanup. Presentation still fails closed
+    # without asking an operator to repair infrastructure for work that cannot resume.
+    sched.state.get(task.id)["infrastructure_hold"] = {
+        "kind": "missing_libraries", "diagnostic": "legacy hold",
+    }
+    assert not [card for card in build_inbox(sched.store, sched) if card["task"] == task.id]
+
+
 def test_mixed_checkout_and_live_config_work_waits_for_operator_evidence(sched, fake_github):
     """A live setting is an operator prerequisite, never a worker instruction or owner card."""
     from garden.brief import build_brief

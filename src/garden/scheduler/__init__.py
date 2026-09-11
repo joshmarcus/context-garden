@@ -719,7 +719,7 @@ class Scheduler(
             # any stop recorded while it was still active (a review-cap card, feedback
             # waiting for a revise run, an automerge hold) must not linger and be counted as
             # a decision on the Inbox, the Board or the task page.
-            for k in ("needs_human", "pending_feedback"):
+            for k in ("needs_human", "pending_feedback", "infrastructure_hold"):
                 changed = st.pop(k, None) is not None or changed
             changed = self._retire_terminal_review_recovery(task) or changed
             changed = self._retire_terminal_check(task) or changed
