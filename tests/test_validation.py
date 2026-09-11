@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +11,7 @@ import pytest
 
 from garden import validation
 from garden.validation import (
+    POLICY_ADDOPTS,
     POLICY_SOURCE_SHA,
     STRESS_NODES,
     ValidationPolicyError,
@@ -84,12 +87,24 @@ def test_current_policy_excludes_old_stress_without_rewriting_checkout(tmp_path,
         assert (repo / "implementation.py").read_text() == "valuable_uncommitted_edit = True\n"
 
 
-def test_old_branch_can_explicitly_opt_in_to_known_stress(tmp_path):
+@pytest.mark.parametrize("inherited_policy", [False, True], ids=["clean", "worker-policy"])
+def test_old_branch_can_explicitly_opt_in_to_known_stress(tmp_path, inherited_policy):
     repo = _checkout(tmp_path, "old")
     requested = [sys.executable, "-m", "pytest", "--run-stress", "-q"]
 
     effective, policy = resolve_validation(requested, repo)
-    result = subprocess.run(effective, cwd=repo, capture_output=True, text=True, timeout=15)
+    env = os.environ.copy()
+    pytest_addopts = shlex.split(env.get("PYTEST_ADDOPTS", ""))
+    if inherited_policy:
+        pytest_addopts.extend(option for option in POLICY_ADDOPTS if option not in pytest_addopts)
+    inherited_options = tuple(pytest_addopts)
+    pytest_addopts = [option for option in pytest_addopts if option not in POLICY_ADDOPTS]
+    env["PYTEST_ADDOPTS"] = shlex.join(pytest_addopts)
+    if inherited_policy:
+        assert all(option in inherited_options for option in POLICY_ADDOPTS)
+    result = subprocess.run(
+        effective, cwd=repo, env=env, capture_output=True, text=True, timeout=15,
+    )
 
     assert "--run-stress" not in effective  # the old pytest config does not define the option
     assert result.returncode == 1
