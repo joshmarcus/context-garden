@@ -186,15 +186,15 @@ of the loop touch different files.
 
 ## Where state lives
 
-Git is the database. The split between the four stores is deliberate.
+Git is the database. The split between these stores is deliberate.
 
 | store | what it holds | written by | why it is separate |
 |---|---|---|---|
 | `<product>/<phase>/tasks/*.md` | one task per file: YAML frontmatter is the state (`status`, `depends_on`, `priority`, `difficulty`, `branch`, `pr`, `attempts`, `last_dispatched_at`), the body is what the worker reads, `## Log` is one line per transition | humans (everything but the scheduler-owned fields), the planner, the scheduler | reviewable in git, readable by people, the source of truth for *state* |
-| `.garden/state.json` | per-task bookkeeping that would be noise in a task file (below) | the scheduler and the UIs | machine detail; safe to delete and rebuild from GitHub, at the cost of one poll; concurrent writers are safe (see below) |
-| `.garden/runs/<task>/<run>/` | one directory per worker run: the exact brief, raw output, exit code, usage and cost | runners and the scheduler | the audit trail and the token ledger |
-| `.garden/run-archive/<task>/<run>/` | old terminal run artifacts plus `index.json`, a compact metadata ledger | `garden archive-runs` | keeps transcripts available on demand without putting their directories in ordinary request scans |
-| `.garden/events.jsonl` | append-only history: every transition, dispatch, run completion, review verdict, question, answer, stall, budget event | the scheduler | the source of truth for *history*; feeds timelines, `garden digest` and `garden metrics` |
+| `.garden/state.json` | per-task scheduler controls and bookkeeping that would be noise in a task file (below) | the scheduler and the UIs | machine detail; some provider facts are reconstructible, but pending feedback, continuations, and decisions are not guaranteed to be; concurrent writers are safe (see below) |
+| `.garden/runs/<task>/<run>/` | one directory per live or unarchived run: the exact brief or prompt, raw output, exit code, usage and cost as applicable | runners and the scheduler | the audit trail and the token ledger |
+| `.garden/run-archive/` | metadata indexes plus archived run artifacts (compressed, checksum-verified content-addressed blobs in version 2) | `garden archive-runs` | keeps transcripts available on demand without putting terminal history in ordinary request scans |
+| `.garden/events.jsonl` | event history: normally append-only, with an explicit cost-backfill repair exception | the scheduler | the source of truth for *history*; feeds timelines, `garden digest` and `garden metrics` |
 | `.garden/storage-cleanup/*.json` | bounded inventory and cleanup receipts, including bytes reclaimed and retained/error reasons | the scheduler and `garden cleanup-storage` | makes partial or interrupted cleanup observable without treating missing run results as success |
 
 Also under `.garden/`: `worktrees/<task>` (one git worktree per task, on the task's branch),
@@ -263,7 +263,9 @@ single refresh. It does not reparse every historical `run.json`. The archive's c
 `index.json` is read only when its own fingerprint changes and participates in costs and run
 listings; ordinary reads never walk the archive tree. If that ledger is missing or corrupt,
 totals and affected web pages report history unavailable instead of silently showing partial
-figures.
+figures. The current version-2 archive uses a top-level task-fingerprint index and per-task
+metadata indexes; archived file bodies are compressed content-addressed blobs verified on
+every read. Legacy archive ledgers remain readable.
 
 `garden archive-runs --older-than-days 30` moves only terminal runs with a recorded finish
 before the cutoff. It retains running/unreaped records and any run id still named by

@@ -1,7 +1,10 @@
 # Ontology authorship record
 
-The canonical [`ONTOLOGY.md`](../../ONTOLOGY.md) was authored from the built-in ontologist
-persona at accepted source commit `bcc8419c2dde10ff022621a8a73d37bebdb8d1bc`.
+The original canonical [`ONTOLOGY.md`](../../ONTOLOGY.md) was authored from the built-in
+ontologist persona at accepted source commit
+`bcc8419c2dde10ff022621a8a73d37bebdb8d1bc`. The canonical file is a maintained reference:
+later source-checked editorial corrections do not change the persona attribution or raw
+artifact below, and must record their newer source identity in the canonical file.
 
 - Persona: `ontologist` from `src/garden/personas.py`
 - Harness/model: `codex` / `gpt-5.6-sol`
