@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +11,7 @@ import pytest
 
 from garden import validation
 from garden.validation import (
+    POLICY_ADDOPTS,
     POLICY_SOURCE_SHA,
     STRESS_NODES,
     ValidationPolicyError,
@@ -84,12 +87,33 @@ def test_current_policy_excludes_old_stress_without_rewriting_checkout(tmp_path,
         assert (repo / "implementation.py").read_text() == "valuable_uncommitted_edit = True\n"
 
 
-def test_old_branch_can_explicitly_opt_in_to_known_stress(tmp_path):
+@pytest.mark.parametrize(
+    ("configured_addopts", "has_policy", "keeps_unrelated_option"),
+    [
+        ("", False, False),
+        (shlex.join(POLICY_ADDOPTS), True, False),
+        ("--tb=short", False, True),
+    ],
+    ids=["clean", "worker-policy", "unrelated-option"],
+)
+def test_old_branch_can_explicitly_opt_in_to_known_stress(
+    tmp_path, monkeypatch, configured_addopts, has_policy, keeps_unrelated_option
+):
     repo = _checkout(tmp_path, "old")
     requested = [sys.executable, "-m", "pytest", "--run-stress", "-q"]
+    monkeypatch.setenv("VALIDATION_FIXTURE_PARENT", "preserved")
 
     effective, policy = resolve_validation(requested, repo)
-    result = subprocess.run(effective, cwd=repo, capture_output=True, text=True, timeout=15)
+    env = os.environ.copy()
+    env["PYTEST_ADDOPTS"] = configured_addopts
+    assert all(option in shlex.split(env["PYTEST_ADDOPTS"]) for option in POLICY_ADDOPTS) is has_policy
+    validation._enable_stress_opt_in(env)
+    assert env["VALIDATION_FIXTURE_PARENT"] == "preserved"
+    assert ("--tb=short" in shlex.split(env["PYTEST_ADDOPTS"])) is keeps_unrelated_option
+    assert all(option not in shlex.split(env["PYTEST_ADDOPTS"]) for option in POLICY_ADDOPTS)
+    result = subprocess.run(
+        effective, cwd=repo, env=env, capture_output=True, text=True, timeout=15,
+    )
 
     assert "--run-stress" not in effective  # the old pytest config does not define the option
     assert result.returncode == 1
