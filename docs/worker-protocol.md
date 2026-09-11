@@ -728,9 +728,11 @@ preparation hold rather than falling back to a worker tied to the connection.
 The scheduler transfers a trusted supervisor and `remote.sh` over `ssh <host> sh -s`.
 The script refreshes the product clone, creates or reuses
 `<repo>/.garden-worktrees/<id>`, and runs setup and the harness under the configured
-worker environment policy. Successful runs commit remaining changes and push the assigned
-branch. Failed or interrupted runs retain their dirty work and commits. Divergent remote
-branches require deliberate recovery and are never reset to discard local commits.
+worker environment policy. A run that reaches its end commits remaining changes and pushes
+the assigned branch whether it succeeded or failed, so no commit is left reachable only
+inside the remote checkout; if that push is refused, the run says so and its commits stay
+on the host for recovery. Interrupted runs retain their dirty work and commits. Divergent
+remote branches require deliberate recovery and are never reset to discard local commits.
 
 The supervisor keeps logs, references and the exact terminal head under a private,
 run-specific directory in the repository's common Git directory. An atomic checkout
@@ -751,7 +753,11 @@ tmux arguments. Existing `worker_env.pass` and `setup.env` policies still apply.
 the command to watch without sending keystrokes to the worker. Detach with **Ctrl-b d**.
 The pane displays assistant text and tool activity while the complete raw stream remains
 in the run logs. Finished sessions and run artifacts remain available for inspection;
-remove only the named finished session when done, never the shared tmux server.
+remove only the named finished session when done, never the shared tmux server. Each
+checkout keeps its `ssh.retain_runs` most recent run directories (default 5) and drops
+older ones when Garden acknowledges a completion, so a long-lived host does not accumulate
+logs and reference snapshots forever. A run that is live, uncertain or never collected is
+never pruned.
 
 Recovery is bounded by `ssh.recovery_timeout_seconds` (default 300), with each SSH call
 bounded by `ssh.connect_timeout_seconds` (30) and polls spaced by

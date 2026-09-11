@@ -17,6 +17,7 @@ garden.yaml:
           max_parallel: 4
           harness: claude                 # optional per-host override
       options: ["-o", "BatchMode=yes"]    # extra ssh args
+      retain_runs: 5                      # acknowledged run directories kept per remote checkout
 """
 
 from __future__ import annotations
@@ -222,11 +223,23 @@ else
 fi
 RC=$?
 set -e
-# Preserve all artifacts for reconnect and operator inspection. Failed work is retained
-# without an automatic commit or push; the completion receipt records its exact head.
-[ "$RC" -eq 0 ] || exit "$RC"
-if [ -n "$(git status --porcelain)" ]; then git add -A >&2; git -c user.name=garden -c user.email=garden@localhost commit -q -m "{task}: leftover changes from run {run_id}" >&2 || true; fi
-if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then git push -u --force-with-lease origin "HEAD:refs/heads/$BRANCH" >&2; fi
+# Preserve all artifacts for reconnect and operator inspection; the completion receipt records
+# this run's exact head. A failed run's work is committed and published too, so no commit is
+# left reachable only inside the remote checkout. The earlier drift and divergence checks
+# already refused to run unless HEAD is strictly ahead of the branch, so this push only adds
+# commits. Its routine chatter goes to a log, never onto the tail of stderr where it would
+# displace the run's own fatal diagnostic; only a refused publication speaks on stderr.
+GARDEN_PUBLISH_LOG="$GARDEN_RUN_DIR/publish.log"
+if [ -n "$(git status --porcelain)" ]; then
+  git add -A >>"$GARDEN_PUBLISH_LOG" 2>&1
+  git -c user.name=garden -c user.email=garden@localhost commit -q -m "{task}: leftover changes from run {run_id}" >>"$GARDEN_PUBLISH_LOG" 2>&1 || true
+fi
+if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then
+  if ! git push -u --force-with-lease origin "HEAD:refs/heads/$BRANCH" >>"$GARDEN_PUBLISH_LOG" 2>&1; then
+    echo "could not publish this run's commits (see $GARDEN_PUBLISH_LOG); they remain in the remote checkout for recovery" >&2
+    if [ "$RC" -eq 0 ]; then RC=5; fi
+  fi
+fi
 exit $RC
 """
 
@@ -358,6 +371,9 @@ class SSHRunner(Runner):
             "identity": identity, "repo": str(repo), "task": run.task_id, "run_id": run.run_id,
             "in_place": checkout.get("strategy") == "in_place", "script": script,
             "timeout_seconds": float(self.config.get("timeout_minutes", 90) or 90) * 60,
+            # How many acknowledged run directories this checkout keeps on the remote host.
+            # Only runs Garden has collected in full are ever pruned.
+            "retain_runs": max(1, int(self.config.get("retain_runs", 5) or 5)),
             "source": {name: (Path(__file__).parents[1] / name).read_text()
                        for name in ("ssh_session.py", "proctree.py")},
         }

@@ -170,6 +170,45 @@ def launch(request: dict) -> dict:
     return snapshot(request)
 
 
+def remove_tree(path: Path) -> None:
+    """Delete a run directory even though a reference snapshot inside it is read-only.
+
+    A read-only file in a writable directory is still removable, so making the directories
+    writable is enough; symlinks are left alone so nothing outside the tree is touched.
+    """
+    for parent, directories, _files in os.walk(path, topdown=False):
+        for name in directories:
+            target = Path(parent) / name
+            if target.is_symlink():
+                continue
+            try:
+                target.chmod(0o700)
+            except OSError:
+                pass
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def prune(root: Path, keep: Path, retain: int) -> list[str]:
+    """Drop the oldest acknowledged run directories, keeping `retain` of the newest.
+
+    Only a run whose exact completion the controller has already acknowledged is removable:
+    a live, uncertain or unacknowledged run keeps its brief, reference snapshot and logs
+    until a person or a later collector settles it. Called with the checkout guard held.
+    """
+    if retain < 1:
+        return []
+    settled = sorted(
+        (path for path in root.iterdir()
+         if path.is_dir() and path != keep and (path / "acknowledged").exists()),
+        key=lambda path: path.stat().st_mtime,
+    )
+    removed = []
+    for path in settled[:max(0, len(settled) + 1 - retain)]:
+        remove_tree(path)
+        removed.append(path.name)
+    return removed
+
+
 def acknowledge(request: dict) -> dict:
     root, directory, _session = locations(request)
     with (root / "guard").open("a") as guard:
@@ -177,10 +216,12 @@ def acknowledge(request: dict) -> dict:
         completion = json.loads((directory / "completion.json").read_text())
         if completion.get("identity") != request["identity"] or completion.get("status") != "terminal":
             raise RuntimeError("cannot acknowledge an unverified remote completion")
+        (directory / "acknowledged").touch()
         lease = root / "lease.json"
         if lease.exists() and json.loads(lease.read_text()).get("identity") == request["identity"]:
             lease.unlink()
-    return {"identity": request["identity"], "status": "acknowledged"}
+        pruned = prune(root, directory, int(request.get("retain_runs") or 1))
+    return {"identity": request["identity"], "status": "acknowledged", "pruned": pruned}
 
 
 def read_context(directory: Path) -> dict:

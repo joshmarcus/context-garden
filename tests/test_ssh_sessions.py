@@ -218,6 +218,47 @@ def test_failure_diagnostic_uses_fatal_tail(sched, tmp_path):
     assert runner.collect(run)["error"].endswith("fatal preparation error")
 
 
+def test_failed_run_publishes_its_commits_and_keeps_its_own_diagnostic(sched, tmp_path):
+    """A nonzero run must not leave commits reachable only inside the remote checkout."""
+    command = ("echo kept > kept.txt; git add kept.txt; "
+               "git -c user.name=Test -c user.email=test@example.com commit -qm kept; "
+               "echo scratch > untracked.txt; echo 'fatal harness error' >&2; exit 2")
+    runner, run = start(sched, tmp_path, command)
+    wait_for(run.process_finished)
+    assert run.read_exit_code() == 2
+    assert runner.collect(run)["error"].endswith("fatal harness error")
+    origin = tmp_path / "remote.git"
+    for name in ("kept.txt", "untracked.txt"):
+        assert subprocess.check_output(
+            ["git", "-C", str(origin), "show", f"{run.branch}:{name}"], text=True).strip()
+    assert (Path(state(run)["directory"]) / "publish.log").exists()
+    reap_collector(run)
+
+
+def test_acknowledged_run_directories_are_pruned_and_live_work_is_kept(sched, tmp_path):
+    """Collected runs age out per checkout; an uncollected or live run keeps its artifacts."""
+    _runner, first = start(sched, tmp_path, retain_runs=1)
+    wait_for(first.process_finished)
+    first_dir = Path(state(first)["directory"])
+    (first_dir / "references").mkdir()
+    (first_dir / "references" / "task.md").write_text("frozen prior brief")
+    (first_dir / "references" / "task.md").chmod(0o444)
+    (first_dir / "references").chmod(0o555)
+    assert (first_dir / "acknowledged").exists()
+
+    marker = tmp_path / "live"
+    _runner, second = start(sched, tmp_path,
+                            f"touch {shlex.quote(str(marker))}; sleep 2", retain_runs=1)
+    wait_for(marker.exists)
+    second_dir = Path(state(second)["directory"])
+    assert first_dir.exists() and second_dir.exists()  # nothing is pruned while a run is live
+    wait_for(second.process_finished)
+    assert not first_dir.exists()  # the older acknowledged run aged out
+    assert (second_dir / "brief.md").exists()  # the newest acknowledged run is retained
+    reap_collector(first)
+    reap_collector(second)
+
+
 def test_remote_timeout_works_without_controller_connection(sched, tmp_path):
     runner, run = start(sched, tmp_path, "sleep 30", timeout_minutes=0.025)
     wait_for(lambda: state(run).get("status") == "running")
