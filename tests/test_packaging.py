@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import os
 import tomllib
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).parents[1]
+
+
+def load_distribution_verifier():
+    path = ROOT / "scripts/verify_distribution.py"
+    spec = importlib.util.spec_from_file_location("verify_distribution", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_distribution_metadata_and_import_version_agree():
@@ -49,3 +60,37 @@ def test_pypi_publication_is_an_explicit_trusted_release():
     assert publish["environment"]["name"] == "pypi"
     assert publish["permissions"] == {"id-token": "write"}
     assert publish["steps"][-1]["uses"] == "pypa/gh-action-pypi-publish@release/v1"
+
+
+def test_distribution_verifier_removes_python_source_path_overrides(monkeypatch):
+    verifier = load_distribution_verifier()
+    monkeypatch.setenv("PYTHONHOME", "/source/python")
+    monkeypatch.setenv("PYTHONPATH", "/source/checkout")
+
+    environment = verifier.clean_environment()
+
+    assert "PYTHONHOME" not in environment
+    assert "PYTHONPATH" not in environment
+    assert environment["PATH"] == os.environ["PATH"]
+
+
+def test_distribution_verifier_runs_checks_from_disposable_directory(tmp_path, monkeypatch):
+    verifier = load_distribution_verifier()
+    artifact = tmp_path / "context_garden-0.3.1-py3-none-any.whl"
+    artifact.touch()
+    calls = []
+    monkeypatch.setattr(verifier, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(verifier.sys, "argv", [
+        "verify_distribution.py", str(artifact), "--version", "0.3.1",
+    ])
+    monkeypatch.setenv("PYTHONPATH", str(ROOT / "src"))
+
+    verifier.main()
+
+    working_directories = {kwargs["cwd"] for _, kwargs in calls}
+    assert len(working_directories) == 1
+    assert all(not cwd.resolve().is_relative_to(ROOT.resolve()) for cwd in working_directories)
+    assert all("PYTHONPATH" not in kwargs["env"] for _, kwargs in calls)
+    installed_check = next(args[2] for args, _ in calls if args[1:2] == ("-c",))
+    assert "Path(garden.__file__).resolve().is_relative_to(environment)" in installed_check
+    assert "Path(installed.locate_file('')).resolve().is_relative_to(environment)" in installed_check
