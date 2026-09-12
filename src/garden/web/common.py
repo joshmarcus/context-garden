@@ -31,7 +31,13 @@ from ..model import Status, dispatch_sort_key, now_iso
 from ..multiplayer_client import AuthoritativeView, MultiplayerClient, MultiplayerUnavailable
 from ..profiles import describe as describe_stop
 from ..runs import RunStore, _rollup
-from ..scheduler import REVIEW_MODES, WORKER_MODES, Scheduler, State
+from ..scheduler import (
+    MULTIPLAYER_EXECUTION_UNAVAILABLE,
+    REVIEW_MODES,
+    WORKER_MODES,
+    Scheduler,
+    State,
+)
 from ..scheduler_health import scheduler_health
 from ..store import Store
 from .trust import sanitize_html
@@ -184,10 +190,12 @@ class Hub:
     def __init__(self, store: Store, watch: bool, github: Any | None = None,
                  scheduler_blocked_reason: str = ""):
         self.store = store
+        self.coordinator_error = ""
         try:
             self.coordinator = MultiplayerClient.from_config(store.config)
-        except MultiplayerUnavailable:
+        except MultiplayerUnavailable as exc:
             self.coordinator = None
+            self.coordinator_error = str(exc)
         # A Store has mutable discovery caches.  A web request gets its own instance so its
         # first read observes files written by another process, while its page body and base
         # template share one stable discovery snapshot.  The scheduler/watch thread keeps using
@@ -227,9 +235,23 @@ class Hub:
         """Return current shared authority, explicitly marked stale during an outage."""
         return self.coordinator.refresh() if self.coordinator else None
 
+    def prepare_authoritative_request(self, *, mutation: bool) -> AuthoritativeView | None:
+        """Refresh/synchronize enrolled requests, refusing every offline mutation."""
+        if not self.store.config.get("multiplayer.enabled", False):
+            return None
+        if self.coordinator is None:
+            # The pre-coordinator member-authenticated web mode remains supported. A
+            # partially configured coordinator enrollment, however, is never standalone.
+            if not self.coordinator_error:
+                return None
+            raise MultiplayerUnavailable(self.coordinator_error or MULTIPLAYER_EXECUTION_UNAVAILABLE)
+        return self.coordinator.prepare(mutation=mutation)
+
     def coordinator_status(self) -> dict[str, Any]:
         if self.coordinator is None:
-            return {"configured": False, "stale": False, "error": "", "projection_lag": []}
+            configured = bool(self.coordinator_error)
+            return {"configured": configured, "stale": configured,
+                    "error": self.coordinator_error, "projection_lag": []}
         try:
             view = self.authoritative_view()
             assert view is not None

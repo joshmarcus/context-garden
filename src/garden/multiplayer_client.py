@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,6 +114,14 @@ class MultiplayerClient:
     @classmethod
     def from_config(cls, config: Config, **kwargs: Any) -> MultiplayerClient | None:
         if not config.get("multiplayer.enabled", False):
+            return None
+        enrollment = tuple(str(config.get(f"multiplayer.{key}", "")) for key in (
+            "garden_id", "coordinator_url", "member_id", "installation_id", "credential_env",
+        ))
+        # ``multiplayer.enabled`` predates the shared coordinator and still selects the
+        # member-authenticated local web boundary. Enrollment begins when any coordinator
+        # identity field is supplied; a partial enrollment must then fail closed.
+        if not any(enrollment):
             return None
         credential_env = str(config.get("multiplayer.credential_env", ""))
         credential = os.environ.get(credential_env, "") if credential_env else ""
@@ -227,3 +236,43 @@ class MultiplayerClient:
             for row in snapshot.get("projections", [])
             if int(ledger.get(str(row.get("path", "")), {}).get("version", 0)) < int(row["version"])
         ]
+
+    def prepare(self, *, mutation: bool = False) -> AuthoritativeView:
+        """Refresh authority and bring this checkout to the returned revision.
+
+        Mutations never accept the cached view.  Reads may retain it, but only an online
+        response is applied: the cache describes what was already authorized, not a queue
+        of writes to replay after a disconnect.
+        """
+        view = self.refresh(allow_stale=not mutation)
+        if not view.stale:
+            self.synchronize(view.snapshot)
+        if mutation and self.projection_lag(view.snapshot):
+            raise MultiplayerUnavailable("local projection has not reached required authority")
+        return view
+
+    def transition(self, *, kind: str, scope: str, new_state: str, markdown: str,
+                   path: str, canonical_revision: str) -> dict[str, Any]:
+        """Claim and commit one local lifecycle transition at a fresh revision."""
+        view = self.prepare(mutation=True)
+        row = next((item for item in view.snapshot.get("authority", [])
+                    if item.get("kind") == kind and item.get("scope") == scope), None)
+        if row is None:
+            raise MultiplayerUnavailable(f"no authoritative revision for {kind} {scope}")
+        if row.get("owner") != self.member_id:
+            raise MultiplayerUnavailable(f"{kind} {scope} is not assigned to this member")
+        operation = uuid.uuid4().hex
+        claim = self.command(
+            "/claims",
+            {"kind": kind, "scope": scope, "accepted_owner": self.member_id,
+             "authority_generation": int(row["authority_generation"]),
+             "operation_id": f"{operation}-claim", "protocol_version": PROTOCOL_VERSION},
+            kind=kind, scope=scope, expected_version=int(row["version"]),
+        )
+        return self.command(
+            "/transitions",
+            {"claim": claim, "new_state": new_state, "markdown": markdown,
+             "path": path, "canonical_revision": canonical_revision,
+             "operation_id": f"{operation}-transition"},
+            kind=kind, scope=scope, expected_version=int(row["version"]),
+        )
