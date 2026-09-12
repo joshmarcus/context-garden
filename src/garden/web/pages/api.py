@@ -387,6 +387,8 @@ def register(app: FastAPI, site: Site) -> None:
         principal = getattr(request.state, "principal", None)
         rows = []
         for task in tasks.values():
+            if principal is not None and not authorize(principal, "read", project=task.product):
+                continue
             phase = scheduler.store.phase(task.product, task.phase)
             owner = (scheduler.members.effective_task_owner(task, phase)
                      if scheduler.cfg.get("multiplayer.enabled", False)
