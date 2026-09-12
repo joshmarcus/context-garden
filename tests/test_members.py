@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from garden.members import MemberRegistry, Principal, authorize
 from garden.store import Store
-from garden.web.app import create_app
+from garden.web.app import create_app, multiplayer_tls_files
 
 
 def _registry(tmp_path):
@@ -73,6 +73,8 @@ def test_roles_separate_administration_owned_work_and_viewing():
     assert not authorize(admin, "mutate_work", owner_id="bob")
     assert authorize(member, "mutate_work", owner_id="bob")
     assert not authorize(member, "mutate_work", owner_id="alice")
+    assert not authorize(member, "mutate_work")
+    assert not authorize(admin, "mutate_work")
     assert authorize(viewer, "read")
     assert not authorize(viewer, "mutate_work")
     assert not authorize(member, "read", owner_id="alice")
@@ -106,6 +108,33 @@ def test_multiplayer_nonlocal_listener_requires_https_transport(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     with pytest.raises(RuntimeError, match="HTTPS"):
         create_app(Store(garden), watch=False, host="0.0.0.0")
+
+    config["multiplayer"]["transport"] = "https"
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    with pytest.raises(RuntimeError, match="tls_certfile"):
+        create_app(Store(garden), watch=False, host="0.0.0.0")
+
+
+def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeypatch):
+    cert = garden / "private/server.crt"
+    key = garden / "private/server.key"
+    cert.parent.mkdir()
+    cert.write_text("certificate")
+    key.write_text("private key")
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {
+        "enabled": True,
+        "transport": "https",
+        "tls_certfile": "private/server.crt",
+        "tls_keyfile": "private/server.key",
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    loaded = []
+    monkeypatch.setattr("ssl.SSLContext.load_cert_chain",
+                        lambda _self, certfile, keyfile: loaded.append((certfile, keyfile)))
+
+    assert multiplayer_tls_files(Store(garden), "0.0.0.0") == (str(cert), str(key))
+    assert loaded == [(str(cert), str(key))]
 
 
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
