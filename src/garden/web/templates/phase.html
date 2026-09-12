@@ -36,7 +36,7 @@
       {% for t, owner, eff, st, u, brief_tok in rows %}
       <tr><td><a class="id" href="/tasks/{{ t.id }}">{{ t.id }}</a></td><td><span class="state s-{{ eff }}" title="{{ stage_word(eff) }}">{{ stage(eff, 18) }}{{ eff.replace('_',' ') }}</span></td><td>{{ owner or 'unassigned' }}</td><td>{{ priority_label(t.priority) }}</td><td>{{ t.difficulty }}</td><td class="title">{{ t.title }}</td><td class="mono">{{ t.depends_on|join(', ') }}</td>
         <td>{% if t.pr %}<a href="{{ t.pr }}" target="_blank">#{{ t.pr.rsplit('/', 1)[-1] }}</a>{% if st.pr_draft %} <span class="badge">draft</span>{% endif %}{% endif %}</td>
-        <td class="muted">{% if st.last_review %}auto: {{ st.last_review.verdict.replace('_', ' ') }}{% endif %}{% if st.review_decision %}{% if st.last_review %} · {% endif %}{{ st.review_decision.lower().replace('_', ' ') }}{% endif %}</td>
+        <td class="muted">{% if st.last_review %}auto: {% if st.last_review.get('verdict') %}{{ st.last_review.get('verdict').replace('_', ' ') }}{% else %}incomplete{% endif %}{% endif %}{% if st.review_decision %}{% if st.last_review %} · {% endif %}{{ st.review_decision.lower().replace('_', ' ') }}{% endif %}</td>
         <td class="muted" title="{{ st.failed_checks|join(', ') if st.failed_checks else '' }}">{{ (st.checks or '').lower() }}</td>
         <td class="muted">{{ st.revisions or '' }}</td>
         <td class="muted mono">~{{ '{:,}'.format(brief_tok) }}</td>

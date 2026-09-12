@@ -24,7 +24,7 @@
 {% if task.status.value == 'awaiting_triage' %}
 <div class="panel" style="border-color:var(--s-awaiting_triage)">
   <div class="eyebrow" style="color:var(--s-awaiting_triage)">Draft PR: your first look</div>
-  <p style="margin:6px 0 10px">Skim the PR{% if state.last_review %}; the automated review said <b>{{ state.last_review.verdict.replace('_',' ') }}</b>: {{ state.last_review.summary }}{% endif %}. Mark it ready for a full review, or send it back with what to change.</p>
+  <p style="margin:6px 0 10px">Skim the PR{% if state.last_review and state.last_review.get('verdict') %}; the automated review said <b>{{ state.last_review.get('verdict').replace('_',' ') }}</b>: {{ state.last_review.get('summary', '') }}{% elif state.last_review %}; the automated review did not finish with a verdict{% endif %}. Mark it ready for a full review, or send it back with what to change.</p>
   <div class="actions">
     <form class="inline" method="post" action="/tasks/{{ task.id }}/triage-ready"><button class="primary">Ready for review</button></form>
     <a class="btn quiet" href="{{ task.pr }}" target="_blank">Open PR ↗</a>
@@ -243,7 +243,7 @@
         <dt>PR</dt><dd>{% if task.pr %}<a href="{{ task.pr }}" target="_blank">{{ task.pr }}</a>{% if state.pr_draft %} <span class="badge">draft</span>{% endif %}{% else %}<span class="faint">—</span>{% endif %}</dd>
         {% if state.review_decision or state.checks %}<dt>review / CI</dt><dd>{{ state.review_decision or '—' }} / {{ state.checks or '—' }}{% if state.failed_checks %} ({{ state.failed_checks|join(', ') }}){% endif %}</dd>{% endif %}
         {% if state.ci_status %}<dt>exact-head CI</dt><dd>{{ state.ci_status.provider }} · {{ state.ci_status.state }} · <span class="mono">{{ state.ci_status.queried_sha[:12] or 'head unavailable' }}</span>{% if state.ci_status.stale %} · stale{% endif %}{% if not state.ci_status.exists_for_sha %} · absent for SHA{% endif %}{% if state.ci_status.evidence_url %} · <a href="{{ state.ci_status.evidence_url }}" target="_blank">evidence</a>{% endif %}</dd>{% endif %}
-        {% if state.last_review %}<dt>auto review</dt><dd>{{ state.last_review.verdict.replace('_',' ') }} ({{ state.review_rounds }} round{{ 's' if state.review_rounds != 1 else '' }}){% if state.review_run %} · running{% endif %}</dd>{% endif %}
+        {% if state.last_review %}<dt>auto review</dt><dd>{% if state.last_review.get('verdict') %}{{ state.last_review.get('verdict').replace('_',' ') }}{% else %}incomplete{% endif %} ({{ state.review_rounds }} round{{ 's' if state.review_rounds != 1 else '' }}){% if state.review_run %} · running{% endif %}</dd>{% endif %}
         {% if state.automerge_blocked and not task.status.terminal %}<dt>automerge</dt><dd>held: {{ state.automerge_blocked }}</dd>{% endif %}
         {% if state.automerged %}<dt>automerge</dt><dd>merged by the garden ({{ state.automerged.method }}, {{ state.automerged.review_rounds }} review round{{ 's' if state.automerged.review_rounds != 1 else '' }})</dd>{% endif %}
         <dt>attempts</dt><dd>{{ task.attempts }}{% if state.revisions %} · {{ state.revisions }} revision(s){% endif %}</dd>

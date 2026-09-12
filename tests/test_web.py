@@ -98,6 +98,23 @@ def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
     assert c.get("/tasks/NOPE").status_code == 404
 
 
+def test_phase_and_task_pages_render_a_legacy_incomplete_review_without_crashing(garden):
+    """Durable review state from an older or interrupted run may omit its verdict; both
+    pages must render that state without crashing or inventing a decision."""
+    state = State(garden / ".garden" / "state.json")
+    state.get("DM-001")["last_review"] = {"findings": []}
+    state.save()
+
+    c = client(garden)
+    phase_page = c.get("/phases/demo/p1")
+    assert phase_page.status_code == 200
+    assert "incomplete" in phase_page.text
+
+    task_page = c.get("/tasks/DM-001")
+    assert task_page.status_code == 200
+    assert "incomplete" in task_page.text
+
+
 def test_task_page_back_control_keeps_a_safe_in_app_origin(garden):
     c = client(garden)
 

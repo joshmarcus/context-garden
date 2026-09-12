@@ -727,8 +727,24 @@ def enforce_criteria_verdict(review: dict[str, Any]) -> dict[str, Any]:
     return review
 
 
+VALID_REVIEW_VERDICTS = {"approve", "request_changes"}
+
+
+def has_recognized_verdict(review: dict[str, Any]) -> bool:
+    """Whether a review result satisfies the minimum schema to be applied.
+
+    A parseable JSON fragment is not a valid review verdict on its own — a killed or
+    timed-out reviewer process can leave one (e.g. ``{"findings": []}``) that must not
+    be mistaken for a completed review. Call this after `enforce_criteria_verdict`,
+    which may itself derive a verdict from unmet criteria or blocking findings.
+    """
+    return isinstance(review, dict) and review.get("verdict") in VALID_REVIEW_VERDICTS
+
+
 def review_to_markdown(rev: dict[str, Any], run_id: str = "") -> str:
-    verdict = str(rev.get("verdict", "?"))
+    if not has_recognized_verdict(rev):
+        return "⚠️ **Automated review: incomplete** — no verdict was recorded for this run."
+    verdict = str(rev.get("verdict"))
     icon = "✅" if verdict == "approve" else "🔁"
     out = [f"{icon} **Automated review: {verdict.replace('_', ' ')}** — {rev.get('summary', '')}".rstrip(" —")]
     attestation = str(rev.get("attestation") or "").strip()

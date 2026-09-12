@@ -21,6 +21,7 @@ from ..review import (
     ambiguous_unverified,
     enforce_criteria_verdict,
     feedback_from_review,
+    has_recognized_verdict,
     interaction_evidence_gaps,
     is_pending_external_gate,
     parse_review,
@@ -1155,14 +1156,21 @@ class ReviewMixin:
                     task.log(f"review validation scope expansion: {item} — {reason}")
                     self.store.save(task)
 
-        if run.status == "timeout" and not review:
+        if not has_recognized_verdict(review):
+            # A parseable fragment (e.g. `{"findings": []}` from a killed or signalled
+            # reviewer process) is not a valid verdict; never let it look like a completed
+            # review. Not only `run.status == "timeout"` — a process the scheduler didn't
+            # itself detect as timed out (e.g. an external kill) can leave the same kind of
+            # fragment behind with `run.status` still "running".
+            if run.status == "running":
+                run.status = "failed"
             if run.save() is RunSaveOutcome.SUPERSEDED:
                 return False
             if final and not (run.path / "final.md").exists():
                 (run.path / "final.md").write_text(final)
             return self._queue_review_recovery(
-                task, run, run.error or "timed out", rep, started=True,
-                count_round=bool((run.env_snapshot or {}).get("count_round", True)),
+                task, run, run.error or f"review produced no recognized verdict ({run.status})", rep,
+                started=True, count_round=bool((run.env_snapshot or {}).get("count_round", True)),
             )
         if review:
             expansions = review.get("scope_expansions") if isinstance(review, dict) else None
@@ -1352,7 +1360,9 @@ class ReviewMixin:
             self.events.emit("run_finished", task.id, run=run.run_id, mode="review", harness=run.harness,
                              model=run.model, pool_member=run.pool_member, cost_usd=run.cost_usd, usage=run.usage,
                              status=str(review.get("verdict") or run.status))
-        if not review:
+        if not has_recognized_verdict(review):
+            # Reached when a restart replays a run whose stored `result` predates this
+            # check (a legacy incomplete review) — never apply it as a decision.
             task.log(f"automated review produced no verdict ({run.error[:120] or run.status}){cost}")
             self.store.save(task)
             if pending_triage:
