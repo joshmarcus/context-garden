@@ -886,7 +886,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             add("retrying", t, why, [{"label": "Cancel", "kind": "cancel", "command": f"garden cancel {t.id}"}],
                 attempts=t.attempts, last_log=last)
         hold = st.get("infrastructure_hold")
-        if isinstance(hold, dict) and hold.get("diagnostic"):
+        if not t.status.terminal and isinstance(hold, dict) and hold.get("diagnostic"):
             add("operator", t, f"capture prerequisite: {hold['diagnostic']}", [
                 {"label": "Check environment", "kind": "doctor", "command": "garden doctor",
                  "detail": "verify the prepared worker environment, then the scheduler will retry admission"},
