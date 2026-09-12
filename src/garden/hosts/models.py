@@ -338,8 +338,20 @@ class HostRequirements:
     environment: str
     capabilities: tuple[str, ...] = ()
     memory_mib: int = 0
+    vcpu: int = 0
+    gpu_count: int = 0
+    gpu_vendor: str = ""
+    gpu_device_memory_mib: int = 0
+    gpu_features: tuple[str, ...] = ()
     disk_gib: int = 0
     heavy: bool = False
+    effective_requirement_digest: str = ""
+    profile_revision: str = ""
+    worker_id: str = ""
+    run_id: str = ""
+    operating_user: str = ""
+    installation_id: str = ""
+    lease_generation: int = 0
     probe_max_age_seconds: int = 60
     lease_seconds: int = 120
 
@@ -355,6 +367,19 @@ class HostAdmission:
     capabilities: tuple[str, ...]
     memory_available_mib: int
     disk_free_gib: int
+    effective_requirement_digest: str = ""
+    profile_revision: str = ""
+    worker_id: str = ""
+    run_id: str = ""
+    activity: str = ""
+    operating_user: str = ""
+    installation_id: str = ""
+    lease_generation: int = 0
+    memory_limit_mib: int = 0
+    vcpu_limit: int = 0
+    gpu_devices: tuple[str, ...] = ()
+    gpu_device_memory_mib: tuple[int, ...] = ()
+    resources_enforced: bool = False
     lease_id: str = ""
     lease_expires_at: float = 0
     detail: str = ""

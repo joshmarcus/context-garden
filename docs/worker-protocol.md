@@ -164,6 +164,18 @@ bindings, mismatched profile generations, scope violations, and resources above 
 ceiling. Protocol-version negotiation admits a version-zero worker only for an unconstrained
 legacy task; any constraint the worker cannot represent makes it ineligible.
 
+Host-local admission is a reservation, not a capacity hint. Constrained reservations carry
+the effective-requirements digest, profile revision, worker/run/activity, user and installation,
+and a monotonically fenced lease generation. The host service atomically arbitrates these
+identities against all controllers and local users, applies exact RAM and vCPU ceilings, and
+assigns exclusive compatible GPU devices with sufficient device memory. It must echo its
+bindings and enforcement evidence when the lease is acquired, renewed, and activated. The
+activation call is the final process-start barrier and repeats measurement and identity checks.
+Missing enforcement support makes constrained work ineligible. Lease expiry alone never makes
+capacity reusable: the host service retains it until the associated process and devices are
+proved stopped or superseded by a stronger fence. Global, heavy-work, and host safety caps remain
+additional limits, and repeated claims for one run/activity envelope are idempotent.
+
 The application does not trust `Forwarded` or `X-Forwarded-*` for authentication or for
 deciding whether a request is local. A reverse proxy may terminate TLS and inject the
 operator Authorization header, but must strip client-supplied Authorization itself and be
