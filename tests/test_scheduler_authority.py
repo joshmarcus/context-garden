@@ -126,3 +126,18 @@ def test_phase_authority_is_distinct_from_task_and_admin_visibility():
     assert sched.phase_is_authorized("demo", "p2")
     with pytest.raises(PermissionError, match="not owned"):
         sched.require_phase_authority("demo", "p1")
+
+
+def test_handoff_cancellation_fences_matching_local_run_without_losing_record():
+    value = scheduler(snapshot())
+    saved = []
+    run = SimpleNamespace(
+        task_id="A-1", status="running", finished_at="", error="",
+        kill=lambda: None, process_finished=lambda: True, save=lambda: saved.append(True),
+    )
+    value.runs = SimpleNamespace(active=lambda: [run])
+
+    assert value._cancel_fenced_scope("task", "A-1")
+    assert run.status == "cancelled"
+    assert run.finished_at and run.error == "fenced by multiplayer ownership handoff"
+    assert saved == [True]
