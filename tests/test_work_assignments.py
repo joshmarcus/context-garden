@@ -183,6 +183,49 @@ def test_real_dispatch_enforces_authenticated_owner_cursor_and_generation(sched)
     assert run.task_id == task.id
 
 
+def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutation(sched):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    token = registry.enroll_administrator("garden", "alice", "alice-machine")
+    alice = registry.authenticate(token)
+    assert alice is not None
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    task.status = Status.FAILED
+    sched.store.save(task)
+    assignment = registry.set_assignment(alice, "alice", task.product, task.phase)
+
+    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    with pytest.raises(RuntimeError, match="stale assignment"):
+        bound.retry(task, assignment_generation=assignment.generation - 1)
+    assert task.status == Status.FAILED
+
+    paused = registry.set_assignment(
+        alice, "alice", task.product, task.phase, enabled=False,
+        expected_generation=assignment.generation,
+    )
+    with pytest.raises(PermissionError, match="paused"):
+        bound.retry(task, assignment_generation=paused.generation)
+    assert task.status == Status.FAILED
+
+    wrong_phase = registry.set_assignment(
+        alice, "alice", task.product, "p2", expected_generation=paused.generation,
+    )
+    with pytest.raises(PermissionError, match="outside"):
+        bound.retry(task, assignment_generation=wrong_phase.generation)
+    assert task.status == Status.FAILED
+
+    registry.clear_assignment(alice, "alice", expected_generation=wrong_phase.generation)
+    with pytest.raises(PermissionError, match="no execution assignment"):
+        bound.retry(task)
+    assert task.status == Status.FAILED
+
+    current = registry.set_assignment(alice, "alice", task.product, task.phase,
+                                      expected_generation=wrong_phase.generation + 1)
+    bound.retry(task, assignment_generation=current.generation)
+    assert task.status == Status.READY
+
+
 def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
