@@ -181,6 +181,7 @@ class Coordinator:
     def claim(self, principal: Principal, *, garden_id: str, kind: Literal["task", "phase"],
               scope: str, expected_version: int, accepted_owner: str,
               authority_generation: int, operation_id: str, lease_seconds: int = 120,
+              replaces_operation_id: str = "",
               protocol_version: int = PROTOCOL_VERSION) -> Claim:
         """Acquire one fenced lease; expiration is evaluated only against server time."""
         self._protocol(protocol_version)
@@ -193,7 +194,8 @@ class Coordinator:
             raise ValueError("lease_seconds must be positive")
         request = {"kind": kind, "scope": scope, "expected_version": expected_version,
                    "accepted_owner": accepted_owner, "authority_generation": authority_generation,
-                   "lease_seconds": lease_seconds}
+                   "lease_seconds": lease_seconds,
+                   "replaces_operation_id": replaces_operation_id}
         now = self.clock()
         with self._transaction() as db:
             repeated = self._repeat(db, principal, garden_id, operation_id, "claim", request)
@@ -211,7 +213,12 @@ class Coordinator:
                 raise Conflict("stale authority snapshot")
             active = db.execute("SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
                                 (garden_id, kind, scope)).fetchone()
-            if active and dt.datetime.fromisoformat(active["lease_expires_at"]) > now:
+            replacing_current = (
+                active and active["installation"] == principal.installation_id
+                and active["operation_id"] == replaces_operation_id
+            )
+            if (active and dt.datetime.fromisoformat(active["lease_expires_at"]) > now
+                    and not replacing_current):
                 raise Conflict("scope is waiting on another fenced operation")
             fence = int(authority["next_fence"]) + 1
             expires = _iso(now + dt.timedelta(seconds=lease_seconds))
