@@ -175,12 +175,52 @@ def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
         )
     snapshot = coordinator.snapshot(admin, "garden")
     assert snapshot["blocking_effects"] == [
-        {"provider": "github", "effect_key": "publish:CG-1", "status": "unknown"}
+        {"provider": "github", "effect_key": "publish:CG-1", "claim_kind": "task",
+         "claim_scope": "CG-1", "authority_generation": 4, "status": "unknown"}
     ]
     # The ledger records the requested narrow scope, never credential material.
     assert "secret-delegated-token" not in (
         tmp_path / "coordination.db"
     ).read_bytes().decode(errors="ignore")
+
+
+def test_unresolved_effect_blocks_reassignment_and_new_admission(tmp_path):
+    admin, alice, alice_b, bob = principals()
+    clock = Clock()
+    coordinator = Coordinator(tmp_path / "coordination.db", clock=clock)
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+    coordinator.begin_effect(
+        alice, claim, provider="github", effect_key="publish:first", operation_id="publish-1",
+        credential_scope="pull_requests:write", precondition="head=abc", request={},
+    )
+
+    with pytest.raises(Conflict, match="pending provider effect"):
+        coordinator.set_authority(
+            admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+            authority_generation=5, expected_version=1, operation_id="reassign-blocked",
+        )
+    clock.now += dt.timedelta(seconds=121)
+    with pytest.raises(Conflict, match="pending provider effect"):
+        coordinator.claim(
+            alice_b, garden_id="garden", kind="task", scope="CG-1", expected_version=1,
+            accepted_owner="alice", authority_generation=4, operation_id="takeover-blocked",
+        )
+
+    coordinator.finish_effect(alice, "garden", "publish-1", outcome="succeeded")
+    changed = coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+        authority_generation=5, expected_version=1, operation_id="reassign-after-reconciliation",
+    )
+    admitted = coordinator.claim(
+        bob, garden_id="garden", kind="task", scope="CG-1",
+        expected_version=changed["version"], accepted_owner="bob", authority_generation=5,
+        operation_id="new-owner",
+    )
+    coordinator.begin_effect(
+        bob, admitted, provider="github", effect_key="publish:different",
+        operation_id="publish-2", credential_scope="pull_requests:write",
+        precondition="head=def", request={},
+    )
 
 
 def test_capacity_and_spend_reservations_are_atomic(tmp_path):
