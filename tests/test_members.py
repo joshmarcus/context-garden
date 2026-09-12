@@ -256,7 +256,8 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 409
+    assert response.json()["detail"] == MULTIPLAYER_EXECUTION_UNAVAILABLE
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
