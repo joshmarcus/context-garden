@@ -541,7 +541,11 @@ class Run:
         A pull-based remote run's saved worktree is a controller-side checkout, not the
         checkout executing the claim.  For those runs only streamed output is local
         activity evidence; a lease heartbeat proves ownership, but not productive work.
-        Returns None when nothing is measurable yet."""
+        Returns None when nothing is measurable yet.
+
+        The worktree scan is bounded (see `_newest_mtime`); when it cannot finish within its
+        budget the result is inconclusive, not "no activity", so this reports the current time
+        rather than risk an idle-kill on a worktree too large to fully observe."""
         times: list[float] = []
         for name in ("stdout.json", "stderr.log"):
             try:
@@ -549,7 +553,9 @@ class Run:
             except OSError:
                 pass
         if self.worktree and self.runner != "remote":
-            m = _newest_mtime(Path(self.worktree))
+            m, complete = _newest_mtime(Path(self.worktree))
+            if not complete:
+                return dt.datetime.now(dt.UTC)
             if m:
                 times.append(m)
         if not times:
@@ -731,23 +737,57 @@ class Run:
             return ""
 
 
-def _newest_mtime(root: Path) -> float:
-    """Newest mtime of any file under root, skipping the .git bookkeeping dir. 0.0 for an
-    empty, missing or unreadable tree. Used to tell whether a worker is still touching its
-    worktree (a linked worktree's .git is a gitlink file, not a dir, so it costs nothing to
-    skip; a plain checkout's .git dir is skipped so git's own churn is not read as work)."""
+_ACTIVITY_SCAN_BUDGET = 5000
+"""Max filesystem entries `_newest_mtime` stats before giving up as inconclusive.
+
+Bounds one activity probe to a fixed amount of work regardless of worktree size, so a checkout
+with hundreds of thousands of files cannot stall a scheduler tick or an HTTP request the way an
+exhaustive walk did."""
+
+
+def _newest_mtime(root: Path, budget: int | None = None) -> tuple[float, bool]:
+    """Newest mtime of any file under root, skipping the .git bookkeeping dir, and whether the
+    walk finished within `budget` visited entries (default `_ACTIVITY_SCAN_BUDGET`, read at call
+    time so tests can shrink it). (0.0, True) for an empty, missing or unreadable tree. Used to
+    tell whether a worker is still touching its worktree (a linked worktree's .git is a gitlink
+    file, not a dir, so it is never recursed into; a plain checkout's .git dir is skipped so
+    git's own churn is not read as work).
+
+    Walks via an explicit stack over `os.scandir` rather than `os.walk`, so a single directory
+    with more entries than the budget is abandoned mid-listing instead of being read in full
+    first: `os.walk` would otherwise materialize that directory's entire listing before a caller
+    could cap it, making the bound depend on the tree's shape rather than its total size."""
+    if budget is None:
+        budget = _ACTIVITY_SCAN_BUDGET
     newest = 0.0
-    for dirpath, dirnames, filenames in os.walk(root):
-        if ".git" in dirnames:
-            dirnames.remove(".git")
-        for name in filenames:
-            try:
-                m = os.stat(os.path.join(dirpath, name)).st_mtime
-            except OSError:
-                continue
-            if m > newest:
-                newest = m
-    return newest
+    visited = 0
+    stack = [root]
+    while stack:
+        dirpath = stack.pop()
+        try:
+            entries = os.scandir(dirpath)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                if visited >= budget:
+                    return newest, False
+                visited += 1
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                if is_dir:
+                    if entry.name != ".git":
+                        stack.append(entry.path)
+                    continue
+                try:
+                    m = entry.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    continue
+                if m > newest:
+                    newest = m
+    return newest, True
 
 
 def _invalidate_index(runs_dir: Path, task_id: str | None = None) -> None:
