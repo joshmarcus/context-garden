@@ -96,6 +96,10 @@ flowchart LR
   lease-specific staging ref, streams its transcript, and posts its result and usage. Work,
   reviews, checks, personas, and comparisons use the same run records; an expired lease
   returns to the queue.
+  Tasks with execution requirements are admitted through the shared worker matcher before a
+  run is created, and the pull claim repeats that match against the authenticated instance.
+  Hard capability, resource, activity, project, owner and instance-pin constraints precede
+  preference ranking; a non-match therefore cannot start setup or consume a task attempt.
 - **Maintenance pause** is the installation boundary. `garden pause` only blocks new
   dispatch: collection, checks, reviews and merges continue. `garden maintenance-pause`
   requests a whole-scheduler freeze and the next transaction acknowledges quiescence without
@@ -158,6 +162,7 @@ of the loop touch different files.
 | `proctree.py`, `system_resources.py` | procfs/BSD process observation and Linux/macOS host-memory telemetry used by local lifecycle and admission code |
 | `fleet.py`, `scheduler/fleet.py`, `hosts/factory.py` | the recurring driver that keeps an admitted pool at its configured healthy count: the strict `workers.pool` contract, one bounded reconciliation step per tick, the dispatch fence for hosts that must not receive work, the durable read-only projection every surface shows, and the one builder that constructs a declared pool's operation |
 | `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py`, `hosts/scale.py` | scheduler-independent declarative host lifecycle, resumable bounded scale operations, strict configuration and versioned provider/profile contracts |
+| `hosts/matching.py` | pure same-user capability/capacity selection shared by scheduler admission and pull claims; returns stable machine-readable non-match reasons |
 | `hosts/ec2.py`, `hosts/command.py`, `hosts/fake.py` | the first infrastructure adapter, the vendor-neutral controller command adapter, and the local extension/contract fixture |
 | `hosts/enrollment.py`, `hosts/enrollment_clients.py`, `hosts/registry.py` | durable per-host enrollment journals, scoped provider clients, and the private controller authentication registry |
 | `hosts/deadline.py`, `hosts/deadline_scheduler.py`, `hosts/drain.py`, `locking.py`, `hosts/locking.py` | independent absolute termination schedules, bounded interruption-drain handshakes, and the garden-wide portable lock (`hosts/locking.py` retains its compatibility import) |
