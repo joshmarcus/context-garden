@@ -42,6 +42,9 @@ def test_task_requirements_round_trip_and_no_requirement_compatibility():
 
 
 @pytest.mark.parametrize("value, message", [
+    ({"capabilities": []}, "capabilities must contain only all_of"),
+    ({"resources": False}, "resources has unknown fields"),
+    ({"preferences": []}, "preferences has unknown fields"),
     ({"resources": {"memory_gib": 4}}, "unknown fields"),
     ({"resources": {"memory_mib": 1.5}}, "whole number"),
     ({"resources": {"vcpu": -1}}, "whole number"),
@@ -120,9 +123,10 @@ def test_unknown_capabilities_and_incompatible_gpu_bounds_fail_closed(tmp_path):
 def test_legacy_host_requirements_use_the_canonical_capability_vocabulary():
     legacy = HostRequirements(
         activity="check", host_class="large", environment="linux",
-        capabilities=("tool.sql-client",), memory_mib=4096,
+        capabilities=("python", "tool.sql-client"), memory_mib=4096,
     )
     canonical = ExecutionRequirements.from_host_requirements(legacy)
+    assert parse_execution_requirements(canonical.to_dict()).capabilities == legacy.capabilities
     projected = canonical.to_host_requirements(
         activity="check", host_class="large", environment="linux"
     )

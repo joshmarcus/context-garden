@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
-CAPABILITY_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$")
+CAPABILITY_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*$")
 
 
 @dataclass(frozen=True)
@@ -117,14 +117,18 @@ def parse_execution_requirements(value: Any, *, source: str = "task") -> Executi
         return ExecutionRequirements()
     if not isinstance(value, dict) or set(value) - {"capabilities", "resources", "preferences"}:
         raise ValueError(f"{source}.execution_requirements has unknown fields or is not a mapping")
-    caps = value.get("capabilities") or {}
+    caps = value.get("capabilities")
+    if caps is None:
+        caps = {}
     if not isinstance(caps, dict) or set(caps) - {"all_of"}:
         raise ValueError(f"{source}.execution_requirements.capabilities must contain only all_of")
     all_of = caps.get("all_of", [])
     if (not isinstance(all_of, list) or any(
             not isinstance(name, str) or not CAPABILITY_NAME_RE.fullmatch(name) for name in all_of)):
         raise ValueError(f"{source}.execution_requirements.capabilities.all_of has an invalid name")
-    resources = value.get("resources") or {}
+    resources = value.get("resources")
+    if resources is None:
+        resources = {}
     if not isinstance(resources, dict) or set(resources) - {"memory_mib", "vcpu", "gpu"}:
         raise ValueError(f"{source}.execution_requirements.resources has unknown fields")
     memory = _positive_whole(resources.get("memory_mib", 0), "memory_mib", allow_zero=True)
@@ -148,7 +152,9 @@ def parse_execution_requirements(value: Any, *, source: str = "task") -> Executi
                 for item in features)):
             raise ValueError("gpu.features must be lowercase logical names")
         gpu = GpuReservation(count, vendor, device_memory, tuple(dict.fromkeys(features)))
-    preferences = value.get("preferences") or {}
+    preferences = value.get("preferences")
+    if preferences is None:
+        preferences = {}
     if not isinstance(preferences, dict) or set(preferences) - {"worker_configurations"}:
         raise ValueError(f"{source}.execution_requirements.preferences has unknown fields")
     workers = preferences.get("worker_configurations", [])

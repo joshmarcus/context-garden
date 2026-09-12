@@ -1156,7 +1156,7 @@ def _validate_capability_definitions(value: Any) -> None:
         raise ValueError("capability_definitions must be a mapping")
     for name, definition in value.items():
         if not isinstance(name, str) or not re.fullmatch(
-                r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+", name):
+                r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*", name):
             raise ValueError(f"invalid capability definition name {name!r}")
         if (not isinstance(definition, dict) or set(definition) - {
                 "type", "description", "issuer", "privileged"}):
