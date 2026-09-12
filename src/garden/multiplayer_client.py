@@ -240,6 +240,44 @@ class MultiplayerClient:
         except httpx.HTTPError as exc:
             raise MultiplayerUnavailable(f"could not record authoritative effect outcome: {exc}") from exc
 
+    def acknowledge_cancellations(
+        self, snapshot: dict[str, Any], cancel: Callable[[str, str], bool]
+    ) -> list[str]:
+        """Stop locally owned work before acknowledging a coordinator handoff request."""
+        acknowledged: list[str] = []
+        for request in snapshot.get("cancellation_requests", []):
+            if request.get("installation") != self.installation_id:
+                continue
+            kind, scope = str(request["kind"]), str(request["scope"])
+            if not cancel(kind, scope):
+                continue
+            try:
+                response = self._request(
+                    "POST", self._url("/cancellations/acknowledge"), headers=self._headers,
+                    json={"kind": kind, "scope": scope, "fence": int(request["fence"])},
+                    timeout=10,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise MultiplayerUnavailable(
+                    f"could not acknowledge fenced worker cancellation: {exc}"
+                ) from exc
+            acknowledged.append(f"{kind}:{scope}")
+            self._claims.pop((kind, scope), None)
+        return acknowledged
+
+    def retain_stale_evidence(self, *, kind: str, scope: str, evidence_id: str,
+                              operation_id: str, payload: dict[str, Any]) -> None:
+        try:
+            response = self._request(
+                "POST", self._url("/stale-evidence"), headers=self._headers,
+                json={"kind": kind, "scope": scope, "evidence_id": evidence_id,
+                      "operation_id": operation_id, "payload": payload}, timeout=10,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise MultiplayerUnavailable(f"could not retain stale evidence: {exc}") from exc
+
     def synchronize(self, snapshot: dict[str, Any] | None = None) -> list[str]:
         """Apply projections only when their recorded local base is unchanged."""
         snapshot = snapshot or self.refresh(allow_stale=False).snapshot
