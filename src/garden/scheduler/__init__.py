@@ -99,7 +99,7 @@ MULTIPLAYER_EXECUTION_UNAVAILABLE = (
     "multiplayer execution is waiting for an authenticated operator assignment and "
     "scoped coordinator; identity-less scheduling is disabled"
 )
-NO_WORK_ASSIGNMENT = "No work assignment"
+ NO_WORK_ASSIGNMENT = "No work assignment"
 
 
 class MultiplayerExecutionUnavailable(RuntimeError):
