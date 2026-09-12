@@ -106,15 +106,16 @@ def register(app: FastAPI, site: Site) -> None:
 
         s = hub.fresh()
         sched = hub.reader()
-        items = build_inbox(s, sched)
+        tasks = site.visible_tasks(request, s)
+        items = [item for item in build_inbox(s, sched)
+                 if site.allowed_projects(request) is None or item.get("task") in tasks]
         owner = request.query_params.get("owner")
         if owner is not None:
             owner = "" if owner == "-" else owner
             items = [item for item in items if not item.get("task") or item.get("owner", "") == owner]
         owner_task_items = [item for item in items if item.get("task")]
-        tasks = s.tasks()
         evs = EventLog(s.config.garden_dir / "events.jsonl")
-        all_events = evs.read()
+        all_events = site.visible_events(request, evs.read(), tasks)
         open_tasks = [t for t in tasks.values() if not t.status.terminal and t.status.value != "cancelled"]
         open_tasks = owner_scoped_tasks(open_tasks, s, owner)
         pr_destinations = open_pr_destinations(open_tasks, s)
@@ -130,8 +131,10 @@ def register(app: FastAPI, site: Site) -> None:
             sched.state,
             [event for event in all_events if event.get("kind") == "merge_head"],
         )
+        allowed = site.allowed_projects(request)
         investigation_scopes = [(ph.key, f"{prod.name} / {ph.name}")
-                                for prod in s.products() for ph in prod.phases if not ph.closed]
+                                for prod in s.products() for ph in prod.phases if not ph.closed
+                                and (allowed is None or prod.name in allowed)]
         manual_reservations = {
             task_id: sched.state.get(task_id).get("manual_reservation")
             for task_id in tasks
