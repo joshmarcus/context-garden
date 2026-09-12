@@ -14,8 +14,10 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import os
+import hashlib
 import re
 import threading
 import time
@@ -145,8 +147,14 @@ class Scheduler(
         Until then, a browser administrator or an unbound local process is not an
         execution principal and must not advance scheduler state.
         """
-        if self.cfg.get("multiplayer.enabled", False) and self.principal is None:
+        if not self.cfg.get("multiplayer.enabled", False):
+            return
+        if self.principal is None or self.coordinator is None:
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+        try:
+            self.coordinator.prepare(mutation=True)
+        except MultiplayerUnavailable as exc:
+            raise MultiplayerExecutionUnavailable(str(exc)) from exc
 
     def require_phase_authority(self, phase: Phase, *, expected_generation: int | None = None) -> None:
         if not self.cfg.get("multiplayer.enabled", False):
@@ -183,12 +191,14 @@ class Scheduler(
         self.principal = principal or current_principal() or (
             self.members.authenticate(credential) if credential else None
         )
+        self.coordinator_error = ""
         try:
             self.coordinator = MultiplayerClient.from_config(self.cfg)
-        except MultiplayerUnavailable:
+        except MultiplayerUnavailable as exc:
             # Existing multiplayer startup remains fail-closed and can render its setup
             # diagnostic even when enrollment is incomplete.
             self.coordinator = None
+            self.coordinator_error = str(exc)
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)
@@ -759,8 +769,25 @@ class Scheduler(
     def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False,
                     notify_now: bool = True, base_merged: bool | None = None) -> None:
         old = task.status.value
-        task.status = status
-        task.log(note)
+        if self.cfg.get("multiplayer.enabled", False):
+            self.require_execution_authority()
+            assert self.coordinator is not None
+            current = task.path.read_text() if task.path.exists() else ""
+            proposed = copy.deepcopy(task)
+            proposed.status = status
+            proposed.log(note)
+            proposed.touch()
+            # The coordinator commits first. A rejected or disconnected command therefore
+            # cannot leave an authoritative installation with a standalone local transition.
+            self.coordinator.transition(
+                kind="task", scope=task.id, new_state=status.value, markdown=proposed.render(),
+                path=str(task.path.resolve().relative_to(self.cfg.root.resolve())),
+                canonical_revision=hashlib.sha256(current.encode()).hexdigest(),
+            )
+            task.__dict__.update(proposed.__dict__)
+        else:
+            task.status = status
+            task.log(note)
         self.store.save(task)
         st = self.state.get(task.id)
         changed = False

@@ -21,12 +21,20 @@ class Service:
         self.online = True
         self.posts = []
 
-    def __call__(self, method, _url, **kwargs):
+    def __call__(self, method, url, **kwargs):
         if not self.online:
             raise httpx.ConnectError("offline")
         if method == "GET":
             return response(200, self.snapshot)
         self.posts.append(kwargs["json"])
+        if url.endswith("/claims"):
+            body = kwargs["json"]
+            return response(200, {
+                "garden_id": "garden", "kind": body["kind"], "scope": body["scope"],
+                "owner_id": "alice", "authority_generation": body["authority_generation"],
+                "installation_id": "alice-a", "operation_id": body["operation_id"],
+                "fence": 1, "lease_expires_at": "2026-09-12T00:02:00+00:00",
+            })
         return response(200, {"version": kwargs["json"]["expected_version"] + 1})
 
 
@@ -145,3 +153,37 @@ def test_stale_cache_is_bound_to_the_authenticated_installation(tmp_path):
 
     with pytest.raises(MultiplayerUnavailable, match="unavailable"):
         client(tmp_path, service, "alice-b").refresh()
+
+
+def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_path):
+    path = "demo/p1/tasks/CG-1-task.md"
+    original = "old\n"
+    snapshot = snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden",
+        "authority": [{"kind": "task", "scope": "CG-1", "version": 3,
+                       "owner": "alice", "authority_generation": 7}],
+        "projections": [{"kind": "task", "scope": "CG-1", "version": 3,
+                         "path": path, "markdown": original,
+                         "base_revision": hashlib.sha256(b"").hexdigest()}],
+    })
+    service = Service(snapshot)
+    local = client(tmp_path, service)
+
+    result = local.transition(
+        kind="task", scope="CG-1", new_state="running", markdown="new\n", path=path,
+        canonical_revision=hashlib.sha256(original.encode()).hexdigest(),
+    )
+
+    assert result == {"version": 4}
+    assert (tmp_path / path).read_text() == original
+    assert service.posts[0]["accepted_owner"] == "alice"
+    assert service.posts[1]["claim"]["installation_id"] == "alice-a"
+    assert service.posts[1]["canonical_revision"] == hashlib.sha256(original.encode()).hexdigest()
+
+    service.online = False
+    with pytest.raises(MultiplayerUnavailable, match="unavailable"):
+        local.transition(
+            kind="task", scope="CG-1", new_state="done", markdown="offline\n", path=path,
+            canonical_revision=hashlib.sha256(original.encode()).hexdigest(),
+        )
+    assert (tmp_path / path).read_text() == original
