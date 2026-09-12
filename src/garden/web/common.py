@@ -28,6 +28,7 @@ from ..graph import validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
 from ..members import Principal
 from ..model import Status, dispatch_sort_key, now_iso
+from ..multiplayer_client import AuthoritativeView, MultiplayerClient, MultiplayerUnavailable
 from ..profiles import describe as describe_stop
 from ..runs import RunStore, _rollup
 from ..scheduler import REVIEW_MODES, WORKER_MODES, Scheduler, State
@@ -183,6 +184,10 @@ class Hub:
     def __init__(self, store: Store, watch: bool, github: Any | None = None,
                  scheduler_blocked_reason: str = ""):
         self.store = store
+        try:
+            self.coordinator = MultiplayerClient.from_config(store.config)
+        except MultiplayerUnavailable:
+            self.coordinator = None
         # A Store has mutable discovery caches.  A web request gets its own instance so its
         # first read observes files written by another process, while its page body and base
         # template share one stable discovery snapshot.  The scheduler/watch thread keeps using
@@ -217,6 +222,10 @@ class Hub:
         if watch and not scheduler_blocked_reason:
             self._watch_thread = threading.Thread(target=self._loop, daemon=True, name="garden-watch")
             self._watch_thread.start()
+
+    def authoritative_view(self) -> AuthoritativeView | None:
+        """Return current shared authority, explicitly marked stale during an outage."""
+        return self.coordinator.refresh() if self.coordinator else None
 
     def scheduler(self) -> Scheduler:
         # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
