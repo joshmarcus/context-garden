@@ -107,6 +107,19 @@ class Coordinator:
                     garden TEXT NOT NULL, evidence_id TEXT NOT NULL, operation_id TEXT NOT NULL,
                     payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
                     PRIMARY KEY (garden, evidence_id));
+                CREATE TABLE IF NOT EXISTS handoffs (
+                    garden TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL,
+                    from_owner TEXT NOT NULL, to_owner TEXT NOT NULL,
+                    from_generation INTEGER NOT NULL, to_generation INTEGER NOT NULL,
+                    authority_version INTEGER NOT NULL, status TEXT NOT NULL,
+                    created_at TEXT NOT NULL, completed_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (garden, kind, scope));
+                CREATE TABLE IF NOT EXISTS cancellations (
+                    garden TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL,
+                    installation TEXT NOT NULL, fence INTEGER NOT NULL,
+                    status TEXT NOT NULL, requested_at TEXT NOT NULL,
+                    acknowledged_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (garden, kind, scope, installation, fence));
                 CREATE TABLE IF NOT EXISTS projections (
                     garden TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL,
                     version INTEGER NOT NULL, path TEXT NOT NULL, markdown TEXT NOT NULL,
@@ -164,8 +177,8 @@ class Coordinator:
         self._garden(principal, garden_id)
         if not authorize(principal, "administer"):
             raise PermissionError("administrator role required")
-        if kind not in {"task", "phase"} or not scope or not owner_id:
-            raise ValueError("authority requires kind, scope and explicit owner")
+        if kind not in {"task", "phase"} or not scope:
+            raise ValueError("authority requires a valid kind and scope")
         request = {"kind": kind, "scope": scope, "owner_id": owner_id,
                    "authority_generation": authority_generation, "expected_version": expected_version}
         with self._transaction() as db:
@@ -186,11 +199,33 @@ class Coordinator:
                 version=excluded.version,owner=excluded.owner,
                 authority_generation=excluded.authority_generation""",
                 (garden_id, kind, scope, new_version, owner_id, authority_generation))
-            # Reassignment immediately invalidates the old fence and coordinates admission.
+            # Changing the generation fences the old claim immediately.  Admission remains
+            # closed until the old installation and its externally visible effects have been
+            # reconciled; this is deliberately separate from the new owner projection.
+            if row:
+                active = db.execute(
+                    "SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
+                    (garden_id, kind, scope),
+                ).fetchone()
+                db.execute("""INSERT INTO handoffs VALUES(?,?,?,?,?,?,?,?,?,?,'')
+                    ON CONFLICT(garden,kind,scope) DO UPDATE SET
+                    from_owner=excluded.from_owner,to_owner=excluded.to_owner,
+                    from_generation=excluded.from_generation,to_generation=excluded.to_generation,
+                    authority_version=excluded.authority_version,status='reconciling',
+                    created_at=excluded.created_at,completed_at=''""",
+                    (garden_id, kind, scope, row["owner"], owner_id,
+                     int(row["authority_generation"]), authority_generation, new_version,
+                     "reconciling", _iso(self.clock())))
+                if active:
+                    db.execute("""INSERT OR REPLACE INTO cancellations
+                        VALUES(?,?,?,?,?,'requested',?,'')""",
+                        (garden_id, kind, scope, active["installation"], int(active["fence"]),
+                         _iso(self.clock())))
             db.execute("DELETE FROM claims WHERE garden=? AND kind=? AND scope=?",
                        (garden_id, kind, scope))
             response = {"version": new_version, "owner_id": owner_id,
-                        "authority_generation": authority_generation}
+                        "authority_generation": authority_generation,
+                        "handoff_status": "reconciling" if row else "ready"}
             self._record(db, principal, garden_id, operation_id, "set_authority", request, response)
             return response
 
@@ -228,6 +263,19 @@ class Coordinator:
                     or int(authority["authority_generation"]) != authority_generation):
                 raise Conflict("stale authority snapshot")
             self._reject_unresolved_effects(db, garden_id, kind, scope)
+            if not accepted_owner:
+                raise Conflict("scope is unassigned")
+            handoff = db.execute(
+                "SELECT * FROM handoffs WHERE garden=? AND kind=? AND scope=?",
+                (garden_id, kind, scope),
+            ).fetchone()
+            if handoff and handoff["status"] != "ready":
+                blockers = self._handoff_blockers(db, handoff)
+                if blockers:
+                    raise Conflict("scope is in handoff reconciliation: " + ", ".join(blockers))
+                db.execute("UPDATE handoffs SET status='ready',completed_at=? "
+                           "WHERE garden=? AND kind=? AND scope=?",
+                           (_iso(now), garden_id, kind, scope))
             active = db.execute("SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
                                 (garden_id, kind, scope)).fetchone()
             replacing_current = (
@@ -283,6 +331,14 @@ class Coordinator:
                     authority_generation,status FROM effects
                     WHERE garden=? AND status IN ('pending','unknown')""",
                 (garden_id,))]
+            handoffs = [dict(row) for row in db.execute(
+                "SELECT * FROM handoffs WHERE garden=? ORDER BY kind,scope", (garden_id,))]
+            cancellations = [dict(row) for row in db.execute(
+                "SELECT * FROM cancellations WHERE garden=? AND status='requested' "
+                "ORDER BY kind,scope", (garden_id,))]
+            evidence = [dict(row) for row in db.execute(
+                "SELECT evidence_id,operation_id,payload_json,created_at FROM evidence "
+                "WHERE garden=? ORDER BY created_at,evidence_id", (garden_id,))]
             projections = [dict(row) for row in db.execute(
                 "SELECT kind,scope,version,path,markdown,base_revision FROM projections "
                 "WHERE garden=? ORDER BY kind,scope", (garden_id,))]
@@ -290,7 +346,9 @@ class Coordinator:
                 "member_id": principal.member_id, "installation_id": principal.installation_id,
                 "role": principal.role,
                 "authority": authority, "active_claims": claims, "projections": projections,
-                "pending_outbox": pending, "blocking_effects": effects}
+                "pending_outbox": pending, "blocking_effects": effects,
+                "handoffs": handoffs, "cancellation_requests": cancellations,
+                "evidence": evidence}
 
     def transition(self, principal: Principal, claim: Claim, *, expected_version: int,
                    new_state: str, markdown: str, operation_id: str,
@@ -354,6 +412,22 @@ class Coordinator:
             db.execute("UPDATE outbox SET status=?,attempts=attempts+1,last_error=?,completed_at=? WHERE id=?",
                        (status, error, _iso(self.clock()) if success else "", outbox_id))
 
+    def supersede_outbox(self, principal: Principal, *, garden_id: str,
+                         outbox_id: int, authority_version: int) -> None:
+        """Resolve a fenced old projection without ever publishing its payload."""
+        self._garden(principal, garden_id)
+        if not authorize(principal, "administer"):
+            raise PermissionError("projection recovery authority required")
+        with self._transaction() as db:
+            row = db.execute("SELECT authority_version,status FROM outbox WHERE id=? AND garden=?",
+                             (outbox_id, garden_id)).fetchone()
+            if not row:
+                raise KeyError(outbox_id)
+            if int(row["authority_version"]) != authority_version:
+                raise Conflict("stale projection reconciliation request")
+            db.execute("UPDATE outbox SET status='superseded',attempts=attempts+1,"
+                       "completed_at=? WHERE id=?", (_iso(self.clock()), outbox_id))
+
     def begin_effect(self, principal: Principal, claim: Claim, *, provider: str, effect_key: str,
                      operation_id: str, credential_scope: str, precondition: str,
                      request: dict[str, Any]) -> dict[str, Any]:
@@ -381,7 +455,8 @@ class Coordinator:
                 authority_generation=excluded.authority_generation,fence=excluded.fence,
                 credential_scope=excluded.credential_scope,
                 precondition_value=excluded.precondition_value,request_json=excluded.request_json,
-                status='pending',result_json='{}',updated_at=excluded.updated_at""",
+                status='pending',result_json='{}',updated_at=excluded.updated_at,
+                authority_generation=excluded.authority_generation""",
                 (claim.garden_id, provider, effect_key, operation_id, principal.member_id,
                  principal.installation_id, claim.kind, claim.scope,
                  claim.authority_generation, claim.fence, credential_scope,
@@ -399,11 +474,75 @@ class Coordinator:
         with self._transaction() as db:
             row = db.execute("SELECT * FROM effects WHERE garden=? AND operation_id=?",
                              (garden_id, operation_id)).fetchone()
-            if not row or row["actor"] != principal.member_id:
+            if not row or (row["actor"] != principal.member_id
+                           and not authorize(principal, "administer")):
                 raise PermissionError("provider operation does not belong to actor")
             db.execute("UPDATE effects SET status=?,result_json=?,updated_at=? WHERE garden=? AND operation_id=?",
                        (outcome, json.dumps(result or {}, sort_keys=True), _iso(self.clock()),
                         garden_id, operation_id))
+
+    def acknowledge_cancellation(self, principal: Principal, *, garden_id: str, kind: str,
+                                 scope: str, fence: int) -> None:
+        """Confirm that this installation's fenced local workers have stopped."""
+        self._garden(principal, garden_id)
+        with self._transaction() as db:
+            allowed_installation = principal.installation_id
+            if authorize(principal, "administer"):
+                row = db.execute("""SELECT installation FROM cancellations
+                    WHERE garden=? AND kind=? AND scope=? AND fence=? AND status='requested'""",
+                    (garden_id, kind, scope, fence)).fetchone()
+                allowed_installation = str(row["installation"]) if row else allowed_installation
+            changed = db.execute("""UPDATE cancellations
+                SET status='acknowledged',acknowledged_at=?
+                WHERE garden=? AND kind=? AND scope=? AND installation=? AND fence=?
+                  AND status='requested'""",
+                (_iso(self.clock()), garden_id, kind, scope, allowed_installation, fence),
+            ).rowcount
+            if not changed:
+                raise Conflict("cancellation request is stale or belongs to another installation")
+
+    def retain_stale_evidence(self, principal: Principal, *, garden_id: str, kind: str,
+                              scope: str, evidence_id: str, operation_id: str,
+                              payload: dict[str, Any]) -> None:
+        """Archive a late result without applying its state or source side effects."""
+        self._garden(principal, garden_id)
+        record = {"kind": kind, "scope": scope, "stale": True,
+                  "actor": principal.member_id, "installation": principal.installation_id,
+                  "payload": payload}
+        with self._transaction() as db:
+            existing = db.execute(
+                "SELECT payload_json FROM evidence WHERE garden=? AND evidence_id=?",
+                (garden_id, evidence_id),
+            ).fetchone()
+            encoded = json.dumps(record, sort_keys=True)
+            if existing:
+                if existing["payload_json"] != encoded:
+                    raise Conflict("evidence id was reused with different content")
+                return
+            db.execute("INSERT INTO evidence VALUES(?,?,?,?,?)", (
+                garden_id, evidence_id, operation_id, encoded, _iso(self.clock()),
+            ))
+
+    @staticmethod
+    def _handoff_blockers(db: sqlite3.Connection, handoff: sqlite3.Row) -> list[str]:
+        key = (handoff["garden"], handoff["kind"], handoff["scope"])
+        cancellations = db.execute("""SELECT COUNT(*) FROM cancellations
+            WHERE garden=? AND kind=? AND scope=? AND status='requested'""", key).fetchone()[0]
+        effects = db.execute("""SELECT COUNT(*) FROM effects
+            WHERE garden=? AND kind=? AND scope=? AND authority_generation<=?
+              AND status IN ('pending','unknown')""", (*key, handoff["from_generation"])).fetchone()[0]
+        outbox = db.execute("""SELECT COUNT(*) FROM outbox
+            WHERE garden=? AND scope=? AND authority_version<? AND status='pending'""",
+            (handoff["garden"], handoff["scope"], handoff["authority_version"]),
+        ).fetchone()[0]
+        blockers = []
+        if cancellations:
+            blockers.append("old workers have not acknowledged cancellation")
+        if effects:
+            blockers.append("old provider outcomes are unknown")
+        if outbox:
+            blockers.append("old projections are pending")
+        return blockers
 
     def reserve(self, principal: Principal, *, garden_id: str, pool: str, operation_id: str,
                 units: int, spend_micros: int, unit_limit: int, spend_limit_micros: int) -> dict[str, Any]:
