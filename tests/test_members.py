@@ -372,7 +372,6 @@ def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeyp
     assert multiplayer_tls_files(Store(garden), "0.0.0.0") == (str(cert), str(key))
     assert loaded == [(str(cert), str(key))]
 
-
 def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkeypatch):
     cert = garden / "private/server.crt"
     key = garden / "private/server.key"
@@ -691,7 +690,6 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
         "DM-002": "ready",
     }
     assert RunStore(garden / ".garden").active() == []
-
 
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
