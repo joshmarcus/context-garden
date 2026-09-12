@@ -9,6 +9,7 @@ loop runs in a background thread when `watch=True` (the `garden serve` default).
 from __future__ import annotations
 
 import os
+import ssl
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,31 @@ def _tojson(value: Any) -> Markup:
     return Markup(safe_json(value))
 
 
+def multiplayer_tls_files(store: Store, host: str) -> tuple[str, str] | None:
+    """Validate and return TLS material required by a non-local multiplayer listener."""
+    if not store.config.get("multiplayer.enabled", False) or loopback_listener(host):
+        return None
+    if store.config.get("multiplayer.transport", "") != "https":
+        raise RuntimeError(
+            "multiplayer listeners outside local development require authenticated HTTPS transport"
+        )
+    values = []
+    for setting in ("tls_certfile", "tls_keyfile"):
+        configured = str(store.config.get(f"multiplayer.{setting}", "") or "")
+        path = Path(configured)
+        if configured and not path.is_absolute():
+            path = store.root / path
+        if not configured or not path.is_file():
+            raise RuntimeError(f"multiplayer HTTPS requires a readable multiplayer.{setting}")
+        values.append(str(path))
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(values[0], values[1])
+    except (OSError, ssl.SSLError) as exc:
+        raise RuntimeError("multiplayer HTTPS certificate/key pair is invalid") from exc
+    return values[0], values[1]
+
+
 def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None, github: Any | None = None,
                host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
     """The web app. `github` is an optional stand-in for `garden.github.GitHub` that every
@@ -75,11 +101,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     operator_token = os.environ.get(operator_env, "") if operator_env else ""
     multiplayer = bool(store.config.get("multiplayer.enabled", False))
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
-    if multiplayer and not loopback_listener(host) \
-            and store.config.get("multiplayer.transport", "") != "https":
-        raise RuntimeError(
-            "multiplayer listeners outside local development require authenticated HTTPS transport"
-        )
+    multiplayer_tls_files(store, host)
     require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
     if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(

@@ -233,7 +233,13 @@ DEFAULTS: dict[str, Any] = {
     "doctor": {"min_free_mb": 2048},
     "name": "garden",
     # Membership records and credential verifiers live in .garden/members.json, never here.
-    "multiplayer": {"enabled": False, "transport": ""},
+    "multiplayer": {
+        "enabled": False,
+        "transport": "",
+        # TLS material remains host-private; these are paths relative to the garden root.
+        "tls_certfile": "",
+        "tls_keyfile": "",
+    },
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
     "runner": "local",
