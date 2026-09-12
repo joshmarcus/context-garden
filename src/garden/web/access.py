@@ -10,7 +10,12 @@ OPERATOR_READ = "operator_read"
 OPERATOR_MUTATION = "operator_mutation"
 
 PUBLIC_PATHS = frozenset({"/healthz", "/favicon.svg"})
-ADMINISTRATOR_READ_PATHS = frozenset({"/config"})
+ADMINISTRATOR_READ_PATHS = frozenset({
+    "/api/control/status", "/api/maintenance", "/api/worker-diagnostics", "/api/workers",
+    "/config", "/design", "/docs", "/docs/oauth2-redirect", "/now/workers",
+    "/openapi.json", "/redoc", "/trials",
+})
+ADMINISTRATOR_READ_PREFIXES = ("/design/",)
 # Authenticated members may open these project collections.  Their handlers must project
 # every row and aggregate through ``Site.allowed_projects``; admission alone is not a data
 # boundary. Garden-operational endpoints which cannot be attributed to a project stay admin.
