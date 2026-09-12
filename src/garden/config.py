@@ -235,6 +235,13 @@ DEFAULTS: dict[str, Any] = {
     # Membership records and credential verifiers live in .garden/members.json, never here.
     "multiplayer": {
         "enabled": False,
+        # Enrollment belongs in garden.local.yaml. The secret itself stays in the named
+        # environment variable, outside both shared context and Config.
+        "garden_id": "",
+        "coordinator_url": "",
+        "member_id": "",
+        "installation_id": "",
+        "credential_env": "",
         "transport": "",
         # TLS material remains host-private; these are paths relative to the garden root.
         "tls_certfile": "",
