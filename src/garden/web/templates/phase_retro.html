@@ -6,6 +6,11 @@
     <p>{{ summary.tasks_done }} of {{ summary.tasks_total }} tasks done{% if cancelled %} · {{ cancelled }} cancelled{% endif %} · {{ runs }} run(s) · spent ${{ '%.2f' % spent }}{% if phase.closed %} · closed {{ phase.closed }}{% endif %}</p></div>
   <div class="tools"><a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}">Phase page</a><a class="btn" href="/herbarium">Herbarium</a></div>
 </div>
+<div class="panel" style="margin-bottom:14px"><div class="eyebrow">Defects discovered after closure{% if defects %} · {{ defect_summary.total }} total, {{ defect_summary.major }} major, {{ defect_summary.unreviewed }} unreviewed{% endif %}</div>
+  {% if defects %}<div class="scroll"><table style="margin-top:6px"><tr><th>defect</th><th>severity</th><th>task</th><th>discovered</th><th>disposition</th><th>what happened</th></tr>
+    {% for defect in defects %}<tr><td class="mono">{{ defect.id }}</td><td>{{ defect.severity }}</td><td><a href="/tasks/{{ defect.task_id }}">{{ defect.task_id }}</a></td><td class="mono">{{ defect.discovered_at[:10] }}</td><td>{{ defect.disposition }}</td><td>{{ defect.description }}</td></tr>{% endfor %}
+  </table></div>{% else %}<div class="empty">no defects have been recorded for this phase</div>{% endif %}
+</div>
 {% if not has_retro %}
 <div class="empty">no retro yet — <code>garden retro {{ phase.key }}</code> reconciles the phase's friction and files this page</div>
 {% else %}

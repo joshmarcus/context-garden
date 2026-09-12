@@ -112,12 +112,28 @@
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
   {% if not phase_hold and has_pending and task.status.value != 'running' and not edit_running %}<form class="inline" method="post" action="/tasks/{{ task.id }}/integrate"><button class="quiet">Integrate now</button></form>{% endif %}
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
+  {% if task.status.terminal %}<button class="quiet" data-toggle="defect-form">Record defect…</button>{% endif %}
   {% if not task.status.terminal and not state.investigation %}<button class="quiet" data-toggle="deep-dive-form">Deep dive…</button>{% endif %}
   {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
   {% if not phase_hold and ((task.status.value in ('ready','draft','failed') and not task.pr) or trial_again) %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
+{% if task.status.terminal %}<div id="defect-form" class="panel" hidden>
+  <div class="eyebrow">Record a defect found after closure</div>
+  <p class="muted">Minor: limited impact or workaround available. Major: substantial impact or core behavior fails. You choose the severity; analysis can be added later.</p>
+  <form method="post" action="/tasks/{{ task.id }}/defects">
+    <div class="actions"><label>severity <select name="severity"><option value="minor">minor</option><option value="major">major</option></select></label></div>
+    <label>What happened <textarea name="description" maxlength="1000" required></textarea></label>
+    <div class="grid2"><label>Expected behavior<textarea name="expected"></textarea></label><label>Observed behavior<textarea name="observed"></textarea></label></div>
+    <label>Impact<textarea name="impact"></textarea></label>
+    <div class="grid2"><label>Evidence or reproduction links, one per line<textarea name="evidence_links"></textarea></label><label>Linked follow-up issue<input name="follow_up" placeholder="issue or task URL / ID"></label></div>
+    <div class="grid2"><label>Affected source<input name="affected_source"></label><label>Affected release<input name="affected_release"></label></div>
+    <label>Affected run<input name="affected_run"></label>
+    <input type="hidden" name="idempotency_key" value="{{ defect_idempotency_key }}">
+    <div class="actions" style="margin-top:8px"><button class="primary">Record defect</button></div>
+  </form>
+</div>{% endif %}
 {% if not task.status.terminal and not state.investigation %}<div id="deep-dive-form" class="panel" hidden><div class="eyebrow">Deep dive</div><p>Ask a local investigation agent to examine the complete Garden diagnostics. Work already in flight drains safely.</p><form method="post" action="/tasks/{{ task.id }}/investigate"><textarea name="note" required placeholder="What happened, and what should the investigation explain?"></textarea><input type="hidden" name="applies_to" value="agent"><div class="actions" style="margin-top:8px"><button class="primary">Queue deep dive</button></div></form></div>{% endif %}
 {% if state.investigation %}{% set publication = state.investigation.get('publication', {}) %}<div class="panel" style="margin-bottom:14px"><div class="eyebrow">Deep dive · {{ state.investigation.status }}</div><p>{{ state.investigation.reason }}</p>{% if state.investigation.get('run_id') %}<a class="btn" href="/runs/{{ task.id }}/{{ state.investigation.run_id }}">Investigation run</a>{% endif %}{% if state.investigation.get('report_paths') %}<a class="btn" href="/investigations/{{ task.id }}/{{ state.investigation.run_id }}/report.html">Read HTML report</a><a class="btn quiet" href="/investigations/{{ task.id }}/{{ state.investigation.run_id }}/report.md">Markdown source</a>{% endif %}{% if publication.get('status') == 'failed' %}<p class="warn">Publication failed: {{ publication.error }}</p><form class="inline" method="post" action="/tasks/{{ task.id }}/investigation-publish-retry"><button>Retry report publication</button></form>{% elif publication.get('commit') %}<p class="muted">Published {{ publication.markdown }} and {{ publication.html }} at {{ publication.commit[:12] }}.</p>{% endif %}</div>{% endif %}
 {% if not manual_reservation and not task.status.terminal %}<div id="manual-mode-form" class="panel" hidden><form method="post" action="/tasks/{{ task.id }}/manual-mode"><div class="eyebrow">Reserve from automation</div><p class="muted">Existing work keeps running. Garden applies the reservation at the next safe lifecycle boundary.</p><label for="manual-note">Short note (optional)</label><input id="manual-note" name="note" maxlength="240" style="width:min(100%,420px)"><input type="hidden" name="actor" value="human_owner"><div class="actions" style="margin-top:8px"><button class="primary">Enable Manual mode</button></div></form></div>{% endif %}
@@ -202,6 +218,19 @@
       {% if edit_diff %}<details style="margin-top:8px"><summary class="muted">What integration changed</summary><pre class="log" style="margin-top:6px;white-space:pre-wrap">{{ edit_diff }}</pre></details>{% endif %}
     </div>{% endif %}
     {% if friction_text %}<div class="panel"><div class="eyebrow">Friction</div><div class="prose" style="margin-top:6px">{{ friction_text|md|safe }}</div></div>{% endif %}
+    <div class="panel"><div class="eyebrow">Defects{% if defects %} · {{ defect_summary.total }} total, {{ defect_summary.unreviewed }} unreviewed{% endif %}</div>
+      {% for defect in defects %}<article style="padding:10px 0;border-bottom:1px dashed var(--line)">
+        <div><span class="pill s-{{ 'failed' if defect.severity == 'major' else 'ready' }}">{{ defect.severity }}</span> <b>{{ defect.description }}</b></div>
+        <div class="muted mono" style="font-size:11.5px">{{ defect.id }} · {{ defect.disposition }} · {{ defect.discovered_at[:16] }} · {{ defect.reporter }} · revision {{ defect.revision }}</div>
+        {% if defect.impact %}<p><b>Impact:</b> {{ defect.impact }}</p>{% endif %}
+        {% if defect.expected or defect.observed %}<p>{% if defect.expected %}<b>Expected:</b> {{ defect.expected }}{% endif %}{% if defect.observed %}<br><b>Observed:</b> {{ defect.observed }}{% endif %}</p>{% endif %}
+        {% if defect.known_facts or defect.hypotheses or defect.unknowns %}<p>{% if defect.known_facts %}<b>Known:</b> {{ defect.known_facts }}{% endif %}{% if defect.hypotheses %}<br><b>Hypothesis:</b> {{ defect.hypotheses }}{% endif %}{% if defect.unknowns %}<br><b>Unknown:</b> {{ defect.unknowns }}{% endif %}</p>{% endif %}
+        {% if defect.could_have_caught or defect.prevention %}<p>{% if defect.could_have_caught %}<b>Could have caught:</b> {{ defect.could_have_caught }}{% endif %}{% if defect.prevention %}<br><b>Prevention:</b> {{ defect.prevention }}{% endif %}</p>{% endif %}
+        {% if defect.follow_up or defect.proposed_follow_up %}<p><b>Follow-up:</b> {{ defect.follow_up or defect.proposed_follow_up }}</p>{% endif %}
+        {% if defect.evidence_links %}<ul>{% for link in defect.evidence_links %}<li>{{ link }}</li>{% endfor %}</ul>{% endif %}
+        {% if defect.history %}<details><summary class="muted">Correction history ({{ defect.history|length }})</summary><ul>{% for item in defect.history %}<li>revision {{ item.revision }} changed by {{ item.changed_by }} at {{ item.changed_at[:16] }}; prior values: {{ item.prior }}</li>{% endfor %}</ul></details>{% endif %}
+      </article>{% else %}<div class="empty">No defects recorded. A later defect does not change this task's closure or historical evidence.</div>{% endfor %}
+    </div>
     {% if state.stashes %}<div class="panel"><div class="eyebrow">Stashed changes</div>
       <p class="muted" style="margin:6px 0 0">Leftover edits from a killed run, set aside so a fresh dispatch could start clean. Recover with <code>git stash apply &lt;sha&gt;</code> in the task's worktree.</p>
       <ul class="tl" style="margin-top:6px;list-style:none;padding-left:0">{% for s in state.stashes %}<li style="margin-bottom:4px"><span class="mono">{{ s.sha[:12] }}</span> <span class="faint">{{ s.name }}</span>{% if s.at %} <span class="faint mono">— {{ s.at[:16] }}</span>{% endif %}</li>{% endfor %}</ul>
