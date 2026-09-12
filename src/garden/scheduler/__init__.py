@@ -149,7 +149,35 @@ class Scheduler(
         snapshot = view.snapshot
         assignment = snapshot.get("assignment")
         self._authority_snapshot = snapshot
+        acknowledge = getattr(self.coordinator, "acknowledge_cancellations", None)
+        if acknowledge is not None:
+            acknowledge(snapshot, self._cancel_fenced_scope)
         return bool(assignment and assignment.get("enabled"))
+
+    def _cancel_fenced_scope(self, kind: str, scope: str) -> bool:
+        """Stop this installation's old-generation workers without adopting their result."""
+        if kind == "task":
+            runs = [run for run in self.runs.active() if run.task_id == scope]
+        elif kind == "phase":
+            product, separator, phase = scope.partition("/")
+            if not separator:
+                return False
+            tasks = self.store.tasks()
+            runs = [run for run in self.runs.active()
+                    if (task := tasks.get(run.task_id)) is not None
+                    and task.product == product and task.phase == phase]
+        else:
+            return False
+        for run in runs:
+            run.kill()
+        if any(not run.process_finished() for run in runs):
+            return False
+        for run in runs:
+            run.status = "cancelled"
+            run.finished_at = now_iso()
+            run.error = "fenced by multiplayer ownership handoff"
+            run.save()
+        return True
 
     def _task_authority(self, task: Task) -> dict[str, Any] | None:
         """Return current authority only inside this operator's assigned project/phase."""
