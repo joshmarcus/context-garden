@@ -144,6 +144,8 @@
         {% endfor %}
       {% elif it.group == 'retrying' %}
         <form method="post" action="/tasks/{{ it.task }}/cancel"><button class="quiet danger">Cancel</button></form>
+      {% elif it.group == 'routing' %}
+        <a class="btn quiet" href="/config">Review trusted profiles</a>
       {% elif it.group == 'approve' %}
         <form method="post" action="/tasks/{{ it.task }}/approve" style="display:inline-flex;gap:6px;align-items:center">
           <button{% if not it.gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ it.phase_name }}</span></button>

@@ -55,6 +55,9 @@ def register(app: FastAPI, site: Site) -> None:
         stops = sched.operating_profile_stops()
         active = sched.operating_profile_name()
         maintenance = sched.maintenance_readiness()
+        from ...routing import worker_configuration_views
+
+        worker_profiles = worker_configuration_views(s)
         stop_rows = [{"name": name, "active": name == active, "meaning": describe_stop(stop),
                      **{f: stop.get(f) for f in ("workers", "reviews", "review_difficulty", "retro_difficulty", "observe")}}
                     for name, stop in stops.items()]
@@ -117,6 +120,7 @@ def register(app: FastAPI, site: Site) -> None:
             })
         return templates.TemplateResponse(request, "config.html", ctx(
             request, page="config", sources=cfg.sources, effective=effective, budgets=budgets,
+            worker_profiles=worker_profiles,
             budget_overrides=sorted(overrides), restart_keys=RESTART_KEYS, config_hold=config_hold,
             max_parallel_file=cfg.get("max_parallel"), max_parallel_override=sched.overrides().get("max_parallel"),
             max_parallel_value=sched.effective_max_parallel(), max_parallel_source=sched.effective_source("max_parallel"),
