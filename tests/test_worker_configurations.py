@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from garden.config import Config, executable_diff
@@ -152,3 +153,38 @@ def test_config_supports_multiple_user_owned_instances_and_redacts_identity_refs
     assert public["identity_references"] == ["<redacted>"]
     assert "identity.reader" not in str(public)
     assert executable_diff({}, data) == ["worker_configurations", "worker_instances"]
+
+
+def test_config_rejects_credential_reused_by_another_user_installation(tmp_path):
+    data = {
+        "worker_configurations": {
+            "restricted": {
+                "contract_version": WORKER_CONFIGURATION_CONTRACT_VERSION,
+                "version": "1", "generation": 1,
+                "identity_references": ["identity.reader"],
+            },
+        },
+        "worker_instances": [
+            {
+                "instance_id": name, "configuration": "restricted",
+                "configuration_version": "1", "profile_generation": 1,
+                "operating_user": user, "installation_id": installation,
+                "authenticated_at": 10, "readiness_checked_at": 20,
+                "readiness_expires_at": 30,
+                "identity_bindings": [{
+                    "identity_reference": "identity.reader",
+                    "credential_reference": "credential.shared",
+                    "operating_user": user, "installation_id": installation,
+                    "enrolled_at": 10,
+                }],
+            }
+            for name, user, installation in (
+                ("one", "alice", "install-a"),
+                ("two", "bob", "install-b"),
+            )
+        ],
+    }
+    (tmp_path / "garden.yaml").write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="more than one user-owned installation"):
+        Config.load(tmp_path)
