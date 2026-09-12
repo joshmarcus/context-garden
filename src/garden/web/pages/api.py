@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
-from ...members import authorize
+from ...members import Principal, authorize
 from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
@@ -244,7 +244,7 @@ def register(app: FastAPI, site: Site) -> None:
 
     def worker_host(authorization: str, request: Request | None = None) -> dict[str, Any]:
         principal = getattr(request.state, "worker_identity", None) if request else None
-        if principal is not None:
+        if isinstance(principal, Principal):
             return {"name": principal.installation_id, "member_id": principal.member_id,
                     "max_parallel": 1, "member_principal": principal}
         from ...hosts.registry import authenticate_worker, worker_configuration
