@@ -14,6 +14,7 @@ from garden.model import Status, parse_execution_requirements
 from garden.scheduler import StateCorruptionError
 from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
 from garden.scheduler.report import TickReport
+from garden.scheduler.resources import ResourcePressureError
 from garden.suggestions import record_suggestion
 from tests.scheduler.conftest import statuses
 
@@ -84,6 +85,75 @@ def test_manual_take_cannot_bypass_constrained_worker_claim(sched):
 
     assert sched.store.task(task.id).attempts == 0
     assert sched.runs.latest(task.id) is None
+
+
+def _configure_capability_worker(sched, task, *, activities):
+    task.owner = "alice"
+    task.execution_requirements = parse_execution_requirements({
+        "capabilities": {"all_of": ["tool.build"]},
+        "resources": {"memory_mib": 1024},
+    })
+    sched.store.save(task)
+    sched.cfg.data.update({
+        "capability_definitions": {
+            "tool.build": {"type": "tool", "description": "builder",
+                           "issuer": "operator", "privileged": False},
+        },
+        "worker_configurations": {"builder": {
+            "contract_version": "garden.worker-configuration/v1", "version": "1",
+            "generation": 1, "activities": activities, "projects": ["demo"],
+            "resource_ceilings": {"memory_mib": 2048},
+            "grants": [{"capability": "tool.build", "approved_by": "operator",
+                        "approved_at": 1, "profile_generation": 1}],
+        }},
+        "worker_instances": [{
+            "instance_id": "build-1", "configuration": "builder",
+            "configuration_version": "1", "profile_generation": 1,
+            "operating_user": "alice", "installation_id": "install-a",
+            "authenticated_at": 1, "readiness_checked_at": 1,
+            "readiness_expires_at": 4_102_444_800,
+        }],
+    })
+
+
+def test_execution_envelope_records_activity_owner_requirements_and_claim_fence(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["review"])
+    requirements, match = sched._execution_match(task, "review")
+    run = sched.runs.new_run(task.id, "remote", mode="review")
+
+    sched._record_execution_envelope(task, run, "review", requirements, match)
+
+    envelope = run.env_snapshot["execution_envelope"]
+    assert envelope["version"] == "garden.execution-envelope/v1"
+    assert envelope["activity"] == "review"
+    assert envelope["owner"] == "alice"
+    assert envelope["worker_instance"] == "build-1"
+    assert run.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
+
+
+def test_continuation_fences_a_changed_hard_requirement(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work", "review"])
+    source = sched.runs.new_run(task.id, "remote", mode="work")
+    source.status = "done"
+    source.env_snapshot["execution_requirements"] = task.execution_requirements.to_dict()
+    source.save()
+    task.execution_requirements = parse_execution_requirements({
+        "capabilities": {"all_of": ["tool.build"]},
+        "resources": {"memory_mib": 2048},
+    })
+    sched.store.save(task)
+    requirements, match = sched._execution_match(task, "review")
+    continuation = sched.runs.new_run(task.id, "remote", mode="review")
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched._record_execution_envelope(
+            task, continuation, "review", requirements, match, source_run=source
+        )
+    assert continuation.status == "failed"
+    assert "continuation fenced before launch" in continuation.error
+    assert source.status == "done"
 
 
 def test_duplicate_task_id_quarantined_the_tick_survives_and_dispatch_continues(sched, garden, fake_github):
