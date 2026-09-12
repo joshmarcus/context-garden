@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...members import Principal, authorize
 from ...model import effective_owner, parse_execution_requirements
+from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
 from ...workers import WorkerContactStore
