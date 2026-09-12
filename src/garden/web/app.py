@@ -39,7 +39,13 @@ from ..plants import (
 from ..runs import HistoryUnavailable
 from ..store import Store
 from . import actions, pages
-from .access import ADMINISTRATOR_READ_PATHS, loopback_listener, route_access
+from .access import (
+    ADMINISTRATOR_READ_PATHS,
+    PROJECT_COLLECTION_PATHS,
+    PROJECT_COLLECTION_PREFIXES,
+    loopback_listener,
+    route_access,
+)
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
 from .trust import OriginCheck, safe_json, server_origins
 
@@ -125,20 +131,26 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # cannot accidentally inherit the generic project-read policy.
             if path.rstrip("/") in ADMINISTRATOR_READ_PATHS:
                 return authorize(principal, "administer")
-            parts = path.split("/")
+            parts = path.rstrip("/").split("/")
             project = parts[2] if len(parts) > 2 and parts[1] in {"projects", "phases"} else ""
-            if len(parts) > 2 and parts[1] == "tasks":
+            task_detail_roots = {"tasks", "runs", "investigations"}
+            if len(parts) > 2 and parts[1] in task_detail_roots:
                 task = store.tasks().get(parts[2])
                 project = task.product if task else ""
-            # This endpoint applies the same project boundary to its response rows.
-            if path == "/api/tasks":
+            if len(parts) > 3 and parts[1] == "partials" and parts[2] in {"runs", "tasks"}:
+                task = store.tasks().get(parts[3])
+                project = task.product if task else ""
+            if len(parts) > 4 and parts[1:3] == ["api", "operations"]:
+                task = store.tasks().get(parts[3])
+                project = task.product if task else ""
+            normalized = path.rstrip("/") or "/"
+            collection = (normalized in PROJECT_COLLECTION_PATHS
+                          or path.startswith(PROJECT_COLLECTION_PREFIXES))
+            if collection and principal.project_visibility == "assigned" and not principal.projects:
+                # Empty assignment is a valid idle/view-only state; projected collections
+                # render empty rather than turning it into implicit garden-wide access.
                 return True
-            # Project-neutral pages are authorized over the member's project set.  The
-            # project selector/filtering work can then narrow their contents without an
-            # empty project being mistaken for a garden-wide permission request.
-            project_neutral = (path in {"/", "/board", "/inbox", "/now", "/partials/board"}
-                               or path.startswith("/partials/now/"))
-            if not project and project_neutral and principal.projects:
+            if not project and collection and principal.projects:
                 project = sorted(principal.projects)[0]
             return authorize(principal, "read", project=project)
         # Configuration, lifecycle and phase-wide actions are administrator operations.
