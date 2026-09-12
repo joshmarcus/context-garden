@@ -18,8 +18,6 @@ SAFE_REASON_TEXT = {
     MatchReason.INVALID_REQUIREMENTS: "The effective requirements are invalid.",
     MatchReason.BUDGET_OR_DEADLINE_HOLD: "Policy currently holds this activity.",
 }
-
-
 def active_worker_reservations(runs: list[Any]) -> set[str]:
     """Return worker instances reserved by active queued or claimed runs."""
     return {
@@ -29,7 +27,6 @@ def active_worker_reservations(runs: list[Any]) -> set[str]:
             run.host or (run.env_snapshot or {}).get("worker_instance") or ""
         ))
     }
-
 
 def task_routing_view(store: Any, task: Task, *, activity: str = "work", now: float | None = None) -> dict[str, Any]:
     """Explain current routing without claiming or contacting a worker."""
