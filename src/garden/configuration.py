@@ -132,6 +132,65 @@ CONFIG_FIELDS: dict[str, ConfigField] = {f.key: f for f in (
 )}
 
 
+# The optional recurring worker-pool contract.  A garden without a `workers.pool` block
+# keeps its static `workers.hosts` behavior; this block only names an already admitted pool
+# and the healthy count Garden should maintain inside that admission.
+WORKER_POOL_CONTRACT = "garden.fleet/v1"
+WORKER_POOL_FIELDS: dict[str, tuple[type, Any, int | None, int | None]] = {
+    # key: (type, default, minimum, maximum); a default of None marks a required key.
+    "contract_version": (str, None, None, None),
+    "declaration": (str, None, None, None),
+    "desired": (int, None, 0, 64),
+    "state": (str, "", None, None),
+    "enrollment_dir": (str, "", None, None),
+    "enrollment_config": (str, "", None, None),
+    "interval_seconds": (int, 300, 30, 86400),
+    "backoff_seconds": (int, 60, 5, 86400),
+    "backoff_ceiling_seconds": (int, 1800, 5, 86400),
+    "failure_threshold": (int, 5, 1, 100),
+}
+
+
+def worker_pool_settings(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Strictly resolve the optional `workers.pool` block, or ``None`` when absent.
+
+    Unknown keys, a missing or unsupported contract version and out-of-range counts are
+    refused here rather than being silently ignored, so a configuration mistake never
+    becomes an unintended provisioning request.
+    """
+    workers = data.get("workers")
+    if not isinstance(workers, dict) or workers.get("pool") is None:
+        return None
+    block = workers["pool"]
+    if not isinstance(block, dict):
+        raise ValueError("workers.pool must be a mapping")
+    unknown = sorted(set(block) - set(WORKER_POOL_FIELDS))
+    if unknown:
+        raise ValueError(f"workers.pool contains unknown settings {unknown}")
+    resolved: dict[str, Any] = {}
+    for key, (kind, default, minimum, maximum) in WORKER_POOL_FIELDS.items():
+        if key not in block:
+            if default is None:
+                raise ValueError(f"workers.pool requires {key}")
+            resolved[key] = default
+            continue
+        value = block[key]
+        if kind is int and isinstance(value, bool) or not isinstance(value, kind):
+            raise ValueError(f"workers.pool.{key} must be {kind.__name__}")
+        if kind is str and not str(value).strip():
+            raise ValueError(f"workers.pool.{key} must not be empty")
+        if minimum is not None and value < minimum:
+            raise ValueError(f"workers.pool.{key} must be at least {minimum}")
+        if maximum is not None and value > maximum:
+            raise ValueError(f"workers.pool.{key} must be at most {maximum}")
+        resolved[key] = value
+    if resolved["contract_version"] != WORKER_POOL_CONTRACT:
+        raise ValueError(f"workers.pool.contract_version must be {WORKER_POOL_CONTRACT!r}")
+    if resolved["backoff_ceiling_seconds"] < resolved["backoff_seconds"]:
+        raise ValueError("workers.pool.backoff_ceiling_seconds must be at least backoff_seconds")
+    return resolved
+
+
 @dataclass(frozen=True)
 class ConfigProvenance:
     value: Any
@@ -193,6 +252,7 @@ def validate_configuration(data: dict[str, Any]) -> None:
     for key, field in CONFIG_FIELDS.items():
         if ConfigScope.DERIVED not in field.scopes:
             field.validate(_get(data, key, deepcopy(field.default)))
+    worker_pool_settings(data)
     for product, product_data in (data.get("products") or {}).items():
         if not isinstance(product_data, dict):
             continue

@@ -1,9 +1,10 @@
 """Bounded, provider-neutral worker presence and occupancy snapshots.
 
 Worker contact is durable independently of task leases: an idle pull worker still polls the
-claim endpoint, and that poll is evidence that the agent is online.  Page and API reads only
-combine this small ledger, configuration, and the indexed active-run set; they never contact
-a host or provider.
+claim endpoint, and that poll is evidence that the agent is online.  A statically configured
+SSH host has no agent, so its presence comes from the cached reading `ssh_probe` writes on its
+own cadence.  Page and API reads only combine those small ledgers, configuration, the durable
+scale projection and the indexed active-run set; they never contact a host or provider.
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .fleet import fleet_projection
 from .hosts.registry import enrolled_hosts, worker_configuration
 from .runs import Run, RunStore
+from .ssh_probe import probe_readings
 
 ACTIVE = {"requested", "preparing", "running"}
 TERMINAL_HOST_STATES = {"disabled", "terminated"}
@@ -100,6 +103,18 @@ def _job(run: Run, now: dt.datetime) -> dict[str, Any]:
     }
 
 
+def _managed_dispatchable(scale: dict[str, Any]) -> set[str]:
+    """The managed hosts the durable scale reading counts as able to take new work.
+
+    The projection's own count is authoritative about the operation as a whole — a closing
+    operation dispatches nothing — so an empty count means no managed host qualifies.
+    """
+    if not scale.get("configured") or not int(scale.get("dispatchable") or 0):
+        return set()
+    return {str(row.get("host_id") or "") for row in scale.get("hosts") or []
+            if str(row.get("state")) in {"ready", "busy"}} - {""}
+
+
 def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> dict[str, Any]:
     """Return one secret-free fleet reading without network or subprocess work."""
     now = now or _now()
@@ -113,13 +128,29 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
         if row.get("name"):
             name = str(row["name"])
             remote_cfg[name] = {**remote_cfg.get(name, {}), **dict(row)}
+    # One projection joins declared capacity, worker contact and active runs.  The scale
+    # reading is durable and local: the controller wrote it on its last reconciliation pass,
+    # so a page read still contacts neither a host nor a provider.
+    scale = fleet_projection(config)
+    for row in scale.get("hosts") or []:
+        name = str(row.get("host_id") or "")
+        if name:
+            remote_cfg[name] = {**remote_cfg.get(name, {}), "state": row.get("state"),
+                                "host_detail": row.get("detail") or ""}
     ssh_cfg = {str(row.get("name") or ""): dict(row)
                for row in (config.get("ssh.hosts") or []) if row.get("name")}
+
+    probes = probe_readings(config, now=now)
     rows: list[dict[str, Any]] = []
 
     def add(identity: str, placement: str, cfg: dict[str, Any], contact: dict[str, Any] | None,
             jobs: list[Run], capacity: int) -> None:
         explicit = str(cfg.get("state") or cfg.get("status") or "").lower()
+        # A static SSH host has no agent to report contact, so its presence comes from the
+        # cached read-only probe instead.  A fresh successful probe is evidence the host is
+        # dispatchable; a failed one is evidence it is not.
+        probe = probes.get(identity) if placement == "ssh" else None
+        probed = bool(probe and probe["ok"] and not probe["stale"])
         last_contact = str((contact or {}).get("last_contact") or "")
         contact_at = _parse(last_contact)
         poll_stale_after = max(1, int(config.get("workers.poll_seconds", 5) or 5) * 4)
@@ -146,7 +177,11 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
             status = "unknown"
         elif placement == "remote" and stale:
             status = "unreachable"
-        elif placement == "ssh" and not contact_at:
+        elif placement == "ssh" and probe and not probe["ok"]:
+            status = "unreachable"
+        elif placement == "ssh" and not probed and not jobs:
+            # Active work is its own evidence; without it and without a fresh probe there is
+            # nothing to say about this host.
             status = "unknown"
         elif reconnecting:
             status = "reconnecting"
@@ -171,6 +206,11 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
             elif all(int((run.env_snapshot or {}).get("resource_weight") or 1) > available
                      for run in compatible):
                 reason = "queued work requires more capacity than this worker has available"
+        elif placement == "ssh" and status in {"unknown", "unreachable"}:
+            reason = (probe["reason"] or "reachability probe failed") if probe and not probe["ok"] \
+                else "no fresh reachability probe"
+            if probe and probe["stale"] and probe["checked_at"]:
+                reason += f" (probe last ran {probe['checked_at']})"
         elif status in {"unknown", "unreachable"}:
             reason = "no recent worker-agent contact"
         elif status in TERMINAL_HOST_STATES | {"draining", "restarting", "reconnecting"}:
@@ -188,7 +228,7 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
             "last_contact": last_contact or None, "evidence_at": evidence_at,
             "evidence_stale": evidence_stale,
             "capacity": capacity, "available_capacity": available,
-            "current_jobs": job_rows, "unavailable_reason": reason,
+            "current_jobs": job_rows, "unavailable_reason": reason, "probe": probe,
             "provider_id": facts.get("provider_id"),
             "prior_provider_ids": list((contact or {}).get("prior_provider_ids") or []),
         })
@@ -231,11 +271,19 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
     counts = {key: sum(row["status"] == key for row in rows) for key in (
         "available", "executing", "draining", "restarting", "reconnecting", "unreachable",
         "unknown", "terminated", "disabled")}
+    # Dispatchable means capacity that can take new work now, wherever it comes from: static
+    # and pull workers report it themselves, and a managed host is dispatchable per the
+    # durable scale reading even before its own agent has made contact.  A managed host that
+    # already reports as available or executing is one worker, not two.
+    dispatchable = len({row["id"] for row in rows
+                        if row["status"] in {"available", "executing"}}
+                       | _managed_dispatchable(scale))
     return {
-        "observed_at": now.isoformat(), "workers": rows,
+        "observed_at": now.isoformat(), "workers": rows, "scale": scale,
         "totals": {"workers": len(rows), "jobs": sum(len(row["current_jobs"]) for row in rows),
                    "capacity": sum(row["capacity"] for row in rows),
-                   "available_capacity": sum(row["available_capacity"] for row in rows), **counts},
+                   "available_capacity": sum(row["available_capacity"] for row in rows),
+                   "dispatchable": dispatchable, **counts},
         "explanation": ("Available pull workers poll for work and receive a task lease only when a claim succeeds. "
                         "Worker contact remains visible while idle; a task lease describes job ownership, not liveness."),
     }

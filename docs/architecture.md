@@ -154,7 +154,9 @@ of the loop touch different files.
 | `remote_worker.py` | the independent-host worker agent |
 | `managed_worker.py` | measured single-host admission and remote resource/version attribution |
 | `workers.py` | bounded, provider-neutral worker presence and current-job snapshots for the API and Now view |
+| `ssh_probe.py` | the bounded, read-only reachability and workspace probe that gives a statically configured `ssh.hosts` entry the presence a pull worker reports for itself: one cached reading per host (latency, last success, failure reason, staleness), all hosts probed at once, in a detached process the tick starts and never waits for |
 | `proctree.py`, `system_resources.py` | procfs/BSD process observation and Linux/macOS host-memory telemetry used by local lifecycle and admission code |
+| `fleet.py`, `scheduler/fleet.py`, `hosts/factory.py` | the recurring driver that keeps an admitted pool at its configured healthy count: the strict `workers.pool` contract, one bounded reconciliation step per tick, the dispatch fence for hosts that must not receive work, the durable read-only projection every surface shows, and the one builder that constructs a declared pool's operation |
 | `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py`, `hosts/scale.py` | scheduler-independent declarative host lifecycle, resumable bounded scale operations, strict configuration and versioned provider/profile contracts |
 | `hosts/ec2.py`, `hosts/command.py`, `hosts/fake.py` | the first infrastructure adapter, the vendor-neutral controller command adapter, and the local extension/contract fixture |
 | `hosts/enrollment.py`, `hosts/enrollment_clients.py`, `hosts/registry.py` | durable per-host enrollment journals, scoped provider clients, and the private controller authentication registry |

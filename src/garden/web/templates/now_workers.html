@@ -23,6 +23,11 @@
 .job-list { list-style:none; margin:12px 0 0; padding:0; border-top:1px dashed var(--line); }
 .job-list li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; padding:9px 0; border-bottom:1px dashed var(--line); }
 .job-list .lease { grid-column:1/-1; font:11px/1.4 var(--mono); color:var(--muted); }
+.fleet-scale { border:1px solid var(--line-strong); padding:13px 16px; margin:0 0 22px; }
+.fleet-scale p { margin:0 0 5px; font:11.5px/1.6 var(--mono); color:var(--muted); overflow-wrap:anywhere; }
+.fleet-scale p:last-child { margin-bottom:0; }
+.fleet-scale b { color:var(--ink); }
+.fleet-action { color:var(--warn); }
 .fleet-note { max-width:780px; color:var(--muted); font:13px/1.55 var(--body); }
 .fleet-empty { padding:28px; border:1px dashed var(--line-strong); text-align:center; color:var(--muted); }
 @media (max-width:600px) {
@@ -40,15 +45,24 @@
   <div class="fleet-summary">
     <div><b>{{ fleet.totals.workers }}</b><span>workers known</span></div>
     <div><b>{{ fleet.totals.jobs }}</b><span>jobs executing</span></div>
-    <div><b>{{ fleet.totals.available }}</b><span>available</span></div>
+    <div><b>{{ fleet.totals.dispatchable }}</b><span>dispatchable</span></div>
     <div><b>{{ fleet.totals.available_capacity }}/{{ fleet.totals.capacity }}</b><span>capacity free</span></div>
   </div>
+  {% if fleet.scale.configured %}
+  <div class="fleet-scale">
+    <p><b>Managed pool</b> · desired {{ fleet.scale.configured_desired }} · healthy {{ fleet.scale.healthy|default(0) }} · dispatchable {{ fleet.scale.dispatchable|default(0) }} · pending {{ fleet.scale.pending|default(0) }} · draining {{ fleet.scale.draining|default(0) }} · failed {{ fleet.scale.failed|default(0) }}</p>
+    <p>worker version {{ fleet.scale.exact_version or "unknown" }} · deadline {{ fleet.scale.deadline or "unknown" }} · estimated cost ${{ "%.2f"|format(fleet.scale.estimated_accrued_usd|default(0)|float) }} of ${{ "%.2f"|format(fleet.scale.spend_limit_usd|default(0)|float) }}</p>
+    <p>{% if fleet.scale.next_retry_at %}next retry {{ fleet.scale.next_retry_at }}{% else %}no retry pending{% endif %}{% if fleet.scale.breaker %} · replacement stopped after repeated failures{% endif %}{% if fleet.scale.last_outcome %} · last pass: {{ fleet.scale.last_outcome }}{% endif %}</p>
+    {% if fleet.scale.action_required %}<p class="fleet-action">Action required: {{ fleet.scale.action_required }}</p>{% endif %}
+  </div>
+  {% endif %}
   <p class="fleet-note">{{ fleet.explanation }} This view uses recorded telemetry as of <time datetime="{{ fleet.observed_at }}">{{ fleet.observed_at[11:19] }}Z</time>; it does not contact hosts.</p>
   <div class="worker-list">
   {% for worker in fleet.workers %}
     <article class="worker-card">
       <div class="worker-head"><h2>{{ worker.id }}</h2><span class="placement">{{ worker.placement }}</span><span class="worker-state {{ worker.status }}">{{ worker.status }}</span></div>
       <p class="worker-meta"><span>{{ worker.available_capacity }}/{{ worker.capacity }} capacity available</span><span>last contact: {{ worker.last_contact or "unknown" }}</span><span>evidence: {{ worker.evidence_at or "unknown" }}{% if worker.evidence_stale %} · stale/unknown{% endif %}</span></p>
+      {% if worker.probe %}<p class="worker-reason">probe: {{ "reachable" if worker.probe.ok else "failed" }} · {{ worker.probe.latency_ms }} ms · checked {{ worker.probe.checked_at or "never" }} · last success {{ worker.probe.last_success_at or "never" }}{% if worker.probe.stale %} · stale{% endif %}</p>{% endif %}
       {% if worker.unavailable_reason %}<p class="worker-reason">{{ worker.unavailable_reason }}</p>{% endif %}
       {% if worker.prior_provider_ids %}<p class="worker-reason">Replaced infrastructure identities retained in history: {{ worker.prior_provider_ids|join(", ") }}</p>{% endif %}
       <ul class="job-list">

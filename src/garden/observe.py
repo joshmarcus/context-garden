@@ -16,6 +16,7 @@ from typing import Any
 
 from .events import EventLog, parse_duration
 from .events import digest as _digest
+from .fleet import fleet_summary
 from .inbox import build_inbox, decisions
 from .model import STATUS_ORDER, now_iso
 from .runs import RunStore
@@ -181,10 +182,15 @@ def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
     count_bits = " ".join(f"{s} {counts[s]}" for s in [*STATUS_ORDER, "blocked"] if counts.get(s))
     totals = RunStore(store.config.garden_dir).totals()
     pressure = sched.resource_status()
+    # A managed pool's reading sits with the worker slots it explains, and ahead of the
+    # pressure bits: `observe.line_width` clips this line, and a fleet that needs an
+    # operator is worth more of that width than the tail.
+    managed = fleet_summary(store.config)
     fixed = [
         f"garden: {store.config.get('name')}",
         f"service {_service_state(store, sched)}",
         f"workers {len(sched.worker_runs_active())}/{sched.effective_max_parallel()}",
+        *([managed] if managed else []),
         f"local {len(sched.local_runs_active())}/{sched.resource_parallel_limit()}",
         f"heavy {pressure.heavy_running}/{pressure.heavy_limit} authoritative "
         f"(requested {pressure.requested_heavy_limit}; {pressure.heavy_waiting} waiting)",

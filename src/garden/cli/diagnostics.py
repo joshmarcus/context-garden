@@ -508,6 +508,33 @@ def doctor():
         console.print(f"runner {name}: {status}")
         if probs:
             fail(f"runner {name}")
+    from ..fleet import fleet_lines
+
+    try:
+        lines = fleet_lines(store.config)
+    except (ValueError, OSError) as exc:
+        # A `workers.pool` block that does not parse never provisions anything; say so here
+        # rather than leaving the operator to discover it in the controller log.
+        console.print(f"[red]fleet: {exc}[/red]  (fix: correct the workers.pool block in garden.yaml)")
+        fail("fleet")
+        lines = []
+    for line in lines:
+        if "action required" in line:
+            console.print(f"[yellow]{line}[/yellow]")
+            fail("fleet")
+        else:
+            console.print(line)
+    from ..ssh_probe import probe_lines, unreachable_hosts
+
+    # Cached readings only: doctor never opens a connection of its own here.
+    unreachable = set(unreachable_hosts(store.config))
+    for line in probe_lines(store.config):
+        if any(f"static host {name}:" in line for name in unreachable):
+            console.print(f"[yellow]{line}[/yellow]")
+        else:
+            console.print(line)
+    for name in sorted(unreachable):
+        fail(f"static host {name}")
     from ..scheduler import State
     ctrl = State(store.config.garden_dir / "state.json").get("_control")
     mp_live = (ctrl.get("overrides") or {}).get("max_parallel")

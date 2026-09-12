@@ -475,13 +475,19 @@ class HostLifecycle:
             for host in hosts
         ]
 
-    def drain(self, pool: PoolDeclaration, *, deadline: str, detail: str) -> list[HostFacts]:
+    def drain(self, pool: PoolDeclaration, *, deadline: str, detail: str,
+              slots: set[int] | None = None) -> list[HostFacts]:
         """Stop new work, then retire hosts once their current work has drained.
 
         A lifecycle consumer supplies ``interruption_drain`` when it can fence worker
         admission and observe active work.  The portable lifecycle remains usable by
         other consumers: without that bridge there is no active-work protocol to wait
         for, so retirement proceeds immediately.
+
+        ``slots`` restricts the drain to named stable slots, which is how a reduced
+        desired count retires excess capacity without touching a healthy sibling.  The
+        returned facts still describe the whole pool, so the durable record keeps every
+        host a later pass must still reconcile.
         """
         self.validate(pool)
         provider = self._provider(pool)
@@ -490,6 +496,9 @@ class HostLifecycle:
         result: list[HostFacts] = []
         for host in hosts:
             if host.state == HostState.TERMINATED:
+                result.append(host)
+                continue
+            if slots is not None and self._host_slot(pool, host) not in slots:
                 result.append(host)
                 continue
             ready_to_retire = self.interruption_drain is None or self.interruption_drain(
