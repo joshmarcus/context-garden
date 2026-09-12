@@ -5,6 +5,43 @@ The route policy is deliberately split between admission and projection: middlew
 resource ownership and rejects direct access outside the principal's projects, while collection
 handlers construct their response only from the principal's visible project set.
 
+## Local installation startup
+
+An administrator bootstraps the coordinator's private registry, then adds a member and issues
+that member's installation credential.  The commands print credentials once; put each value in
+that person's shell secret store, never in a garden file.
+
+```sh
+garden members enroll-administrator garden-1 admin coordinator-host
+export GARDEN_ADMIN_CREDENTIAL='printed-once-value'
+garden members add alex --role member --credential-env GARDEN_ADMIN_CREDENTIAL
+garden members issue-installation alex alex-laptop --credential-env GARDEN_ADMIN_CREDENTIAL
+```
+
+On Alex's local checkout, save only the connection metadata.  `connect` verifies the credential
+before writing the ignored `garden.local.yaml`; it does not copy the credential into that file.
+
+```sh
+export GARDEN_ALEX_CREDENTIAL='printed-once-value'
+garden members connect garden-1 https://coordinator.example alex alex-laptop \
+  --credential-env GARDEN_ALEX_CREDENTIAL
+garden members status
+```
+
+An administrator assigns execution explicitly on the coordinator host (the generation prevents
+silently replacing a newer assignment):
+
+```sh
+garden members assign alex context-garden phase-10 \
+  --credential-env GARDEN_ADMIN_CREDENTIAL --generation 0
+```
+
+Before that assignment, `garden watch` is supported: it reports **No work assignment** and
+performs no scheduler work.  A viewer session is read-only and `garden watch` refuses to start
+it.  `garden serve` follows the same local-principal rule, so a viewer never starts its embedded
+scheduler.  `garden members status` distinguishes a missing credential, disconnected
+coordinator, cached/disconnected authority, and a valid unassigned installation.
+
 | Read surface | Principal policy | Response boundary |
 | --- | --- | --- |
 | health, favicon, plate assets | public | contains no garden records |
