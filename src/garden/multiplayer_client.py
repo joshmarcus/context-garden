@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import os
@@ -94,6 +95,8 @@ class MultiplayerClient:
     Reads may use the last authenticated response during an outage. Mutations never do:
     each command refreshes authority and names the revision it was based on.
     """
+
+    CLAIM_RENEWAL_MARGIN = dt.timedelta(seconds=10)
 
     def __init__(self, *, root: Path, garden_id: str, endpoint: str, credential: str,
                  member_id: str, installation_id: str,
@@ -192,7 +195,13 @@ class MultiplayerClient:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as exc:
-            raise MultiplayerUnavailable(f"authoritative command rejected: {exc}") from exc
+            detail = ""
+            if isinstance(exc, httpx.HTTPStatusError):
+                try:
+                    detail = f": {exc.response.json().get('detail', '')}"
+                except (ValueError, AttributeError):
+                    detail = f": {exc.response.text}"
+            raise MultiplayerUnavailable(f"authoritative command rejected: {exc}{detail}") from exc
 
     def claim(self, *, kind: str, scope: str, owner_id: str,
               authority_generation: int, expected_version: int) -> dict[str, Any]:
@@ -200,7 +209,8 @@ class MultiplayerClient:
         key = (kind, scope)
         current = self._claims.get(key)
         if (current and current.get("owner_id") == owner_id
-                and int(current.get("authority_generation", -1)) == authority_generation):
+                and int(current.get("authority_generation", -1)) == authority_generation
+                and self._claim_is_current(current)):
             return current
         operation_id = f"claim:{self.installation_id}:{kind}:{scope}:{uuid.uuid4().hex}"
         claim = self.command(
@@ -208,28 +218,51 @@ class MultiplayerClient:
                 "kind": kind, "scope": scope, "accepted_owner": owner_id,
                 "authority_generation": authority_generation,
                 "operation_id": operation_id,
+                "replaces_operation_id": str(current.get("operation_id", "")) if current else "",
             }, kind=kind, scope=scope, expected_version=expected_version,
         )
         self._claims[key] = claim
         return claim
+
+    def _claim_is_current(self, claim: dict[str, Any]) -> bool:
+        try:
+            expires = dt.datetime.fromisoformat(str(claim["lease_expires_at"]))
+            if expires.tzinfo is None:
+                return False
+            return expires > dt.datetime.now(dt.UTC) + self.CLAIM_RENEWAL_MARGIN
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _is_stale_claim_rejection(exc: MultiplayerUnavailable) -> bool:
+        message = str(exc).lower()
+        return "stale" in message and ("expired" in message or "fencing lease" in message)
 
     @contextmanager
     def effect(self, *, kind: str, scope: str, owner_id: str,
                authority_generation: int, expected_version: int,
                effect_key: str, provider: str = "scheduler"):
         """Fence one mutation and leave uncertain effects blocked for reconciliation."""
-        claim = self.claim(kind=kind, scope=scope, owner_id=owner_id,
-                           authority_generation=authority_generation,
-                           expected_version=expected_version)
         operation_id = f"effect:{self.installation_id}:{uuid.uuid4().hex}"
-        self.command(
-            "/effects", {
-                "claim": claim, "provider": provider, "effect_key": effect_key,
-                "operation_id": operation_id, "credential_scope": f"{provider}:write",
-                "precondition": f"authority={expected_version}",
-                "request": {"kind": kind, "scope": scope},
-            }, kind=kind, scope=scope, expected_version=expected_version,
-        )
+        key = (kind, scope)
+        for attempt in range(2):
+            claim = self.claim(kind=kind, scope=scope, owner_id=owner_id,
+                               authority_generation=authority_generation,
+                               expected_version=expected_version)
+            try:
+                self.command(
+                    "/effects", {
+                        "claim": claim, "provider": provider, "effect_key": effect_key,
+                        "operation_id": operation_id, "credential_scope": f"{provider}:write",
+                        "precondition": f"authority={expected_version}",
+                        "request": {"kind": kind, "scope": scope},
+                    }, kind=kind, scope=scope, expected_version=expected_version,
+                )
+                break
+            except MultiplayerUnavailable as exc:
+                if attempt or not self._is_stale_claim_rejection(exc):
+                    raise
+                self._claims.pop(key, None)
         try:
             yield claim
         except BaseException:
