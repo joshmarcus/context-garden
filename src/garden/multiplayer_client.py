@@ -198,3 +198,15 @@ class MultiplayerClient:
             ledger[relative] = {"version": version, "content_hash": _digest(content)}
         _atomic_json(self._projection_path, ledger)
         return changed
+
+    def projection_lag(self, snapshot: dict[str, Any]) -> list[str]:
+        """Name server projections this checkout has not applied at their current version."""
+        try:
+            ledger = json.loads(self._projection_path.read_text())
+        except (OSError, ValueError):
+            ledger = {}
+        return [
+            f"{row['kind']}:{row['scope']}@{row['version']}"
+            for row in snapshot.get("projections", [])
+            if int(ledger.get(str(row.get("path", "")), {}).get("version", 0)) < int(row["version"])
+        ]
