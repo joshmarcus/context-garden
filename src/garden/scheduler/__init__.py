@@ -36,6 +36,7 @@ from ..github import (
 from ..harness import DIFFICULTIES
 from ..members import MemberRegistry, Principal, current_principal
 from ..model import Phase, Status, Task, now_iso
+from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
@@ -182,6 +183,12 @@ class Scheduler(
         self.principal = principal or current_principal() or (
             self.members.authenticate(credential) if credential else None
         )
+        try:
+            self.coordinator = MultiplayerClient.from_config(self.cfg)
+        except MultiplayerUnavailable:
+            # Existing multiplayer startup remains fail-closed and can render its setup
+            # diagnostic even when enrollment is incomplete.
+            self.coordinator = None
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)
