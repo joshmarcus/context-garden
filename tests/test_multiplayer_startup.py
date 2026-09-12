@@ -68,6 +68,8 @@ def test_unassigned_member_ui_names_idle_execution_scope(garden, monkeypatch):
 
     assert response.status_code == 200
     assert "No work assignment" in response.text
+    assert "identity: alex (member)" in response.text
+    assert "viewing: All authorized projects" in response.text
     assert "execution: No work assignment" in response.text
 
 
