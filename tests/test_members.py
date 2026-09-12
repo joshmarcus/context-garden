@@ -226,16 +226,36 @@ PRIVATE_BODY_MARKER
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     headers = {"Authorization": f"Bearer {token}"}
 
-    for path in ("/", "/inbox", "/board", "/board?product=demo", "/now"):
+    for path in (
+        "/", "/inbox", "/board", "/board?product=demo", "/now", "/now1", "/now2",
+        "/events", "/costs",
+        "/runs", "/trellis", "/graph", "/herbarium", "/api/decisions",
+        "/partials/now/head?burst=member-test",
+    ):
         response = client.get(path, headers=headers)
         assert response.status_code == 200, path
-        assert "demo" in response.text, path
+        if path not in {"/api/decisions", "/partials/now/head?burst=member-test"}:
+            assert "demo" in response.text, path
         for marker in ("PRIVATE_PRODUCT_MARKER", "SECRET_PHASE_MARKER", "PRIVATE_TASK_MARKER",
                        "PRIVATE_BODY_MARKER", "PRIVATE_EVENT_MARKER", "test/private"):
             assert marker not in response.text, (path, marker)
 
     assert client.get("/board?product=private", headers=headers).status_code == 403
     assert client.get("/board?view=prs&product=private", headers=headers).status_code == 403
+    assert client.get("/trellis?product=private", headers=headers).status_code == 403
+    assert client.get("/costs?product=private", headers=headers).status_code == 403
+    assert client.get("/tasks/PV-001", headers=headers).status_code == 403
+    assert client.get("/api/operations/PV-001/private-run", headers=headers).status_code == 403
+    assert client.get("/partials/tasks/DM-001/stdout", headers=headers).status_code == 200
+    assert client.get("/partials/tasks/PV-001/stdout", headers=headers).status_code == 403
+    assert client.get("/partials/runs/PV-001/private-run/stdout", headers=headers).status_code == 403
+
+    with client.stream(
+        "GET", "/now/stream?start=0&seconds=0.01", headers=headers,
+    ) as response:
+        stream_text = "".join(response.iter_text())
+    assert response.status_code == 200
+    assert "PRIVATE_EVENT_MARKER" not in stream_text
 
 
 def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):

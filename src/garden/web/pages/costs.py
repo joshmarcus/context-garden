@@ -7,7 +7,7 @@ import datetime as dt
 from types import SimpleNamespace
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ... import now1
@@ -72,10 +72,14 @@ def register(app: FastAPI, site: Site) -> None:
         metric: str = "total",
     ):
         s = hub.fresh()
-        tasks = s.tasks()
+        allowed = site.allowed_projects(request)
+        if product and allowed is not None and product not in allowed:
+            raise HTTPException(403, "project is not visible to this member")
+        tasks = site.visible_tasks(request, s)
         events = EventLog(s.config.garden_dir / "events.jsonl").read()
         operator_records = ops.read_records(ops.default_path(s.root, s.config))
         events = events + ops.to_cost_events(operator_records)
+        events = site.visible_events(request, events, tasks)
         by = by if by in GROUP_BY_CHOICES else "activity"
         bucket = bucket if bucket in ("day", "hour") else "day"
         metric = metric if metric in ("total", "per_task") else "total"
@@ -103,9 +107,10 @@ def register(app: FastAPI, site: Site) -> None:
         harnesses = sorted({str(e["harness"]) for e in runs if e.get("harness")})
         task_ids = sorted({str(e["task"]) for e in runs if e.get("task")})
         session_ids = sorted({str(e["session"]) for e in runs if e.get("session")})
-        phase_keys = [ph.key for p in s.products() for ph in p.phases]
-        product_names = [p.name for p in s.products()]
-        compactions = ops.compaction_marks(operator_records)
+        visible_products = [p for p in s.products() if allowed is None or p.name in allowed]
+        phase_keys = [ph.key for p in visible_products for ph in p.phases]
+        product_names = [p.name for p in visible_products]
+        compactions = ops.compaction_marks(operator_records) if allowed is None else []
         annotations = [
             {"at": e.get("at"), "from": e.get("from"), "to": e.get("to")}
             for e in events
