@@ -168,6 +168,7 @@ of the loop touch different files.
 | `restricted_data.py` | host-owned restricted-data authorization: resolves trusted boundary policy, narrows dataset grants, validates model/tool egress and emits bounded evidence summaries without treating task-controlled fields as authority |
 | `hosts/ec2.py`, `hosts/command.py`, `hosts/fake.py` | the first infrastructure adapter, the vendor-neutral controller command adapter, and the local extension/contract fixture |
 | `hosts/enrollment.py`, `hosts/enrollment_clients.py`, `hosts/registry.py` | durable per-host enrollment journals, scoped provider clients, and the private controller authentication registry |
+| `plugins/__init__.py`, `plugins/manifest.py`, `plugins/registry.py`, `plugins/discovery.py` | the plugin platform's public data model: immutable validated manifests (plugin and distribution identity, plugin API version, supported core range, configuration schema, redaction and resource metadata, namespaced capabilities), the read-only registry that indexes them and resolves capability references, and entry-point enumeration that reads installed metadata without importing plugin code (`docs/plugin-contract.md`) |
 | `hosts/deadline.py`, `hosts/deadline_scheduler.py`, `hosts/drain.py`, `locking.py`, `hosts/locking.py` | independent absolute termination schedules, bounded interruption-drain handshakes, and the garden-wide portable lock (`hosts/locking.py` retains its compatibility import) |
 | `review.py`, `criteria.py`, `events.py`, `trials.py`, `personas.py`, `checks.py`, `checkrun.py`, `ci_status.py`, `retro.py`, `friction.py`, `defects.py`, `suggestions.py` | the review brief and verdict; acceptance-criteria parsing and the reconciliation of a worker's `verified` evidence with a reviewer's `criteria` verdict (the PR body's Verification section, the task page, metrics); the event log, digest and metrics; trial records; persona briefs and reports; token-free checks, detached check jobs and exact-head CI status providers; the retro brief and documents (including the phase's "Numbers": worker cost against the operator's, CG-223); friction harvesting; a private append-history ledger for defects found after task closure; task suggestions |
 | `interaction_replay.py`, `preflight.py` | disposable application replay that records review-journey evidence; shared worker pre-flight rules and token-free mechanical checks |
@@ -939,6 +940,12 @@ take effect within one tick.
 | source control | a `SourceControlProvider` adapter returning neutral change-request metadata; register it with an endpoint-scoped `ConnectionPolicy` | one adapter |
 | a persona | a markdown file under `personas/` | none |
 | context | markdown under the garden; the planner and the briefs pick it up | none |
+
+Each of those is built in or configured. An installed distribution can also *describe*
+capabilities of its own: `garden.plugins` holds the manifest and registry contract
+(`docs/plugin-contract.md`), which indexes plugin identity, versions and namespaced
+capabilities. Describing is all it does so far — enabling and loading a plugin is not wired
+up yet, and discovery alone never imports plugin code.
 
 ## How it is tested
 
