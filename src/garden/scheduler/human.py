@@ -1225,8 +1225,16 @@ class HumanMixin:
         self.events.emit("ssh_recovery_resumed", task.id, run=run.run_id)
         self.state.save()
 
-    def retry(self, task: Task, *, actor: str = "human_owner") -> None:
+    def retry(self, task: Task, *, actor: str = "human_owner",
+              assignment_generation: int | None = None) -> None:
         ensure_open(task)
+        if self.cfg.get("multiplayer.enabled", False):
+            self.require_execution_authority()
+            assert self.principal is not None
+            self.members.authorize_task_execution(
+                self.principal, task, self.store.phase(task.product, task.phase),
+                expected_generation=assignment_generation,
+            )
         for active in self.runs.runs_for(task.id):
             if active.runner == "ssh" and active.status == "running" and not active.process_finished():
                 raise RuntimeError("remote worker outcome is not terminal; use garden ssh-recover before retry")
