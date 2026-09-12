@@ -174,6 +174,8 @@ def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
             precondition="head=abc", request={"head": "abc"},
         )
     snapshot = coordinator.snapshot(admin, "garden")
+    assert snapshot["member_id"] == "admin" and snapshot["installation_id"] == "admin-box"
+    assert snapshot["active_claims"][0]["installation"] == "alice-a"
     assert snapshot["blocking_effects"] == [
         {"provider": "github", "effect_key": "publish:CG-1", "status": "unknown"}
     ]
