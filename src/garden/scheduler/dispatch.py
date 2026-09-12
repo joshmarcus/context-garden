@@ -116,6 +116,7 @@ class DispatchMixin:
         max_rev = 10**9 if policy["enabled"] else int(self.cfg.get("max_revisions", 3))
         candidates = [(task, mode) for task, mode in worker_candidates(
             tasks, self.state, max_rev, True, self._edit_pending)
+            if self.task_is_authorized(task)
             if (mode != "work" or not self.state.get(task.id).get("needs_human"))
             # A persisted hold may briefly precede its task-file routing after an I/O error.
             # It remains an operational stop for revise rounds as well as new work.
@@ -515,15 +516,17 @@ class DispatchMixin:
                  external_pr: str = "", external_pr_number: int | None = None,
                  pool_member: str = "") -> Run:
         self.require_execution_authority()
+        self._task_authority(task)
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
         # runs.new_run(), including worktree/brief preparation failures, closes it.
         self._dispatching_run = None
         try:
-            return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
-                                  branch_override, worktree_override, model_override, reserved_run,
-                                  completion_mode, external_pr, external_pr_number, pool_member)
+            with self.task_effect(task, f"dispatch:{task.id}:{mode}"):
+                return self._dispatch(task, mode, runner, worktree, session_id, prompt_override,
+                                      branch_override, worktree_override, model_override, reserved_run,
+                                      completion_mode, external_pr, external_pr_number, pool_member)
         except Exception as e:  # noqa: BLE001
             run = self._dispatching_run
             # A runner may have launched the worker and then raised while recording
