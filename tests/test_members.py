@@ -300,6 +300,66 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
+def test_shared_project_selector_resolves_url_preference_assignment_and_revocation(garden):
+    private = garden / "private" / "p1"
+    (private / "tasks").mkdir(parents=True)
+    (garden / "private" / "product.md").write_text("# Private\n")
+    (private / "goals.md").write_text("# Private phase\n")
+    (private / "tasks" / "PV-001-private.md").write_text("""---
+id: PV-001
+title: PRIVATE_SELECTOR_MARKER
+status: ready
+depends_on: [DM-001]
+priority: 1
+reading: []
+created: '2026-01-01T00:00:00+00:00'
+updated: '2026-01-01T00:00:00+00:00'
+---
+""")
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["products"]["private"] = {
+        "repo": "../repo", "base_branch": "main", "id_prefix": "PV",
+        "github": "test/private",
+    }
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo", "private"))
+    token = registry.issue_installation(admin, "bob", "bob-browser")
+    registry.set_assignment(admin, "bob", "demo", "p1")
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assigned = client.get("/board", headers=headers)
+    assert assigned.status_code == 200
+    assert "DM-001" in assigned.text and "PRIVATE_SELECTOR_MARKER" not in assigned.text
+    assert '<option value="demo" selected>' in assigned.text
+
+    selected = client.get("/board?project=private", headers=headers)
+    assert selected.status_code == 200
+    assert "PRIVATE_SELECTOR_MARKER" in selected.text and "DM-001" not in selected.text
+    assert "1 inaccessible blocker" in selected.text
+    private_rows = client.get("/api/tasks", headers=headers).json()
+    assert private_rows[0]["product"] == "private"
+    assert private_rows[0]["depends_on"] == []
+    assert private_rows[0]["inaccessible_blocker_count"] == 1
+    private_task = client.get("/tasks/PV-001", headers=headers)
+    assert "1 inaccessible blocker" in private_task.text and "DM-001" not in private_task.text
+    assert client.get("/tasks/DM-001", headers=headers).status_code == 200
+
+    overview = client.get("/api/tasks?project=__all__", headers=headers).json()
+    assert {row["product"] for row in overview} == {"demo", "private"}
+    assert client.get("/board?project=missing", headers=headers).status_code == 403
+
+    state = json.loads(registry.path.read_text())
+    state["members"]["bob"]["projects"] = ["demo"]
+    registry.path.write_text(json.dumps(state))
+    fallback = client.get("/board", headers=headers)
+    assert fallback.status_code == 200
+    assert "DM-001" in fallback.text and "PRIVATE_SELECTOR_MARKER" not in fallback.text
+    assert client.get("/board?project=private", headers=headers).status_code == 403
+
+
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
     private = garden / "private" / "secret-phase"
     (private / "tasks").mkdir(parents=True)

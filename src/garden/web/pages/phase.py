@@ -30,7 +30,7 @@ def register(app: FastAPI, site: Site) -> None:
             ph = s.phase(product, phase)
         except KeyError:
             raise HTTPException(404) from None
-        tasks = s.tasks()
+        tasks = site.visible_tasks(request, s)
         from ...model import goals_text
 
         goals = goals_text(ph.goals_path)
@@ -115,6 +115,7 @@ def register(app: FastAPI, site: Site) -> None:
             new_task=_new_task_prefill(request),
             kickoff=_kickoff_panel(s, sched, ph),
             retro_verdict=verdict_view,
+            dependency_labels=lambda task: site.dependency_labels(task, tasks),
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)

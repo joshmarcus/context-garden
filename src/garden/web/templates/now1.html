@@ -268,7 +268,8 @@ body.page-now .rail-running { display:none; }
   var burstSeq = 0;
   function burst() { burstSeq += 1; return burstRoot + "-" + burstSeq; }
   function partialUrl(region, reading) {
-    return "/partials/now/" + region + "?window=" + encodeURIComponent(win) + "&burst=" + reading;
+    var url = "/partials/now/" + region + "?window=" + encodeURIComponent(win) + "&burst=" + reading;
+    return window.gardenScopedUrl ? window.gardenScopedUrl(url) : url;
   }
   function say(text) { if (live) live.textContent = text; }
   function parse(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content; }
@@ -367,7 +368,8 @@ body.page-now .rail-running { display:none; }
   function strips() { return document.getElementById("now-strips"); }
   function stripFor(run) { return document.querySelector('.strip[data-run="' + run + '"]'); }
   async function arrive(ev) {
-    var html = await fetchText("/partials/now/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run));
+    var stripUrl = "/partials/now/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run);
+    var html = await fetchText(window.gardenScopedUrl ? window.gardenScopedUrl(stripUrl) : stripUrl);
     var strip = parse(html).firstElementChild;
     if (!strip || stripFor(ev.run)) return;
     strip.dataset.started = ev.at || strip.dataset.started;  // counts up from the dispatch moment
@@ -384,7 +386,8 @@ body.page-now .rail-running { display:none; }
   }
   async function finish(ev) {
     var old = stripFor(ev.run);
-    var html = await fetchText("/partials/now/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run)).catch(function () { return ""; });
+    var stripUrl = "/partials/now/strip/" + encodeURIComponent(ev.task) + "/" + encodeURIComponent(ev.run);
+    var html = await fetchText(window.gardenScopedUrl ? window.gardenScopedUrl(stripUrl) : stripUrl).catch(function () { return ""; });
     var fresh = html ? parse(html).firstElementChild : null;
     if (old && fresh) { fade(old.querySelector(".glyphs")); old.replaceWith(fresh); old = fresh; }
     say(ev.task + " finished: " + (ev.status || ""));
@@ -448,7 +451,8 @@ body.page-now .rail-running { display:none; }
     if (refreshesPeriod) refreshHeadAndPeriod(reading);
   }
   // ---- the stream
-  var source = new EventSource("/now/stream");
+  var streamUrl = window.gardenScopedUrl ? window.gardenScopedUrl("/now/stream") : "/now/stream";
+  var source = new EventSource(streamUrl);
   var dropped = null, wasDown = false;
   var interval = parseInt(root.dataset.tickInterval || "60", 10) * 1000;
   source.addEventListener("event", function (m) { try { onEvent(JSON.parse(m.data)); } catch (e) {} });

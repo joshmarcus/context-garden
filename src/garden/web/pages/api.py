@@ -374,8 +374,7 @@ def register(app: FastAPI, site: Site) -> None:
     @app.get("/api/tasks")
     def api_tasks(request: Request):
         scheduler = hub.reader()
-        tasks = scheduler.store.tasks()
-        principal = getattr(request.state, "principal", None)
+        tasks = site.visible_tasks(request, scheduler.store)
         return JSONResponse([
             {
                 **task.to_frontmatter(),
@@ -386,9 +385,12 @@ def register(app: FastAPI, site: Site) -> None:
                 "owner_source": effective_owner(
                     task, scheduler.store.phase(task.product, task.phase),
                 )[1],
+                "depends_on": [dependency for dependency in task.depends_on if dependency in tasks],
+                "inaccessible_blocker_count": sum(
+                    dependency not in tasks for dependency in task.depends_on
+                ),
             }
             for task in tasks.values()
-            if principal is None or authorize(principal, "read", project=task.product)
         ])
 
     @app.get("/api/workers")
