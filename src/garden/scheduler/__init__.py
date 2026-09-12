@@ -295,6 +295,7 @@ class Scheduler(
             # Provider code and delivery policy stay on the executing host. Pull-based
             # workers use their own managed-worker configuration instead of a claim value.
             cfg["workload_identity"] = dict(self.cfg.get("workload_identity") or {})
+            cfg["restricted_data"] = dict(self.cfg.get("restricted_data") or {})
         # A private class may be selected only from operator configuration.  Preserve the
         # entire registration map so its configured alias continues to resolve at reap.
         cfg["_runner_adapters"] = dict(self.cfg.get("runner_adapters") or {})
