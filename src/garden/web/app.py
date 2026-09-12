@@ -37,7 +37,6 @@ from ..plants import (
     vine_svg,
 )
 from ..runs import HistoryUnavailable
-from ..scheduler import MULTIPLAYER_EXECUTION_UNAVAILABLE
 from ..store import Store
 from . import actions, pages
 from .access import (
@@ -194,7 +193,6 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         store,
         watch,
         github=github,
-        scheduler_blocked_reason=MULTIPLAYER_EXECUTION_UNAVAILABLE if multiplayer else "",
     )
     app.state.hub = hub
 
