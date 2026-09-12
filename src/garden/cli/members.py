@@ -34,10 +34,12 @@ def enroll_administrator(garden_id: str, member_id: str, installation_id: str) -
 
 @members_app.command("add")
 def add(member_id: str, role: str = typer.Option("member"),
-        visibility: str = typer.Option("all"), credential_env: str = typer.Option(...)) -> None:
+        visibility: str = typer.Option("all"), projects: str = typer.Option(""),
+        credential_env: str = typer.Option(...)) -> None:
     """Add a member. The caller credential must belong to an administrator."""
     registry = _registry()
-    registry.add_member(_actor(registry, credential_env), member_id, role, visibility)  # type: ignore[arg-type]
+    registry.add_member(_actor(registry, credential_env), member_id, role, visibility,
+                        tuple(value.strip() for value in projects.split(",") if value.strip()))  # type: ignore[arg-type]
     console.print(f"{member_id} enrolled as {role}")
 
 

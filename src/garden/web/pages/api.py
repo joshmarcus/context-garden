@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
+from ...members import authorize
 from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
@@ -241,7 +242,11 @@ def register(app: FastAPI, site: Site) -> None:
             outcome=outcome,
         )
 
-    def worker_host(authorization: str) -> dict[str, Any]:
+    def worker_host(authorization: str, request: Request | None = None) -> dict[str, Any]:
+        principal = getattr(request.state, "worker_identity", None) if request else None
+        if principal is not None:
+            return {"name": principal.installation_id, "member_id": principal.member_id,
+                    "max_parallel": 1, "member_principal": principal}
         from ...hosts.registry import authenticate_worker, worker_configuration
 
         if not authorization.startswith("Bearer "):
@@ -257,6 +262,17 @@ def register(app: FastAPI, site: Site) -> None:
 
     def leased(run: Any) -> bool:
         return bool(run.lease_expires_at and run.lease_expires_at > dt.datetime.now(dt.UTC).isoformat())
+
+    def authorize_member_run(run: Any, host: dict[str, Any]) -> None:
+        member_id = str(host.get("member_id") or "")
+        if not member_id:
+            return
+        fresh = hub.fresh()
+        task = fresh.tasks().get(run.task_id)
+        owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
+        principal = host.get("member_principal")
+        if principal is None or not authorize(principal, "mutate_work", owner_id=owner):
+            raise HTTPException(403, "scheduler is not authorized for this task assignee")
 
     def execution_timeout_minutes(run: Any) -> float:
         """Return the snapshotted execution budget, keeping checks independently bounded."""
@@ -356,9 +372,10 @@ def register(app: FastAPI, site: Site) -> None:
         return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
     @app.get("/api/tasks")
-    def api_tasks():
+    def api_tasks(request: Request):
         scheduler = hub.reader()
         tasks = scheduler.store.tasks()
+        principal = getattr(request.state, "principal", None)
         return JSONResponse([
             {
                 **task.to_frontmatter(),
@@ -371,6 +388,7 @@ def register(app: FastAPI, site: Site) -> None:
                 )[1],
             }
             for task in tasks.values()
+            if principal is None or authorize(principal, "read", project=task.product)
         ])
 
     @app.get("/api/workers")
@@ -425,7 +443,7 @@ def register(app: FastAPI, site: Site) -> None:
         for the lifetime of the allocated lease generation (ordinary lease plus recovery
         grace); it cannot be reused after expiry, reclaim, completion, or by another host.
         """
-        host_cfg = worker_host(authorization)
+        host_cfg = worker_host(authorization, request)
         body = await worker_request(request)
         if str(body.get("host") or "") != str(host_cfg.get("name") or ""):
             raise HTTPException(403, "token does not belong to this host")
@@ -502,6 +520,12 @@ def register(app: FastAPI, site: Site) -> None:
                     continue
                 if run.difficulty and tiers and run.difficulty not in tiers:
                     continue
+                fresh = hub.fresh()
+                task = fresh.tasks().get(run.task_id)
+                if host_cfg.get("member_id"):
+                    owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
+                    if owner != host_cfg["member_id"]:
+                        continue
                 weight = int((run.env_snapshot or {}).get("resource_weight") or 1)
                 if not in_place and used + weight > capacity:
                     # First-fit admission lets a cheap product use remaining capacity while
@@ -528,8 +552,6 @@ def register(app: FastAPI, site: Site) -> None:
                 run.lease_updated_at = claim_time
                 run.lease_token = secrets.token_urlsafe(32)
                 run.claim_request_id = request_id
-                fresh = hub.fresh()
-                task = fresh.tasks().get(run.task_id)
                 product = task.product if task is not None else str(run.env_snapshot.get("product") or "")
                 if not product:
                     raise HTTPException(409, "remote run has no product identity")
@@ -646,7 +668,7 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/api/runs/{run_id}/heartbeat")
     async def heartbeat(run_id: str, request: Request, authorization: str = Header(default="")):
-        host = worker_host(authorization)
+        host = worker_host(authorization, request)
         body = await worker_request(request)
         bound_host_facts(body.get("host_facts"), host)
         transcript_value = body.get("transcript", "")
@@ -660,6 +682,7 @@ def register(app: FastAPI, site: Site) -> None:
         candidate = run_for(run_id)
         with hub.action_lock, Run.mutation(candidate.path):
             run = Run.load(candidate.path)
+            authorize_member_run(run, host)
             ensure_claimed(run, host, str(body.get("lease_token") or ""))
             chunk = transcript_value
             record_worker_contact(host, body, outcome="heartbeat")
@@ -698,7 +721,7 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/api/runs/{run_id}/finish")
     async def finish(run_id: str, request: Request, authorization: str = Header(default="")):
-        host = worker_host(authorization)
+        host = worker_host(authorization, request)
         body = await worker_request(request)
         result = body.get("result", {})
         usage = body.get("usage", {})
@@ -719,6 +742,7 @@ def register(app: FastAPI, site: Site) -> None:
             # Reload under the process-safe lock: lease validation, result publication,
             # metadata and the completion marker are one fenced transaction.
             run = Run.load(candidate.path)
+            authorize_member_run(run, host)
             token = str(body.get("lease_token") or "")
             final = str(body.get("final_text") or "")
             posted = {"result": result, "usage": usage,

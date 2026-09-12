@@ -50,16 +50,19 @@ class Principal:
     installation_id: str
     role: Role
     project_visibility: Visibility
+    projects: frozenset[str] = frozenset()
 
 
-def authorize(principal: Principal, operation: str, *, owner_id: str = "") -> bool:
+def authorize(principal: Principal, operation: str, *, owner_id: str = "",
+              project: str = "") -> bool:
     """One role vocabulary for coordinator, clients and HTTP actions.
 
     Administration is deliberately separate from authority over assigned work: even an
     administrator cannot mutate work owned by somebody else.
     """
     if operation == "read":
-        return principal.project_visibility == "all" or not owner_id or owner_id == principal.member_id
+        return (principal.project_visibility == "all"
+                or bool(project and project in principal.projects))
     if operation == "administer":
         return principal.role == "administrator"
     if operation == "mutate_work":
@@ -125,11 +128,12 @@ class MemberRegistry:
 
     @_locked_mutation
     def add_member(self, actor: Principal, member_id: str, role: Role,
-                   project_visibility: Visibility = "all") -> None:
+                   project_visibility: Visibility = "all",
+                   projects: tuple[str, ...] = ()) -> None:
         state = self._authorized_state(actor)
         if not authorize(actor, "administer"):
             raise PermissionError("administrator role required")
-        self._add_member(state, member_id, role, project_visibility)
+        self._add_member(state, member_id, role, project_visibility, projects)
         self._write(state)
 
     @_locked_mutation
@@ -193,7 +197,8 @@ class MemberRegistry:
         if not secrets.compare_digest(actual, installation["verifier"]):
             return None
         return Principal(garden_id, installation["member_id"], installation_id,
-                         member["role"], member["project_visibility"])
+                         member["role"], member["project_visibility"],
+                         frozenset(member.get("projects") or ()))
 
     @staticmethod
     def _decode_id(value: str) -> str:
@@ -208,21 +213,27 @@ class MemberRegistry:
                 or not installation or installation.get("revoked")
                 or installation.get("member_id") != actor.member_id
                 or actor.role != current.get("role")
-                or actor.project_visibility != current.get("project_visibility")):
+                or actor.project_visibility != current.get("project_visibility")
+                or actor.projects != frozenset(current.get("projects") or ())):
             raise PermissionError("caller is no longer an active garden member")
         # Use current registry capabilities, never stale caller-supplied role fields.
         return state
 
-    def _add_member(self, state: dict, member_id: str, role: str, visibility: str) -> None:
+    def _add_member(self, state: dict, member_id: str, role: str, visibility: str,
+                    projects: tuple[str, ...] = ()) -> None:
         member_id = self._valid_id(member_id, "member_id")
         if role not in ROLES:
             raise ValueError("role must be administrator, member, or viewer")
         if visibility not in VISIBILITIES:
             raise ValueError("project_visibility must be all or assigned")
+        normalized_projects = sorted({self._valid_id(value, "project") for value in projects})
+        if visibility == "all" and normalized_projects:
+            raise ValueError("projects may only be supplied with assigned visibility")
         if member_id in state["members"]:
             raise ValueError("member already exists")
         state["members"][member_id] = {"role": role, "active": True,
-                                        "project_visibility": visibility}
+                                        "project_visibility": visibility,
+                                        "projects": normalized_projects}
 
     def _add_installation(self, state: dict, member_id: str, installation_id: str) -> str:
         installation_id = self._valid_id(installation_id, "installation_id")
