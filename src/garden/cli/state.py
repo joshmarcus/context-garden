@@ -258,12 +258,17 @@ def cancel(task_id: str, note: str = typer.Option("cancelled by hand")):
 
 @app.command(rich_help_panel=PANEL_DECIDE)
 def retry(task_id: str, actor: str = typer.Option("human_owner", "--actor",
-                                                   help="human_owner, delegated_operator, automated_scheduler, or unknown")):
+                                                   help="human_owner, delegated_operator, automated_scheduler, or unknown"),
+          assignment_generation: int | None = typer.Option(
+              None, "--assignment-generation", help="Reject a stale multiplayer execution assignment")):
     """Continue the loop: with an open PR, queue a revise run on the branch; otherwise reset attempts and start over."""
     store = _store()
     try:
-        _scheduler(store).retry(_task(store, task_id), actor=actor)
-    except RuntimeError as e:
+        _scheduler(store).retry(
+            _task(store, task_id), actor=actor,
+            assignment_generation=assignment_generation,
+        )
+    except (PermissionError, RuntimeError) as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1) from None
 
