@@ -133,3 +133,9 @@ def test_gpu_shape_is_attested_and_aggregate_capacity_is_reserved():
         ),)}, now=200,
     )
     assert busy.reason is MatchReason.BUSY
+
+def test_routing_explanation_does_not_export_private_match_detail():
+    from garden.routing import SAFE_REASON_TEXT
+
+    assert "capabil" not in SAFE_REASON_TEXT[MatchReason.NO_COMPATIBLE_PROFILE].lower()
+    assert "identity" not in SAFE_REASON_TEXT[MatchReason.DENIED_ACCESS].lower()
