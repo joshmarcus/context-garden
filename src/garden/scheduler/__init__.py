@@ -15,6 +15,7 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 from __future__ import annotations
 
 import fcntl
+import os
 import re
 import threading
 import time
@@ -33,7 +34,8 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..model import Status, Task, now_iso
+from ..members import MemberRegistry, Principal, current_principal
+from ..model import Phase, Status, Task, now_iso
 from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
@@ -142,8 +144,18 @@ class Scheduler(
         Until then, a browser administrator or an unbound local process is not an
         execution principal and must not advance scheduler state.
         """
-        if self.cfg.get("multiplayer.enabled", False):
+        if self.cfg.get("multiplayer.enabled", False) and self.principal is None:
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+
+    def require_phase_authority(self, phase: Phase, *, expected_generation: int | None = None) -> None:
+        if not self.cfg.get("multiplayer.enabled", False):
+            return
+        self.require_execution_authority()
+        assert self.principal is not None
+        self.members.require_phase_operation(
+            self.principal, phase.product, phase.name,
+            expected_generation=expected_generation,
+        )
 
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
@@ -161,9 +173,15 @@ class Scheduler(
         restarter: Callable[[], None] | None = None,
         read_only: bool = False,
         source_control_factories: Mapping[str, SourceControlFactory] | None = None,
+        principal: Principal | None = None,
     ):
         self.store = store
         self.cfg = store.config
+        self.members = MemberRegistry(self.cfg.garden_dir)
+        credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
+        self.principal = principal or current_principal() or (
+            self.members.authenticate(credential) if credential else None
+        )
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)

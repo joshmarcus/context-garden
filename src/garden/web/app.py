@@ -163,9 +163,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # dynamic shapes must also fail closed. An unscoped read is garden-wide and is
             # therefore administrative regardless of all-project visibility.
             return authorize(principal, "administer")
-        # Configuration, lifecycle and phase-wide actions are administrator operations.
+        # Phase-wide actions belong to the explicit phase owner; garden-wide configuration
+        # remains administrative, while task actions remain bound to effective ownership.
         task_id = ""
         parts = path.split("/")
+        if len(parts) > 4 and parts[1] == "phases":
+            return registry.authorize_phase_operation(principal, parts[2], parts[3])
         if path.startswith("/tasks/") and len(parts) > 2:
             task_id = parts[2]
         elif path.startswith("/api/control/tasks/") and len(parts) > 4:
@@ -190,11 +193,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         member_authenticator=registry.authenticate if registry else None,
         member_authorizer=member_authorizer if registry else None,
     )
+    background_principal = registry.authenticate(os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")) if registry else None
     hub = Hub(
         store,
         watch,
         github=github,
-        scheduler_blocked_reason=MULTIPLAYER_EXECUTION_UNAVAILABLE if multiplayer else "",
+        scheduler_blocked_reason=(MULTIPLAYER_EXECUTION_UNAVAILABLE
+                                  if multiplayer and background_principal is None else ""),
     )
     app.state.hub = hub
 

@@ -548,6 +548,7 @@ class RetroMixin:
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
         self.require_execution_authority()
+        self.require_phase_authority(phase)
         self.require_maintenance_running()
         # A queued automatic request already contains the configuration identity needed to
         # finish it.  Load that durable identity before consulting current configuration:
@@ -1515,6 +1516,7 @@ class RetroMixin:
         """Accept or change a phase's retro verdict. `reopen` (re)opens the phase and approves
         its blocking tasks; `close`/`close_with_followups` close the phase (refusing on open
         tasks the way `close-phase` does). Records who decided and when."""
+        self.require_phase_authority(phase)
         choice = normalize_verdict(choice)
         if not choice:
             raise RuntimeError("choose one of: close, followups, reopen")
