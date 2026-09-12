@@ -112,6 +112,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     operator_token = os.environ.get(operator_env, "") if operator_env else ""
     multiplayer = bool(store.config.get("multiplayer.enabled", False))
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
+    multiplayer_tls_files(store, host)
     require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
     if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
