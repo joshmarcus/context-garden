@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from .models import (
@@ -238,6 +238,21 @@ class _BoundCommandProvider(CommandProvider):
                 capabilities=tuple(str(item) for item in value.get("capabilities", [])),
                 memory_available_mib=int(value["memory_available_mib"]),
                 disk_free_gib=int(value["disk_free_gib"]),
+                effective_requirement_digest=str(value.get("effective_requirement_digest", "")),
+                profile_revision=str(value.get("profile_revision", "")),
+                worker_id=str(value.get("worker_id", "")),
+                run_id=str(value.get("run_id", "")),
+                activity=str(value.get("activity", "")),
+                operating_user=str(value.get("operating_user", "")),
+                installation_id=str(value.get("installation_id", "")),
+                lease_generation=int(value.get("lease_generation", 0)),
+                memory_limit_mib=int(value.get("memory_limit_mib", 0)),
+                vcpu_limit=int(value.get("vcpu_limit", 0)),
+                gpu_devices=tuple(str(item) for item in value.get("gpu_devices", [])),
+                gpu_device_memory_mib=tuple(
+                    int(item) for item in value.get("gpu_device_memory_mib", [])
+                ),
+                resources_enforced=value.get("resources_enforced") is True,
                 lease_id=str(value.get("lease_id", "")),
                 lease_expires_at=float(value.get("lease_expires_at", 0)),
                 detail=str(value.get("detail", "")),
@@ -258,8 +273,20 @@ class _BoundCommandProvider(CommandProvider):
                 "environment": requirements.environment,
                 "capabilities": list(requirements.capabilities),
                 "memory_mib": requirements.memory_mib,
+                "vcpu": requirements.vcpu,
+                "gpu_count": requirements.gpu_count,
+                "gpu_vendor": requirements.gpu_vendor,
+                "gpu_device_memory_mib": requirements.gpu_device_memory_mib,
+                "gpu_features": list(requirements.gpu_features),
                 "disk_gib": requirements.disk_gib,
                 "heavy": requirements.heavy,
+                "effective_requirement_digest": requirements.effective_requirement_digest,
+                "profile_revision": requirements.profile_revision,
+                "worker_id": requirements.worker_id,
+                "run_id": requirements.run_id,
+                "operating_user": requirements.operating_user,
+                "installation_id": requirements.installation_id,
+                "lease_generation": requirements.lease_generation,
                 "probe_max_age_seconds": requirements.probe_max_age_seconds,
                 "lease_seconds": requirements.lease_seconds,
             },
@@ -271,6 +298,16 @@ class _BoundCommandProvider(CommandProvider):
         return self._admission(
             self._invoke("renew-admission", {"provider_id": provider_id, "lease_id": lease_id}, self.options)
         )
+
+    def activate_admission(
+        self, provider_id: str, *, lease_id: str, requirements: HostRequirements
+    ) -> HostAdmission:
+        return self._admission(self._invoke(
+            "activate-admission",
+            {"provider_id": provider_id, "lease_id": lease_id,
+             "requirements": asdict(requirements)},
+            self.options,
+        ))
 
     def release_admission(self, provider_id: str, *, lease_id: str) -> None:
         value = self._invoke(

@@ -91,11 +91,26 @@ class Wrapper:
                     "measured_at": time.time(),
                     "lease_id": lease_id,
                     "lease_expires_at": time.time() + request["lease_seconds"],
+                    "effective_requirement_digest": request["effective_requirement_digest"],
+                    "profile_revision": request["profile_revision"],
+                    "worker_id": request["worker_id"],
+                    "run_id": request["run_id"],
+                    "activity": request["activity"],
+                    "operating_user": request["operating_user"],
+                    "installation_id": request["installation_id"],
+                    "lease_generation": request["lease_generation"],
+                    "memory_limit_mib": request["memory_mib"],
+                    "vcpu_limit": request["vcpu"],
+                    "gpu_devices": [f"gpu-{index}" for index in range(request["gpu_count"])],
+                    "gpu_device_memory_mib": [
+                        request["gpu_device_memory_mib"] for _ in range(request["gpu_count"])
+                    ],
+                    "resources_enforced": True,
                     **self.admission,
                 }
                 if value["lease_id"]:
                     self.admissions[value["lease_id"]] = value
-        elif action == "renew-admission":
+        elif action in {"renew-admission", "activate-admission"}:
             value = self.admissions.get(request["lease_id"])
             if value is None:
                 return CommandResult(tuple(argv), stdin, b"", b"lease lost", 4)
@@ -514,6 +529,9 @@ def _requirements(**changes):
     value = HostRequirements(
         activity="check", host_class="large", environment="linux",
         capabilities=("python",), memory_mib=4096, disk_gib=20, heavy=True,
+        effective_requirement_digest="sha256:requirements", profile_revision="profile-v3",
+        worker_id="worker-1", run_id="run-1", operating_user="alice",
+        installation_id="garden-1", lease_generation=7,
     )
     return replace(value, **changes)
 
@@ -532,6 +550,8 @@ def test_host_local_admission_routes_on_fresh_resources_and_capabilities(tmp_pat
     assert request["activity"] == "check"
     assert request["capabilities"] == ["python"]
     assert request["memory_mib"] == 4096
+    assert request["effective_requirement_digest"] == "sha256:requirements"
+    assert request["lease_generation"] == 7
     lease = json.loads(path.read_text())["leases"][host.provider_id]["admission"]
     assert lease["host_class"] == "large"
     assert lease["memory_available_mib"] == 8192
@@ -587,6 +607,9 @@ def test_slow_readiness_uses_a_fresh_clock_for_admission_and_reservation(tmp_pat
         ({"capabilities": []}, {}, "missing capabilities: python"),
         ({"memory_available_mib": 1000}, {}, "host memory 1000 MiB"),
         ({"disk_free_gib": 1}, {}, "host disk 1 GiB"),
+        ({"resources_enforced": False}, {}, "cannot enforce constrained"),
+        ({"run_id": "other-run"}, {}, "run identity does not match"),
+        ({"memory_limit_mib": 2048}, {}, "memory ceiling does not match"),
         ({"lease_id": "", "lease_expires_at": 0}, {}, "lease is missing or expired"),
     ],
 )
@@ -646,3 +669,94 @@ def test_all_activities_share_host_owned_heavy_lease_across_controllers(tmp_path
     wrapper.admissions.clear()
     with pytest.raises(EnvironmentStop, match="host admission lease lost"):
         first.renew_admission(command_pool(), host.provider_id)
+
+
+def test_cpu_and_exclusive_gpu_shape_must_be_enforced(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    requirements = _requirements(
+        vcpu=2, gpu_count=2, gpu_vendor="nvidia", gpu_device_memory_mib=12_000,
+        gpu_features=("cuda",),
+    )
+
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=requirements,
+    )
+    request = next(call[1] for call in wrapper.calls if call[0][-1] == "admit")
+    assert request["vcpu"] == 2
+    assert request["gpu_vendor"] == "nvidia"
+    assert request["gpu_features"] == ["cuda"]
+
+    lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+    wrapper.admission["gpu_devices"] = ["gpu-0", "gpu-0"]
+    with pytest.raises(EnvironmentStop, match="GPU assignment is not exclusive"):
+        lifecycle.acquire_ready(
+            command_pool(), workspace="/work", revision="abc", harness="codex",
+            process_terminal=lambda _: True, requirements=requirements,
+        )
+
+
+def test_renewal_rejects_capacity_drift_and_requirement_change(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(vcpu=2),
+    )
+
+    wrapper.admissions[next(iter(wrapper.admissions))]["vcpu_limit"] = 1
+    with pytest.raises(EnvironmentStop, match="vCPU ceiling does not match"):
+        lifecycle.renew_admission(command_pool(), host.provider_id)
+
+    # A restarted controller reads the durable requirement identity and cannot renew a
+    # lease after that identity is altered independently of the host-owned reservation.
+    data = json.loads(path.read_text())
+    data["leases"][host.provider_id]["requirements"]["effective_requirement_digest"] = "changed"
+    path.write_text(json.dumps(data))
+    wrapper.admissions[next(iter(wrapper.admissions))]["vcpu_limit"] = 2
+    restarted = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    with pytest.raises(EnvironmentStop, match="requirement digest does not match"):
+        restarted.renew_admission(command_pool(), host.provider_id)
+
+
+def test_activation_rechecks_the_fenced_lease_at_start(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(vcpu=2),
+    )
+
+    activated = lifecycle.activate_admission(command_pool(), host.provider_id)
+    request = next(call[1] for call in wrapper.calls if call[0][-1] == "activate-admission")
+    assert request["requirements"]["effective_requirement_digest"] == "sha256:requirements"
+    assert activated.vcpu_limit == 2
+
+    wrapper.admissions[activated.lease_id]["lease_generation"] = 8
+    with pytest.raises(EnvironmentStop, match="lease generation does not match"):
+        lifecycle.activate_admission(command_pool(), host.provider_id)
+
+
+def test_expired_controller_reservation_does_not_reuse_live_host_capacity(tmp_path, monkeypatch):
+    clock = [1_000.0]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json"),
+        reservation_seconds=10,
+    )
+    kwargs = dict(
+        pool=command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    lifecycle.acquire_ready(now=lambda: clock[0], **kwargs)
+
+    clock[0] += 11
+    with pytest.raises(EnvironmentStop, match="heavy-check capacity is full"):
+        lifecycle.acquire_ready(now=lambda: clock[0], **kwargs)
