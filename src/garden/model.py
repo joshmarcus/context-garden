@@ -22,6 +22,169 @@ from typing import Any
 import yaml
 
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+CAPABILITY_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$")
+
+
+@dataclass(frozen=True)
+class GpuReservation:
+    count: int = 0
+    vendor: str = ""
+    min_device_memory_mib: int = 0
+    features: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ResourceReservation:
+    """Per-activity execution shape; zero means that resource is not required."""
+
+    memory_mib: int = 0
+    vcpu: int = 0
+    gpu: GpuReservation | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionRequirements:
+    """Canonical hard requirements and soft worker-configuration preferences."""
+
+    capabilities: tuple[str, ...] = ()
+    resources: ResourceReservation = field(default_factory=ResourceReservation)
+    preferred_worker_configurations: tuple[str, ...] = ()
+    provenance: tuple[str, ...] = ()
+
+    @property
+    def empty(self) -> bool:
+        return not (self.capabilities or self.preferred_worker_configurations
+                    or self.resources.memory_mib or self.resources.vcpu or self.resources.gpu)
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.capabilities:
+            data["capabilities"] = {"all_of": list(self.capabilities)}
+        resources: dict[str, Any] = {}
+        if self.resources.memory_mib:
+            resources["memory_mib"] = self.resources.memory_mib
+        if self.resources.vcpu:
+            resources["vcpu"] = self.resources.vcpu
+        if self.resources.gpu:
+            gpu = self.resources.gpu
+            resources["gpu"] = {
+                "count": gpu.count,
+                **({"vendor": gpu.vendor} if gpu.vendor else {}),
+                **({"min_device_memory_mib": gpu.min_device_memory_mib}
+                   if gpu.min_device_memory_mib else {}),
+                **({"features": list(gpu.features)} if gpu.features else {}),
+            }
+        if resources:
+            data["resources"] = resources
+        if self.preferred_worker_configurations:
+            data["preferences"] = {
+                "worker_configurations": list(self.preferred_worker_configurations)
+            }
+        return data
+
+    @classmethod
+    def from_host_requirements(cls, requirements: Any) -> ExecutionRequirements:
+        """Adapt the established host vocabulary without treating lifecycle flags as grants."""
+        return cls(
+            capabilities=tuple(requirements.capabilities),
+            resources=ResourceReservation(memory_mib=requirements.memory_mib),
+            provenance=("legacy HostRequirements",),
+        )
+
+    def to_host_requirements(self, *, activity: str, host_class: str = "",
+                             environment: str = "", disk_gib: int = 0,
+                             heavy: bool = False) -> Any:
+        """Project the subset understood by v1 host admission; later protocols add CPU/GPU."""
+        from .hosts.models import HostRequirements
+
+        return HostRequirements(
+            activity=activity, host_class=host_class, environment=environment,
+            capabilities=self.capabilities, memory_mib=self.resources.memory_mib,
+            disk_gib=disk_gib, heavy=heavy,
+        )
+
+
+def _positive_whole(value: Any, name: str, *, allow_zero: bool = False) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < (0 if allow_zero else 1):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ValueError(f"{name} must be a {qualifier} whole number")
+    return value
+
+
+def parse_execution_requirements(value: Any, *, source: str = "task") -> ExecutionRequirements:
+    """Parse the authored schema strictly. Name trust is checked against operator config later."""
+    if value in (None, {}):
+        return ExecutionRequirements()
+    if not isinstance(value, dict) or set(value) - {"capabilities", "resources", "preferences"}:
+        raise ValueError(f"{source}.execution_requirements has unknown fields or is not a mapping")
+    caps = value.get("capabilities") or {}
+    if not isinstance(caps, dict) or set(caps) - {"all_of"}:
+        raise ValueError(f"{source}.execution_requirements.capabilities must contain only all_of")
+    all_of = caps.get("all_of", [])
+    if (not isinstance(all_of, list) or any(
+            not isinstance(name, str) or not CAPABILITY_NAME_RE.fullmatch(name) for name in all_of)):
+        raise ValueError(f"{source}.execution_requirements.capabilities.all_of has an invalid name")
+    resources = value.get("resources") or {}
+    if not isinstance(resources, dict) or set(resources) - {"memory_mib", "vcpu", "gpu"}:
+        raise ValueError(f"{source}.execution_requirements.resources has unknown fields")
+    memory = _positive_whole(resources.get("memory_mib", 0), "memory_mib", allow_zero=True)
+    vcpu = _positive_whole(resources.get("vcpu", 0), "vcpu", allow_zero=True)
+    gpu_value = resources.get("gpu")
+    gpu = None
+    if gpu_value is not None:
+        if not isinstance(gpu_value, dict) or set(gpu_value) - {
+                "count", "vendor", "min_device_memory_mib", "features"}:
+            raise ValueError(f"{source}.execution_requirements.resources.gpu has unknown fields")
+        count = _positive_whole(gpu_value.get("count"), "gpu.count")
+        vendor = gpu_value.get("vendor", "")
+        features = gpu_value.get("features", [])
+        device_memory = _positive_whole(
+            gpu_value.get("min_device_memory_mib", 0), "gpu.min_device_memory_mib", allow_zero=True
+        )
+        if not isinstance(vendor, str) or (vendor and not re.fullmatch(r"[a-z][a-z0-9-]*", vendor)):
+            raise ValueError("gpu.vendor must be a lowercase logical name")
+        if (not isinstance(features, list) or any(
+                not isinstance(item, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", item)
+                for item in features)):
+            raise ValueError("gpu.features must be lowercase logical names")
+        gpu = GpuReservation(count, vendor, device_memory, tuple(dict.fromkeys(features)))
+    preferences = value.get("preferences") or {}
+    if not isinstance(preferences, dict) or set(preferences) - {"worker_configurations"}:
+        raise ValueError(f"{source}.execution_requirements.preferences has unknown fields")
+    workers = preferences.get("worker_configurations", [])
+    if (not isinstance(workers, list) or any(
+            not isinstance(item, str) or not item.strip() for item in workers)):
+        raise ValueError("preferences.worker_configurations must be non-empty names")
+    return ExecutionRequirements(
+        tuple(dict.fromkeys(all_of)), ResourceReservation(memory, vcpu, gpu),
+        tuple(dict.fromkeys(workers)), (source,),
+    )
+
+
+def merge_execution_requirements(*requirements: ExecutionRequirements) -> ExecutionRequirements:
+    """Monotonic policy merge: unions categorical constraints and strengthens minima."""
+    present = [item for item in requirements if not item.empty]
+    if not present:
+        return ExecutionRequirements()
+    gpus = [item.resources.gpu for item in present if item.resources.gpu]
+    vendors = {gpu.vendor for gpu in gpus if gpu and gpu.vendor}
+    if len(vendors) > 1:
+        raise ValueError(f"incompatible GPU vendor requirements: {', '.join(sorted(vendors))}")
+    gpu = None
+    if gpus:
+        gpu = GpuReservation(
+            max(item.count for item in gpus if item), next(iter(vendors), ""),
+            max(item.min_device_memory_mib for item in gpus if item),
+            tuple(sorted({feature for item in gpus if item for feature in item.features})),
+        )
+    return ExecutionRequirements(
+        tuple(sorted({cap for item in present for cap in item.capabilities})),
+        ResourceReservation(max(item.resources.memory_mib for item in present),
+                            max(item.resources.vcpu for item in present), gpu),
+        tuple(dict.fromkeys(worker for item in present
+                            for worker in item.preferred_worker_configurations)),
+        tuple(source for item in present for source in item.provenance),
+    )
 
 
 class Status(str, Enum):
@@ -142,6 +305,7 @@ class Task:
     harness: str = ""  # override harness (claude | codex | ...)
     difficulty: str = "medium"  # easy | medium | hard -> picks the model tier
     model: str = ""  # explicit model override
+    execution_requirements: ExecutionRequirements = field(default_factory=ExecutionRequirements)
     owner: str = ""  # stable logical owner id; never an execution or permission identity
     owner_unassigned: bool = False  # explicit task-level opt-out of a phase default
     discovered_from: str = ""  # task id that reported this one as discovered work
@@ -209,6 +373,7 @@ class Task:
         "harness",
         "difficulty",
         "model",
+        "execution_requirements",
         "owner",
         "discovered_from",
         "freeze_exception",
@@ -269,6 +434,9 @@ class Task:
             harness=str(data.get("harness") or ""),
             difficulty=str(data.get("difficulty") or "medium"),
             model=str(data.get("model") or ""),
+            execution_requirements=parse_execution_requirements(
+                data.get("execution_requirements"), source="task"
+            ),
             owner="" if data.get("owner") == _UNASSIGNED_OWNER else _owner_id(data.get("owner"), path),
             owner_unassigned=data.get("owner") == _UNASSIGNED_OWNER,
             discovered_from=str(data.get("discovered_from") or ""),
@@ -311,6 +479,8 @@ class Task:
                 data[k] = v
         if self.owner_unassigned:
             data["owner"] = _UNASSIGNED_OWNER
+        if not self.execution_requirements.empty:
+            data["execution_requirements"] = self.execution_requirements.to_dict()
         if self.freeze_exception:
             data["freeze_exception"] = True
             if self.freeze_exception_reason:
