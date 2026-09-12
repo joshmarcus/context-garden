@@ -249,3 +249,34 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
         bound.reopen_phase(phase, owner_generation=owner.generation - 1)
     bound.reopen_phase(phase, owner_generation=owner.generation)
     assert not bound.store.phase(phase.product, phase.name).closed
+
+
+def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparation(sched, monkeypatch):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-machine")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member")
+    alice_token = registry.issue_installation(admin, "alice", "alice-machine")
+    alice = registry.authenticate(alice_token)
+    assert alice is not None
+    phase = sched.store.phase("demo", "p1")
+    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    run = object()
+    calls = []
+
+    monkeypatch.setattr(
+        bound, "prepare_persona_phase",
+        lambda *args, **kwargs: calls.append("prepare") or {"run": run},
+    )
+    monkeypatch.setattr(bound, "_commit_prepared_aux", lambda payload: calls.append("commit"))
+    monkeypatch.setattr(bound, "_launch_prepared_aux", lambda payload: calls.append("launch"))
+
+    with pytest.raises(PermissionError, match="explicit active phase owner"):
+        bound.dispatch_persona_phase(phase, "security")
+    assert calls == []
+
+    registry.set_phase_owner(admin, phase.product, phase.name, "alice")
+    assert bound.dispatch_persona_phase(phase, "security") is run
+    assert calls == ["prepare", "commit", "launch"]
