@@ -11,7 +11,7 @@ from garden.coordination_api import create_coordination_app
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
 from garden.runs import RunStore
- from garden.scheduler import (
+from garden.scheduler import (
     MULTIPLAYER_EXECUTION_UNAVAILABLE,
     MultiplayerExecutionUnavailable,
     Scheduler,
