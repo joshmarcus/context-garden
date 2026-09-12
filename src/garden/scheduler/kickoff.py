@@ -34,6 +34,10 @@ class KickoffMixin:
 
     def start_kickoff(self, phase: Phase) -> Any:
         self.require_execution_authority()
+        with self.phase_effect(phase.product, phase.name, f"kickoff:{phase.key}"):
+            return self._start_kickoff(phase)
+
+    def _start_kickoff(self, phase: Phase) -> Any:
         self.require_phase_authority(phase)
         self.require_maintenance_running()
         if self.kickoff_pending(phase.key):
