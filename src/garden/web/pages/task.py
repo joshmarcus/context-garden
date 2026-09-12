@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import uuid
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -83,6 +84,9 @@ def register(app: FastAPI, site: Site) -> None:
         from ...suggestions import APPLIES_TO, has_pending, parse_suggestions, spec_body
 
         friction_text = extract_friction(pr_body_for(t, rs))
+        from ...defects import DefectStore
+        defect_store = DefectStore(s.config.garden_dir)
+        defects = defect_store.list(task_id=t.id)
         suggestions = parse_suggestions(t.body)
         edit_diff = _edit_diff(runs)
         criteria_rows = reconcile(parse_criteria(t.body), worker_verified(runs),
@@ -183,6 +187,9 @@ def register(app: FastAPI, site: Site) -> None:
             return_to=_return_to(request, task_id),
             completion=completion,
             review_history=review_history,
+            defects=defects,
+            defect_summary=defect_store.summary(task_id=t.id),
+            defect_idempotency_key=uuid.uuid4().hex,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
