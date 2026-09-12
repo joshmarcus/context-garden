@@ -134,6 +134,45 @@ def test_claimed_review_recovery_preserves_logical_round_and_exhausts_to_decisio
     assert not st.get("last_review")
 
 
+def test_signalled_review_with_a_parseable_fragment_cannot_replace_last_review(sched, fake_github, monkeypatch):
+    """A signalled reviewer may leave parseable JSON without a verdict; it must enter
+    bounded recovery instead of becoming authoritative review state."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000,
+                                "recovery_attempts": 2, "recovery_backoff_seconds": 0}
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run = sched._run_by_id(task, st["review_run"])
+    assert run is not None
+    assert run.status == "running"
+    runner_type = type(sched.runner_for(task, run.runner, run.harness))
+    collected = {
+        "final_text": 'GARDEN_REVIEW: {"findings": []}',
+        "usage": {"input_tokens": 10, "output_tokens": 2},
+        "cost_usd": 0.01,
+        "model": run.model,
+        "error": "",
+    }
+    monkeypatch.setattr(sched, "_finished_or_timed_out", lambda *_args: True)
+    monkeypatch.setattr(runner_type, "collect", lambda *_args: collected)
+
+    rep = TickReport()
+    assert sched.reap_review(task, rep)
+
+    assert not st.get("last_review")
+    assert not st.get("last_review_run")
+    assert st["review_rounds"] == 1
+    assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
+    assert st["review_recovery"]["attempts"] == 1
+    assert st["review_recovery"]["started"] is True
+    assert not any(e.get("kind") == "review" for e in sched.events.read(task_id=task.id))
+    assert not any("approve" in c or "request_changes" in c for c in fake_github.comments)
+    saved = sched._run_by_id(task, run.run_id)
+    assert saved.status == "failed"
+
+
 def test_timed_out_review_applies_a_collected_verdict_once(sched, monkeypatch):
     sched.cfg.data["stack"] = False
     sched.cfg.data["review"]["enabled"] = True
