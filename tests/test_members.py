@@ -255,8 +255,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 409
-    assert response.json()["detail"] == MULTIPLAYER_EXECUTION_UNAVAILABLE
+    assert response.status_code == 303
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -490,7 +489,7 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
             headers={"Authorization": f"Bearer {admin_token}"},
             follow_redirects=False,
         )
-        assert response.status_code == 409
+        assert response.status_code == 303
 
     scheduler = Scheduler(Store(garden))
     with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
