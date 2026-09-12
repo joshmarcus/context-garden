@@ -72,3 +72,53 @@ def set_active(member_id: str, active: bool, credential_env: str = typer.Option(
     registry = _registry()
     registry.set_member_active(_actor(registry, credential_env), member_id, active)
     console.print(f"{member_id} {'enabled' if active else 'disabled'}")
+
+
+@members_app.command("assign-work")
+def assign_work(member_id: str, target: str, enabled: bool = typer.Option(True),
+                advance: bool = typer.Option(False), generation: int = typer.Option(0),
+                credential_env: str = typer.Option(...)) -> None:
+    """Set one versioned project/phase execution cursor for a member."""
+    if "/" not in target:
+        raise typer.BadParameter("target must be project/phase")
+    project, phase = target.split("/", 1)
+    registry = _registry()
+    row = registry.set_assignment(
+        _actor(registry, credential_env), member_id, project, phase,
+        enabled=enabled, advance=advance, expected_generation=generation,
+    )
+    console.print(
+        f"{member_id}: {row.project}/{row.phase} generation {row.generation} "
+        f"({'enabled' if row.enabled else 'paused'}, advance={'on' if row.advance else 'off'})"
+    )
+
+
+@members_app.command("assign-phase-owner")
+def assign_phase_owner(target: str, owner_id: str,
+                       generation: int = typer.Option(0),
+                       credential_env: str = typer.Option(...)) -> None:
+    """Assign, transfer, or explicitly vacate phase-operation ownership."""
+    if "/" not in target:
+        raise typer.BadParameter("target must be project/phase")
+    project, phase = target.split("/", 1)
+    registry = _registry()
+    row = registry.set_phase_owner(
+        _actor(registry, credential_env), project, phase,
+        None if owner_id == "-" else owner_id, expected_generation=generation,
+    )
+    console.print(
+        f"{target}: phase owner {row.owner_id or 'unassigned'} generation {row.generation} "
+        f"(changed by {row.changed_by})"
+    )
+
+
+@members_app.command("advance-work")
+def advance_work(member_id: str, next_phase: str, generation: int = typer.Option(...),
+                 credential_env: str = typer.Option(...)) -> None:
+    """Explicitly advance a configured cursor after all work in its phase is terminal."""
+    registry = _registry()
+    row = registry.advance_assignment(
+        _actor(registry, credential_env), member_id, next_phase, _store().tasks(),
+        expected_generation=generation,
+    )
+    console.print(f"{member_id}: advanced to {row.project}/{row.phase} generation {row.generation}")

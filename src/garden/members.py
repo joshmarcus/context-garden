@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -31,8 +32,6 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 _Result = TypeVar("_Result")
-
-
 def _locked_mutation(method: Callable[..., _Result]) -> Callable[..., _Result]:
     """Serialize registry read/modify/write operations across local processes."""
     @functools.wraps(method)
@@ -54,6 +53,22 @@ class Principal:
     role: Role
     project_visibility: Visibility
     projects: frozenset[str] = frozenset()
+
+
+_CURRENT_PRINCIPAL: ContextVar[Principal | None] = ContextVar("garden_member_principal", default=None)
+
+
+def current_principal() -> Principal | None:
+    """Authenticated principal for the current HTTP request, when there is one."""
+    return _CURRENT_PRINCIPAL.get()
+
+
+def bind_principal(principal: Principal | None):
+    return _CURRENT_PRINCIPAL.set(principal)
+
+
+def reset_principal(token: object) -> None:
+    _CURRENT_PRINCIPAL.reset(token)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -294,6 +309,36 @@ class MemberRegistry:
                 and not phase_refusal(phases[task.key], task)
                 and self.effective_task_owner(task, phases[task.key])[0] == member_id]
 
+    def authorize_task_execution(self, principal: Principal, task: Task, phase: Phase, *,
+                                 expected_generation: int | None = None) -> WorkAssignment:
+        """Bind a lifecycle action to the caller's current membership and cursor."""
+        self._authorized_state(principal)
+        cursor = self.assignment(principal.member_id)
+        if cursor is None:
+            raise PermissionError("member has no execution assignment")
+        if expected_generation is not None and cursor.generation != expected_generation:
+            raise RuntimeError("stale assignment generation")
+        if not cursor.enabled:
+            raise PermissionError("member execution assignment is paused")
+        if (cursor.project, cursor.phase) != (task.product, task.phase):
+            raise PermissionError("task is outside the member's execution assignment")
+        owner, _source = self.effective_task_owner(task, phase)
+        if owner != principal.member_id:
+            raise PermissionError("member is not the effective active owner of this task")
+        return cursor
+
+    def require_phase_operation(self, principal: Principal, project: str, phase: str, *,
+                                expected_generation: int | None = None) -> PhaseOwner:
+        """Return the current explicit owner or reject vacant, stale and non-owner calls."""
+        owner = self.phase_owner(project, phase)
+        if owner is None or not owner.owner_id:
+            raise PermissionError("phase operations require an explicit active phase owner")
+        if expected_generation is not None and owner.generation != expected_generation:
+            raise RuntimeError("stale phase owner generation")
+        if not self.authorize_phase_operation(principal, project, phase):
+            raise PermissionError("current phase owner authorization required")
+        return owner
+
     def can_advance_assignment(self, member_id: str, tasks: dict[str, Task],
                                phases: dict[str, Phase]) -> bool:
         """Configured advance remains blocked until everybody's current phase work is done."""
@@ -305,6 +350,31 @@ class MemberRegistry:
                 continue
             return False
         return True
+
+    @_locked_mutation
+    def advance_assignment(self, actor: Principal, member_id: str, next_phase: str,
+                           tasks: dict[str, Task], *, expected_generation: int) -> WorkAssignment:
+        """Explicitly advance a configured cursor after every member's phase work is terminal."""
+        state = self._authorized_state(actor)
+        if not authorize(actor, "administer"):
+            raise PermissionError("administrator role required")
+        current = (state.get("assignments") or {}).get(member_id)
+        if current is None or int(current.get("generation", 0)) != expected_generation:
+            raise RuntimeError("stale assignment generation")
+        if not current.get("enabled") or not current.get("advance"):
+            raise RuntimeError("assignment is not configured for phase advancement")
+        project, phase = str(current["project"]), str(current["phase"])
+        if any(task.product == project and task.phase == phase and not task.status.terminal
+               for task in tasks.values()):
+            raise RuntimeError("unfinished member work prevents phase advancement")
+        self._valid_id(next_phase, "phase")
+        generation = expected_generation + 1
+        row = {"project": project, "phase": next_phase, "generation": generation,
+               "enabled": True, "advance": True, "changed_by": actor.member_id}
+        state.setdefault("assignments", {})[member_id] = row
+        state.setdefault("assignment_generations", {})[member_id] = generation
+        self._write(state)
+        return WorkAssignment(member_id, project, next_phase, generation, True, True)
 
     def _write(self, value: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
