@@ -188,3 +188,31 @@ def test_config_rejects_credential_reused_by_another_user_installation(tmp_path)
 
     with pytest.raises(ValueError, match="more than one user-owned installation"):
         Config.load(tmp_path)
+
+
+@pytest.mark.parametrize("instance_ids", [("", "two"), ("shared", "shared")])
+def test_config_rejects_empty_or_cross_owner_duplicate_instance_ids(tmp_path, instance_ids):
+    data = {
+        "worker_configurations": {
+            "standard": {
+                "contract_version": WORKER_CONFIGURATION_CONTRACT_VERSION,
+                "version": "1", "generation": 1,
+            },
+        },
+        "worker_instances": [
+            {
+                "instance_id": instance_id, "configuration": "standard",
+                "configuration_version": "1", "profile_generation": 1,
+                "operating_user": user, "installation_id": installation,
+                "authenticated_at": 10, "readiness_checked_at": 20,
+                "readiness_expires_at": 30,
+            }
+            for instance_id, user, installation in zip(
+                instance_ids, ("alice", "bob"), ("install-a", "install-b"), strict=True
+            )
+        ],
+    }
+    (tmp_path / "garden.yaml").write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="unique non-empty instance IDs"):
+        Config.load(tmp_path)

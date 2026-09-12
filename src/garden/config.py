@@ -1199,9 +1199,14 @@ def _validate_worker_configurations(data: dict[str, Any]) -> None:
                 + ", ".join(unknown)
             )
     instances = [worker_instance_from_dict(value) for value in raw_instances]
+    instance_ids: set[str] = set()
     identities: set[tuple[str, str]] = set()
     credential_owners: dict[str, tuple[str, str]] = {}
     for instance in instances:
+        if (not isinstance(instance.instance_id, str) or not instance.instance_id.strip()
+                or instance.instance_id in instance_ids):
+            raise ValueError("worker instances require unique non-empty instance IDs")
+        instance_ids.add(instance.instance_id)
         profile = profiles.get(instance.configuration)
         if profile is None:
             raise ValueError(f"worker instance {instance.instance_id!r} references unknown configuration")
