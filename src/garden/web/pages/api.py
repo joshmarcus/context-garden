@@ -15,7 +15,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from ...events import DECISION_KINDS, EventLog, decision_notifications
-from ...model import effective_owner
+from ...github import is_git_remote_url
+from ...model import effective_owner, parse_execution_requirements
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
 from ...workers import WorkerContactStore
@@ -483,6 +484,11 @@ def register(app: FastAPI, site: Site) -> None:
             if not in_place and used >= capacity:
                 return Response(status_code=204)
             now = dt.datetime.now(dt.UTC)
+            busy_workers = {
+                r.host for r in runs if r.host and r.status == "running"
+                and (leased(r) or recovering(r)) and not r.process_finished()
+                and not r.final_received_at
+            }
             for run in runs:
                 if (run.runner != "remote" or run.status != "running"
                         or run.process_finished() or run.final_received_at):
@@ -492,6 +498,40 @@ def register(app: FastAPI, site: Site) -> None:
                 deadline = execution_deadline(run)
                 if deadline is not None and now >= deadline:
                     continue
+                raw_requirements = (run.env_snapshot or {}).get("execution_requirements")
+                if raw_requirements:
+                    from ...hosts import MatchReason, match_worker
+
+                    try:
+                        requirements = parse_execution_requirements(
+                            raw_requirements, source=f"run:{run.run_id}"
+                        )
+                    except ValueError as exc:
+                        run.env_snapshot["worker_match"] = {
+                            "reason": MatchReason.INVALID_REQUIREMENTS.value, "detail": str(exc)
+                        }
+                        run.save()
+                        continue
+                    match = match_worker(
+                        requirements, activity=("work" if run.mode in {
+                            "work", "revise", "resume", "rebase"
+                        } else run.mode),
+                        project=str(run.env_snapshot.get("product") or ""),
+                        owner=str(run.env_snapshot.get("execution_owner") or ""),
+                        configurations=hub.store.config.worker_configurations(),
+                        instances=hub.store.config.worker_instances(),
+                        busy_instance_ids=busy_workers - {str(body["host"])},
+                        pinned_instance_id=str(run.env_snapshot.get("worker_instance") or ""),
+                        held=deadline is not None and now >= deadline,
+                        now=now.timestamp(),
+                    )
+                    run.env_snapshot["worker_match"] = {
+                        "reason": match.reason.value, "detail": match.detail
+                    }
+                    if (match.reason is not MatchReason.MATCHED or match.instance is None
+                            or match.instance.instance_id != str(body["host"])):
+                        run.save()
+                        continue
                 # Checks execute the portable check payload and need no model harness.
                 # Every other remote mode is harness-backed: an empty offer means the
                 # host cannot execute it, rather than acting as a wildcard.
