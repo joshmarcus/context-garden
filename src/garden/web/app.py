@@ -39,7 +39,7 @@ from ..plants import (
 from ..runs import HistoryUnavailable
 from ..store import Store
 from . import actions, pages
-from .access import loopback_listener, route_access
+from .access import ADMINISTRATOR_READ_PATHS, loopback_listener, route_access
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
 from .trust import OriginCheck, safe_json, server_origins
 
@@ -120,6 +120,11 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     def member_authorizer(principal: Any, method: str, path: str) -> bool:
         if method in {"GET", "HEAD", "OPTIONS"}:
+            # Project visibility governs garden content, not operational configuration.
+            # Keep this explicit in the route inventory so administrative read surfaces
+            # cannot accidentally inherit the generic project-read policy.
+            if path.rstrip("/") in ADMINISTRATOR_READ_PATHS:
+                return authorize(principal, "administer")
             parts = path.split("/")
             project = parts[2] if len(parts) > 2 and parts[1] in {"projects", "phases"} else ""
             if len(parts) > 2 and parts[1] == "tasks":

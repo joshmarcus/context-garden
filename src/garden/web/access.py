@@ -10,6 +10,7 @@ OPERATOR_READ = "operator_read"
 OPERATOR_MUTATION = "operator_mutation"
 
 PUBLIC_PATHS = frozenset({"/healthz", "/favicon.svg"})
+ADMINISTRATOR_READ_PATHS = frozenset({"/config"})
 WORKER_PATHS = frozenset({
     "/api/runs/claim", "/api/runs/{run_id}/heartbeat", "/api/runs/{run_id}/finish",
 })
