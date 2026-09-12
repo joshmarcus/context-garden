@@ -7,6 +7,7 @@ from garden.criteria import (
     criteria_counts,
     evidence_gap_diagnosis,
     evidence_gaps,
+    normalize_verified,
     parse_criteria,
     reconcile,
     required_evidence,
@@ -213,6 +214,40 @@ def test_evidence_gaps_require_wording_drift_to_be_reconciled():
     assert evidence_gaps(criteria, verified2) == []
 
 
+def test_normalize_verified_expands_a_done_summary_or_notes_without_rewriting_worker_rows():
+    criteria = ["A renders.", "B returns 200.", "C remains visible."]
+    partial = {"status": "done", "summary": "Focused tests passed.", "verified": [
+        {"criterion": "A renders.", "evidence": "test_a"},
+        {"criterion": "B returns 200.", "not_done": True, "reason": "service unavailable"},
+        {"criterion": "Unknown criterion.", "evidence": "must remain visible"},
+    ]}
+    normalized = normalize_verified(criteria, partial)
+    assert normalized is not None
+    assert normalized[:3] == partial["verified"]
+    generated = normalized[3]
+    assert generated["criterion"] == "C remains visible."
+    assert generated["evidence"] == "summary: Focused tests passed."
+    assert generated["provenance"] == "normalized from worker summary attestation"
+    replay = {**partial, "verified": normalized}
+    assert normalize_verified(criteria, replay) == normalized
+
+    notes_only = normalize_verified(criteria[:1], {"status": "done", "notes": "Inspected the result."})
+    assert notes_only == [{"criterion": "A renders.", "evidence": "notes: Inspected the result.",
+                           "provenance": "normalized from worker notes attestation"}]
+
+
+def test_normalize_verified_rejects_empty_malformed_or_non_done_attestations_and_bounds_evidence():
+    criteria = ["A."]
+    for result in (
+        {"status": "done"}, {"status": "done", "summary": "  ", "notes": "\t"},
+        {"status": "done", "summary": 1}, {"status": "blocked", "summary": "looks good"},
+    ):
+        assert normalize_verified(criteria, result) is None
+    normalized = normalize_verified(criteria, {"status": "done", "summary": "x" * 2000})
+    assert normalized is not None
+    assert len(normalized[0]["evidence"]) == 1000
+
+
 def test_verification_markdown_surfaces_reconciliation_notes():
     criteria = ["A renders.", "B returns 200."]
     verified = [{"criterion": "A renders.", "evidence": "test_a"},
@@ -312,6 +347,27 @@ def test_silently_skipped_criterion_blocks_pr_and_requests_revision(sched, fake_
     findings = (revise_run.path / "references" / "context" / "review-findings.md").read_text()
     assert "acceptance criteria evidence" in findings
     assert "The widget renders on the home page." in findings
+
+
+def test_summary_only_result_is_persisted_for_pr_and_review(sched, fake_github, monkeypatch):
+    """A global attestation becomes durable per-criterion evidence before consumers run."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    _give_criteria(sched)
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "summary-only")
+
+    sched.tick()  # dispatch work
+    sched.tick()  # reap work -> persist normalization -> open PR and dispatch review
+
+    work_run = next(run for run in sched.runs.runs_for("DM-001") if run.mode == "work")
+    verified = work_run.result["verified"]
+    assert [row["criterion"] for row in verified] == parse_criteria(CRITERIA_BODY)
+    assert all(row["provenance"] == "normalized from worker summary attestation" for row in verified)
+    assert all(row["evidence"] == "summary: implemented the thing" for row in verified)
+    assert "summary: implemented the thing" in fake_github.created[-1]["body"]
+    review_run = sched.runs.latest("DM-001")
+    assert review_run.mode == "review"
+    assert "summary: implemented the thing" in (review_run.path / "brief.md").read_text()
 
 
 def test_targeted_check_evidence_opens_pr_without_full_suite_finding(sched, fake_github, monkeypatch):

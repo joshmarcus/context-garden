@@ -17,6 +17,7 @@ from ..criteria import (
     apply_verification,
     evidence_gap_diagnosis,
     evidence_gaps,
+    normalize_verified,
     parse_criteria,
 )
 from ..github import GitHubError, mark_garden_comment
@@ -488,6 +489,18 @@ class ReapMixin:
             self._retry_or_fail(task, run, rep, f"worker exited {run.exit_code}: {run.error[:200]}")
             return
         status = str(result.get("status", "")).lower()
+        # A done worker may give one clear overall attestation instead of mechanically
+        # repeating every frozen criterion. Persist its expansion before the pre-PR gate,
+        # PR renderer, or review can read this result; explicit rows (including not_done)
+        # remain intact and are never rewritten.
+        if status == "done":
+            snapshot = run.env_snapshot or {}
+            criteria = list(snapshot["criteria"]) if "criteria" in snapshot else parse_criteria(task.body)
+            normalized = normalize_verified(criteria, result)
+            if normalized is not None and normalized != result.get("verified"):
+                result["verified"] = normalized
+                run.result = result
+                run.save()
         # A headless worker can finish its commits but lose its final result while waiting for
         # an unattended command.  The worktree is the durable record in that case: salvage its
         # commits before treating an optional result/checklist omission as a failed attempt.

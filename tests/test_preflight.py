@@ -161,6 +161,25 @@ def test_mechanical_preflight_evidence_gate_distinguishes_gaps_from_explanations
     assert "A renders." not in gate["summary"] and "C is not done yet." not in gate["summary"]
 
 
+def test_mechanical_preflight_accepts_normalized_summary_evidence(garden, monkeypatch):
+    """The scheduler's normalized rows satisfy the unchanged deterministic gate."""
+    worktree = garden / "normalized-criteria-gate"
+    worktree.mkdir()
+    from garden import gitops
+    from garden.criteria import normalize_verified
+
+    monkeypatch.setattr(gitops, "base_ref", lambda *_args: "main")
+    monkeypatch.setattr(gitops, "git", lambda *args, **_kwargs:
+                        "+VALUE = 1\n" if "--name-only" not in args else "good.py\n")
+    criteria = ["A renders.", "B returns 200."]
+    result = {"status": "done", "summary": "Focused checks passed."}
+    verified = normalize_verified(criteria, result)
+    rows = mechanical_results(worktree, "main", "Description", require_description=True,
+                              ui_changed=False, captures=[], criteria=criteria, verified=verified,
+                              run_id="run-summary")
+    assert next(row for row in rows if row["name"] == "acceptance criteria evidence")["status"] == "pass"
+
+
 def test_capture_infrastructure_policy_defaults_required_and_validates(sched):
     assert sched.cfg.capture_infrastructure_policy() == "require"
     sched.cfg.data.setdefault("review", {})["capture_infrastructure_policy"] = "advisory"

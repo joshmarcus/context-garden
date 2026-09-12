@@ -585,13 +585,15 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   rebases, reviews, checks, prior attempts — and on a revise round it is omitted unless the
   description itself must change (the current one then stays). Process narration goes in
   `pr_comment`, posted as a PR comment.
-- `verified` speaks to each acceptance criterion by name: one entry per criterion, in order,
-  with `evidence` (the test that proves it, the command and its output, or the page and what
-  it shows), or `not_done` with a `reason`. The scheduler builds the PR body's `## Verification`
-  section from this list (`garden.criteria`), so the worker does not write one itself; the
-  automated review is shown the same list to check each claim against the diff, and
-  `garden metrics` reports criteria met on the first review per tier. A criterion with no
-  evidence is a finding, not a pass.
+- `verified` is useful when criterion-specific evidence or an explicit `not_done` outcome needs
+  to be recorded. A clear non-empty `summary` or `notes` attestation is also sufficient for a
+  `done` result: before checks, PR rendering, or review, the scheduler expands it into a bounded
+  evidence row quoting every otherwise-missing frozen criterion and records its summary/notes
+  provenance. Explicit worker rows, including `not_done`, are preserved. The scheduler builds
+  the PR body's `## Verification` section from those rows (`garden.criteria`), so the worker does
+  not write one itself; the automated review is shown the same list to check each claim against
+  the diff, and `garden metrics` reports criteria met on the first review per tier. Without an
+  explicit row or this attestation, a criterion with no evidence is a finding, not a pass.
 - `pre_flight` has one row for every item in the review rubric the brief gives the worker:
   criterion evidence, lint, conflict markers, UI captures where relevant, PR description, and
   criteria-by-name. Each row says `pass`, `not_applicable`, or `fail` and gives short evidence.
