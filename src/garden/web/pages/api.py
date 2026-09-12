@@ -271,8 +271,10 @@ def register(app: FastAPI, site: Site) -> None:
         task = fresh.tasks().get(run.task_id)
         owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
         principal = host.get("member_principal")
-        if principal is None or not authorize(principal, "mutate_work", owner_id=owner):
-            raise HTTPException(403, "scheduler is not authorized for this task assignee")
+        if (task is None or principal is None
+                or not authorize(principal, "mutate_work", owner_id=owner,
+                                 project=task.product)):
+            raise HTTPException(403, "scheduler is not authorized for this task")
 
     def execution_timeout_minutes(run: Any) -> float:
         """Return the snapshotted execution budget, keeping checks independently bounded."""
@@ -323,6 +325,7 @@ def register(app: FastAPI, site: Site) -> None:
 
     def claimed_run(run_id: str, host: dict[str, Any], lease_token: str):
         run = run_for(run_id)
+        authorize_member_run(run, host)
         ensure_claimed(run, host, lease_token)
         return run
 
@@ -525,8 +528,11 @@ def register(app: FastAPI, site: Site) -> None:
                 fresh = hub.fresh()
                 task = fresh.tasks().get(run.task_id)
                 if host_cfg.get("member_id"):
+                    principal = host_cfg.get("member_principal")
                     owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
-                    if owner != host_cfg["member_id"]:
+                    if (task is None or principal is None
+                            or not authorize(principal, "mutate_work", owner_id=owner,
+                                             project=task.product)):
                         continue
                 weight = int((run.env_snapshot or {}).get("resource_weight") or 1)
                 if not in_place and used + weight > capacity:
