@@ -293,7 +293,8 @@ def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
     garden_dir = tmp_path / ".garden"
     registry = MemberRegistry(garden_dir)
     token = registry.enroll_administrator("garden", "admin", "admin-box")
-    client = TestClient(create_coordination_app(garden_dir))
+    app = create_coordination_app(garden_dir)
+    client = TestClient(app)
 
     assert client.get("/v1/gardens/garden/snapshot").status_code == 401
     headers = {"Authorization": f"Bearer {token}"}
@@ -310,3 +311,29 @@ def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
         "authority_generation": 1, "expected_version": 0, "operation_id": "authority",
     })
     assert authority.status_code == 200 and authority.json()["version"] == 1
+
+    reservation = {
+        "pool": "phase:demo/p1:reviews", "operation_id": "claimless-reservation",
+        "units": 1, "spend_micros": 100, "unit_limit": 1, "spend_limit_micros": 100,
+    }
+    claimless = client.post(
+        "/v1/gardens/garden/reservations", headers=headers, json=reservation,
+    )
+    assert claimless.status_code == 403
+    with app.state.coordinator._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0] == 0
+
+    claim = client.post("/v1/gardens/garden/claims", headers=headers, json={
+        "kind": "phase", "scope": "demo/p1", "expected_version": 1,
+        "accepted_owner": "admin", "authority_generation": 1,
+        "operation_id": "phase-claim",
+    })
+    assert claim.status_code == 200
+    authorized = client.post("/v1/gardens/garden/reservations", headers=headers, json={
+        **reservation,
+        "pool": "reviews",
+        "operation_id": "authorized-reservation",
+        "claim": claim.json(),
+    })
+    assert authorized.status_code == 200
+    assert authorized.json() == {"status": "active", "units": 1, "spend_micros": 100}
