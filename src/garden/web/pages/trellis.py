@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ...graph import critical_path, mermaid, svg, validate, visible_ids
@@ -18,8 +18,12 @@ def register(app: FastAPI, site: Site) -> None:
     @app.get("/graph", response_class=HTMLResponse, include_in_schema=False)
     def trellis_page(request: Request, product: str | None = None, phase: str | None = None, closed: bool = False, hide: str | None = None):
         s = hub.fresh()
+        allowed = site.allowed_projects(request)
+        if product and allowed is not None and product not in allowed:
+            raise HTTPException(403, "project is not visible to this member")
         closed_keys = closed_phase_keys(s)
         tasks = {k: v for k, v in s.tasks().items()
+                 if (allowed is None or v.product in allowed)
                  if (not product or v.product == product) and (not phase or v.phase == phase)
                  and (closed or v.key not in closed_keys or (v.product, v.phase) == (product, phase))}
         try:
