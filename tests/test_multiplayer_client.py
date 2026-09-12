@@ -106,7 +106,9 @@ def test_commands_require_fresh_matching_revision_and_projection_sync_is_non_des
     target.parent.mkdir(parents=True)
     target.write_text(original)
 
+    assert local.projection_lag(snapshot) == ["task:CG-1@2"]
     assert local.synchronize(snapshot) == [path]
+    assert local.projection_lag(snapshot) == []
     assert target.read_text() == projected
     target.write_text("authored locally\n")
     snapshot["projections"][0].update(version=3, markdown="new authority\n")
