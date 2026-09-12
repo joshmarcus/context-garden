@@ -643,7 +643,6 @@ class ReviewMixin:
         if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         self._refuse_if_phase_not_admitted(task)
-        execution_requirements, worker_match = self._execution_match(task, "review")
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         review_tier = str(self.effective("review.difficulty", None, task.product)
                           or task.difficulty or "medium")
@@ -709,6 +708,9 @@ class ReviewMixin:
         review_diff_hash = gitops.diff_hash(wt, review_base_head)
         changed = gitops.diff_names(wt, review_base_head)
         work_run = self._review_source_for_head(task, review_head, work_run)
+        execution_requirements, worker_match = self._execution_match(
+            task, "review", source_run=work_run
+        )
         source_run = work_run.run_id if work_run is not None else ""
         source_head = self._review_source_head(work_run) if work_run is not None else ""
         pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None

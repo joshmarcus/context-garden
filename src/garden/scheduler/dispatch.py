@@ -26,7 +26,7 @@ MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 
 
 class DispatchMixin:
-    def _execution_match(self, task: Task, mode: str):
+    def _execution_match(self, task: Task, mode: str, *, source_run: Run | None = None):
         """Use the shared worker matcher before creating a constrained execution run."""
         try:
             requirements = self.cfg.execution_requirements(
@@ -45,6 +45,23 @@ class DispatchMixin:
         from ..hosts import MatchReason, match_worker
 
         owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
+        source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
+        source_envelope = source_snapshot.get("execution_envelope") or {}
+        source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
+        if source_owner and source_owner != owner:
+            detail = (f"source activity belongs to operating user {source_owner!r}; "
+                      f"current owner is {owner!r}")
+            self.state.get(task.id)["worker_match"] = {
+                "reason": MatchReason.NO_COMPATIBLE_PROFILE.value, "detail": detail,
+            }
+            self.state.save()
+            raise ResourcePressureError(f"worker match {MatchReason.NO_COMPATIBLE_PROFILE.value}: {detail}")
+        pinned_instance = str(
+            source_envelope.get("worker_instance")
+            or source_snapshot.get("worker_instance")
+            or task.extra.get("worker_instance")
+            or ""
+        )
         busy = {run.host for run in self.runs.active() if run.host}
         routing = self.state.get("_worker_routing")
         selection_counts = dict(routing.get("selection_counts") or {})
@@ -54,7 +71,7 @@ class DispatchMixin:
             configurations=self.cfg.worker_configurations(), instances=self.cfg.worker_instances(),
             busy_instance_ids=busy,
             selection_counts=selection_counts,
-            pinned_instance_id=str(task.extra.get("worker_instance") or ""),
+            pinned_instance_id=pinned_instance,
             held=self.budget_exceeded(task),
         )
         state = self.state.get(task.id)
@@ -80,6 +97,7 @@ class DispatchMixin:
         requirement_data = requirements.to_dict()
         encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
+        source_envelope = source_snapshot.get("execution_envelope") or {}
         source_requirements = source_snapshot.get("execution_requirements")
         if source_requirements and source_requirements != requirement_data:
             run.status = "failed"
@@ -94,6 +112,19 @@ class DispatchMixin:
                 "requires a fresh author dispatch"
             )
         instance = match.instance if match is not None else None
+        source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
+        source_instance = str(source_envelope.get("worker_instance")
+                              or source_snapshot.get("worker_instance") or "")
+        if ((source_owner and source_owner != owner)
+                or (source_instance and (instance is None or instance.instance_id != source_instance))):
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.error = "source execution identity changed; continuation fenced before launch"
+            run.save()
+            raise ResourcePressureError(
+                "source execution owner or worker instance changed; fenced recovery requires "
+                "the original authorized worker"
+            )
         run.env_snapshot.update({
             "execution_requirements": requirement_data,
             "execution_owner": owner,
@@ -659,7 +690,11 @@ class DispatchMixin:
                   pool_member: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
-        execution_requirements, worker_match = self._execution_match(task, mode)
+        source_run = (self._execution_source_run(task)
+                      if mode in {"revise", "resume", "rebase"} else None)
+        execution_requirements, worker_match = self._execution_match(
+            task, mode, source_run=source_run
+        )
         # A read-only local diagnosis may explain work in a closed or frozen phase, but it
         # is still new phase-owned model work and therefore obeys sequential phase order.
         if mode == "investigation":
@@ -998,8 +1033,7 @@ class DispatchMixin:
         run.env_snapshot.setdefault("resource_weight", self.cfg.product_resource_weight(task.product))
         self._record_execution_envelope(
             task, run, mode, execution_requirements, worker_match,
-            source_run=(self._execution_source_run(task, run)
-                        if mode in {"revise", "resume", "rebase"} else None),
+            source_run=source_run,
         )
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
