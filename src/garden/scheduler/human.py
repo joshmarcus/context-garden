@@ -1431,6 +1431,7 @@ class HumanMixin:
     def _close_phase(self, phase: Phase, force: bool, date: str) -> str:
         import datetime as _dt
 
+        self.require_phase_authority(phase, expected_generation=owner_generation)
         if phase.closed:
             return ""
         from ..stabilization import gate
@@ -1460,6 +1461,7 @@ class HumanMixin:
             self._reopen_phase(phase)
 
     def _reopen_phase(self, phase: Phase) -> None:
+        self.require_phase_authority(phase, expected_generation=owner_generation)
         if not phase.closed:
             raise RuntimeError(f"{phase.key} is not closed")
         self.store.set_phase_closed(phase, "")
