@@ -103,6 +103,34 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
 
 
+def test_multiplayer_administrator_reads_do_not_inherit_project_visibility(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "all")
+    member_token = registry.issue_installation(admin, "bob", "bob-browser")
+    registry.add_member(admin, "eve", "viewer", "all")
+    viewer_token = registry.issue_installation(admin, "eve", "eve-browser")
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    for token in (member_token, viewer_token):
+        headers = {"Authorization": f"Bearer {token}"}
+        for method in ("GET", "HEAD", "OPTIONS"):
+            response = client.request(method, "/config", headers=headers)
+            assert response.status_code == 403, (method, response.status_code)
+            assert "garden.yaml" not in response.text
+        assert client.get("/config?product=demo", headers=headers).status_code == 403
+        trailing = client.get("/config/", headers=headers, follow_redirects=False)
+        assert trailing.status_code == 403
+        assert trailing.headers.get("location") is None
+        assert client.get("/board", headers=headers).status_code == 200
+
+    assert client.get("/config", headers=admin_headers).status_code == 200
+    assert client.get("/config?product=demo", headers=admin_headers).status_code == 200
+
+
 def test_multiplayer_nonlocal_listener_requires_https_transport(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
