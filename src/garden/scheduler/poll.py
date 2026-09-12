@@ -125,11 +125,13 @@ class PollMixin:
         result: dict[tuple[str, int], tuple[PRInfo, Feedback]] = {}
         suppressed: set[str] = set()
         root = self.state.get(self._PR_OBSERVATIONS)
-        products = {str(product) for product in (self.cfg.data.get("products") or {})}
+        products = ({task.product for task in tasks.values() if self.task_is_authorized(task)}
+                    if self.coordinator is not None else
+                    {str(product) for product in (self.cfg.data.get("products") or {})})
         linked = {
             (task.product, self._pr_number(task)): task
             for task in tasks.values()
-            if task.pr
+            if task.pr and self.task_is_authorized(task)
         }
         for product in sorted(products):
             route = self.cfg.product_source_control(product)
