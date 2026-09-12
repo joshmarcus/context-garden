@@ -691,7 +691,11 @@ def test_partial_reclaim_requires_fresh_normal_gate_and_cooldown(sched, monkeypa
     assert "900→1200 MiB actual headroom" in sched.resource_status().reclaim
     observe = status_line(sched.store, sched, resolve(sched.cfg, sched))
     config = TestClient(create_app(sched.store, watch=False)).get("/config").text
-    assert "last bounded cache reclaim complete (900→1200 MiB actual headroom)" in observe
+    # Observe bounds long diagnostics; full reclaim evidence remains on the config page.
+    assert "last bounded cache reclaim complete" in observe
+    assert observe.endswith("…")
+    assert observe.index("spend $") < observe.index("last bounded cache reclaim complete")
+    assert "last bounded cache reclaim complete (900→1200 MiB actual headroom)" in config
     assert "Admission still requires a fresh ordinary headroom check" in config
 
 
