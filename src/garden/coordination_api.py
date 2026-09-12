@@ -90,6 +90,24 @@ def create_coordination_app(garden_dir: Path) -> FastAPI:
             raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
         return {"status": body.get("outcome")}
 
+    @app.post("/v1/gardens/{garden_id}/cancellations/acknowledge")
+    def acknowledge_cancellation(garden_id: str, body: dict[str, Any],
+                                 actor: Principal = Depends(principal)):
+        try:
+            coordinator.acknowledge_cancellation(actor, garden_id=garden_id, **body)
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
+        return {"status": "acknowledged"}
+
+    @app.post("/v1/gardens/{garden_id}/stale-evidence")
+    def stale_evidence(garden_id: str, body: dict[str, Any],
+                       actor: Principal = Depends(principal)):
+        try:
+            coordinator.retain_stale_evidence(actor, garden_id=garden_id, **body)
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
+        return {"status": "retained", "stale": True}
+
     @app.post("/v1/gardens/{garden_id}/outbox/{outbox_id}/finish")
     def finish_outbox(garden_id: str, outbox_id: int, body: dict[str, Any],
                       actor: Principal = Depends(principal)):
@@ -98,6 +116,17 @@ def create_coordination_app(garden_dir: Path) -> FastAPI:
         except (PermissionError, ValueError) as exc:
             raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
         return {"status": "done" if body.get("success") else "pending"}
+
+    @app.post("/v1/gardens/{garden_id}/outbox/{outbox_id}/supersede")
+    def supersede_outbox(garden_id: str, outbox_id: int, body: dict[str, Any],
+                         actor: Principal = Depends(principal)):
+        try:
+            coordinator.supersede_outbox(
+                actor, garden_id=garden_id, outbox_id=outbox_id, **body,
+            )
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
+        return {"status": "superseded"}
 
     @app.post("/v1/gardens/{garden_id}/reservations")
     def reserve(garden_id: str, body: dict[str, Any],
