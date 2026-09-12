@@ -3,6 +3,26 @@
 For installation and your first project, start with [getting started](getting-started.md).
 This page assumes a garden is configured and covers steady-state operation and recovery.
 
+## Repository-size work on recurring paths
+
+The following source inventory covers filesystem traversal and git or network subprocesses
+reachable from a scheduler tick and the task, Now, and Inbox pages. It distinguishes Garden's
+own bounded context and run records from a configured product checkout. Setup, checkout
+creation, kickoff, onboarding, cleanup, validation, fence capture, walkthrough capture, and
+operator-requested storage measurement are separate, explicitly initiated paths and are outside
+this inventory.
+
+| Entry point | Filesystem traversal | Git or network work |
+| --- | --- | --- |
+| Scheduler tick | `Store` discovers product, phase, task, spec, and phase-doc files under the Garden root; `RunStore` enumerates Garden-owned run records; `Run.last_activity_at` calls the only recurring product-worktree traversal, `_newest_mtime`, which stops after `_ACTIVITY_SCAN_BUDGET` entries and treats overflow as inconclusive. | PR and CI polling use their configured network clients. Reap and publication transitions may run bounded, named git ref, status, diff, rebase, and push commands; idle activity observation runs none. Clone, fetch, and worktree materialization belong to the excluded checkout-creation path. |
+| Task page | `Store` reads Garden context, `RunStore.runs_for` enumerates that task's run records, and the page reads Garden-owned event, persona, reference, and result data. It never traverses the product checkout. | None. Task-page design discovery was removed; the handler does not clone, fetch, diff, or inspect product refs. |
+| Now/status page | `Store` reads Garden context, while `now1.snapshot` enumerates Garden-owned run records and reads the event and operator-spend logs. It never traverses the product checkout. | None. The page renders the scheduler's recorded state. |
+| Inbox page | `Store` reads Garden context; `build_inbox`, burn-up, and tier summaries enumerate Garden-owned task, run, and event records. They never traverse the product checkout. | None. PR destinations are built from stored task URLs and branch names without a request-time host call. |
+
+The direct `/design/...` routes remain available when a person requests a known artifact. They
+are separate from task-page rendering and therefore do not add repository work to these core
+pages.
+
 ## Know what needs a person
 
 The scheduler automatically orders dependencies, dispatches eligible tasks, collects runs,
