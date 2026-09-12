@@ -46,6 +46,22 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             pass
 
 
+def _atomic_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 @dataclass(frozen=True)
 class AuthoritativeView:
     snapshot: dict[str, Any]
@@ -115,7 +131,9 @@ class MultiplayerClient:
         try:
             value = json.loads(self._cache_path.read_text())
             if (value.get("garden_id") != self.garden_id
-                    or value.get("protocol_version") != PROTOCOL_VERSION):
+                    or value.get("protocol_version") != PROTOCOL_VERSION
+                    or value.get("member_id") != self.member_id
+                    or value.get("installation_id") != self.installation_id):
                 return None
             return value
         except (OSError, ValueError, AttributeError):
@@ -192,8 +210,7 @@ class MultiplayerClient:
         changed: list[str] = []
         for relative, target, content, version in updates:
             if not target.exists() or target.read_text() != content:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content)
+                _atomic_text(target, content)
                 changed.append(relative)
             ledger[relative] = {"version": version, "content_hash": _digest(content)}
         _atomic_json(self._projection_path, ledger)
