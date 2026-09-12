@@ -912,6 +912,7 @@ class RetroMixin:
 
     def _launch_prepared_reconcile(self, prepared: dict[str, Any]) -> None:
         """Launch exactly the payload whose identity was durably committed under the lock."""
+        self.require_execution_authority()
         run = prepared["run"]
         runner = prepared["runner"]
         phase = prepared["phase"]
