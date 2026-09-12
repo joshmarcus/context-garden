@@ -98,6 +98,7 @@ MULTIPLAYER_EXECUTION_UNAVAILABLE = (
     "multiplayer execution is waiting for an authenticated operator assignment and "
     "scoped coordinator; identity-less scheduling is disabled"
 )
+NO_WORK_ASSIGNMENT = "No work assignment"
 
 
 class MultiplayerExecutionUnavailable(RuntimeError):
@@ -138,6 +139,28 @@ class Scheduler(
         """Require an authenticated coordinator client in explicit multiplayer mode."""
         if self.cfg.get("multiplayer.enabled", False) and self.coordinator is None:
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+
+    def execution_status(self) -> dict[str, str]:
+        """Describe this installation's execution boundary without starting work."""
+        if not self.cfg.get("multiplayer.enabled", False):
+            return {"state": "legacy", "label": "Single-user execution"}
+        if self.coordinator is None:
+            return {"state": "unavailable", "label": MULTIPLAYER_EXECUTION_UNAVAILABLE}
+        try:
+            view = self.coordinator.refresh()
+        except MultiplayerUnavailable as exc:
+            return {"state": "unavailable", "label": str(exc)}
+        snapshot = view.snapshot
+        if snapshot.get("role") == "viewer":
+            return {"state": "viewer", "label": "Viewer session — execution is disabled"}
+        assignment = snapshot.get("assignment")
+        if not assignment:
+            return {"state": "unassigned", "label": NO_WORK_ASSIGNMENT}
+        if not assignment.get("enabled"):
+            return {"state": "paused", "label": "Work assignment is paused"}
+        return {"state": "assigned", "label": (
+            f"Executing {assignment.get('project', '')}/{assignment.get('phase', '')}"
+        )}
 
     def _refresh_execution_authority(self) -> bool:
         """Load the current member cursor; an unassigned installation is safely idle."""

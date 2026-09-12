@@ -27,6 +27,22 @@ class ProjectionConflict(MultiplayerUnavailable):
     """A local authored edit and an authoritative projection need reconciliation."""
 
 
+def _connection_diagnostic(exc: Exception) -> str:
+    """Turn coordinator transport failures into setup actions, without exposing secrets."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status == 401:
+            return "coordinator rejected this installation credential; re-enroll or rotate it"
+        if status == 426:
+            return "coordinator protocol is incompatible with this Garden version; upgrade the client or service"
+        if status in {502, 503, 504}:
+            return "coordinator is disconnected; check its address and try again"
+        return f"coordinator rejected the request (HTTP {status})"
+    if isinstance(exc, httpx.ConnectError):
+        return "coordinator is disconnected; check its address and try again"
+    return str(exc)
+
+
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -164,8 +180,10 @@ class MultiplayerClient:
         except (httpx.HTTPError, ValueError, MultiplayerUnavailable) as exc:
             cached = self._load_cache() if allow_stale else None
             if cached is not None:
-                return AuthoritativeView(cached, True, str(exc))
-            raise MultiplayerUnavailable(f"authoritative coordinator unavailable: {exc}") from exc
+                return AuthoritativeView(cached, True, _connection_diagnostic(exc))
+            raise MultiplayerUnavailable(
+                f"authoritative coordinator unavailable: {_connection_diagnostic(exc)}"
+            ) from exc
 
     def command(self, path: str, body: dict[str, Any], *, kind: str, scope: str,
                 expected_version: int) -> dict[str, Any]:
