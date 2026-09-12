@@ -430,7 +430,9 @@ class RebaseMixin:
         oldest-approved candidate becomes the head."""
         head = self._current_merge_head()
         if head is not None:
-            self._advance_merge_head(head, rep)
+            if self.task_is_authorized(head):
+                with self.task_effect(head, f"merge-queue:{head.id}"):
+                    self._advance_merge_head(head, rep)
             return
         if self._merge_head_pending():
             # A pre-merge check dispatched for a would-be head is still in flight. Its
@@ -440,6 +442,8 @@ class RebaseMixin:
             return
         candidates: list[tuple[str, str, Task]] = []
         for t in self.store.tasks().values():
+            if not self.task_is_authorized(t):
+                continue
             if t.status != Status.IN_REVIEW:
                 continue
             if self._manual_reserved(t):
@@ -453,7 +457,9 @@ class RebaseMixin:
         if not candidates:
             return
         candidates.sort(key=lambda c: (c[0], c[1]))
-        self._merge_candidate(candidates[0][2], rep)
+        candidate = candidates[0][2]
+        with self.task_effect(candidate, f"merge-queue:{candidate.id}"):
+            self._merge_candidate(candidate, rep)
 
     def _merge_head_pending(self) -> bool:
         """Whether a pre-merge rebase's check run is in flight for a would-be head. Between the
@@ -461,6 +467,8 @@ class RebaseMixin:
         `merge_head` marker (the reap sets it) yet is already the queue's chosen head, so the
         queue must not pick another candidate meanwhile."""
         for t in self.store.tasks().values():
+            if not self.task_is_authorized(t):
+                continue
             info = self.state.get(t.id).get("check_run") or {}
             if info.get("stage") == "merge_rebase" and (info.get("cont") or {}).get("merge_head"):
                 return True
@@ -471,6 +479,8 @@ class RebaseMixin:
         left on a task that is no longer an `in_review` automerge candidate is cleared here."""
         head: Task | None = None
         for t in self.store.tasks().values():
+            if not self.task_is_authorized(t):
+                continue
             st = self.state.get(t.id)
             if not st.get("merge_head"):
                 continue
