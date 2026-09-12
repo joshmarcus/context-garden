@@ -599,6 +599,7 @@ class DispatchMixin:
                 self.principal, task, self.store.phase(task.product, task.phase),
                 expected_generation=assignment_generation,
             )
+        self._task_authority(task)
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
