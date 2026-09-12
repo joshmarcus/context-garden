@@ -64,7 +64,7 @@ def register(app: FastAPI, site: Site) -> None:
             t = s.task(task_id)
         except KeyError:
             raise HTTPException(404) from None
-        tasks = s.tasks()
+        tasks = site.visible_tasks(request, s)
         sched = hub.reader(s)
         rs = RunStore(s.config.garden_dir)
         runs = rs.runs_for(t.id)
@@ -86,6 +86,13 @@ def register(app: FastAPI, site: Site) -> None:
                                   (st.get("last_review") or {}).get("criteria"))
         evidence_rows = required_evidence_rows(required_evidence(t.body, t.extra.get("requires")), st)
         gaps = brief_gaps(s, t) if t.status.value == "draft" else []
+        blocker_ids = sched.task_blockers(t, tasks)
+        visible_blockers = [dependency for dependency in blocker_ids if dependency in tasks]
+        hidden_blockers = sum(dependency not in tasks for dependency in blocker_ids)
+        blocker_labels = [*visible_blockers, *(
+            [f"{hidden_blockers} inaccessible blocker{'s' if hidden_blockers != 1 else ''}"]
+            if hidden_blockers else []
+        )]
 
         # Phases this task can move to (the product's own phases, current one always shown even
         # if closed), and any dependency that now sits in a later phase and so can never merge
@@ -146,7 +153,8 @@ def register(app: FastAPI, site: Site) -> None:
             }
         return templates.TemplateResponse(request, "task.html", ctx(
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
-            task=t, eff=sched.task_effective_status(t, tasks), blockers=sched.task_blockers(t, tasks), usage=usage,
+            task=t, eff=sched.task_effective_status(t, tasks), blockers=blocker_labels, usage=usage,
+            dependency_labels=site.dependency_labels(t, tasks),
             dependency_after=lambda dep: dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             manual_reservation=(st.get("manual_reservation") if isinstance(st.get("manual_reservation"), dict) else None),
