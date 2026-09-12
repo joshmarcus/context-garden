@@ -148,6 +148,17 @@ class Scheduler(
         )
         if multiplayer and self.coordinator is None and self.principal is None:
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+        if self.cfg.get("multiplayer.enabled", False) and self.coordinator is not None:
+            if self.principal is None:
+                raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+            try:
+                self.coordinator.prepare(mutation=True)
+            except MultiplayerUnavailable as exc:
+                raise MultiplayerExecutionUnavailable(str(exc)) from exc
+        try:
+            self.coordinator.prepare(mutation=True)
+        except MultiplayerUnavailable as exc:
+            raise MultiplayerExecutionUnavailable(str(exc)) from exc
 
     def execution_status(self) -> dict[str, str]:
         """Describe this installation's execution boundary without starting work."""
@@ -369,10 +380,12 @@ class Scheduler(
         self.cfg = store.config
         try:
             self.coordinator = MultiplayerClient.from_config(self.cfg)
-        except MultiplayerUnavailable:
+            self.coordinator_error = ""
+        except MultiplayerUnavailable as exc:
             # Existing multiplayer startup remains fail-closed and can render its setup
             # diagnostic even when enrollment is incomplete.
             self.coordinator = None
+            self.coordinator_error = str(exc)
         self.members = MemberRegistry(self.cfg.garden_dir)
         # Execution identity belongs to this installation, not to the browser request
         # that happened to construct a scheduler.  Request principals authorize HTTP
@@ -958,13 +971,16 @@ class Scheduler(
         # final common boundary still rejects stale ownership before their durable write.
         self._task_authority(task)
         old = task.status.value
-        if self.coordinator is not None:
+        if self.cfg.get("multiplayer.enabled", False):
             self.require_execution_authority()
+            assert self.coordinator is not None
             current = task.path.read_text() if task.path.exists() else ""
             proposed = copy.deepcopy(task)
             proposed.status = status
             proposed.log(note)
             proposed.touch()
+            # The coordinator commits first. A rejected or disconnected command therefore
+            # cannot leave an authoritative installation with a standalone local transition.
             self.coordinator.transition(
                 kind="task", scope=task.id, new_state=status.value, markdown=proposed.render(),
                 path=str(task.path.resolve().relative_to(self.cfg.root.resolve())),
