@@ -342,8 +342,14 @@ def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: 
     except MultiplayerExecutionUnavailable as e:
         err.print(f"[yellow]{e}[/yellow]")
         raise typer.Exit(1) from None
+    execution = sched.execution_status()
+    if execution["state"] in {"viewer", "unavailable"}:
+        err.print(f"[yellow]{execution['label']}[/yellow]")
+        raise typer.Exit(2)
     heartbeat = WatchHeartbeat(store.config.garden_dir, interval)
     console.print(f"watching {store.root} every {interval}s (ctrl-c to stop)")
+    if execution["state"] in {"unassigned", "paused"}:
+        console.print(f"[yellow]{execution['label']}[/yellow] — watching without scheduler work")
     try:
         heartbeat.write("starting")
         start_rep = sched.reap_on_start()  # reap any run the last process finished but never reaped

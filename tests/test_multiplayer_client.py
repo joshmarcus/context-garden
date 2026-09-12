@@ -136,6 +136,19 @@ def test_snapshot_rejects_garden_and_protocol_mismatch_and_reports_projection_la
     assert client(tmp_path, service).refresh().projection_lag() == ["task:CG-1@4"]
 
 
+@pytest.mark.parametrize(
+    ("status", "diagnostic"),
+    [(401, "re-enroll or rotate"), (426, "protocol is incompatible"), (503, "disconnected")],
+)
+def test_snapshot_reports_actionable_credential_protocol_and_outage_errors(tmp_path, status, diagnostic):
+    class Rejected(Service):
+        def __call__(self, _method, _url, **_kwargs):
+            return response(status, {"detail": "rejected"})
+
+    with pytest.raises(MultiplayerUnavailable, match=diagnostic):
+        client(tmp_path, Rejected({})).refresh(allow_stale=False)
+
+
 def test_stale_cache_is_bound_to_the_authenticated_installation(tmp_path):
     service = Service(snapshot_identity({
         "protocol_version": 1, "garden_id": "garden", "authority": [], "projections": [],

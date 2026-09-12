@@ -213,13 +213,17 @@ class Hub:
         self.tick_record: dict[str, Any] = {}
         self.watch = watch
         self.scheduler_blocked_reason = scheduler_blocked_reason
-        self._embedded_state = "waiting" if scheduler_blocked_reason else ("starting" if watch else "off")
+        if watch and not scheduler_blocked_reason:
+            execution = self.execution_status()
+            if execution["state"] in {"viewer", "unavailable"}:
+                self.scheduler_blocked_reason = execution["label"]
+        self._embedded_state = "waiting" if self.scheduler_blocked_reason else ("starting" if watch else "off")
         self._embedded_heartbeat = ""
         self._embedded_error = ""
         self._watch_thread: threading.Thread | None = None
         self.planning: dict[str, str] = {}  # "product/phase" -> status text
         self._stop = threading.Event()
-        if watch and not scheduler_blocked_reason:
+        if watch and not self.scheduler_blocked_reason:
             self._watch_thread = threading.Thread(target=self._loop, daemon=True, name="garden-watch")
             self._watch_thread.start()
 
@@ -239,6 +243,32 @@ class Hub:
                     ]}
         except MultiplayerUnavailable as exc:
             return {"configured": True, "stale": True, "error": str(exc), "projection_lag": []}
+
+    def execution_status(self) -> dict[str, str]:
+        """The local execution scope, separate from an HTTP caller's view scope."""
+        if not self.store.config.get("multiplayer.enabled", False):
+            return {"state": "legacy", "label": "Single-user execution"}
+        if self.coordinator is None:
+            return {"state": "unavailable", "label": (
+                "multiplayer execution is waiting for an authenticated operator assignment and "
+                "scoped coordinator; identity-less scheduling is disabled"
+            )}
+        try:
+            view = self.authoritative_view()
+            assert view is not None
+        except MultiplayerUnavailable as exc:
+            return {"state": "unavailable", "label": str(exc)}
+        snapshot = view.snapshot
+        if snapshot.get("role") == "viewer":
+            return {"state": "viewer", "label": "Viewer session — execution is disabled"}
+        assignment = snapshot.get("assignment")
+        if not assignment:
+            return {"state": "unassigned", "label": "No work assignment"}
+        if not assignment.get("enabled"):
+            return {"state": "paused", "label": "Work assignment is paused"}
+        return {"state": "assigned", "label": (
+            f"Executing {assignment.get('project', '')}/{assignment.get('phase', '')}"
+        )}
 
     def scheduler(self) -> Scheduler:
         # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
@@ -584,6 +614,7 @@ class Site:
             "last_tick": hub.last_tick,
             "scheduler_status": hub.scheduler_health(),
             "coordinator_status": hub.coordinator_status(),
+            "execution_status": hub.execution_status(),
             "server_now": now_iso(),  # the clock every live elapsed counter is offset against
             "products": visible_products,
             "has_design": any(product_design_root(s, p.name).is_dir() for p in visible_products),
