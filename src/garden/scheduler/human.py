@@ -1506,6 +1506,10 @@ class HumanMixin:
         return date
 
     def reopen_phase(self, phase: Phase, owner_generation: int | None = None) -> None:
+        with self.phase_effect(phase.product, phase.name, f"reopen-phase:{phase.key}"):
+            self._reopen_phase(phase)
+
+    def _reopen_phase(self, phase: Phase) -> None:
         self.require_phase_authority(phase, expected_generation=owner_generation)
         with self.phase_effect(phase.product, phase.name, f"reopen-phase:{phase.key}"):
             self._reopen_phase(phase, owner_generation)
