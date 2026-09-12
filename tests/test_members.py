@@ -528,7 +528,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
-
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
