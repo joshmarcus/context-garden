@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -731,6 +732,116 @@ def test_log_exposes_recovery_state_without_raw_attach_details(sched, tmp_path, 
     assert "tmux attach-session" not in output.output
     assert "boxA" not in output.output
     reap_collector(run)
+
+
+def test_attach_selects_only_the_exact_live_session_and_quotes_it(sched, garden, monkeypatch):
+    """The CLI path does not pick a retry or let a recorded session alter its shell command."""
+    from garden.cli import diagnostics
+
+    run = sched.runs.new_run("DM-001", "ssh", run_id="attach-live")
+    run.status, run.host = "running", "boxA"
+    run.env_snapshot = {"ssh_tmux_session": "garden-safe; touch never"}
+    run.save()
+    store = sched.store
+
+    command = diagnostics._attach_command(store, diagnostics._attach_run(store, "DM-001", ""))
+    assert command[0] == str(store.config.get("ssh.ssh_bin"))
+    assert command[-3:-1] == ["-tt", "boxA"]
+    assert command[-1] == "tmux attach-session -r -t '=garden-safe; touch never'"
+
+    completed = sched.runs.new_run("DM-001", "ssh", run_id="attach-finished")
+    completed.status, completed.host = "done", "boxA"
+    completed.env_snapshot = {"ssh_tmux_session": "garden-finished"}
+    completed.save()
+    with pytest.raises(ValueError, match="no longer running"):
+        diagnostics._attach_run(store, "DM-001", completed.run_id)
+
+    second = sched.runs.new_run("DM-001", "ssh", run_id="attach-second")
+    second.status, second.host = "running", "boxA"
+    second.env_snapshot = {"ssh_tmux_session": "garden-second"}
+    second.save()
+    with pytest.raises(ValueError, match="pass --run RUN_ID"):
+        diagnostics._attach_run(store, "DM-001", "")
+
+
+def test_attach_denies_another_member_and_never_launches_ssh(sched, garden, monkeypatch):
+    import yaml
+
+    from garden.cli import diagnostics
+    from garden.members import MemberRegistry
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["multiplayer"] = {"enabled": True}
+    config_path.write_text(yaml.safe_dump(config))
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: alice"))
+    registry = MemberRegistry(garden / ".garden")
+    admin_token = registry.enroll_administrator("test-garden", "alice", "alice-cli")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "bob", "member", "all")
+    monkeypatch.setenv("GARDEN_MEMBER_TOKEN", registry.issue_installation(admin, "bob", "bob-cli"))
+    from garden.store import Store
+
+    store = Store(garden)
+    assert not diagnostics._attach_authorized(store, store.task("DM-001"))
+
+
+def test_attach_requires_a_terminal_and_runs_only_the_selected_attempt(sched, garden, monkeypatch):
+    from garden.cli import diagnostics
+    from tests.test_cli import run as cli
+
+    live = sched.runs.new_run("DM-001", "ssh", run_id="attach-cli")
+    live.status, live.host = "running", "boxA"
+    live.env_snapshot = {"ssh_tmux_session": "garden-attach-cli"}
+    live.save()
+    noninteractive = cli(garden, "attach", "DM-001")
+    assert noninteractive.exit_code == 2
+    assert "interactive local terminal" in noninteractive.output
+
+    executed = []
+    monkeypatch.setattr(diagnostics, "_interactive_terminal", lambda: True)
+    monkeypatch.setattr(diagnostics.subprocess, "run", lambda command, check: executed.append(command)
+                        or subprocess.CompletedProcess(command, 0))
+    attached = cli(garden, "attach", "DM-001", "--run", live.run_id)
+    assert attached.exit_code == 0, attached.output
+    assert executed and executed[0][-1].endswith("=garden-attach-cli")
+
+
+def test_attach_transport_joins_a_disposable_real_tmux_session(sched, garden, tmp_path):
+    """A local SSH transport double proves the generated argv attaches without killing its pane."""
+    from garden.cli import diagnostics
+
+    if not Path("/usr/bin/tmux").exists():
+        pytest.skip("real tmux is unavailable")
+    run = sched.runs.new_run("DM-001", "ssh", run_id="attach-tmux")
+    run.status, run.host = "running", "boxA"
+    run.env_snapshot = {"ssh_tmux_session": "garden-attach-tmux"}
+    run.save()
+    socket_dir = Path(tempfile.mkdtemp(prefix="garden-tmux-", dir="/tmp"))
+    environment = {"PATH": "/usr/bin:/bin", "TMUX_TMPDIR": str(socket_dir), "TERM": "xterm"}
+    transport = tmp_path / "ssh-transport"
+    transport.write_text("#!/bin/sh\nfor remote; do :; done\nexec sh -c \"$remote\"\n")
+    transport.chmod(0o755)
+    try:
+        subprocess.run(["/usr/bin/tmux", "new-session", "-d", "-s", "garden-attach-tmux", "sleep 30"],
+                       check=True, env=environment)
+        command = diagnostics._attach_command(sched.store, run)
+        command[0] = str(transport)
+        attached = subprocess.Popen(["script", "-qefc", shlex.join(command), "/dev/null"],
+                                    env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(0.2)
+        subprocess.run(["/usr/bin/tmux", "detach-client", "-s", "garden-attach-tmux"],
+                       check=True, env=environment)
+        _stdout, stderr = attached.communicate(timeout=5)
+        assert attached.returncode == 0, stderr
+        assert subprocess.run(["/usr/bin/tmux", "has-session", "-t", "garden-attach-tmux"],
+                              env=environment, capture_output=True).returncode == 0
+    finally:
+        subprocess.run(["/usr/bin/tmux", "kill-session", "-t", "garden-attach-tmux"],
+                       env=environment, check=False, capture_output=True)
+        shutil.rmtree(socket_dir, ignore_errors=True)
 
 
 def test_recovery_page_reconnects_same_run_without_offering_a_fresh_worker(sched, tmp_path, monkeypatch):

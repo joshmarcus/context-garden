@@ -755,9 +755,13 @@ at their byte offsets and adopts the same result. Credentials and the fresh remo
 environment cross a private, one-use pipe; neither is stored in the supervisor's files or
 tmux arguments. Existing `worker_env.pass` and `setup.env` policies still apply.
 
-`garden log TASK-ID` shows the logical host and a command like
-`tmux attach-session -r -t garden-TASK-ID-<run-key>`. Connect to that host first, then run
-the command to watch without sending keystrokes to the worker. Detach with **Ctrl-b d**.
+`garden attach TASK-ID` opens SSH to the recorded host and joins that task's current tmux
+session in read-only mode, without sending keystrokes to the worker. If a task has more
+than one live attempt, select the exact attempt with `--run RUN-ID`; Garden refuses to
+guess. Detach with **Ctrl-b d**. `garden log TASK-ID` remains available for recorded output
+when the local terminal is noninteractive, the host is unreachable, the run has completed,
+or the execution backend has no tmux session. It still shows the logical host and the
+read-only tmux command for manual troubleshooting.
 The pane displays assistant text and tool activity while the complete raw stream remains
 in the run logs. Finished sessions and run artifacts remain available for inspection;
 remove only the named finished session when done, never the shared tmux server. Each
