@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,10 @@ def create_coordination_app(garden_dir: Path) -> FastAPI:
     @app.get("/v1/gardens/{garden_id}/snapshot")
     def snapshot(garden_id: str, actor: Principal = Depends(principal),
                  protocol_version: int = 1):
-        return coordinator.snapshot(actor, garden_id, protocol_version=protocol_version)
+        value = coordinator.snapshot(actor, garden_id, protocol_version=protocol_version)
+        assignment = registry.assignment(actor.member_id)
+        value["assignment"] = asdict(assignment) if assignment is not None else None
+        return value
 
     @app.post("/v1/gardens/{garden_id}/authority")
     def set_authority(garden_id: str, body: dict[str, Any],

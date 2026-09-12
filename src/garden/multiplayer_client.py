@@ -8,6 +8,7 @@ import os
 import tempfile
 import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,7 @@ class MultiplayerClient:
         self._request = request or httpx.request
         self._cache_path = self.root / ".garden" / "authoritative-snapshot.json"
         self._projection_path = self.root / ".garden" / "authoritative-projections.json"
+        self._claims: dict[tuple[str, str], dict[str, Any]] = {}
 
     @classmethod
     def from_config(cls, config: Config, **kwargs: Any) -> MultiplayerClient | None:
@@ -191,6 +193,60 @@ class MultiplayerClient:
             return response.json()
         except httpx.HTTPError as exc:
             raise MultiplayerUnavailable(f"authoritative command rejected: {exc}") from exc
+
+    def claim(self, *, kind: str, scope: str, owner_id: str,
+              authority_generation: int, expected_version: int) -> dict[str, Any]:
+        """Acquire (or reuse) this installation's fenced lifecycle lease."""
+        key = (kind, scope)
+        current = self._claims.get(key)
+        if (current and current.get("owner_id") == owner_id
+                and int(current.get("authority_generation", -1)) == authority_generation):
+            return current
+        operation_id = f"claim:{self.installation_id}:{kind}:{scope}:{uuid.uuid4().hex}"
+        claim = self.command(
+            "/claims", {
+                "kind": kind, "scope": scope, "accepted_owner": owner_id,
+                "authority_generation": authority_generation,
+                "operation_id": operation_id,
+            }, kind=kind, scope=scope, expected_version=expected_version,
+        )
+        self._claims[key] = claim
+        return claim
+
+    @contextmanager
+    def effect(self, *, kind: str, scope: str, owner_id: str,
+               authority_generation: int, expected_version: int,
+               effect_key: str, provider: str = "scheduler"):
+        """Fence one mutation and leave uncertain effects blocked for reconciliation."""
+        claim = self.claim(kind=kind, scope=scope, owner_id=owner_id,
+                           authority_generation=authority_generation,
+                           expected_version=expected_version)
+        operation_id = f"effect:{self.installation_id}:{uuid.uuid4().hex}"
+        self.command(
+            "/effects", {
+                "claim": claim, "provider": provider, "effect_key": effect_key,
+                "operation_id": operation_id, "credential_scope": f"{provider}:write",
+                "precondition": f"authority={expected_version}",
+                "request": {"kind": kind, "scope": scope},
+            }, kind=kind, scope=scope, expected_version=expected_version,
+        )
+        try:
+            yield claim
+        except BaseException:
+            self._finish_effect(operation_id, "unknown")
+            raise
+        else:
+            self._finish_effect(operation_id, "succeeded")
+
+    def _finish_effect(self, operation_id: str, outcome: str) -> None:
+        try:
+            response = self._request(
+                "POST", self._url(f"/effects/{operation_id}/finish"),
+                headers=self._headers, json={"outcome": outcome}, timeout=10,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise MultiplayerUnavailable(f"could not record authoritative effect outcome: {exc}") from exc
 
     def synchronize(self, snapshot: dict[str, Any] | None = None) -> list[str]:
         """Apply projections only when their recorded local base is unchanged."""
