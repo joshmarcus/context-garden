@@ -883,8 +883,10 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         source_head = str(run.get("source_head") or "")
         stage = "checkout"
         if source_head:
-            subprocess.run(["git", "checkout", "--detach", source_head], cwd=repo, check=True,
-                           pass_fds=(lock_fd,))
+            checkout = (["git", "checkout", "--detach", source_head]
+                        if run.get("mode") == "check"
+                        else ["git", "checkout", "-B", branch, source_head])
+            subprocess.run(checkout, cwd=repo, check=True, pass_fds=(lock_fd,))
             actual_source = subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
                 check=True, pass_fds=(lock_fd,),

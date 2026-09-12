@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from garden import gitops, managed_worker
 from garden.ci_status import worker_check_status
+from garden.github import is_git_remote_url
 from garden.harness import Harness
 from garden.hosts.drain import WorkerDrainStore
 from garden.hosts.models import HostFacts, HostState
@@ -261,6 +262,16 @@ def test_replacement_recovers_crash_immediately_after_durable_handoff(
 def queued_run(store, task_id="DM-001"):
     run = RunStore(store.config.garden_dir).new_run(task_id, "remote", mode="work")
     run.branch, run.base, run.harness, run.model, run.difficulty = "garden/dm-001", "main", "claude", "small", "easy"
+    run.env_snapshot["prepared_source_head"] = gitops.git(
+        "rev-parse", "HEAD", cwd=store.root.parent / "repo"
+    ).strip()
+    configured_repo = str(store.task(task_id).repo or store.config.product_repo("demo"))
+    run.env_snapshot.update({
+        "product": "demo",
+        "remote_repo": configured_repo if is_git_remote_url(configured_repo) else gitops.git(
+            "remote", "get-url", "origin", cwd=store.root.parent / "repo"
+        ).strip(),
+    })
     RemoteRunner({"worker_env": store.config.get("worker_env")}, store.config.harness("claude")).start(run, store.root, "safe brief")
     return run
 
@@ -987,9 +998,12 @@ def test_claim_request_replay_fences_host_generation_and_expiry(garden, monkeypa
     (False, "git@example.test:team/project.git"),
     (True, "../repo"),
 ])
-def test_claim_resolves_controller_repository_before_reading_branch_head(
+def test_claim_binds_the_head_the_scheduler_resolved_before_dispatch(
     garden, monkeypatch, task_override, reference,
 ):
+    """the scheduler resolves the controller repository and reads the branch head
+    while dispatching a run, before it is claimable. A claim only binds that already-resolved,
+    immutable head; it never clones, fetches, or otherwise resolves a checkout of its own."""
     repo = garden.parent / "repo"
     gitops.git("push", "origin", "main:refs/heads/garden/dm-001", cwd=repo)
     expected_head = gitops.git("rev-parse", "HEAD", cwd=repo).strip()
@@ -1010,7 +1024,19 @@ def test_claim_resolves_controller_repository_before_reading_branch_head(
         cfg["products"]["demo"]["repo"] = reference
         path.write_text(yaml.safe_dump(cfg))
     client, store = remote_client(garden, monkeypatch)
-    queued_run(store)
+
+    sched = Scheduler(store, log=print)
+    run = sched.dispatch(store.task("DM-001"), mode="work", branch_override="garden/dm-001")
+    assert run.status == "running"
+    assert not run.source_head and run.start_head == expected_head
+    assert run.env_snapshot["prepared_source_head"] == expected_head
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("a claim must not clone, fetch, or otherwise resolve a checkout")
+
+    monkeypatch.setattr(gitops, "ensure_repo", _forbidden)
+    monkeypatch.setattr(gitops, "fetch", _forbidden)
+    monkeypatch.setattr(gitops, "git", _forbidden)
 
     response = client.post("/api/runs/claim",
                            json={"host": "build-1", "harnesses": ["claude"]},
@@ -1022,6 +1048,44 @@ def test_claim_resolves_controller_repository_before_reading_branch_head(
     if reference != "../repo":
         assert response.json()["repo"] == reference
         assert (store.config.repos_dir / "project/.git").is_dir()
+
+
+def test_claim_never_prepares_a_checkout_and_ignores_a_still_preparing_run(garden, monkeypatch):
+    """A run mid-dispatch (status "preparing") is not yet claimable, and the claim handler
+    performs no clone/fetch of its own at any point -- proving the claim response stays
+    bounded even if a checkout would be slow or blocked to prepare."""
+    client, store = remote_client(garden, monkeypatch)
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError("a claim must not clone, fetch, or otherwise resolve a checkout")
+
+    monkeypatch.setattr(gitops, "ensure_repo", _forbidden)
+    monkeypatch.setattr(gitops, "fetch", _forbidden)
+    monkeypatch.setattr(gitops, "git", _forbidden)
+
+    run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="work",
+                                                     initial_status="preparing")
+    run.branch, run.base, run.harness, run.model, run.difficulty = "garden/dm-001", "main", "claude", "small", "easy"
+    run.save()
+
+    still_preparing = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                                  headers={"Authorization": "Bearer secret-token"})
+    assert still_preparing.status_code == 204
+
+    run.status = "running"
+    run.env_snapshot.update({
+        "product": "demo",
+        "remote_repo": "https://example.test/team/project.git",
+        "prepared_source_head": "c" * 40,
+    })
+    run.save()
+
+    ready = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                        headers={"Authorization": "Bearer secret-token"})
+    assert ready.status_code == 200
+    assert ready.json()["source_head"] == run.env_snapshot["prepared_source_head"]
+    saved = RunStore(store.config.garden_dir).latest("DM-001")
+    assert not saved.start_head
 
 
 @pytest.mark.parametrize("task_override,reference", [
@@ -1045,8 +1109,6 @@ def test_claim_preserves_configured_scp_repository_reference(
         path.write_text(yaml.safe_dump(cfg))
     client, store = remote_client(garden, monkeypatch)
     queued_run(store)
-    repo = garden.parent / "repo"
-    monkeypatch.setattr("garden.web.pages.api.gitops.ensure_repo", lambda *_args, **_kwargs: repo)
 
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                            headers={"Authorization": "Bearer secret-token"})
@@ -1076,8 +1138,6 @@ def test_claim_preserves_scp_repository_over_served_http(garden, monkeypatch, re
     client, store = remote_client(garden, monkeypatch)
     client.close()
     queued_run(store)
-    repo = garden.parent / "repo"
-    monkeypatch.setattr("garden.web.pages.api.gitops.ensure_repo", lambda *_args, **_kwargs: repo)
     application = create_app(store, watch=False, host="127.0.0.1")
     server = uvicorn.Server(uvicorn.Config(application, log_level="error"))
     sock = socket.socket()
@@ -1277,13 +1337,17 @@ def test_remote_weighted_admission_first_fits_cheap_work_without_bypassing_cap(g
     occupied.save()
     heavy = runs.new_run("HEAVY-001", "remote", mode="work")
     heavy.harness, heavy.difficulty = "claude", "easy"
-    heavy.env_snapshot = {"product": "demo", "resource_weight": 2,
+    heavy.env_snapshot = {"product": "demo", "remote_repo": "https://example.test/demo.git",
+                          "source_head": "a" * 40, "resource_weight": 2,
                           "execution_timeout_minutes": 120}
+    heavy.env_snapshot["prepared_source_head"] = heavy.env_snapshot["source_head"]
     RemoteRunner({}, store.config.harness("claude")).start(heavy, store.root, "heavy")
     cheap = runs.new_run("CHEAP-001", "remote", mode="work")
     cheap.harness, cheap.difficulty = "claude", "easy"
-    cheap.env_snapshot = {"product": "demo", "resource_weight": 1,
+    cheap.env_snapshot = {"product": "demo", "remote_repo": "https://example.test/demo.git",
+                          "source_head": "b" * 40, "resource_weight": 1,
                           "execution_timeout_minutes": 15}
+    cheap.env_snapshot["prepared_source_head"] = cheap.env_snapshot["source_head"]
     RemoteRunner({}, store.config.harness("claude")).start(cheap, store.root, "cheap")
 
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
@@ -1307,7 +1371,9 @@ def test_remote_weighted_admission_first_fits_cheap_work_without_bypassing_cap(g
     claimed_cheap.save()
     another = runs.new_run("CHEAP-002", "remote", mode="work")
     another.harness, another.difficulty = "claude", "easy"
-    another.env_snapshot = {"product": "demo", "resource_weight": 1}
+    another.env_snapshot = {"product": "demo", "remote_repo": "https://example.test/demo.git",
+                            "source_head": "c" * 40, "resource_weight": 1}
+    another.env_snapshot["prepared_source_head"] = another.env_snapshot["source_head"]
     RemoteRunner({}, store.config.harness("claude")).start(another, store.root, "another cheap")
 
     protected = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"],
@@ -1379,7 +1445,9 @@ def test_remote_base_probe_materialises_its_advertised_source(garden, monkeypatc
 def test_remote_check_has_no_worker_execution_deadline(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="check")
-    run.env_snapshot = {"product": "demo", "execution_timeout_minutes": 0}
+    run.source_head = "a" * 40
+    run.env_snapshot = {"product": "demo", "remote_repo": "https://example.test/demo.git",
+                        "execution_timeout_minutes": 0}
     RemoteRunner({}, None).start_checks(run, store.root, {"specs": [], "ctx": {}})
 
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": []},
@@ -1393,7 +1461,8 @@ def test_remote_check_has_no_worker_execution_deadline(garden, monkeypatch):
 def test_legacy_remote_check_has_no_product_execution_timeout(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
     run = RunStore(store.config.garden_dir).new_run("DM-001", "remote", mode="check")
-    run.env_snapshot = {"product": "demo"}
+    run.source_head = "a" * 40
+    run.env_snapshot = {"product": "demo", "remote_repo": "https://example.test/demo.git"}
     RemoteRunner({}, None).start_checks(run, store.root, {"specs": [], "ctx": {}})
 
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": []},
@@ -1406,10 +1475,10 @@ def test_legacy_remote_check_has_no_product_execution_timeout(garden, monkeypatc
 def test_in_place_host_claims_one_run_regardless_of_its_resource_weight(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch, capacity=4, in_place=True)
     first = queued_run(store)
-    first.env_snapshot = {"product": "demo", "resource_weight": 2}
+    first.env_snapshot.update({"resource_weight": 2})
     first.save()
     second = queued_run(store, "DM-002")
-    second.env_snapshot = {"product": "demo", "resource_weight": 1}
+    second.env_snapshot.update({"resource_weight": 1})
     second.save()
     auth = {"Authorization": "Bearer secret-token"}
 
@@ -2038,15 +2107,9 @@ def test_each_run_keeps_its_own_trusted_fence_manifest(garden, fake_github):
 
 def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch):
     client, store = remote_client(garden, monkeypatch)
-    queued_run(store)
-    original_git = __import__("garden.gitops", fromlist=["git"]).git
-
-    def credentialed_remote(*args, **kwargs):
-        if args == ("remote", "get-url", "origin"):
-            return "https://scheduler-token@example.test/team/repo.git?access_token=also-secret"
-        return original_git(*args, **kwargs)
-
-    monkeypatch.setattr("garden.web.pages.api.gitops.git", credentialed_remote)
+    run = queued_run(store)
+    run.env_snapshot["remote_repo"] = "https://scheduler-token@example.test/team/repo.git?access_token=also-secret"
+    run.save()
     store.config.data["harnesses"]["claude"]["args"] = ["--api-key", "harness-secret"]
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                            headers={"Authorization": "Bearer secret-token"})
@@ -2068,15 +2131,9 @@ def test_claim_strips_repo_credentials_and_harness_arguments(garden, monkeypatch
 ])
 def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch, remote):
     client, store = remote_client(garden, monkeypatch)
-    queued_run(store)
-    original_git = __import__("garden.gitops", fromlist=["git"]).git
-
-    def unsafe_remote(*args, **kwargs):
-        if args == ("remote", "get-url", "origin"):
-            return remote
-        return original_git(*args, **kwargs)
-
-    monkeypatch.setattr("garden.web.pages.api.gitops.git", unsafe_remote)
+    run = queued_run(store)
+    run.env_snapshot["remote_repo"] = remote
+    run.save()
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                            headers={"Authorization": "Bearer secret-token"})
 
@@ -2094,15 +2151,9 @@ def test_claim_rejects_credentialed_or_malformed_git_remotes(garden, monkeypatch
 ])
 def test_claim_preserves_safe_ssh_transport_usernames(garden, monkeypatch, remote):
     client, store = remote_client(garden, monkeypatch)
-    queued_run(store)
-    original_git = __import__("garden.gitops", fromlist=["git"]).git
-
-    def safe_remote(*args, **kwargs):
-        if args == ("remote", "get-url", "origin"):
-            return remote
-        return original_git(*args, **kwargs)
-
-    monkeypatch.setattr("garden.web.pages.api.gitops.git", safe_remote)
+    run = queued_run(store)
+    run.env_snapshot["remote_repo"] = remote
+    run.save()
     response = client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
                            headers={"Authorization": "Bearer secret-token"})
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .. import gitops
+from ..github import is_git_remote_url
 from ..model import Task, now_iso
 from ..runs import Run
 from .report import TickReport
@@ -73,6 +75,14 @@ class AuxMixin:
         if canonical is not None:
             worktree = canonical
             run.worktree = str(canonical)
+        if runner.remote:
+            run.source_head = gitops.head_sha(worktree)
+            configured_repo = str(probe.repo or self.cfg.product_repo(probe.product))
+            run.env_snapshot["remote_repo"] = (
+                configured_repo if is_git_remote_url(configured_repo) else gitops.git(
+                    "remote", "get-url", "origin", cwd=worktree
+                ).strip()
+            )
         return {"run": run, "runner": runner, "worktree": worktree, "text": brief_text,
                 "kind": kind, "meta": meta}
 

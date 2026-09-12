@@ -446,7 +446,12 @@ class Scheduler(
             return gitops.ensure_repo(repo, self.cfg.repos_dir, git_name, git_email)
         # An existing path is never cloned, so ensure_repo cannot use an identity here.
         # Avoid two process launches on every scheduler lookup just to discard the result.
-        return gitops.ensure_repo(Path(repo), self.cfg.repos_dir)
+        # A task-level override is stored as configured (relative paths resolve against the
+        # garden root, same as product_repo's own local-path branch above).
+        path = Path(repo)
+        if not path.is_absolute():
+            path = (self.cfg.root / path).resolve()
+        return gitops.ensure_repo(path, self.cfg.repos_dir)
 
     def worktree_for(self, task: Task) -> Path:
         from ..canonical import configured_root

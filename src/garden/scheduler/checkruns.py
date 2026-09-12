@@ -24,7 +24,7 @@ from typing import Any
 from .. import gitops
 from ..checks import failures as check_failures
 from ..criteria import parse_criteria, required_evidence
-from ..github import GitHubError
+from ..github import GitHubError, is_git_remote_url
 from ..model import Status, Task, ensure_open, now_iso
 from ..preflight import _is_ui_path as _is_preflight_ui_path
 from ..preflight import capture_infrastructure_reason, mechanical_results
@@ -136,6 +136,14 @@ class CheckRunMixin:
                                if runner_name == "remote"
                                else self._new_local_run(task.id, "check", f"{stage} check"))
         run.branch, run.base, run.worktree, run.difficulty = branch, base, str(worktree), "easy"
+        if runner.remote:
+            source_head = source_head or gitops.head_sha(worktree)
+            configured_repo = str(task.repo or self.cfg.product_repo(task.product))
+            run.env_snapshot["remote_repo"] = (
+                configured_repo if is_git_remote_url(configured_repo) else gitops.git(
+                    "remote", "get-url", "origin", cwd=worktree
+                ).strip()
+            )
         if stage == "ci":
             run.env_snapshot["ci_head"] = str(cont.get("head") or "")
         # A base probe is about one exact merge-base commit, not whichever task branch a

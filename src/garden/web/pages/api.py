@@ -8,16 +8,13 @@ import json
 import math
 import re
 import secrets
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
-from ...github import is_git_remote_url
 from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
@@ -515,6 +512,22 @@ def register(app: FastAPI, site: Site) -> None:
                         run.env_snapshot["admission_bypasses"] = bypasses + 1
                         run.save()
                     continue
+                product = str(run.env_snapshot.get("product") or "")
+                if not product:
+                    raise HTTPException(409, "remote run has no product identity")
+                repo_value = credential_free_repo_url(str(run.env_snapshot.get("remote_repo") or ""))
+                prepared_head = str(
+                    run.source_head
+                    or run.env_snapshot.get("prepared_source_head")
+                    or run.start_head
+                    or ""
+                )
+                if not repo_value or not prepared_head:
+                    # Runs from before dispatch persisted checkout identity are not safe to
+                    # grant: retry after the scheduler has prepared a replacement. In
+                    # particular, do not fall back to inspecting the configured checkout here.
+                    return Response(status_code=204)
+                harness = hub.store.config.harness(run.harness) if run.harness else None
                 run.host = str(body["host"])
                 claim_time = now.isoformat()
                 if not run.claimed_at:
@@ -528,24 +541,6 @@ def register(app: FastAPI, site: Site) -> None:
                 run.lease_updated_at = claim_time
                 run.lease_token = secrets.token_urlsafe(32)
                 run.claim_request_id = request_id
-                fresh = hub.fresh()
-                task = fresh.tasks().get(run.task_id)
-                product = task.product if task is not None else str(run.env_snapshot.get("product") or "")
-                if not product:
-                    raise HTTPException(409, "remote run has no product identity")
-                harness = hub.store.config.harness(run.harness) if run.harness else None
-                configured_repo = (task.repo if task is not None else "") or hub.store.config.product_repo(product)
-                repo_value = str(configured_repo)
-                repo_path = Path(repo_value)
-                if not repo_path.is_absolute() and not is_git_remote_url(repo_value):
-                    repo_value = str((hub.store.root / repo_path).resolve())
-                    repo_path = Path(repo_value)
-                if repo_path.exists():
-                    try:
-                        repo_value = gitops.git("remote", "get-url", "origin", cwd=repo_path).strip()
-                    except gitops.GitError:
-                        pass
-                repo_value = credential_free_repo_url(repo_value)
                 # A worker never writes the task branch directly. Each lease owns an
                 # unguessable staging ref; after an authenticated finish the scheduler
                 # promotes that exact commit. An expired generation can therefore push only
@@ -555,21 +550,12 @@ def register(app: FastAPI, site: Site) -> None:
                                           "claim_request_id": request_id,
                                           "lease_token_sha256": hashlib.sha256(run.lease_token.encode()).hexdigest(),
                                           "pushed_ref": run.pushed_ref})
-                if run.source_head:
-                    # The scheduler recorded this immutable base-probe source before the
-                    # lease. Do not replace it with the task branch's moving head.
-                    run.start_head = run.source_head
-                else:
-                    try:
-                        source = str(configured_repo)
-                        scheduler_repo = gitops.ensure_repo(
-                            source if is_git_remote_url(source) else repo_path,
-                            hub.store.config.repos_dir,
-                        )
-                        gitops.fetch(scheduler_repo)
-                        run.start_head = gitops.remote_head(scheduler_repo, run.branch)
-                    except (AttributeError, gitops.GitError):
-                        run.start_head = ""
+                # The scheduler resolved this immutable checkout head before the run became
+                # claimable. Detached checks retain it as `source_head`; author runs retain it
+                # as `start_head`, which is also the publication lease. A claim only binds the
+                # prepared value and never resolves a checkout of its own.
+                if run.mode == "check":
+                    run.start_head = prepared_head
                 setup = hub.store.config.product_setup(product) or {}
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
@@ -583,7 +569,7 @@ def register(app: FastAPI, site: Site) -> None:
                         + int(hub.store.config.get("workers.recovery_seconds", 300))
                     ),
                     "brief": (run.path / "brief.md").read_text() if (run.path / "brief.md").exists() else "",
-                    "branch": run.branch, "base": run.base, "source_head": run.source_head,
+                    "branch": run.branch, "base": run.base, "source_head": prepared_head,
                     "push_ref": run.pushed_ref,
                     "repo": repo_value,
                     # The product command is trusted executable configuration. Values from

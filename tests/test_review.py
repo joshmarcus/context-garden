@@ -2118,9 +2118,10 @@ def test_remote_authored_portable_check_remains_remote(sched):
     task = sched.store.task("DM-001")
     task.runner = "remote"
     sched.store.save(task)
+    repo = sched.repo_for(task)
 
     check = sched._dispatch_check_run(
-        task, worktree=sched.store.root, branch=task.default_branch(), base="main",
+        task, worktree=repo, branch=task.default_branch(), base="main",
         specs=[{"name": "portable", "command": "true"}], stage="ci", cont={}, rep=TickReport(),
     )
 
