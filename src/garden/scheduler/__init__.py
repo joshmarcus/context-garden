@@ -86,13 +86,21 @@ def _tick_thread_lock(path: Path) -> Iterator[None]:
         yield
 
 __all__ = [
-    "REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "StateCorruptionError",
+    "REVIEW_MODES", "WORKER_MODES", "MultiplayerExecutionUnavailable", "Scheduler", "State", "StateCorruptionError",
     "TickReport", "_TaskState",
 ]
 
 WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase", "investigation"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
 CHECK_MODES = frozenset({"check"})  # detached pre-PR/base-probe/pre-merge checks; no worker slot
+MULTIPLAYER_EXECUTION_UNAVAILABLE = (
+    "multiplayer execution is waiting for an authenticated operator assignment and "
+    "scoped coordinator; identity-less scheduling is disabled"
+)
+
+
+class MultiplayerExecutionUnavailable(RuntimeError):
+    """The legacy scheduler has no authenticated multiplayer execution principal."""
 
 
 class Scheduler(
@@ -124,6 +132,16 @@ class Scheduler(
     docs/architecture.md). This file holds construction, the shared helpers, `tick()` and
     `_transition()`; everything else lives in the mixin whose phase it belongs to, so two
     features in different parts of the loop edit different files."""
+
+    def require_execution_authority(self) -> None:
+        """Refuse the legacy garden-wide controller in explicit multiplayer mode.
+
+        Member-bound coordination and execution assignments arrive in CG-630--CG-633.
+        Until then, a browser administrator or an unbound local process is not an
+        execution principal and must not advance scheduler state.
+        """
+        if self.cfg.get("multiplayer.enabled", False):
+            raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
 
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
@@ -862,6 +880,7 @@ class Scheduler(
         work (a review the old process reaped in its last tick but died before persisting) nor
         re-runs it, and only then does the caller tick. Safe to call more than once: an
         already-reaped run is skipped (CG-198)."""
+        self.require_execution_authority()
         with self._controller_lock():
             return self._reap_on_start_locked()
 
@@ -878,6 +897,7 @@ class Scheduler(
         self.confirm_restarted_upgrade()
         with self._step(rep, "reap"):
             self._reload_config_if_safe()  # CG-192 / CG-242: see tick()
+            self.require_execution_authority()
             self._reap_all(rep)
         self.state.save()
         rep.duration_s = time.monotonic() - started
@@ -887,6 +907,7 @@ class Scheduler(
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
         """Run one controller-owned pass, serialised across processes for this garden."""
+        self.require_execution_authority()
         self._closing_review_claims.clear()
         with self._controller_lock():
             rep = self._tick_locked(dispatch)
@@ -927,6 +948,9 @@ class Scheduler(
             # change against an in-flight run's fence manifest until it's safe or an operator
             # confirms it (CG-242) — before anything else in this pass can act on it.
             self._reload_config_if_safe()
+            # Enabling multiplayer is live-reloadable. Re-check the adopted config so a
+            # legacy watcher cannot execute one final unbound pass after that switch.
+            self.require_execution_authority()
             retry_pending(self.cfg.data)
             with gitops.tick_read_cache(), ci_status.tick_query_cache():
                 self._tick_body(rep, dispatch)
