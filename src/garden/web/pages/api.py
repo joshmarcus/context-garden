@@ -381,6 +381,7 @@ def register(app: FastAPI, site: Site) -> None:
     def api_tasks(request: Request):
         scheduler = hub.reader()
         tasks = site.visible_tasks(request, scheduler.store)
+        principal = getattr(request.state, "principal", None)
         return JSONResponse([
             {
                 **task.to_frontmatter(),
@@ -397,6 +398,7 @@ def register(app: FastAPI, site: Site) -> None:
                 ),
             }
             for task in tasks.values()
+            if principal is None or authorize(principal, "read", project=task.product)
         ])
 
     @app.get("/api/workers")
