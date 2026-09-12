@@ -91,12 +91,27 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     def member_authorizer(principal: Any, method: str, path: str) -> bool:
         if method in {"GET", "HEAD", "OPTIONS"}:
-            return authorize(principal, "read")
+            parts = path.split("/")
+            project = parts[2] if len(parts) > 2 and parts[1] in {"projects", "phases"} else ""
+            if len(parts) > 2 and parts[1] == "tasks":
+                task = store.tasks().get(parts[2])
+                project = task.product if task else ""
+            # This endpoint applies the same project boundary to its response rows.
+            if path == "/api/tasks":
+                return True
+            return authorize(principal, "read", project=project)
         # Configuration, lifecycle and phase-wide actions are administrator operations.
-        if not path.startswith("/tasks/"):
-            return authorize(principal, "administer")
+        task_id = ""
         parts = path.split("/")
-        task = store.tasks().get(parts[2]) if len(parts) > 2 else None
+        if path.startswith("/tasks/") and len(parts) > 2:
+            task_id = parts[2]
+        elif path.startswith("/api/control/tasks/") and len(parts) > 4:
+            task_id = parts[4]
+        elif path.startswith("/api/tasks/") and len(parts) > 3:
+            task_id = parts[3]
+        if not task_id:
+            return authorize(principal, "administer")
+        task = store.tasks().get(task_id)
         if task is None:
             return False
         from ..model import effective_owner
@@ -106,8 +121,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
-        worker_authenticator=lambda token: authenticate_worker(
-            worker_configuration(store.config), token) is not None,
+        worker_authenticator=(registry.authenticate if registry else lambda token: authenticate_worker(
+            worker_configuration(store.config), token)),
         operator_token="" if multiplayer else operator_token,
         require_operator_auth=require_operator_auth,
         member_authenticator=registry.authenticate if registry else None,
