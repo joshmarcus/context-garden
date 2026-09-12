@@ -124,7 +124,10 @@ class CheckRunMixin:
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
-        execution_requirements, worker_match = self._execution_match(task, "check")
+        source_run = self._run_by_id(task, str(cont.get("worker_run_id") or ""))
+        execution_requirements, worker_match = self._execution_match(
+            task, "check", source_run=source_run
+        )
         # Reaping a worker or polling a PR can start checks before dispatch_ready.
         # Let an eligible earlier review use this just-freed shared slot first too.
         # If it fills capacity, the normal resource gate preserves this continuation
@@ -146,7 +149,6 @@ class CheckRunMixin:
         run.source_head = source_head
         run.env_snapshot.update({"product": task.product, "execution_timeout_minutes": 0,
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
-        source_run = self._run_by_id(task, str(cont.get("worker_run_id") or ""))
         self._record_execution_envelope(
             task, run, "check", execution_requirements, worker_match, source_run=source_run
         )
