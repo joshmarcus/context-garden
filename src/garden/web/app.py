@@ -111,6 +111,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     if operator_token and authenticate_worker(worker_configuration(store.config), operator_token) is not None:
         raise RuntimeError("operator and worker credentials must be different")
 
+    def authenticate_run_credential(token: str) -> Any | None:
+        """Keep member installations and legacy worker enrollments distinct."""
+        principal = registry.authenticate(token) if registry else None
+        if principal is not None:
+            return principal
+        return authenticate_worker(worker_configuration(store.config), token)
+
     def member_authorizer(principal: Any, method: str, path: str) -> bool:
         if method in {"GET", "HEAD", "OPTIONS"}:
             parts = path.split("/")
@@ -121,6 +128,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # This endpoint applies the same project boundary to its response rows.
             if path == "/api/tasks":
                 return True
+            # Project-neutral pages are authorized over the member's project set.  The
+            # project selector/filtering work can then narrow their contents without an
+            # empty project being mistaken for a garden-wide permission request.
+            project_neutral = path in {"/", "/board", "/inbox", "/now"}
+            if not project and project_neutral and principal.projects:
+                project = sorted(principal.projects)[0]
             return authorize(principal, "read", project=project)
         # Configuration, lifecycle and phase-wide actions are administrator operations.
         task_id = ""
@@ -143,8 +156,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
-        worker_authenticator=(registry.authenticate if registry else lambda token: authenticate_worker(
-            worker_configuration(store.config), token)),
+        worker_authenticator=authenticate_run_credential,
         operator_token="" if multiplayer else operator_token,
         require_operator_auth=require_operator_auth,
         member_authenticator=registry.authenticate if registry else None,
