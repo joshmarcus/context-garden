@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -156,6 +157,8 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert rows and {row["product"] for row in rows} == {"demo"}
     assert client.get("/api/tasks", headers=eve).json() == []
     assert client.get("/config", headers=bob).status_code == 403
+    for path in ("/", "/board", "/inbox", "/now"):
+        assert client.get(path, headers=bob).status_code == 200
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
@@ -173,6 +176,28 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
                        json={"host": "alice-laptop"}).status_code == 204
     assert client.post("/api/runs/claim", headers=auth,
                        json={"host": "spoofed"}).status_code == 403
+
+
+def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
+    enrollment.parent.mkdir(parents=True, mode=0o700)
+    enrollment.write_text(json.dumps({"hosts": [{
+        "name": "legacy", "token_sha256": hashlib.sha256(b"legacy-secret").hexdigest()
+    }]}))
+    enrollment.chmod(0o600)
+    config.setdefault("workers", {})["enrollment_registry"] = str(enrollment)
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    _registry(garden)
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    response = client.post(
+        "/api/runs/claim",
+        headers={"Authorization": "Bearer legacy-secret"},
+        json={"host": "legacy"},
+    )
+    assert response.status_code == 204
 
 
 def test_legacy_loopback_behavior_is_unchanged(garden):
