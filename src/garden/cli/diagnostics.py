@@ -12,7 +12,17 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from .common import PANEL_BOARD, PANEL_DIAG, PANEL_LOOP, _scheduler, _store, app, console, err
+from .common import (
+    PANEL_BOARD,
+    PANEL_DIAG,
+    PANEL_LOOP,
+    _scheduler,
+    _store,
+    _task,
+    app,
+    console,
+    err,
+)
 
 
 @app.command(rich_help_panel=PANEL_DIAG)
