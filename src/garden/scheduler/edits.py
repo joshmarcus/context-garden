@@ -65,6 +65,7 @@ class EditsMixin:
     def dispatch_edit(self, task: Task) -> Run:
         """One cheap, text-only run that rewrites the task body to fold in its suggestions.
         The old body is kept in the run directory so the page can show the diff."""
+        self.require_execution_authority()
         from ..suggestions import edit_brief, pending_suggestions
 
         if self._manual_reserved(task):

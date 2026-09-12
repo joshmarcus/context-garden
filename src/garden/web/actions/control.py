@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from ...github import GitHubError
 from ...gitops import GitError
+from ...scheduler import MultiplayerExecutionUnavailable
 from ..common import LOGGER, Site, _flash_url
 
 
@@ -15,7 +16,11 @@ def register(app: FastAPI, site: Site) -> None:
 
     @app.post("/tick")
     def tick(request: Request):
-        summary = hub.tick()
+        try:
+            summary = hub.tick()
+        except MultiplayerExecutionUnavailable as e:
+            hub._log(f"manual tick refused: {e}")
+            return JSONResponse({"detail": str(e)}, status_code=409)
         hub._log(f"manual tick: {summary}")
         return RedirectResponse(request.headers.get("referer", "/"), status_code=303)
 

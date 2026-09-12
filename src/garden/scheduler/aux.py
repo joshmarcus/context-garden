@@ -21,6 +21,7 @@ class AuxMixin:
                      harness_name: str = "", difficulty: str = "", prepared_run: Run | None = None,
                      model_override: str | None = None, pool_member: str = "",
                      reference_files: dict[str, str] | None = None, run_id: str = "") -> Run:
+        self.require_execution_authority()
         prepared = self._prepare_aux(kind, task, brief_text, worktree, meta, harness_name,
                                      difficulty, prepared_run, model_override, pool_member,
                                      reference_files, run_id)
