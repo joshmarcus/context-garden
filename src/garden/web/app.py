@@ -96,10 +96,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     scheduler the app builds will use (`garden qa` passes its pretend GitHub). `host`/`port`
     are the address `garden serve` binds to; they fix the origins a POST may come from."""
     app = FastAPI(title="context-garden")
+    tls = multiplayer_tls_files(store, host)
     # A POST from another site (a page open in the same browser) is refused; see web/trust.py.
     # The allowlist is the bound address plus any web.trusted_origins; the request's Host is
     # never trusted, so a DNS-rebound page is refused even when its Host and Origin agree.
-    allowed = server_origins(host, port) + [str(o) for o in (store.config.get("web.trusted_origins") or [])]
+    allowed = server_origins(host, port, scheme="https" if tls else "http") + [
+        str(o) for o in (store.config.get("web.trusted_origins") or [])
+    ]
     tokens = [os.environ.get(str(h.get("token_env") or ""), "")
               for h in (store.config.get("workers.hosts") or [])]
     from ..hosts.registry import authenticate_worker, worker_configuration
@@ -108,7 +111,6 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     operator_token = os.environ.get(operator_env, "") if operator_env else ""
     multiplayer = bool(store.config.get("multiplayer.enabled", False))
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
-    multiplayer_tls_files(store, host)
     require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
     if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
