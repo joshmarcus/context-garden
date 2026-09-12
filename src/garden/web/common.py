@@ -270,6 +270,18 @@ class Hub:
             f"Executing {assignment.get('project', '')}/{assignment.get('phase', '')}"
         )}
 
+    def identity_status(self) -> str:
+        """Return the authenticated local installation identity without trusting a URL."""
+        if self.coordinator is None:
+            return ""
+        try:
+            view = self.authoritative_view()
+            assert view is not None
+        except MultiplayerUnavailable:
+            return ""
+        snapshot = view.snapshot
+        return f"{snapshot.get('member_id', '')} ({snapshot.get('role', '')})"
+
     def scheduler(self) -> Scheduler:
         # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
         # every action's scheduler() call, so a button press between ticks can't hand a held
@@ -605,6 +617,10 @@ class Site:
                 "meaning": "",
             })
         active_option = next(option for option in profile_options if option["value"] == active)
+        viewing_project = request.query_params.get("project", "")
+        parts = request.url.path.strip("/").split("/")
+        if not viewing_project and len(parts) > 1 and parts[0] in {"projects", "phases"}:
+            viewing_project = parts[1]
         return {
             "request": request,
             "page": page,
@@ -615,6 +631,8 @@ class Site:
             "scheduler_status": hub.scheduler_health(),
             "coordinator_status": hub.coordinator_status(),
             "execution_status": hub.execution_status(),
+            "identity_status": hub.identity_status(),
+            "viewing_project": viewing_project or "All authorized projects",
             "server_now": now_iso(),  # the clock every live elapsed counter is offset against
             "products": visible_products,
             "has_design": any(product_design_root(s, p.name).is_dir() for p in visible_products),
