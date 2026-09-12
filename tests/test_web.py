@@ -16,6 +16,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from garden import gitops
 from garden.config import Config
 from garden.github import GitHubError, PRInfo
 from garden.gitops import head_sha
@@ -976,96 +977,72 @@ def test_design_files_are_safe_and_use_the_product_checkout(garden):
     assert c.get("/design/%2Fetc%2Fpasswd").status_code == 404
 
 
-def test_task_design_files_show_only_the_current_pr_and_shared_references(garden):
-    """A stacked PR excludes its parent's designs and uses its refreshed remote branch."""
-    repo = garden.parent / "repo"
-
-    def commit(message: str) -> None:
-        subprocess.run(["git", "add", "docs/design"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-m", message], cwd=repo, check=True)
-
-    (repo / "docs" / "design").mkdir(parents=True)
-    (repo / "docs" / "design" / "shared.md").write_text("# Shared")
-    (repo / "docs" / "design" / "reference.md").write_text("# Reference")
-    (repo / "docs" / "design" / "rename-source.md").write_text("# Rename source")
-    commit("add shared design")
-    subprocess.run(["git", "push", "origin", "main"], cwd=repo, check=True)
-
-    parent = "garden/parent-design"
-    child = "garden/child-design"
-    subprocess.run(["git", "checkout", "-b", parent], cwd=repo, check=True)
-    (repo / "docs" / "design" / "parent.md").write_text("# Parent")
-    commit("add parent design")
-    subprocess.run(["git", "push", "-u", "origin", parent], cwd=repo, check=True)
-
-    subprocess.run(["git", "checkout", "-b", child], cwd=repo, check=True)
-    (repo / "docs" / "design" / "shared.md").write_text("# Shared, updated")
-    (repo / "docs" / "design" / "variant-dark.md").write_text("# Dark variant")
-    commit("update shared design and add variant")
-    subprocess.run(["git", "push", "-u", "origin", child], cwd=repo, check=True)
-
-    # An unpushed local commit must not be mistaken for current PR output.
-    (repo / "docs" / "design" / "stale-local.md").write_text("# Stale local")
-    commit("unpublished local design")
-    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True)
-
+def test_core_pages_do_not_access_the_product_checkout(garden, monkeypatch):
+    """Task, status, and Inbox requests stay independent of product checkout size."""
+    repo = (garden.parent / "repo").resolve()
     store = Store(garden)
-    task = store.task("DM-002")
-    task.branch = child
-    task.reading = ["docs/design/parent.md", "docs/design/parent.md", "docs/design/reference.md"]
+    task = store.task("DM-001")
+    task.branch = "garden/dm-001"
+    task.reading = ["docs/design/repeated.md"]
     store.save(task)
-    state = State(garden / ".garden" / "state.json")
-    state.get(task.id)["pr_base"] = parent
-    state.save()
+
+    def unexpected_git(*_args, **_kwargs):
+        raise AssertionError("a core page attempted a product-repository git operation")
+
+    monkeypatch.setattr(gitops, "ensure_repo", unexpected_git)
+    monkeypatch.setattr(gitops, "fetch", unexpected_git)
+    monkeypatch.setattr(gitops, "git", unexpected_git)
+
+    real_scandir = os.scandir
+    real_iterdir = Path.iterdir
+    real_glob = Path.glob
+    real_rglob = Path.rglob
+
+    def reject_checkout(path):
+        candidate = Path(path).resolve()
+        if candidate == repo or repo in candidate.parents:
+            raise AssertionError("a core page enumerated the product checkout")
+
+    def guarded_scandir(path="."):
+        reject_checkout(path)
+        return real_scandir(path)
+
+    def guarded_iterdir(path):
+        reject_checkout(path)
+        return real_iterdir(path)
+
+    def guarded_glob(path, pattern, *args, **kwargs):
+        reject_checkout(path)
+        return real_glob(path, pattern, *args, **kwargs)
+
+    def guarded_rglob(path, pattern, *args, **kwargs):
+        reject_checkout(path)
+        return real_rglob(path, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    monkeypatch.setattr(Path, "iterdir", guarded_iterdir)
+    monkeypatch.setattr(Path, "glob", guarded_glob)
+    monkeypatch.setattr(Path, "rglob", guarded_rglob)
 
     c = client(garden)
-    page = c.get(f"/tasks/{task.id}").text
-    assert "Design files in this PR" in page
-    assert "docs/design/shared.md" in page and "docs/design/variant-dark.md" in page
-    child_ref = f"origin/{child}".replace("/", "%2F")
-    parent_ref = f"origin/{parent}".replace("/", "%2F")
-    assert f"/design/parent.md?ref={child_ref}" not in page
-    assert f"/design/parent.md?ref={parent_ref}" in page
-    assert "docs/design/stale-local.md" not in page
-    assert page.count("docs/design/shared.md") == 1
-    assert "Relevant shared design files" in page
-    assert page.count(f"/design/parent.md?ref={parent_ref}") == 1
-    assert page.count(f"/design/reference.md?ref={parent_ref}") == 1
-    assert c.get(f"/design/shared.md?ref=origin%2F{child}&product=demo").status_code == 200
-    assert c.get(f"/design/parent.md?ref=origin%2F{parent}&product=demo").status_code == 200
-    assert c.get(f"/design/reference.md?ref=origin%2F{parent}&product=demo").status_code == 200
+    task_page = c.get(f"/tasks/{task.id}")
+    repeated_task_page = c.get(f"/tasks/{task.id}")
+    status_page = c.get("/now")
+    inbox_page = c.get("/inbox")
 
-    # Deleted designs are not PR output because their head-revision links would not resolve.
-    subprocess.run(["git", "checkout", child], cwd=repo, check=True)
-    (repo / "docs" / "design" / "parent.md").unlink()
-    commit("remove parent design")
-    subprocess.run(["git", "push"], cwd=repo, check=True)
-    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True)
-
-    deleted_design_page = c.get(f"/tasks/{task.id}").text
-    assert f"/design/parent.md?ref={child_ref}" not in deleted_design_page
-    assert deleted_design_page.count(f"/design/parent.md?ref={parent_ref}") == 1
-
-    # A pure rename is current PR output at its destination, which exists at the head.
-    subprocess.run(["git", "checkout", child], cwd=repo, check=True)
-    (repo / "docs" / "design" / "rename-source.md").rename(repo / "docs" / "design" / "renamed.md")
-    commit("rename design variant")
-    subprocess.run(["git", "push"], cwd=repo, check=True)
-    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True)
-    renamed_design_page = c.get(f"/tasks/{task.id}").text
-    assert f"/design/rename-source.md?ref={child_ref}" not in renamed_design_page
-    assert f"/design/renamed.md?ref={child_ref}" in renamed_design_page
-    assert c.get(f"/design/renamed.md?ref=origin%2F{child}&product=demo").status_code == 200
-
-    # A branch with no changed designs has no PR-output panel, even if it reads shared art.
-    no_design = store.task("DM-001")
-    no_design.branch = "garden/no-design"
-    no_design.reading = ["docs/design/parent.md"]
-    store.save(no_design)
-    subprocess.run(["git", "branch", "garden/no-design", "origin/main"], cwd=repo, check=True)
-    no_design_page = c.get(f"/tasks/{no_design.id}").text
-    assert "Design files in this PR" not in no_design_page
-    assert "Relevant shared design files" in no_design_page
+    assert task_page.status_code == repeated_task_page.status_code == 200
+    assert status_page.status_code == inbox_page.status_code == 200
+    # The base template stamps each response with the current time. Apart from that clock,
+    # repeated task reads render the same stored content and no discovered design entries.
+    dynamic_utc = r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+\+00:00"
+    assert re.sub(dynamic_utc, "<now>", task_page.text) == re.sub(
+        dynamic_utc, "<now>", repeated_task_page.text
+    )
+    assert "Design files in this PR" not in task_page.text
+    assert "Relevant shared design files" not in task_page.text
+    # The path appears once in the task's explicit reading list and is not repeated in an
+    # automatically discovered design panel.
+    assert task_page.text.count("docs/design/repeated.md") == 1
 
 
 def test_design_routes_select_the_requested_product(garden):
@@ -1162,7 +1139,7 @@ def test_artifact_preview_policy_sandboxes_active_files_and_downloads_ambiguous_
     assert download.headers["content-disposition"].startswith("attachment;")
 
 
-def test_active_worktree_design_files_are_inert_and_visible_from_the_task(garden):
+def test_active_worktree_design_files_are_inert_when_requested_directly(garden):
     repo = garden.parent / "repo"
     worktree = garden / ".garden" / "worktrees" / "DM-001"
     subprocess.run(["git", "worktree", "add", "-q", "-b", "garden/dm-001", str(worktree)], cwd=repo, check=True)
@@ -1175,22 +1152,8 @@ def test_active_worktree_design_files_are_inert_and_visible_from_the_task(garden
         task.branch = "garden/dm-001"
         store.save(task)
 
-        # An inherited design from the comparison base is not current task output.
-        shared = worktree / "docs" / "design" / "shared.html"
-        shared.write_text("<p>shared</p>")
-        subprocess.run(["git", "add", str(shared)], cwd=worktree, check=True)
-        subprocess.run(["git", "commit", "-m", "shared parent design"], cwd=worktree, check=True)
-        subprocess.run(["git", "branch", "garden/parent", "HEAD"], cwd=worktree, check=True)
-        state = State(garden / ".garden" / "state.json")
-        state.get(task.id)["pr_base"] = "garden/parent"
-        state.save()
-
-        c = client(garden)
-        page = c.get("/tasks/DM-001")
-        assert "worktree%3ADM-001" in page.text and "draft.html" in page.text
-        assert "shared.html" not in page.text
-        response = c.get("/design/draft.html?ref=worktree%3ADM-001&product=demo")
-        assert response.status_code == 200 and "target=\"_top\"" in response.text
+        response = client(garden).get("/design/draft.html?ref=worktree%3ADM-001&product=demo")
+        assert response.status_code == 200 and 'target="_top"' in response.text
         assert response.headers["content-security-policy"].startswith("sandbox;")
         assert response.headers["content-disposition"].startswith("inline;")
     finally:
