@@ -13,6 +13,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import TypeVar
 
 from .locking import file_lock
 from .models import (
@@ -35,6 +36,8 @@ from .provider import (
     ProvisioningUncertain,
     TransientProviderError,
 )
+
+LaunchResult = TypeVar("LaunchResult")
 
 
 class EnvironmentStop(RuntimeError):
@@ -1012,6 +1015,24 @@ class HostLifecycle:
             lease["activated_at"] = now()
             self.state.write(data)
             return admission
+
+    def launch_admitted(
+        self,
+        pool: PoolDeclaration,
+        provider_id: str,
+        launch: Callable[[HostAdmission], LaunchResult],
+        *,
+        now: Callable[[], float] = time.time,
+    ) -> LaunchResult:
+        """Activate the fenced reservation at the host-backed process launch boundary.
+
+        The callback is unreachable when the provider rejects the final resource,
+        requirement, profile, or lease-generation check. A successful activation stays
+        recorded for normal release/reconciliation even if process creation raises, so
+        cleanup never guesses that provider-side activation was rolled back.
+        """
+        admission = self.activate_admission(pool, provider_id, now=now)
+        return launch(admission)
 
     def _record_environment_stop(
         self,
