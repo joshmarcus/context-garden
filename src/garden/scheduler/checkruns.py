@@ -124,6 +124,7 @@ class CheckRunMixin:
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
+        execution_requirements, worker_match = self._execution_match(task, "check")
         # Reaping a worker or polling a PR can start checks before dispatch_ready.
         # Let an eligible earlier review use this just-freed shared slot first too.
         # If it fills capacity, the normal resource gate preserves this continuation
@@ -131,6 +132,7 @@ class CheckRunMixin:
         if stage != "interaction_replay" and self.review_slots_free() > 0 and self._queued_review_precedes(task):
             self._drain_pending_reviews(self.store.tasks(), rep)
         runner_name, provenance = self._check_execution(task, stage, specs, backend, provenance)
+        self._require_capability_runner(execution_requirements, runner_name)
         runner = self.runner_for(task, runner_name)
         run = prepared_run or (self.runs.new_run(task.id, runner_name, mode="check")
                                if runner_name == "remote"
@@ -152,6 +154,10 @@ class CheckRunMixin:
         run.source_head = source_head
         run.env_snapshot.update({"product": task.product, "execution_timeout_minutes": 0,
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
+        source_run = self._run_by_id(task, str(cont.get("worker_run_id") or ""))
+        self._record_execution_envelope(
+            task, run, "check", execution_requirements, worker_match, source_run=source_run
+        )
         run.save()
         # Keep the complete resolved contract with the continuation.  A base probe, retry,
         # or deferred recovery can happen after another product (or an operator) changes
