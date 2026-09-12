@@ -160,6 +160,40 @@ def test_stale_cache_is_bound_to_the_authenticated_installation(tmp_path):
         client(tmp_path, service, "alice-b").refresh()
 
 
+def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_path):
+    path = "demo/p1/tasks/CG-1-task.md"
+    original = "old\n"
+    snapshot = snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden",
+        "authority": [{"kind": "task", "scope": "CG-1", "version": 3,
+                       "owner": "alice", "authority_generation": 7}],
+        "projections": [{"kind": "task", "scope": "CG-1", "version": 3,
+                         "path": path, "markdown": original,
+                         "base_revision": hashlib.sha256(b"").hexdigest()}],
+    })
+    service = Service(snapshot)
+    local = client(tmp_path, service)
+
+    result = local.transition(
+        kind="task", scope="CG-1", new_state="running", markdown="new\n", path=path,
+        canonical_revision=hashlib.sha256(original.encode()).hexdigest(),
+    )
+
+    assert result == {"version": 4}
+    assert (tmp_path / path).read_text() == original
+    assert service.posts[0]["accepted_owner"] == "alice"
+    assert service.posts[1]["claim"]["installation_id"] == "alice-a"
+    assert service.posts[1]["canonical_revision"] == hashlib.sha256(original.encode()).hexdigest()
+
+    service.online = False
+    with pytest.raises(MultiplayerUnavailable, match="unavailable"):
+        local.transition(
+            kind="task", scope="CG-1", new_state="done", markdown="offline\n",
+            path=path, canonical_revision=hashlib.sha256(original.encode()).hexdigest(),
+        )
+    assert (tmp_path / path).read_text() == original
+
+
 def test_cancellation_is_acknowledged_only_after_local_worker_stops(tmp_path):
     state = snapshot_identity({
         "protocol_version": 1, "garden_id": "garden", "authority": [], "projections": [],
