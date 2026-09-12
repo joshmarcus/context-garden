@@ -9,7 +9,11 @@ from fastapi.testclient import TestClient
 
 from garden.members import MemberRegistry, Principal, authorize
 from garden.runs import RunStore
-from garden.scheduler import MULTIPLAYER_EXECUTION_UNAVAILABLE, Scheduler
+from garden.scheduler import (
+    MULTIPLAYER_EXECUTION_UNAVAILABLE,
+    MultiplayerExecutionUnavailable,
+    Scheduler,
+)
 from garden.store import Store
 from garden.web.app import create_app, multiplayer_tls_files
 
@@ -108,6 +112,55 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("workflow", "forbidden_calls"),
+    [
+        ("kickoff", ("require_maintenance_running", "_aux_list", "_new_local_run")),
+        ("kickoff_now", ("file_kickoff",)),
+        ("retro", ("require_maintenance_running", "_controller_lock", "_self_product")),
+        ("trial", ("require_maintenance_running", "_manual_reserved", "dispatch")),
+    ],
+)
+def test_direct_multiplayer_workflows_refuse_before_preparation(
+    sched, monkeypatch, workflow, forbidden_calls
+):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    before = {
+        path.relative_to(sched.store.root): path.read_bytes()
+        for path in sched.store.root.rglob("*")
+        if path.is_file()
+    }
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("workflow performed preparation before checking execution authority")
+
+    for name in forbidden_calls:
+        monkeypatch.setattr(sched, name, unexpected)
+    if workflow == "kickoff_now":
+        monkeypatch.setattr("garden.planner.run_planner", unexpected)
+
+    phase = sched.store.phase("demo", "p1")
+    task = sched.store.task("DM-001")
+    calls = {
+        "kickoff": lambda: sched.start_kickoff(phase),
+        "kickoff_now": lambda: sched.run_kickoff_now(phase),
+        "retro": lambda: sched.start_retro(phase),
+        "trial": lambda: sched.start_trial(task, ["claude:sonnet", "codex:gpt"]),
+    }
+    with pytest.raises(
+        MultiplayerExecutionUnavailable,
+        match="identity-less scheduling is disabled",
+    ):
+        calls[workflow]()
+
+    after = {
+        path.relative_to(sched.store.root): path.read_bytes()
+        for path in sched.store.root.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_multiplayer_administrator_reads_do_not_inherit_project_visibility(garden):
