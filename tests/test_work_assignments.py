@@ -213,6 +213,7 @@ def test_real_dispatch_enforces_authenticated_owner_cursor_and_generation(sched)
     assert run.task_id == task.id
 
 
+<<<<<<< HEAD
 def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutation(sched):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
@@ -259,6 +260,8 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
     assert task.status == Status.READY
 
 
+=======
+>>>>>>> a06aabd6 (Enforce member authority in scheduler workflows)
 def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
@@ -282,6 +285,7 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
         bound.reopen_phase(phase, owner_generation=owner.generation - 1)
     bound.reopen_phase(phase, owner_generation=owner.generation)
     assert not bound.store.phase(phase.product, phase.name).closed
+<<<<<<< HEAD
 
 
 def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparation(sched, monkeypatch):
@@ -313,3 +317,5 @@ def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparati
     registry.set_phase_owner(admin, phase.product, phase.name, "alice")
     assert bound.dispatch_persona_phase(phase, "security") is run
     assert calls == ["prepare", "commit", "launch"]
+=======
+>>>>>>> a06aabd6 (Enforce member authority in scheduler workflows)

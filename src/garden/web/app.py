@@ -175,9 +175,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # dynamic shapes must also fail closed. An unscoped read is garden-wide and is
             # therefore administrative regardless of all-project visibility.
             return authorize(principal, "administer")
-        # Configuration, lifecycle and phase-wide actions are administrator operations.
+        # Phase-wide actions belong to the explicit phase owner; garden-wide configuration
+        # remains administrative, while task actions remain bound to effective ownership.
         task_id = ""
         parts = path.split("/")
+        if len(parts) > 4 and parts[1] == "phases":
+            return registry.authorize_phase_operation(principal, parts[2], parts[3])
         if path.startswith("/tasks/") and len(parts) > 2:
             task_id = parts[2]
         elif path.startswith("/api/control/tasks/") and len(parts) > 4:
