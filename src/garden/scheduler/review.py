@@ -635,6 +635,7 @@ class ReviewMixin:
                         clarify_unverified: list[str] | None = None,
                         clarifies_review_run: str = "",
                         member: dict[str, Any] | None = None) -> Run:
+        self.require_execution_authority()
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()
