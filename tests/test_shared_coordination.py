@@ -262,6 +262,11 @@ def test_phase_claim_is_exclusive_and_reassignment_invalidates_children(tmp_path
             operation_id="child-review", credential_scope="pull_requests:read",
             precondition="", request={},
         )
+    request = coordinator.snapshot(alice, "garden")["cancellation_requests"][0]
+    coordinator.acknowledge_cancellation(
+        alice, garden_id="garden", kind="phase", scope="demo/phase-10",
+        fence=request["fence"],
+    )
     bob_claim = coordinator.claim(
         bob, garden_id="garden", kind="phase", scope="demo/phase-10",
         expected_version=changed["version"], accepted_owner="bob", authority_generation=5,
@@ -278,6 +283,106 @@ def test_phase_claim_is_exclusive_and_reassignment_invalidates_children(tmp_path
             bob, garden_id="garden", pool="global:publishing", operation_id="global",
             units=1, spend_micros=0, unit_limit=1, spend_limit_micros=0,
         )
+
+
+def test_handoff_waits_for_worker_and_original_provider_operation(tmp_path):
+    admin, alice, _alice_b, bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, old = authority_and_claim(coordinator, admin, alice)
+    coordinator.begin_effect(
+        alice, old, provider="github", effect_key="publish:CG-1", operation_id="publish-old",
+        credential_scope="pull_requests:write", precondition="head=old", request={"head": "old"},
+    )
+    changed = coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+        authority_generation=5, expected_version=1, operation_id="handoff",
+    )
+    view = coordinator.snapshot(bob, "garden")
+    assert view["handoffs"][0]["status"] == "reconciling"
+    assert view["cancellation_requests"][0]["installation"] == "alice-a"
+    with pytest.raises(Conflict, match="old workers.*provider outcomes"):
+        coordinator.claim(
+            bob, garden_id="garden", kind="task", scope="CG-1",
+            expected_version=changed["version"], accepted_owner="bob",
+            authority_generation=5, operation_id="bob-too-soon",
+        )
+
+    coordinator.acknowledge_cancellation(
+        alice, garden_id="garden", kind="task", scope="CG-1", fence=old.fence,
+    )
+    with pytest.raises(Conflict, match="provider outcomes"):
+        coordinator.claim(
+            bob, garden_id="garden", kind="task", scope="CG-1",
+            expected_version=changed["version"], accepted_owner="bob",
+            authority_generation=5, operation_id="bob-still-too-soon",
+        )
+    coordinator.finish_effect(
+        admin, "garden", "publish-old", outcome="succeeded", result={"pr": 17},
+    )
+    resumed = coordinator.claim(
+        bob, garden_id="garden", kind="task", scope="CG-1",
+        expected_version=changed["version"], accepted_owner="bob",
+        authority_generation=5, operation_id="bob-resume",
+    )
+    assert resumed.owner_id == "bob" and resumed.fence == 2
+    assert coordinator.snapshot(bob, "garden")["handoffs"][0]["status"] == "ready"
+
+
+def test_unassignment_and_late_result_preserve_stale_evidence_without_transition(tmp_path):
+    admin, alice, _alice_b, _bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, old = authority_and_claim(coordinator, admin, alice)
+    changed = coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="",
+        authority_generation=5, expected_version=1, operation_id="unassign",
+    )
+    with pytest.raises(Conflict, match="stale or expired"):
+        coordinator.transition(
+            alice, old, expected_version=changed["version"], new_state="review",
+            markdown="late source", operation_id="late-transition",
+        )
+    coordinator.retain_stale_evidence(
+        alice, garden_id="garden", kind="task", scope="CG-1", evidence_id="late-run",
+        operation_id="late-result", payload={"result": "done", "head": "old"},
+    )
+    view = coordinator.snapshot(admin, "garden")
+    assert view["authority"][0]["owner"] == ""
+    assert view["projections"] == []
+    assert '"stale": true' in view["evidence"][0]["payload_json"]
+
+
+def test_handoff_waits_until_old_projection_is_explicitly_superseded(tmp_path):
+    admin, alice, _alice_b, bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, old = authority_and_claim(coordinator, admin, alice)
+    coordinator.transition(
+        alice, old, expected_version=1, new_state="review", markdown="old source",
+        operation_id="old-transition", path="tasks/CG-1.md", canonical_revision="old-base",
+    )
+    changed = coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+        authority_generation=5, expected_version=2, operation_id="handoff-after-transition",
+    )
+    coordinator.acknowledge_cancellation(
+        admin, garden_id="garden", kind="task", scope="CG-1", fence=old.fence,
+    )
+    with pytest.raises(Conflict, match="projections are pending"):
+        coordinator.claim(
+            bob, garden_id="garden", kind="task", scope="CG-1",
+            expected_version=changed["version"], accepted_owner="bob",
+            authority_generation=5, operation_id="blocked-by-outbox",
+        )
+    for row in coordinator.pending_outbox("garden"):
+        coordinator.supersede_outbox(
+            admin, garden_id="garden", outbox_id=row["id"],
+            authority_version=row["authority_version"],
+        )
+    claim = coordinator.claim(
+        bob, garden_id="garden", kind="task", scope="CG-1",
+        expected_version=changed["version"], accepted_owner="bob",
+        authority_generation=5, operation_id="after-outbox-reconciled",
+    )
+    assert claim.owner_id == "bob"
 
 
 def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
