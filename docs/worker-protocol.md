@@ -130,6 +130,27 @@ Set `web.worker_ingress: true` when a nominally loopback bind is deliberately pu
 tunnelled to workers; this enables the same requirement. Startup refuses either exposure
 when `web.operator_token_env` is absent or its environment variable is empty.
 
+### Trusted worker configurations
+
+`worker_configurations` are versioned logical templates. They bound activities, projects,
+resources, identity references, and operator-approved capability grants. `worker_instances`
+are private enrollment records: more than one authenticated user/installation may instantiate
+the same template, but each credential binding belongs to exactly one such pair. Reassigning a
+worker means draining its work, revoking the old instance and credential binding, and enrolling
+a new instance; changing a profile generation immediately fences older enrollments and grants.
+
+Capability grants, worker observations, and provider lifecycle features have separate fields
+and meanings. Only an unrevoked operator grant for the current profile generation supplies
+execution authority. A fresh self-observation can describe a worker, and stop/start support can
+describe its provider, but neither can authorize restricted data access. Public serialization
+redacts identity references, and configuration rejects credential-shaped identity values.
+
+Admission evaluates cached authentication and readiness timestamps and does not fetch data or
+contact an identity provider. It fails closed for stale readiness, revoked instances or
+bindings, mismatched profile generations, scope violations, and resources above the declared
+ceiling. Protocol-version negotiation admits a version-zero worker only for an unconstrained
+legacy task; any constraint the worker cannot represent makes it ineligible.
+
 The application does not trust `Forwarded` or `X-Forwarded-*` for authentication or for
 deciding whether a request is local. A reverse proxy may terminate TLS and inject the
 operator Authorization header, but must strip client-supplied Authorization itself and be
