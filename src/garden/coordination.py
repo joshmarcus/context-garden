@@ -111,7 +111,7 @@ class Coordinator:
                     from_generation INTEGER NOT NULL, to_generation INTEGER NOT NULL,
                     authority_version INTEGER NOT NULL, status TEXT NOT NULL,
                     created_at TEXT NOT NULL, completed_at TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (garden, kind, scope));
+                    PRIMARY KEY (garden, kind, scope, to_generation));
                 CREATE TABLE IF NOT EXISTS cancellations (
                     garden TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL,
                     installation TEXT NOT NULL, fence INTEGER NOT NULL,
@@ -209,11 +209,7 @@ class Coordinator:
                     (garden_id, kind, scope),
                 ).fetchone()
                 db.execute("""INSERT INTO handoffs VALUES(?,?,?,?,?,?,?,?,?,?,'')
-                    ON CONFLICT(garden,kind,scope) DO UPDATE SET
-                    from_owner=excluded.from_owner,to_owner=excluded.to_owner,
-                    from_generation=excluded.from_generation,to_generation=excluded.to_generation,
-                    authority_version=excluded.authority_version,status='reconciling',
-                    created_at=excluded.created_at,completed_at=''""",
+                    ON CONFLICT(garden,kind,scope,to_generation) DO NOTHING""",
                     (garden_id, kind, scope, row["owner"], owner_id,
                      int(row["authority_generation"]), authority_generation, new_version,
                      "reconciling", _iso(self.clock())))
@@ -265,17 +261,18 @@ class Coordinator:
                 raise Conflict("stale authority snapshot")
             if not accepted_owner:
                 raise Conflict("scope is unassigned")
-            handoff = db.execute(
-                "SELECT * FROM handoffs WHERE garden=? AND kind=? AND scope=?",
+            handoffs = db.execute(
+                "SELECT * FROM handoffs WHERE garden=? AND kind=? AND scope=? "
+                "AND status!='ready' ORDER BY to_generation",
                 (garden_id, kind, scope),
-            ).fetchone()
-            if handoff and handoff["status"] != "ready":
+            ).fetchall()
+            for handoff in handoffs:
                 blockers = self._handoff_blockers(db, handoff)
                 if blockers:
                     raise Conflict("scope is in handoff reconciliation: " + ", ".join(blockers))
                 db.execute("UPDATE handoffs SET status='ready',completed_at=? "
-                           "WHERE garden=? AND kind=? AND scope=?",
-                           (_iso(now), garden_id, kind, scope))
+                           "WHERE garden=? AND kind=? AND scope=? AND to_generation=?",
+                           (_iso(now), garden_id, kind, scope, handoff["to_generation"]))
             active = db.execute("SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
                                 (garden_id, kind, scope)).fetchone()
             replacing_current = (

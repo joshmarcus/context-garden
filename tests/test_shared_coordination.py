@@ -385,6 +385,32 @@ def test_handoff_waits_until_old_projection_is_explicitly_superseded(tmp_path):
     assert claim.owner_id == "bob"
 
 
+def test_successive_reassignments_preserve_each_handoff_generation(tmp_path):
+    admin, alice, _alice_b, bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, old = authority_and_claim(coordinator, admin, alice)
+    first = coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+        authority_generation=5, expected_version=1, operation_id="alice-to-bob",
+    )
+    coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="alice",
+        authority_generation=6, expected_version=first["version"], operation_id="bob-to-alice",
+    )
+    handoffs = coordinator.snapshot(admin, "garden")["handoffs"]
+    assert [(row["from_owner"], row["to_owner"], row["to_generation"]) for row in handoffs] == [
+        ("alice", "bob", 5), ("bob", "alice", 6),
+    ]
+    coordinator.acknowledge_cancellation(
+        admin, garden_id="garden", kind="task", scope="CG-1", fence=old.fence,
+    )
+    resumed = coordinator.claim(
+        alice, garden_id="garden", kind="task", scope="CG-1", expected_version=3,
+        accepted_owner="alice", authority_generation=6, operation_id="alice-resumes",
+    )
+    assert resumed.authority_generation == 6
+
+
 def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
     garden_dir = tmp_path / ".garden"
     registry = MemberRegistry(garden_dir)
