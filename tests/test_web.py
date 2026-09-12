@@ -88,6 +88,15 @@ def test_routing_api_and_task_edit_are_read_only_validated_and_redacted(garden):
     task.status = Status.DRAFT
     task.owner = "alice"
     store.save(task)
+    historical = RunStore(store.config.garden_dir).new_run("DM-001", "remote", "work")
+    historical.status = "done"
+    historical.env_snapshot = {
+        "worker_configuration": "restricted", "worker_configuration_version": "7",
+        "execution_requirements": {"capabilities": {"all_of": ["data.private-ledger"]}},
+        "execution_envelope": {"version": "garden.execution-envelope/v1",
+                               "worker_instance": "secret-historical-host"},
+    }
+    historical.save()
     c = client(garden)
 
     before = list((garden / ".garden" / "runs").glob("**/*"))
@@ -104,6 +113,9 @@ def test_routing_api_and_task_edit_are_read_only_validated_and_redacted(garden):
     assert explanation["match"]["reason"] == "no_compatible_profile"
     assert "private-ledger" not in explanation["match"]["explanation"]
     assert explanation["dry_run"] is True
+    assert explanation["runs"][0]["profile"] == "restricted"
+    assert explanation["runs"][0]["profile_version"] == "7"
+    assert "secret-historical-host" not in json.dumps(explanation)
     assert list((garden / ".garden" / "runs").glob("**/*")) == before
 
     profiles = c.get("/api/worker-configurations").json()
