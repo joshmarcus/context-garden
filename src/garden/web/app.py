@@ -164,6 +164,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 # Empty assignment is a valid idle/view-only state; projected collections
                 # render empty rather than turning it into implicit garden-wide access.
                 return True
+            # This endpoint applies the same project boundary to its response rows.
+            if normalized == "/api/tasks":
+                return True
             if not project and collection and principal.projects:
                 project = sorted(principal.projects)[0]
             if project or collection:
