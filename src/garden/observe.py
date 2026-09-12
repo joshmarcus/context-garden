@@ -156,9 +156,20 @@ def _phase_keys(store: Any, phases: str | list[str]) -> set[str] | None:
     return None
 
 
+# A conflict or pressure diagnostic can be arbitrarily long (a host error message, a joined
+# list of pressure reasons). It gets its own local budget here, independent of and smaller
+# than `observe.line_width`, so it clips itself — with a visible marker — instead of pushing
+# isolation, spend, or the queue counts out of the line when the overall line_width clip
+# (`_clip` in `render_lines`) runs. The full text is still available uncut on the web config
+# page, which reads `resource_status` directly (CGS-030).
+_DIAGNOSTIC_FIELD_WIDTH = 60
+
+
 def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
     """service, slots, spend, and counts per status (blocked included, as `garden status`
-    computes it) for the configured phases."""
+    computes it) for the configured phases. Fixed operational fields (service, worker/slot
+    counts, isolation, spend, queue) always come first, in the same order; any pressure or
+    conflict diagnostic — variable in length — is locally truncated and appended after them."""
     tasks = store.tasks()
     keys = _phase_keys(store, settings.phases)
     counts: dict[str, int] = {}
@@ -170,25 +181,30 @@ def status_line(store: Any, sched: Any, settings: ObserveSettings) -> str:
     count_bits = " ".join(f"{s} {counts[s]}" for s in [*STATUS_ORDER, "blocked"] if counts.get(s))
     totals = RunStore(store.config.garden_dir).totals()
     pressure = sched.resource_status()
-    bits = [
+    fixed = [
         f"garden: {store.config.get('name')}",
         f"service {_service_state(store, sched)}",
         f"workers {len(sched.worker_runs_active())}/{sched.effective_max_parallel()}",
         f"local {len(sched.local_runs_active())}/{sched.resource_parallel_limit()}",
-        f"heavy {pressure.heavy_running}/{pressure.heavy_limit} authoritative (requested {pressure.requested_heavy_limit}; {pressure.heavy_waiting} waiting)"
-        + (f"; conflict {pressure.heavy_conflict}" if pressure.heavy_conflict else ""),
+        f"heavy {pressure.heavy_running}/{pressure.heavy_limit} authoritative "
+        f"(requested {pressure.requested_heavy_limit}; {pressure.heavy_waiting} waiting)",
         f"isolation {pressure.isolation}",
         f"spend ${totals['cost_usd']:.2f}",
     ]
-    if pressure.capacity_full:
-        bits.append(f"at capacity {pressure.active}/{pressure.limit} — eligible work waits for a slot")
-    if pressure.pressured:
-        bits.append("pressure " + "; ".join(pressure.pressure_reasons) + " — new local launches wait for recovery")
-    if pressure.reclaim:
-        bits.append(pressure.reclaim)
     if count_bits:
-        bits.append(count_bits)
-    return "  ".join(bits)
+        fixed.append(count_bits)
+    variable = []
+    if pressure.heavy_conflict:
+        variable.append("conflict " + _clip(pressure.heavy_conflict, _DIAGNOSTIC_FIELD_WIDTH))
+    if pressure.capacity_full:
+        variable.append(_clip(f"at capacity {pressure.active}/{pressure.limit} — eligible work waits for a slot",
+                               _DIAGNOSTIC_FIELD_WIDTH))
+    if pressure.pressured:
+        variable.append(_clip("pressure " + "; ".join(pressure.pressure_reasons) + " — new local launches wait for recovery",
+                               _DIAGNOSTIC_FIELD_WIDTH))
+    if pressure.reclaim:
+        variable.append(_clip(pressure.reclaim, _DIAGNOSTIC_FIELD_WIDTH))
+    return "  ".join(fixed + variable)
 
 
 def _service_state(store: Any, sched: Any) -> str:
