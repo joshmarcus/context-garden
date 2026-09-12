@@ -1,10 +1,13 @@
 """Provider-neutral lifecycle for declaratively managed remote hosts."""
 
 from .command import CommandProvider, CommandResult, CommandTransport
-from .config import pool_from_dict
+from .config import pool_from_dict, worker_configuration_from_dict, worker_instance_from_dict
 from .core import EnvironmentStop, HostLifecycle, JsonStateStore
 from .models import (
     CONTRACT_VERSION,
+    WORKER_CONFIGURATION_CONTRACT_VERSION,
+    WORKER_PROTOCOL_VERSION,
+    CapabilityGrant,
     EnvironmentProfile,
     HostAdmission,
     HostDeclaration,
@@ -16,6 +19,14 @@ from .models import (
     HostState,
     PoolDeclaration,
     ProviderCapabilities,
+    ProviderLifecycleCapabilities,
+    ResourceCeilings,
+    WorkerConfiguration,
+    WorkerConfigurationAdmission,
+    WorkerIdentityBinding,
+    WorkerInstance,
+    WorkerObservation,
+    verify_worker_configuration,
 )
 from .scale import (
     DirectoryEnrollmentResolver,
@@ -59,11 +70,24 @@ __all__ = [
     "JsonStateStore",
     "PoolDeclaration",
     "ProviderCapabilities",
+    "CapabilityGrant",
+    "ProviderLifecycleCapabilities",
+    "ResourceCeilings",
+    "WorkerConfiguration",
+    "WorkerConfigurationAdmission",
+    "WorkerInstance",
+    "WorkerIdentityBinding",
+    "WorkerObservation",
+    "WORKER_CONFIGURATION_CONTRACT_VERSION",
+    "WORKER_PROTOCOL_VERSION",
+    "verify_worker_configuration",
     "ScaleOperation",
     "ScaleStatus",
     "WorkerDrainStore",
     "DirectoryEnrollmentResolver",
     "durable_worker_readiness",
     "pool_from_dict",
+    "worker_configuration_from_dict",
+    "worker_instance_from_dict",
     "status_dict",
 ]
