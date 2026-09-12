@@ -141,6 +141,8 @@ def register(app: FastAPI, site: Site) -> None:
     def runs_page(request: Request):
         s = hub.fresh()
         rs = RunStore(s.config.garden_dir)
+        tasks = site.visible_tasks(request, s)
         return templates.TemplateResponse(request, "runs.html", ctx(
-            request, page="runs", runs=list(reversed(rs.all_runs())), archive_warning=rs.archive_health(),
-            events=list(reversed(hub.events))[:100]))
+            request, page="runs", runs=[r for r in reversed(rs.all_runs()) if r.task_id in tasks], archive_warning=rs.archive_health(),
+            events=(list(reversed(hub.events))[:100]
+                    if site.allowed_projects(request) is None else [])))
