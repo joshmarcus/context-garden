@@ -121,6 +121,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         connected_client = MultiplayerClient.from_config(store.config)
         if connected_client is not None:
             local_session_authenticator = connected_client.authenticate_local_session
+    multiplayer_tls_files(store, host)
     require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
     if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
