@@ -8,6 +8,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden.members import MemberRegistry, Principal, authorize
+from garden.runs import RunStore
 from garden.store import Store
 from garden.web.app import create_app, multiplayer_tls_files
 
@@ -72,12 +73,15 @@ def test_roles_separate_administration_owned_work_and_viewing():
 
     assert authorize(admin, "administer")
     assert not authorize(admin, "mutate_work", owner_id="bob")
-    assert authorize(member, "mutate_work", owner_id="bob")
+    assert authorize(member, "mutate_work", owner_id="bob", project="demo") is False
+    visible_member = Principal("g", "bob", "b", "member", "assigned", frozenset({"demo"}))
+    assert authorize(visible_member, "mutate_work", owner_id="bob", project="demo")
+    assert not authorize(visible_member, "mutate_work", owner_id="bob", project="private")
     assert not authorize(member, "mutate_work", owner_id="alice")
     assert not authorize(member, "mutate_work")
     assert not authorize(admin, "mutate_work")
     assert authorize(viewer, "read")
-    assert not authorize(viewer, "mutate_work")
+    assert not authorize(viewer, "mutate_work", owner_id="eve", project="demo")
     assert not authorize(member, "read", owner_id="alice")
 
 
@@ -201,6 +205,7 @@ def test_project_neutral_pages_do_not_disclose_another_project(garden):
 id: PV-001
 title: PRIVATE_TASK_MARKER
 status: ready
+owner: bob
 depends_on: []
 priority: 1
 reading: []
@@ -226,6 +231,20 @@ PRIVATE_BODY_MARKER
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     headers = {"Authorization": f"Bearer {token}"}
 
+    private_run = RunStore(garden / ".garden").new_run(
+        "PV-001", "remote", mode="check", run_id="private-project-run",
+    )
+    private_run.env_snapshot = {"product": "private"}
+    private_run.save()
+    denied_claim = client.post(
+        "/api/runs/claim", headers=headers,
+        json={"host": "bob-browser", "claim_request_id": "private-project-claim"},
+    )
+    assert denied_claim.status_code == 204
+    saved_private_run = RunStore(garden / ".garden").runs_for("PV-001")[0]
+    assert saved_private_run.run_id == "private-project-run"
+    assert saved_private_run.host == ""
+
     for path in (
         "/", "/inbox", "/board", "/board?product=demo", "/now", "/now1", "/now2",
         "/events", "/costs",
@@ -249,6 +268,12 @@ PRIVATE_BODY_MARKER
     assert client.get("/partials/tasks/DM-001/stdout", headers=headers).status_code == 200
     assert client.get("/partials/tasks/PV-001/stdout", headers=headers).status_code == 403
     assert client.get("/partials/runs/PV-001/private-run/stdout", headers=headers).status_code == 403
+    assert client.post("/api/tasks/PV-001/manual-mode", headers=headers).status_code == 403
+    assert client.post(
+        "/api/control/tasks/PV-001/launch", headers=headers,
+        json={"idempotency_key": "invisible-project", "expected_run_id": ""},
+    ).status_code == 403
+    assert client.post("/tasks/PV-001/cancel", headers=headers).status_code == 403
 
     with client.stream(
         "GET", "/now/stream?start=0&seconds=0.01", headers=headers,
@@ -270,6 +295,47 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
                        json={"host": "alice-laptop"}).status_code == 204
     assert client.post("/api/runs/claim", headers=auth,
                        json={"host": "spoofed"}).status_code == 403
+
+
+def test_member_worker_lifecycle_requires_current_project_visibility(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    token = registry.issue_installation(admin, "bob", "bob-worker")
+    headers = {"Authorization": f"Bearer {token}"}
+    runs = RunStore(garden / ".garden")
+    run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
+    run.env_snapshot = {"product": "demo"}
+    run.save()
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    claim = client.post(
+        "/api/runs/claim", headers=headers,
+        json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
+    )
+    assert claim.status_code == 200
+    lease_token = claim.json()["lease_token"]
+
+    state = json.loads(registry.path.read_text())
+    state["members"]["bob"]["projects"] = []
+    registry.path.write_text(json.dumps(state))
+    heartbeat = client.post(
+        "/api/runs/member-visible-run/heartbeat", headers=headers,
+        json={"lease_token": lease_token, "transcript": "must not persist"},
+    )
+    finish = client.post(
+        "/api/runs/member-visible-run/finish", headers=headers,
+        json={"lease_token": lease_token, "result": {}, "final_text": "must not persist"},
+    )
+    assert heartbeat.status_code == 403
+    assert finish.status_code == 403
+    assert not (run.path / "stdout.json").exists()
+    assert not (run.path / "final.md").exists()
+    assert not run.process_finished()
 
 
 def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):

@@ -67,7 +67,8 @@ def authorize(principal: Principal, operation: str, *, owner_id: str = "",
         return principal.role == "administrator"
     if operation == "mutate_work":
         return (principal.role in {"administrator", "member"}
-                and bool(owner_id) and owner_id == principal.member_id)
+                and bool(owner_id) and owner_id == principal.member_id
+                and authorize(principal, "read", project=project))
     return False
 
 
