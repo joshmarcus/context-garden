@@ -197,7 +197,6 @@ class LocalRunner(Runner):
         if str(setup.get("command") or "").strip():
             (d / "setup_input.json").write_text(json.dumps({"setup": setup, "config": self.config}))
         brief_path = d / "brief.md"
-        brief_path.write_text(brief_text)
         try:
             with subprocess_authority(
                 self.config, "worker", f"automation:{run.run_id}", env,
@@ -219,6 +218,46 @@ class LocalRunner(Runner):
                     })
                     execution_env["GARDEN_WORKLOAD_IDENTITY_TARGET"] = "worker"
                     execution_env["GARDEN_WORKLOAD_IDENTITY_RUN"] = f"automation:{run.run_id}"
+                restricted = self.config.get("restricted_data") or {}
+                boundaries = restricted.get("boundaries") if isinstance(restricted, dict) else None
+                if isinstance(boundaries, dict) and "worker" in boundaries:
+                    if metadata is None:
+                        raise WorkloadIdentityError(
+                            "restricted-data dispatch requires a resolved workload identity"
+                        )
+                    from ..restricted_data import (
+                        RestrictedDataError,
+                        authorize_restricted_workload,
+                    )
+
+                    identity_boundary = self.config["workload_identity"]["boundaries"]["worker"]
+                    try:
+                        authorization = authorize_restricted_workload(
+                            self.config, "worker", identity=metadata,
+                            identity_reference=str(identity_boundary.get("reference") or ""),
+                            project=str((run.env_snapshot or {}).get("product") or ""),
+                            activity=("work" if run.mode in {"work", "revise", "resume", "rebase"}
+                                      else run.mode),
+                            model=run.model, tool=self.harness.name,
+                        )
+                    except RestrictedDataError as exc:
+                        raise WorkloadIdentityError(str(exc)) from exc
+                    (d / "restricted_data.json").write_text(json.dumps({
+                        "boundary": authorization.boundary,
+                        "automation_identity": authorization.automation_identity,
+                        "project": authorization.project,
+                        "activity": authorization.activity,
+                        "datasets": [
+                            {"dataset": item.dataset, "permission": item.permission.value}
+                            for item in authorization.datasets
+                        ],
+                        "artifact_boundary": authorization.artifact_boundary,
+                        "evidence_exports": authorization.evidence_exports,
+                        "policy_digest": authorization.digest,
+                    }))
+                # Do not materialize a possibly restricted brief until all identity, egress,
+                # dataset, and artifact policy checks have passed.
+                brief_path.write_text(brief_text)
                 self.launch(run, worktree, brief_path, execution_env)
         except WorkloadIdentityError as exc:
             # Complete through the ordinary reap path. It will restore the attempt/revision
