@@ -134,3 +134,14 @@ def test_snapshot_rejects_garden_and_protocol_mismatch_and_reports_projection_la
         "projections": [{"kind": "task", "scope": "CG-1", "version": 3}],
     })
     assert client(tmp_path, service).refresh().projection_lag() == ["task:CG-1@4"]
+
+
+def test_stale_cache_is_bound_to_the_authenticated_installation(tmp_path):
+    service = Service(snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden", "authority": [], "projections": [],
+    }))
+    client(tmp_path, service).refresh()
+    service.online = False
+
+    with pytest.raises(MultiplayerUnavailable, match="unavailable"):
+        client(tmp_path, service, "alice-b").refresh()
