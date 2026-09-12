@@ -173,6 +173,7 @@ def register(app: FastAPI, site: Site) -> None:
         the tab goes away. Never holds the hub lock."""
         s = hub.fresh()
         deadline = time.monotonic() + seconds if seconds is not None else None
-        body = now1.stream(s, hub.tick_state, start=start, limit=limit, deadline=deadline)
+        body = now1.stream(s, hub.tick_state, start=start, limit=limit, deadline=deadline,
+                           projects=site.allowed_projects(request))
         return SSEStreamingResponse(body, media_type="text/event-stream",
                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

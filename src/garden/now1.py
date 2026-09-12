@@ -931,7 +931,8 @@ def progress_messages(runs: RunStore, store: Store, seen: dict[str, float]) -> l
 
 def stream(store: Store, tick_state: Callable[[], dict[str, Any]], *, start: int | None = None,
            limit: int | None = None, deadline: float | None = None, interval: float = 1.0,
-           progress_every: float = 10.0, sleep: Callable[[float], None] = time.sleep) -> Iterator[str]:
+           progress_every: float = 10.0, sleep: Callable[[float], None] = time.sleep,
+           projects: frozenset[str] | None = None) -> Iterator[str]:
     """The Now page's live messages, tailed from events.jsonl and the run records: `event`
     (one log line), `progress` (a run's words and spend, every `progress_every` seconds and
     only when its stream moved) and `tick` (the hub's last pass, when its `seq` changes). The
@@ -941,6 +942,8 @@ def stream(store: Store, tick_state: Callable[[], dict[str, Any]], *, start: int
     path = store.config.garden_dir / "events.jsonl"
     offset = (path.stat().st_size if path.exists() else 0) if start is None else start
     runs = RunStore(store.config.garden_dir)
+    visible_tasks = {task_id for task_id, task in store.tasks().items()
+                     if projects is None or task.product in projects}
     seen_tick = tick_state().get("seq")
     mtimes: dict[str, float] = {}
     sent = 0
@@ -949,14 +952,20 @@ def stream(store: Store, tick_state: Callable[[], dict[str, Any]], *, start: int
     while True:
         pending: list[str] = []
         lines, offset = tail_lines(path, offset)
+        if projects is not None:
+            lines = [ev for ev in lines if ev.get("task") in visible_tasks
+                     or (ev.get("product") in projects and ev.get("product"))]
         pending += [sse("event", ev) for ev in lines]
         ts = tick_state()
         if ts.get("seq") != seen_tick:
             seen_tick = ts.get("seq")
+            if projects is not None:
+                ts = {key: ts.get(key) for key in ("seq", "at", "next_at")}
             pending.append(sse("tick", ts))
         if time.monotonic() - last_progress >= progress_every:
             last_progress = time.monotonic()
-            pending += [sse("progress", p) for p in progress_messages(runs, store, mtimes)]
+            pending += [sse("progress", p) for p in progress_messages(runs, store, mtimes)
+                        if p.get("task") in visible_tasks]
         for msg in pending:
             yield msg
             sent += 1

@@ -11,6 +11,15 @@ OPERATOR_MUTATION = "operator_mutation"
 
 PUBLIC_PATHS = frozenset({"/healthz", "/favicon.svg"})
 ADMINISTRATOR_READ_PATHS = frozenset({"/config"})
+# Authenticated members may open these project collections.  Their handlers must project
+# every row and aggregate through ``Site.allowed_projects``; admission alone is not a data
+# boundary. Garden-operational endpoints which cannot be attributed to a project stay admin.
+PROJECT_COLLECTION_PATHS = frozenset({
+    "/", "/api/decisions", "/api/tasks", "/board", "/costs", "/events", "/graph",
+    "/herbarium", "/inbox", "/now", "/now1", "/now2", "/now/stream", "/partials/board",
+    "/runs", "/trellis",
+})
+PROJECT_COLLECTION_PREFIXES = ("/partials/now/",)
 WORKER_PATHS = frozenset({
     "/api/runs/claim", "/api/runs/{run_id}/heartbeat", "/api/runs/{run_id}/finish",
 })
