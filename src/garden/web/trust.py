@@ -217,7 +217,7 @@ class OriginCheck:
     """ASGI middleware: refuse a POST (or any unsafe method) whose Origin/Referer is not an allowed origin."""
 
     def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = (), worker_tokens: Iterable[str] = (),
-                 worker_authenticator: Callable[[str], bool] | None = None, operator_token: str = "",
+                 worker_authenticator: Callable[[str], Any | None] | None = None, operator_token: str = "",
                  require_operator_auth: bool = False,
                  member_authenticator: Callable[[str], Any | None] | None = None,
                  member_authorizer: Callable[[Any, str, str], bool] | None = None):
@@ -237,12 +237,14 @@ class OriginCheck:
             headers = Headers(scope=scope)
             auth = headers.get("authorization") or ""
             supplied = auth[7:] if auth.startswith("Bearer ") else ""
+            worker_identity: Any | None = None
             worker_ok = bool(supplied) and any(
                 secrets.compare_digest(supplied, token) for token in self.worker_tokens
             )
             if (not worker_ok and supplied and self.worker_authenticator and path.startswith("/api/runs/")):
                 try:
-                    worker_ok = self.worker_authenticator(supplied)
+                    worker_identity = self.worker_authenticator(supplied)
+                    worker_ok = bool(worker_identity)
                 except (OSError, TypeError, ValueError):
                     worker_ok = False
             operator_ok = bool(supplied and self.operator_token) and secrets.compare_digest(
@@ -264,6 +266,8 @@ class OriginCheck:
                 )(scope, receive, send)
                 return
             principal = self.member_authenticator(supplied) if supplied and self.member_authenticator else None
+            if worker_identity is not None:
+                scope.setdefault("state", {})["worker_identity"] = worker_identity
             if principal is not None:
                 scope.setdefault("state", {})["principal"] = principal
             member_ok = bool(principal) and (
