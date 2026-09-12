@@ -368,6 +368,8 @@ class Coordinator:
         self._garden(principal, garden_id)
         if principal.role == "viewer" or min(units, spend_micros) < 0:
             raise PermissionError("reservation is not authorized")
+        if pool.startswith("phase:"):
+            raise PermissionError("phase reservation requires a phase-operation claim")
         if pool.startswith("global:") and not authorize(principal, "administer"):
             raise PermissionError("global reservation requires administrator authority")
         with self._transaction() as db:
