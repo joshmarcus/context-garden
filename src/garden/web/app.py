@@ -131,7 +131,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # Project-neutral pages are authorized over the member's project set.  The
             # project selector/filtering work can then narrow their contents without an
             # empty project being mistaken for a garden-wide permission request.
-            project_neutral = path in {"/", "/board", "/inbox", "/now"}
+            project_neutral = (path in {"/", "/board", "/inbox", "/now", "/partials/board"}
+                               or path.startswith("/partials/now/"))
             if not project and project_neutral and principal.projects:
                 project = sorted(principal.projects)[0]
             return authorize(principal, "read", project=project)

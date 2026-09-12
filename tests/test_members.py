@@ -164,6 +164,52 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
+def test_project_neutral_pages_do_not_disclose_another_project(garden):
+    private = garden / "private" / "secret-phase"
+    (private / "tasks").mkdir(parents=True)
+    (garden / "private" / "product.md").write_text("# PRIVATE_PRODUCT_MARKER\n")
+    (private / "goals.md").write_text("# SECRET_PHASE_MARKER\n")
+    (private / "tasks" / "PV-001-secret.md").write_text("""---
+id: PV-001
+title: PRIVATE_TASK_MARKER
+status: ready
+depends_on: []
+priority: 1
+reading: []
+created: '2026-01-01T00:00:00+00:00'
+updated: '2026-01-01T00:00:00+00:00'
+---
+PRIVATE_BODY_MARKER
+""")
+    events = garden / ".garden" / "events.jsonl"
+    events.parent.mkdir()
+    events.write_text(json.dumps({"at": "2026-01-02T00:00:00+00:00", "kind": "note",
+                                  "task": "PV-001", "message": "PRIVATE_EVENT_MARKER"}) + "\n")
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["products"]["private"] = {
+        "repo": "../repo", "base_branch": "main", "id_prefix": "PV",
+        "github": "test/private",
+    }
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    token = registry.issue_installation(admin, "bob", "bob-browser")
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    for path in ("/", "/inbox", "/board", "/board?product=demo", "/now"):
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200, path
+        assert "demo" in response.text, path
+        for marker in ("PRIVATE_PRODUCT_MARKER", "SECRET_PHASE_MARKER", "PRIVATE_TASK_MARKER",
+                       "PRIVATE_BODY_MARKER", "PRIVATE_EVENT_MARKER", "test/private"):
+            assert marker not in response.text, (path, marker)
+
+    assert client.get("/board?product=private", headers=headers).status_code == 403
+    assert client.get("/board?view=prs&product=private", headers=headers).status_code == 403
+
+
 def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
