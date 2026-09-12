@@ -485,7 +485,8 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     if (url.origin === location.origin) link.href = url.pathname + url.search + url.hash;
   });
   picker.addEventListener("change", function () {
-    document.cookie = "garden_project=" + encodeURIComponent(picker.value) + "; Path=/; SameSite=Lax";
+    document.cookie = "garden_project=" + encodeURIComponent(picker.value)
+      + "; Path=/; SameSite=Lax" + (location.protocol === "https:" ? "; Secure" : "");
     var detail = /^\/(?:projects|phases|tasks|runs|investigations)\//.test(location.pathname);
     var url = new URL(detail ? "/" : location.href, location.href);
     url.searchParams.set("project", picker.value);
