@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,64 @@ class DispatchMixin:
         if match.reason is not MatchReason.MATCHED:
             raise ResourcePressureError(f"worker match {match.reason.value}: {match.detail}")
         return requirements, match
+
+    @staticmethod
+    def _execution_activity(mode: str) -> str:
+        return "work" if mode in {"work", "revise", "resume", "rebase"} else mode
+
+    def _record_execution_envelope(self, task: Task, run: Run, mode: str,
+                                   requirements: Any, match: Any,
+                                   *, source_run: Run | None = None) -> None:
+        """Persist the authorization contract used to admit one activity."""
+        if requirements.empty:
+            return
+        owner, owner_source = effective_owner(task, self.store.phase(task.product, task.phase))
+        requirement_data = requirements.to_dict()
+        encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
+        source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
+        source_requirements = source_snapshot.get("execution_requirements")
+        if source_requirements and source_requirements != requirement_data:
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.error = (
+                "execution requirements changed since the source activity; "
+                "continuation fenced before launch"
+            )
+            run.save()
+            raise ResourcePressureError(
+                "execution requirements changed since the source activity; fenced recovery "
+                "requires a fresh author dispatch"
+            )
+        instance = match.instance if match is not None else None
+        run.env_snapshot.update({
+            "execution_requirements": requirement_data,
+            "execution_owner": owner,
+            "execution_envelope": {
+                "version": "garden.execution-envelope/v1",
+                "activity": self._execution_activity(mode),
+                "project": task.product,
+                "owner": owner,
+                "owner_source": owner_source,
+                "requirements_sha256": hashlib.sha256(encoded).hexdigest(),
+                "source_run_id": source_run.run_id if source_run is not None else "",
+                "worker_instance": instance.instance_id if instance is not None else "",
+            },
+            "worker_instance": instance.instance_id if instance is not None else "",
+        })
+
+    def _execution_source_run(self, task: Task, current: Run | None = None) -> Run | None:
+        """Return the newest completed author activity that owns continuation policy."""
+        return next((candidate for candidate in reversed(self.runs.runs_for(task.id))
+                     if candidate is not current
+                     and candidate.mode in {"work", "revise", "resume"}
+                     and candidate.status == "done"), None)
+
+    @staticmethod
+    def _require_capability_runner(requirements: Any, runner_name: str) -> None:
+        if not requirements.empty and runner_name != "remote":
+            raise ResourcePressureError(
+                "constrained activities require an authenticated pull-worker claim"
+            )
 
     def _sweep_terminal_worktrees(self, rep: TickReport) -> None:
         """Reconcile terminal worktrees and their caches through the guarded storage sweep."""
@@ -622,10 +681,7 @@ class DispatchMixin:
                 # harness to use its own default.  It is not a missing value to fall back from.
                 model_override = member["model"]
             pool_member = pool_member or str((member or {}).get("label") or "")
-        if not execution_requirements.empty and runner.name != "remote":
-            raise ResourcePressureError(
-                "constrained activities require an authenticated pull-worker claim"
-            )
+        self._require_capability_runner(execution_requirements, runner.name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
@@ -940,13 +996,11 @@ class DispatchMixin:
         run.env_snapshot["product"] = task.product
         run.env_snapshot["execution_timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
         run.env_snapshot.setdefault("resource_weight", self.cfg.product_resource_weight(task.product))
-        if not execution_requirements.empty:
-            owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
-            run.env_snapshot.update({
-                "execution_requirements": execution_requirements.to_dict(),
-                "execution_owner": owner,
-                "worker_instance": worker_match.instance.instance_id,
-            })
+        self._record_execution_envelope(
+            task, run, mode, execution_requirements, worker_match,
+            source_run=(self._execution_source_run(task, run)
+                        if mode in {"revise", "resume", "rebase"} else None),
+        )
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
         run.env_snapshot["criteria"] = criteria_snapshot

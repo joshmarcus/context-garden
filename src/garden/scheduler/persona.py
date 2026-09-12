@@ -129,6 +129,9 @@ class PersonaMixin:
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         ensure_open(task)
         self._refuse_if_phase_not_admitted(task)
+        # Fail before materialising review inputs. ``dispatch_aux`` repeats the match at
+        # the atomic launch boundary and persists that result on the run.
+        self._execution_match(task, "persona")
         valid_name(name)
         if not task.pr and not task.branch:
             raise RuntimeError(f"{task.id} has no branch to review")

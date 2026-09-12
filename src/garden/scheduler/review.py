@@ -643,6 +643,7 @@ class ReviewMixin:
         if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         self._refuse_if_phase_not_admitted(task)
+        execution_requirements, worker_match = self._execution_match(task, "review")
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         review_tier = str(self.effective("review.difficulty", None, task.product)
                           or task.difficulty or "medium")
@@ -881,11 +882,15 @@ class ReviewMixin:
         controller_evidence = bool(capture_paths or needs_interaction)
         runner_name = ("remote" if self.runner_for(task).name == "remote" and not controller_evidence
                        else "local")
+        self._require_capability_runner(execution_requirements, runner_name)
         runner = self.runner_for(task, runner_name, harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         if run is None:
             run = (self.runs.new_run(task.id, "remote", mode="review")
                    if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
+        self._record_execution_envelope(
+            task, run, "review", execution_requirements, worker_match, source_run=work_run
+        )
         reference_files: dict[str, str] = {}
         text = review_brief(self.store, task, branch=branch, base=review_base_head,
                             pr_title=pr_title, pr_body=pr_body,
