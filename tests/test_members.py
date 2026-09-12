@@ -178,6 +178,41 @@ def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeyp
     assert loaded == [(str(cert), str(key))]
 
 
+def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkeypatch):
+    cert = garden / "private/server.crt"
+    key = garden / "private/server.key"
+    cert.parent.mkdir()
+    cert.write_text("certificate")
+    key.write_text("private key")
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {
+        "enabled": True,
+        "transport": "https",
+        "tls_certfile": "private/server.crt",
+        "tls_keyfile": "private/server.key",
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    monkeypatch.setattr("ssl.SSLContext.load_cert_chain", lambda *_args: None)
+    _registry_obj, admin_token, _admin = _registry(garden)
+    client = TestClient(create_app(Store(garden), watch=False, host="garden.example", port=8765))
+    auth = {"Authorization": f"Bearer {admin_token}"}
+
+    response = client.post(
+        "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    for origin in (
+        "http://garden.example:8765",
+        "https://garden.example:8766",
+        "https://evil.example:8765",
+    ):
+        response = client.post(
+            "/tick", headers={**auth, "Origin": origin}, follow_redirects=False,
+        )
+        assert response.status_code == 403
+
+
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
