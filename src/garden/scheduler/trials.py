@@ -48,6 +48,7 @@ AGAIN_RESET_KEYS = (
 class TrialsMixin:
     # ---- model trials ------------------------------------------------------
     def start_trial(self, task: Task, contenders: list[str], again: bool = False, keep_prs: bool = False) -> list[Run]:
+        self.require_execution_authority()
         self.require_maintenance_running()
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
