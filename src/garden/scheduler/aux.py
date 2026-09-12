@@ -48,11 +48,14 @@ class AuxMixin:
                                if runner_name == "remote" else self._new_local_run(
                                    run_task_id, kind, kind, run_id=run_id, resource_weight=resource_weight))
         if task is not None:
-            execution_requirements, worker_match = self._execution_match(task, kind)
+            source_run = self._execution_source_run(task, run)
+            execution_requirements, worker_match = self._execution_match(
+                task, kind, source_run=source_run
+            )
             self._require_capability_runner(execution_requirements, runner_name)
             self._record_execution_envelope(
                 task, run, kind, execution_requirements, worker_match,
-                source_run=self._execution_source_run(task, run),
+                source_run=source_run,
             )
         run.branch = task.branch or task.default_branch() if task else self.final_base_for(probe)
         run.base = self.base_for(task) if task else self.final_base_for(probe)
