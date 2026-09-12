@@ -137,6 +137,7 @@ def create_app(
             connected_client = None
         if connected_client is not None:
             local_session_authenticator = connected_client.authenticate_local_session
+    multiplayer_tls_files(store, host)
     require_operator_auth = (
         multiplayer
         or not loopback_listener(host)
