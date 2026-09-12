@@ -119,6 +119,10 @@ def test_multiplayer_administrator_reads_do_not_inherit_project_visibility(garde
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
 
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    administrator_reads = (
+        "/api/workers", "/api/events", "/api/worker-diagnostics", "/api/control/status",
+        "/now/workers", "/docs", "/design", "/design/report.pdf", "/trials",
+    )
     for token in (member_token, viewer_token):
         headers = {"Authorization": f"Bearer {token}"}
         for method in ("GET", "HEAD", "OPTIONS"):
@@ -130,9 +134,13 @@ def test_multiplayer_administrator_reads_do_not_inherit_project_visibility(garde
         assert trailing.status_code == 403
         assert trailing.headers.get("location") is None
         assert client.get("/board", headers=headers).status_code == 200
+        for path in administrator_reads:
+            assert client.get(path, headers=headers, follow_redirects=False).status_code == 403
 
     assert client.get("/config", headers=admin_headers).status_code == 200
     assert client.get("/config?product=demo", headers=admin_headers).status_code == 200
+    for path in administrator_reads:
+        assert client.get(path, headers=admin_headers, follow_redirects=False).status_code != 403
 
 
 def test_multiplayer_nonlocal_listener_requires_https_transport(garden):

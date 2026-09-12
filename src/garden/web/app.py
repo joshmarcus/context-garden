@@ -41,6 +41,7 @@ from ..store import Store
 from . import actions, pages
 from .access import (
     ADMINISTRATOR_READ_PATHS,
+    ADMINISTRATOR_READ_PREFIXES,
     PROJECT_COLLECTION_PATHS,
     PROJECT_COLLECTION_PREFIXES,
     loopback_listener,
@@ -129,7 +130,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # Project visibility governs garden content, not operational configuration.
             # Keep this explicit in the route inventory so administrative read surfaces
             # cannot accidentally inherit the generic project-read policy.
-            if path.rstrip("/") in ADMINISTRATOR_READ_PATHS:
+            normalized = path.rstrip("/") or "/"
+            if (normalized in ADMINISTRATOR_READ_PATHS
+                    or normalized.startswith(ADMINISTRATOR_READ_PREFIXES)):
                 return authorize(principal, "administer")
             parts = path.rstrip("/").split("/")
             project = parts[2] if len(parts) > 2 and parts[1] in {"projects", "phases"} else ""
@@ -143,7 +146,6 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             if len(parts) > 4 and parts[1:3] == ["api", "operations"]:
                 task = store.tasks().get(parts[3])
                 project = task.product if task else ""
-            normalized = path.rstrip("/") or "/"
             collection = (normalized in PROJECT_COLLECTION_PATHS
                           or path.startswith(PROJECT_COLLECTION_PREFIXES))
             if collection and principal.project_visibility == "assigned" and not principal.projects:
@@ -152,7 +154,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                 return True
             if not project and collection and principal.projects:
                 project = sorted(principal.projects)[0]
-            return authorize(principal, "read", project=project)
+            if project or collection:
+                return authorize(principal, "read", project=project)
+            # Route templates are inventoried below, but concrete request aliases and new
+            # dynamic shapes must also fail closed. An unscoped read is garden-wide and is
+            # therefore administrative regardless of all-project visibility.
+            return authorize(principal, "administer")
         # Configuration, lifecycle and phase-wide actions are administrator operations.
         task_id = ""
         parts = path.split("/")
