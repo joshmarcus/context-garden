@@ -88,7 +88,6 @@ class OwnerChangePreview:
     after: str
     affected_issues: tuple[str, ...]
 
-
 def authorize(principal: Principal, operation: str, *, owner_id: str = "",
               project: str = "") -> bool:
     """One role vocabulary for coordinator, clients and HTTP actions.
