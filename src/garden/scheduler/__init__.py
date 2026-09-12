@@ -333,6 +333,26 @@ class Scheduler(
             expected_version=int(row["version"]), effect_key=effect_key,
         ):
             yield
+=======
+        """Refuse the legacy garden-wide controller in explicit multiplayer mode.
+
+        Member-bound coordination and execution assignments arrive in CG-630--CG-633.
+        Until then, a browser administrator or an unbound local process is not an
+        execution principal and must not advance scheduler state.
+        """
+        if self.cfg.get("multiplayer.enabled", False) and self.principal is None:
+            raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+
+    def require_phase_authority(self, phase: Phase, *, expected_generation: int | None = None) -> None:
+        if not self.cfg.get("multiplayer.enabled", False):
+            return
+        self.require_execution_authority()
+        assert self.principal is not None
+        self.members.require_phase_operation(
+            self.principal, phase.product, phase.name,
+            expected_generation=expected_generation,
+        )
+>>>>>>> a06aabd6 (Enforce member authority in scheduler workflows)
 
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
