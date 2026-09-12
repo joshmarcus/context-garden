@@ -127,6 +127,14 @@ def assign(task_id: str, owner: str = typer.Argument(..., help="Logical owner id
     except ValueError as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
+    if store.config.get("multiplayer.enabled", False):
+        from ..members import MemberRegistry
+
+        preview = MemberRegistry(store.config.garden_dir).preview_task_owner_change(
+            t, store.phase(t.product, t.phase),
+            None if explicit_unassigned else (store.phase(t.product, t.phase).default_owner if inherit else value),
+        )
+        console.print("affected issues: " + (", ".join(preview.affected_issues) or "none"))
     old = t.owner or "unassigned"
     t.owner = value
     t.owner_unassigned = explicit_unassigned
@@ -154,6 +162,13 @@ def assign_phase(target: str, owner: str = typer.Argument(..., help="Logical def
     except ValueError as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
+    if store.config.get("multiplayer.enabled", False):
+        from ..members import MemberRegistry
+
+        preview = MemberRegistry(store.config.garden_dir).preview_default_owner_change(
+            phase, list(store.tasks().values()), value or None,
+        )
+        console.print("affected issues: " + (", ".join(preview.affected_issues) or "none"))
     meta, body = split_frontmatter(phase.goals_path.read_text())
     old = phase.owner or "unassigned"
     if value:
