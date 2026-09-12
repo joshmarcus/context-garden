@@ -573,7 +573,7 @@ def serve(
 
     import uvicorn
 
-    from ..web.app import create_app
+    from ..web.app import create_app, multiplayer_tls_files
 
     store = _store()
     # `log_level="warning"` used to also silence uvicorn.access (it logs at INFO), so a 500
@@ -582,7 +582,15 @@ def serve(
     log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     log_config["loggers"]["uvicorn"]["level"] = "WARNING"
     log_config["loggers"]["uvicorn.error"]["level"] = "WARNING"
-    uvicorn.run(create_app(store, watch=watch_, host=host, port=port), host=host, port=port, log_config=log_config)
+    tls = multiplayer_tls_files(store, host)
+    uvicorn.run(
+        create_app(store, watch=watch_, host=host, port=port),
+        host=host,
+        port=port,
+        log_config=log_config,
+        ssl_certfile=tls[0] if tls else None,
+        ssl_keyfile=tls[1] if tls else None,
+    )
 
 
 @app.command(rich_help_panel=PANEL_DIAG)
