@@ -232,6 +232,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "doctor": {"min_free_mb": 2048},
     "name": "garden",
+    # Membership records and credential verifiers live in .garden/members.json, never here.
+    "multiplayer": {"enabled": False, "transport": ""},
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
     "runner": "local",
