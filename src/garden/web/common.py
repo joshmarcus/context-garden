@@ -227,6 +227,19 @@ class Hub:
         """Return current shared authority, explicitly marked stale during an outage."""
         return self.coordinator.refresh() if self.coordinator else None
 
+    def coordinator_status(self) -> dict[str, Any]:
+        if self.coordinator is None:
+            return {"configured": False, "stale": False, "error": "", "projection_lag": []}
+        try:
+            view = self.authoritative_view()
+            assert view is not None
+            return {"configured": True, "stale": view.stale, "error": view.error,
+                    "projection_lag": [
+                        *view.projection_lag(), *self.coordinator.projection_lag(view.snapshot),
+                    ]}
+        except MultiplayerUnavailable as exc:
+            return {"configured": True, "stale": True, "error": str(exc), "projection_lag": []}
+
     def scheduler(self) -> Scheduler:
         # Tasks only: a config edit on disk is picked up by tick()'s own gate (CG-242), not by
         # every action's scheduler() call, so a button press between ticks can't hand a held
@@ -570,6 +583,7 @@ class Site:
             "watch": hub.watch,
             "last_tick": hub.last_tick,
             "scheduler_status": hub.scheduler_health(),
+            "coordinator_status": hub.coordinator_status(),
             "server_now": now_iso(),  # the clock every live elapsed counter is offset against
             "products": visible_products,
             "has_design": any(product_design_root(s, p.name).is_dir() for p in visible_products),
