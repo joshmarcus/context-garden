@@ -148,6 +148,7 @@ of the loop touch different files.
 | `scheduler/upgrades.py` | the pinned tool install: follow the configured tool base, drain, install, restart and confirm the active build; note a merge, upgrade, auto-upgrade on an idle tick |
 | `scheduler/aux.py`, `scheduler/trials.py`, `scheduler/persona.py`, `scheduler/retro.py` | auxiliary runs tracked in `_aux`; model trials; persona reviews; the phase retro |
 | `harness.py`, `openrouter_adapter.py`, `credential_stream.py` | harness definitions and output parsing; the OpenRouter Responses proxy that enforces per-run turn limits and captures provider usage/cost; one-shot credential transport for remote launches |
+| `restricted_data.py` | host-owned restricted-data authorization, dataset permissions, model/tool egress policy, private artifact boundaries, and permitted evidence export |
 | `resource_reclaim.py` | the bounded cgroup v2 cache-reclaim helper: verifies the opened cgroup identity, writes one timed `memory.reclaim` request, and publishes measured before/after headroom without granting admission itself |
 | `runner/base.py` | shared runner lifecycle helpers |
 | `runner/local.py` | the local worker runner backend |
