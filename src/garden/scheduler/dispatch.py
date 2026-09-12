@@ -315,6 +315,7 @@ class DispatchMixin:
         inv["feedback_markdown"] = "\n".join(lines)
 
     def dispatch_investigation(self, task: Task, runner: Runner | None = None) -> Run:
+        self.require_execution_authority()
         ensure_open(task)
         st = self.state.get(task.id)
         inv = st.get("investigation")
@@ -514,6 +515,7 @@ class DispatchMixin:
                  reserved_run: Run | None = None, completion_mode: str = "managed",
                  external_pr: str = "", external_pr_number: int | None = None,
                  pool_member: str = "") -> Run:
+        self.require_execution_authority()
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
@@ -541,6 +543,7 @@ class DispatchMixin:
         A task has one persistent branch and worktree.  Do not mark an old record superseded,
         or start the replacement, until its process is confirmed dead.
         """
+        self.require_execution_authority()
         superseded = [run for run in self.runs.active() if run.task_id == task.id]
         for run in superseded:
             if not run.stop():
