@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 
 import httpx
@@ -187,3 +188,67 @@ def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_pa
             canonical_revision=hashlib.sha256(original.encode()).hexdigest(),
         )
     assert (tmp_path / path).read_text() == original
+
+
+class LeaseService(Service):
+    def __init__(self, snapshot: dict):
+        super().__init__(snapshot)
+        self.claims = 0
+        self.reject_next_effect = False
+
+    def __call__(self, method, url, **kwargs):
+        if method == "GET":
+            return super().__call__(method, url, **kwargs)
+        body = kwargs["json"]
+        self.posts.append(body)
+        if url.endswith("/claims"):
+            self.claims += 1
+            return response(200, {
+                "garden_id": "garden", "kind": body["kind"], "scope": body["scope"],
+                "owner_id": body["accepted_owner"],
+                "authority_generation": body["authority_generation"],
+                "installation_id": "alice-a", "operation_id": body["operation_id"],
+                "fence": self.claims,
+                "lease_expires_at": (dt.datetime.now(dt.UTC) + dt.timedelta(minutes=2)).isoformat(),
+            })
+        if url.endswith("/effects") and self.reject_next_effect:
+            self.reject_next_effect = False
+            return response(409, {"detail": "stale or expired fencing lease"})
+        return response(200, {"status": "pending"})
+
+
+def test_expired_dispatch_claim_is_renewed_before_later_reap_effect(tmp_path):
+    service = LeaseService(snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden", "projections": [],
+        "authority": [{"kind": "task", "scope": "CG-1", "version": 3}],
+    }))
+    local = client(tmp_path, service)
+
+    with local.effect(kind="task", scope="CG-1", owner_id="alice",
+                      authority_generation=2, expected_version=3, effect_key="dispatch:CG-1"):
+        pass
+    local._claims[("task", "CG-1")]["lease_expires_at"] = "2000-01-01T00:00:00+00:00"
+    with local.effect(kind="task", scope="CG-1", owner_id="alice",
+                      authority_generation=2, expected_version=3, effect_key="reap:CG-1"):
+        pass
+
+    assert service.claims == 2
+    assert local._claims[("task", "CG-1")]["fence"] == 2
+
+
+def test_stale_effect_rejection_invalidates_and_reacquires_cached_claim(tmp_path):
+    service = LeaseService(snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden", "projections": [],
+        "authority": [{"kind": "task", "scope": "CG-1", "version": 3}],
+    }))
+    local = client(tmp_path, service)
+    local.claim(kind="task", scope="CG-1", owner_id="alice",
+                authority_generation=2, expected_version=3)
+    service.reject_next_effect = True
+
+    with local.effect(kind="task", scope="CG-1", owner_id="alice",
+                      authority_generation=2, expected_version=3, effect_key="reap:CG-1"):
+        pass
+
+    assert service.claims == 2
+    assert local._claims[("task", "CG-1")]["fence"] == 2
