@@ -954,10 +954,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
-
-
-
-
 def test_legacy_loopback_behavior_is_unchanged(garden):
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     assert client.get("/api/tasks").status_code == 200
