@@ -137,6 +137,19 @@ class DispatchMixin:
         tasks = self.store.tasks()
         phases = {ph.key: ph for p in self.store.products() for ph in p.phases}
         queue = self.dispatch_queue()
+        if self.cfg.get("multiplayer.enabled", False):
+            self.require_execution_authority()
+            assert self.principal is not None
+            permitted = set()
+            for task, _mode, _why in queue:
+                try:
+                    self.members.authorize_task_execution(
+                        self.principal, task, phases[task.key],
+                    )
+                except (PermissionError, RuntimeError, ValueError):
+                    continue
+                permitted.add(task.id)
+            queue = [row for row in queue if row[0].id in permitted]
         local_queue = any((runner := self.runner_for(task)).detached and runner.name == "local"
                           for task, _mode, _why in queue)
         pending_reviews = any(self.state.get(task.id).get("pending_reviews") for task in tasks.values())
@@ -513,8 +526,14 @@ class DispatchMixin:
                  worktree_override: Path | None = None, model_override: str | None = None,
                  reserved_run: Run | None = None, completion_mode: str = "managed",
                  external_pr: str = "", external_pr_number: int | None = None,
-                 pool_member: str = "") -> Run:
+                 pool_member: str = "", assignment_generation: int | None = None) -> Run:
         self.require_execution_authority()
+        if self.cfg.get("multiplayer.enabled", False):
+            assert self.principal is not None
+            self.members.authorize_task_execution(
+                self.principal, task, self.store.phase(task.product, task.phase),
+                expected_generation=assignment_generation,
+            )
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after

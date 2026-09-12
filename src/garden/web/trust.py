@@ -286,4 +286,10 @@ class OriginCheck:
                 if problem:
                     await PlainTextResponse(problem, status_code=403)(scope, receive, send)
                     return
-        await self.app(scope, receive, send)
+        from ..members import bind_principal, reset_principal
+
+        token = bind_principal(scope.get("state", {}).get("principal"))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            reset_principal(token)
