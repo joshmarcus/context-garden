@@ -743,6 +743,56 @@ def test_activation_rechecks_the_fenced_lease_at_start(tmp_path):
         lifecycle.activate_admission(command_pool(), host.provider_id)
 
 
+def test_host_backed_launch_activates_immediately_before_process_start(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(vcpu=2),
+    )
+    launched = []
+
+    result = lifecycle.launch_admitted(
+        command_pool(), host.provider_id,
+        lambda admission: launched.append(admission.lease_id) or "process-1",
+    )
+
+    assert result == "process-1"
+    assert launched
+    assert [call[0][-1] for call in wrapper.calls[-1:]] == ["activate-admission"]
+    saved = json.loads(path.read_text())["leases"][host.provider_id]
+    assert saved["activated_at"]
+    assert saved["admission"]["lease_id"] == launched[0]
+
+
+def test_activation_failure_prevents_host_backed_process_launch(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(vcpu=2),
+    )
+    lease_id = next(iter(wrapper.admissions))
+    wrapper.admissions[lease_id]["effective_requirement_digest"] = "changed"
+    launched = []
+
+    with pytest.raises(EnvironmentStop, match="requirement digest does not match"):
+        lifecycle.launch_admitted(
+            command_pool(), host.provider_id,
+            lambda admission: launched.append(admission.lease_id),
+        )
+
+    assert launched == []
+    saved = json.loads(path.read_text())
+    assert saved["leases"][host.provider_id]["admission"]["lease_id"] == lease_id
+    assert "activated_at" not in saved["leases"][host.provider_id]
+    assert saved["environment_stops"]["workers"]["detail"].startswith(
+        "host admission activation failed"
+    )
+
+
 def test_expired_controller_reservation_does_not_reuse_live_host_capacity(tmp_path, monkeypatch):
     clock = [1_000.0]
     monkeypatch.setattr(time, "time", lambda: clock[0])
