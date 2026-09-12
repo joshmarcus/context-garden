@@ -180,7 +180,8 @@ class Hub:
     a log of recent tick results. `github` is an optional stand-in for GitHub handed to
     every scheduler the hub builds (`garden qa` serves a throwaway garden against one)."""
 
-    def __init__(self, store: Store, watch: bool, github: Any | None = None):
+    def __init__(self, store: Store, watch: bool, github: Any | None = None,
+                 scheduler_blocked_reason: str = ""):
         self.store = store
         # A Store has mutable discovery caches.  A web request gets its own instance so its
         # first read observes files written by another process, while its page body and base
@@ -206,13 +207,14 @@ class Hub:
         self.tick_seq = 0
         self.tick_record: dict[str, Any] = {}
         self.watch = watch
-        self._embedded_state = "starting" if watch else "off"
+        self.scheduler_blocked_reason = scheduler_blocked_reason
+        self._embedded_state = "waiting" if scheduler_blocked_reason else ("starting" if watch else "off")
         self._embedded_heartbeat = ""
         self._embedded_error = ""
         self._watch_thread: threading.Thread | None = None
         self.planning: dict[str, str] = {}  # "product/phase" -> status text
         self._stop = threading.Event()
-        if watch:
+        if watch and not scheduler_blocked_reason:
             self._watch_thread = threading.Thread(target=self._loop, daemon=True, name="garden-watch")
             self._watch_thread.start()
 
@@ -319,6 +321,8 @@ class Hub:
         """Derive embedded health from bounded pass evidence and thread liveness."""
         if not self.watch:
             return {"kind": "off", "label": "embedded watcher off", "state": "off"}
+        if self.scheduler_blocked_reason:
+            return {"kind": "waiting", "label": self.scheduler_blocked_reason, "state": "waiting"}
         thread = self._watch_thread
         if thread is not None and not thread.is_alive():
             return {"kind": "failed", "label": "embedded watcher stopped", "state": "failed",
@@ -336,6 +340,7 @@ class Hub:
             "healthy": "embedded watcher healthy",
             "failed": "embedded watcher failed",
             "stale": "embedded watcher stale",
+            "waiting": self.scheduler_blocked_reason,
         }
         return {"kind": kind, "label": labels[kind], "state": self._embedded_state,
                 "heartbeat_at": self._embedded_heartbeat, "error": self._embedded_error}

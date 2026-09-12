@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from garden.members import MemberRegistry, Principal, authorize
 from garden.runs import RunStore
+from garden.scheduler import MULTIPLAYER_EXECUTION_UNAVAILABLE, Scheduler
 from garden.store import Store
 from garden.web.app import create_app, multiplayer_tls_files
 
@@ -100,8 +101,10 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     direct = client.post("/tick", headers={"Authorization": f"Bearer {viewer_token}"},
                          follow_redirects=False)
     assert direct.status_code == 403
-    assert client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
-                       follow_redirects=False).status_code == 303
+    refused = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
+                          follow_redirects=False)
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == MULTIPLAYER_EXECUTION_UNAVAILABLE
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -201,7 +204,8 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 409
+    assert response.json()["detail"] == MULTIPLAYER_EXECUTION_UNAVAILABLE
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -401,6 +405,46 @@ def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden)
         json={"host": "legacy"},
     )
     assert response.status_code == 204
+
+
+def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(garden):
+    first_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    first_path.write_text(first_path.read_text().replace("status: ready", "status: ready\nowner: alice"))
+    second_path = next((garden / "demo" / "p1" / "tasks").glob("DM-002-*.md"))
+    second_path.write_text(second_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
+    legacy_scheduler = Scheduler(Store(garden))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, admin_token, _admin = _registry(garden)
+
+    with TestClient(create_app(Store(garden), watch=True, host="testserver")) as client:
+        hub = client.app.state.hub
+        assert hub._watch_thread is None
+        assert hub.scheduler_health()["embedded_health"] == {
+            "kind": "waiting",
+            "label": MULTIPLAYER_EXECUTION_UNAVAILABLE,
+            "state": "waiting",
+        }
+        response = client.post(
+            "/tick",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 409
+
+    scheduler = Scheduler(Store(garden))
+    with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
+        legacy_scheduler.tick()
+    with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
+        scheduler.tick()
+    with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
+        scheduler.dispatch(scheduler.store.task("DM-002"))
+    assert {task.id: task.status.value for task in Store(garden).tasks().values()} == {
+        "DM-001": "ready",
+        "DM-002": "ready",
+    }
+    assert RunStore(garden / ".garden").active() == []
 
 
 def test_legacy_loopback_behavior_is_unchanged(garden):

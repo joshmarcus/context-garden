@@ -50,6 +50,7 @@ class PersonaMixin:
 
     def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
                                min_severity: str = "low", run_id: str = "") -> Run:
+        self.require_execution_authority()
         prepared = self.prepare_persona_phase(phase, name, file_tasks, min_severity, run_id)
         self._commit_prepared_aux(prepared)
         self._launch_prepared_aux(prepared)
@@ -125,6 +126,7 @@ class PersonaMixin:
     def dispatch_persona_pr(self, task: Task, name: str, request_changes: bool = False,
                             required_evidence: bool = False,
                             member: dict[str, Any] | None = None) -> Run:
+        self.require_execution_authority()
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         ensure_open(task)
