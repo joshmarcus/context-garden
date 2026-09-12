@@ -255,8 +255,14 @@ class Coordinator:
             authority = [dict(row) for row in db.execute(
                 "SELECT * FROM authority WHERE garden=? ORDER BY kind,scope", (garden_id,))]
             claims = [dict(row) for row in db.execute(
-                "SELECT kind,scope,owner,authority_generation,installation,fence,lease_expires_at "
+                "SELECT kind,scope,owner,authority_generation,installation,operation_id,fence,lease_expires_at "
                 "FROM claims WHERE garden=? ORDER BY kind,scope", (garden_id,))]
+            for claim in claims:
+                # Keep the established diagnostic field while also returning the wire name
+                # needed to reconstruct and reuse the authenticated Claim after a restart.
+                claim["installation_id"] = claim["installation"]
+                claim["owner_id"] = claim["owner"]
+                claim["garden_id"] = garden_id
             pending = [dict(row) for row in db.execute(
                 "SELECT effect_kind,scope,status,last_error FROM outbox WHERE garden=? AND status!='done'",
                 (garden_id,))]
