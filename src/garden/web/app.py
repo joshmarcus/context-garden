@@ -170,7 +170,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         from ..model import effective_owner
 
         owner = effective_owner(task, store.phase(task.product, task.phase))[0]
-        return authorize(principal, "mutate_work", owner_id=owner)
+        return authorize(principal, "mutate_work", owner_id=owner, project=task.product)
 
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
