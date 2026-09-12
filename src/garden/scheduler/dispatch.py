@@ -93,6 +93,8 @@ class DispatchMixin:
                 "requires a fresh author dispatch"
             )
         instance = match.instance if match is not None else None
+        configuration = (self.cfg.worker_configurations().get(instance.configuration)
+                         if instance is not None else None)
         run.env_snapshot.update({
             "execution_requirements": requirement_data,
             "execution_owner": owner,
@@ -107,6 +109,8 @@ class DispatchMixin:
                 "worker_instance": instance.instance_id if instance is not None else "",
             },
             "worker_instance": instance.instance_id if instance is not None else "",
+            "worker_configuration": configuration.name if configuration is not None else "",
+            "worker_configuration_version": configuration.version if configuration is not None else "",
         })
 
     def _execution_source_run(self, task: Task, current: Run | None = None) -> Run | None:

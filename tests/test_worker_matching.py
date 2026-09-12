@@ -89,3 +89,10 @@ def test_preferences_rank_only_after_hard_requirements():
                    instance("preferred", configuration="preferred")), now=200,
     )
     assert match.instance and match.instance.instance_id == "preferred"
+
+
+def test_routing_explanation_does_not_export_private_match_detail():
+    from garden.routing import SAFE_REASON_TEXT
+
+    assert "capabil" not in SAFE_REASON_TEXT[MatchReason.NO_COMPATIBLE_PROFILE].lower()
+    assert "identity" not in SAFE_REASON_TEXT[MatchReason.DENIED_ACCESS].lower()

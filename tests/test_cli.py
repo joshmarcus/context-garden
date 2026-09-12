@@ -39,6 +39,16 @@ def test_status_ls_graph_validate(garden):
     assert run(garden, "validate").exit_code == 0
 
 
+def test_route_explain_is_a_side_effect_free_json_command(garden):
+    before = list((garden / ".garden" / "runs").glob("**/*"))
+    result = run(garden, "route-explain", "DM-001")
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["task_id"] == "DM-001"
+    assert payload["dry_run"] is True
+    assert list((garden / ".garden" / "runs").glob("**/*")) == before
+
+
 def test_archive_runs_apply_repairs_pending_move_before_history_analysis(garden):
     rs = RunStore(garden / ".garden")
     archived = rs.new_run("DM-001", "local", run_id="20260101T000000Z-work")

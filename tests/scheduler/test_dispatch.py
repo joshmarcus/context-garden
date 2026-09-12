@@ -129,6 +129,8 @@ def test_execution_envelope_records_activity_owner_requirements_and_claim_fence(
     assert envelope["owner"] == "alice"
     assert envelope["worker_instance"] == "build-1"
     assert run.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
+    assert run.env_snapshot["worker_configuration"] == "builder"
+    assert run.env_snapshot["worker_configuration_version"] == "1"
 
 
 def test_continuation_fences_a_changed_hard_requirement(sched):
