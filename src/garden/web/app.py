@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
 from ..harness import DIFFICULTIES
+from ..members import MemberRegistry, authorize
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
 from ..now1 import board_run_fact_html, live_clock_html
 from ..plants import (
@@ -72,8 +73,15 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     operator_env = str(store.config.get("web.operator_token_env") or "")
     operator_token = os.environ.get(operator_env, "") if operator_env else ""
-    require_operator_auth = not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
-    if require_operator_auth and not operator_token:
+    multiplayer = bool(store.config.get("multiplayer.enabled", False))
+    registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
+    if multiplayer and not loopback_listener(host) \
+            and store.config.get("multiplayer.transport", "") != "https":
+        raise RuntimeError(
+            "multiplayer listeners outside local development require authenticated HTTPS transport"
+        )
+    require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
+    if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
             "operator authentication is required for this listener; set web.operator_token_env "
             "to an environment variable containing its bearer token"
@@ -81,11 +89,29 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     if operator_token and authenticate_worker(worker_configuration(store.config), operator_token) is not None:
         raise RuntimeError("operator and worker credentials must be different")
 
+    def member_authorizer(principal: Any, method: str, path: str) -> bool:
+        if method in {"GET", "HEAD", "OPTIONS"}:
+            return authorize(principal, "read")
+        # Configuration, lifecycle and phase-wide actions are administrator operations.
+        if not path.startswith("/tasks/"):
+            return authorize(principal, "administer")
+        parts = path.split("/")
+        task = store.tasks().get(parts[2]) if len(parts) > 2 else None
+        if task is None:
+            return False
+        from ..model import effective_owner
+
+        owner = effective_owner(task, store.phase(task.product, task.phase))[0]
+        return authorize(principal, "mutate_work", owner_id=owner)
+
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
         worker_authenticator=lambda token: authenticate_worker(
             worker_configuration(store.config), token) is not None,
-        operator_token=operator_token, require_operator_auth=require_operator_auth,
+        operator_token="" if multiplayer else operator_token,
+        require_operator_auth=require_operator_auth,
+        member_authenticator=registry.authenticate if registry else None,
+        member_authorizer=member_authorizer if registry else None,
     )
     hub = Hub(store, watch, github=github)
     app.state.hub = hub
