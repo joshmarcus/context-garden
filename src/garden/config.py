@@ -116,6 +116,7 @@ def _normalize_review_count_policy(data: dict[str, Any]) -> None:
 EXECUTABLE_KEYS: tuple[str, ...] = (
     "notify.command", "notify.recipient", "notify.destinations", "checks", "worker_env.pass",
     "worker_env.config_files", "sandbox", "runner_adapters", "workload_identity",
+    "restricted_data",
     "worker_configurations", "worker_instances",
 )
 
@@ -243,6 +244,7 @@ DEFAULTS: dict[str, Any] = {
     # Host-trusted provider adapters and logical, least-privilege delivery policies.
     # Authority values are resolved only by operation-boundary code and never enter Config.
     "workload_identity": {"providers": {}, "references": {}, "boundaries": {}},
+    "restricted_data": {"boundaries": {}},
     # Reusable trusted templates and private, per-user installation bindings. These are
     # executable authority and therefore participate in the live-config fence above.
     "worker_configurations": {},
