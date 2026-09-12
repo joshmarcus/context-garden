@@ -128,8 +128,9 @@ def cancel(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> N
 
 
 @action("retry")
-def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor: str = "human_owner") -> None:
-    sched.retry(t, actor=actor)
+def retry(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor: str = "human_owner",
+          assignment_generation: int | None = None) -> None:
+    sched.retry(t, actor=actor, assignment_generation=assignment_generation)
 
 
 @action("hold-runner")
@@ -494,6 +495,7 @@ def register(app: FastAPI, site: Site) -> None:
     @app.post("/tasks/{task_id}/{action}")
     def task_action(request: Request, task_id: str, action: str, note: str = Form(""), applies_to: str = Form(""),
                     actor: str = Form("human_owner"), likely_cause: str = Form(""),
+                    assignment_generation: int | None = Form(None),
                     confidence: str = Form(""), unknowns: str = Form(""), evidence: str = Form(""),
                     attempted_checks: str = Form(""), retain_work: str = Form(""),
                     alternatives: str = Form(""), recommendation: str = Form(""), links: str = Form("")):
@@ -524,13 +526,17 @@ def register(app: FastAPI, site: Site) -> None:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)
-                if action in {"retry", "done", "manual-mode"}:
+                if action == "retry":
+                    warning = run_action(  # type: ignore[call-arg]
+                        s, sched, t, note, applies_to, actor, assignment_generation,
+                    )
+                elif action in {"done", "manual-mode"}:
                     warning = run_action(s, sched, t, note, applies_to, actor)  # type: ignore[call-arg]
                 else:
                     warning = run_action(s, sched, t, note, applies_to)
         except HTTPException:
             raise
-        except (RuntimeError, GitError, GitHubError) as e:
+        except (PermissionError, RuntimeError, GitError, GitHubError) as e:
             message = str(e)
             hub._log(f"{task_id}/{action} failed: {message}")
             note_to_keep = note if action == "answer" else ""
