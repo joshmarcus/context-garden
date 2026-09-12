@@ -370,6 +370,30 @@ def test_local_identity_failure_uses_environment_error_recovery(sched, provider_
     assert sched.store.tasks()["DM-001"].attempts == 0
 
 
+def test_local_restricted_policy_denies_general_worker_before_brief(sched, provider_module):
+    config = identity_config(provider_module)
+    config["restricted_data"] = {"boundaries": {"worker": {
+        "identity_reference": "packages/read",
+        "projects": ["another-product"],
+        "activities": ["work"],
+        "datasets": {"synthetic-private": "read"},
+        "models": [],
+        "tools": [],
+        "artifact_boundary": "private",
+        "evidence_exports": ["validation-state"],
+    }}}
+    sched.cfg.data.update(config)
+
+    assert sched.tick().dispatched == ["DM-001(work)"]
+    run = sched.runs.latest("DM-001")
+    assert not (run.path / "brief.md").exists()
+    assert not (run.path / "restricted_data.json").exists()
+    assert "project or activity" in (run.path / "identity_error.json").read_text()
+    report = sched.tick()
+    assert "DM-001 -> ready (env_error: workload_identity)" in report.transitions
+    assert sched.store.tasks()["DM-001"].attempts == 0
+
+
 def test_setup_environment_excludes_worker_authority(monkeypatch):
     from garden.run_supervisor import setup_environment
 
