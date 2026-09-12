@@ -33,7 +33,7 @@ from .plants import plant_info
 from .runs import Run, RunStore
 from .store import Store
 
-WORKER_MODES = {"work", "revise", "resume", "trial", "rebase"}
+WORKER_MODES = {"work", "revise", "resume", "trial", "rebase", "investigation"}
 REVIEW_MODES = {"review", "persona", "compare"}
 # The design's mode -> growth-stage glyph table (docs/design/now-1.md, Visual system): the
 # glyph is a task-state name `plants.stage_svg` knows; the dot is the state colour.
@@ -305,7 +305,8 @@ def strips_in_flight(runs: RunStore, tasks: dict[str, Any], events: list[dict[st
     return out
 
 
-def cards_needing_a_hand(tasks: dict[str, Any], state: Any, control: dict[str, Any]) -> list[dict[str, Any]]:
+def cards_needing_a_hand(tasks: dict[str, Any], state: Any, control: dict[str, Any],
+                         include_global: bool = True) -> list[dict[str, Any]]:
     """Held merges, needs-you cards and paused harnesses, in the Inbox's words."""
     out = []
     for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
@@ -324,7 +325,7 @@ def cards_needing_a_hand(tasks: dict[str, Any], state: Any, control: dict[str, A
         elif info:
             out.append({"kind": "needs_you", "state": "needs_you", "task": t.id, "title": t.title,
                         "reason": info.get("reason", ""), "glyph": "waiting_human", "dot": "waiting_human"})
-    for name, entry in (control.get("paused_harnesses") or {}).items():
+    for name, entry in ((control.get("paused_harnesses") or {}).items() if include_global else ()):
         out.append({"kind": "paused", "state": "paused", "task": "", "title": f"{name} harness paused",
                     "reason": f"{entry.get('reason', '')} · since {str(entry.get('at', ''))[11:16]}Z · the probe resumes it on its own",
                     "glyph": "blocked", "dot": "blocked"})
@@ -367,6 +368,11 @@ def merge_queue(store: Store, tasks: dict[str, Any], state: Any, events: list[di
     tick's gates, in the tick's order), judged against the hub's `last_tick` and the task's
     newest event so a review nothing explains is named as such."""
     view = merge_queue_view(store, state, events) or {"head": None, "candidates": [], "last_drop": None}
+    view["head"] = view["head"] if view["head"] and view["head"].get("task") in tasks else None
+    view["candidates"] = [candidate for candidate in view["candidates"]
+                          if candidate.get("task") in tasks]
+    if view.get("last_drop") and view["last_drop"].get("task") not in tasks:
+        view["last_drop"] = None
     queued = {c["task"] for c in view["candidates"]} | ({view["head"]["task"]} if view["head"] else set())
     reviewing = {s["task"] for s in strips if s.get("mode") in REVIEW_MODES}
     configured_cap = store.config.review_max_rounds()
@@ -634,20 +640,27 @@ QUIET_PERIOD = "Nothing recorded in this window: no run finished, no merge, no h
 # ---- the snapshot ---------------------------------------------------------------------
 
 def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | None = None,
-             tick: dict[str, Any] | None = None) -> dict[str, Any]:
+             tick: dict[str, Any] | None = None,
+             projects: frozenset[str] | None = None) -> dict[str, Any]:
     """The whole page as one dict: `garden` (slots, pause, the tick), `now` (strips and cards),
     `next` (the dispatch and merge queues), `where` (phase sheets) and `period` (the window's
     figures). `tick` is the hub's last pass (`at`, `next_at`), or None outside the web app."""
     now = now or dt.datetime.now(dt.UTC)
     cfg = store.config
-    tasks = store.tasks()
+    tasks = {task_id: task for task_id, task in store.tasks().items()
+             if projects is None or task.product in projects}
     state = sched.state
     runs: RunStore = sched.runs
     events = EventLog(cfg.garden_dir / "events.jsonl").read()
-    op_events = ops.to_cost_events(ops.read_records(ops.default_path(store.root, store.config)))
+    if projects is not None:
+        events = [event for event in events
+                  if event.get("task") in tasks
+                  or (event.get("product") in projects and event.get("product"))]
+    op_events = (ops.to_cost_events(ops.read_records(ops.default_path(store.root, store.config)))
+                 if projects is None else [])
     control = state.get("_control")
     spent: dict[str, float] = defaultdict(float)
-    all_runs = runs.all_runs()
+    all_runs = [run for run in runs.all_runs() if run.task_id in tasks]
     for r in all_runs:
         if r.task_id in tasks:
             spent[tasks[r.task_id].key] += float(r.cost_usd or 0.0)
@@ -655,17 +668,19 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
     strips = strips_in_flight(runs, tasks, events, store, now, all_runs)
     # Use the scheduler's admission counters.  The strips intentionally also show manual
     # reservations, while those sessions consume neither automated worker nor review slots.
-    worker_busy = len(sched.worker_runs_active())
+    active_runs = [run for run in runs.active() if run.task_id in tasks and run.runner != "manual"]
+    worker_busy = sum(run.mode in WORKER_MODES for run in active_runs)
     worker_without_process = sum(1 for s in strips if s["mode"] in WORKER_MODES and s["no_process"])
-    review_busy = len(sched.review_runs_active())
+    review_busy = sum(run.mode in REVIEW_MODES for run in active_runs)
     max_parallel = sched.effective_max_parallel()
     review_parallel = sched.review_parallel_limit()
-    hands = cards_needing_a_hand(tasks, state, control)
+    hands = cards_needing_a_hand(tasks, state, control, include_global=projects is None)
 
-    open_phases = [ph for p in store.products() for ph in p.phases if not ph.closed]
+    visible_products = [p for p in store.products() if projects is None or p.name in projects]
+    open_phases = [ph for p in visible_products for ph in p.phases if not ph.closed]
     sheets = [phase_sheet(ph, tasks, sched, strips, events, spent) for ph in open_phases]
     sheets.sort(key=lambda s: (-s["running"], s["key"]))
-    closed = [phase_sheet(ph, tasks, sched, strips, events, spent) for p in store.products() for ph in p.phases if ph.closed]
+    closed = [phase_sheet(ph, tasks, sched, strips, events, spent) for p in visible_products for ph in p.phases if ph.closed]
     closed.sort(key=lambda s: s["closed"], reverse=True)
     primary = sheets[0] if sheets else None
 
@@ -687,7 +702,7 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
                    "dispatch_paused": {k: str(control.get(k) or "") for k in ("by", "at", "reason")} if paused else None,
                    "drafts": drafts, "inbox_decisions": len(hands)},
         "now": strips + hands,
-        "next": {"dispatch": dispatch_lines(sched),
+        "next": {"dispatch": [line for line in dispatch_lines(sched) if line["task"] in tasks],
                  "merge": merge_queue(store, tasks, state, events, strips, sched, str(tick.get("at") or ""))},
         "where": {"primary": primary, "others": sheets[1:], "closed": closed},
         "period": period(
