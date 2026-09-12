@@ -233,7 +233,6 @@ def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeyp
     assert multiplayer_tls_files(Store(garden), "0.0.0.0") == (str(cert), str(key))
     assert loaded == [(str(cert), str(key))]
 
-
 def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkeypatch):
     cert = garden / "private/server.crt"
     key = garden / "private/server.key"
