@@ -378,6 +378,7 @@ class MemberRegistry:
                for task in tasks.values()):
             raise RuntimeError("unfinished member work prevents phase advancement")
         self._require_catalog_phase(project, next_phase)
+        self._valid_id(next_phase, "phase")
         generation = expected_generation + 1
         row = {"project": project, "phase": next_phase, "generation": generation,
                "enabled": True, "advance": True, "changed_by": actor.member_id}

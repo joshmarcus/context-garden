@@ -15,6 +15,7 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 from __future__ import annotations
 
 import fcntl
+import os
 import re
 import threading
 import time
@@ -33,7 +34,8 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..model import Status, Task, effective_owner, now_iso
+from ..members import MemberRegistry, Principal, current_principal
+from ..model import Phase, Status, Task, effective_owner, now_iso
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
@@ -139,7 +141,8 @@ class Scheduler(
 
     def require_execution_authority(self) -> None:
         """Require an authenticated coordinator client in explicit multiplayer mode."""
-        if self.cfg.get("multiplayer.enabled", False) and self.coordinator is None:
+        if (self.cfg.get("multiplayer.enabled", False)
+                and self.coordinator is None and self.principal is None):
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
 
     def execution_status(self) -> dict[str, str]:
@@ -259,15 +262,34 @@ class Scheduler(
             raise PermissionError(f"{scope} phase operation is not owned by the authenticated member")
         return row
 
-    def require_phase_authority(self, product: str, phase: str) -> None:
-        self._phase_authority(product, phase)
+    def require_phase_authority(
+        self, phase_or_product: Phase | str, phase: str | None = None,
+        *, expected_generation: int | None = None,
+    ) -> None:
+        if isinstance(phase_or_product, Phase):
+            product, phase_name = phase_or_product.product, phase_or_product.name
+        else:
+            product, phase_name = phase_or_product, phase
+        if phase_name is None:
+            raise TypeError("phase name is required")
+        if self.coordinator is not None:
+            self._phase_authority(product, phase_name)
+            return
+        if self.cfg.get("multiplayer.enabled", False):
+            self.require_execution_authority()
+            assert self.principal is not None
+            self.members.require_phase_operation(
+                self.principal, product, phase_name,
+                expected_generation=expected_generation,
+            )
 
     @contextmanager
     def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
-        row = self._phase_authority(product, phase)
         if self.coordinator is None:
+            self.require_phase_authority(product, phase)
             yield
             return
+        row = self._phase_authority(product, phase)
         with self.coordinator.effect(
             kind="phase", scope=f"{product}/{phase}", owner_id=self.coordinator.member_id,
             authority_generation=int(row["authority_generation"]),
@@ -288,6 +310,26 @@ class Scheduler(
             expected_version=int(row["version"]), effect_key=effect_key,
         ):
             yield
+=======
+        """Refuse the legacy garden-wide controller in explicit multiplayer mode.
+
+        Member-bound coordination and execution assignments arrive in CG-630--CG-633.
+        Until then, a browser administrator or an unbound local process is not an
+        execution principal and must not advance scheduler state.
+        """
+        if self.cfg.get("multiplayer.enabled", False) and self.principal is None:
+            raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+
+    def require_phase_authority(self, phase: Phase, *, expected_generation: int | None = None) -> None:
+        if not self.cfg.get("multiplayer.enabled", False):
+            return
+        self.require_execution_authority()
+        assert self.principal is not None
+        self.members.require_phase_operation(
+            self.principal, phase.product, phase.name,
+            expected_generation=expected_generation,
+        )
+>>>>>>> a06aabd6 (Enforce member authority in scheduler workflows)
 
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
@@ -305,6 +347,7 @@ class Scheduler(
         restarter: Callable[[], None] | None = None,
         read_only: bool = False,
         source_control_factories: Mapping[str, SourceControlFactory] | None = None,
+        principal: Principal | None = None,
     ):
         self.store = store
         self.cfg = store.config
@@ -314,6 +357,11 @@ class Scheduler(
             # Existing multiplayer startup remains fail-closed and can render its setup
             # diagnostic even when enrollment is incomplete.
             self.coordinator = None
+        self.members = MemberRegistry(self.cfg.garden_dir)
+        credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
+        self.principal = principal or current_principal() or (
+            self.members.authenticate(credential) if credential else None
+        )
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)
