@@ -381,6 +381,25 @@ def register(app: FastAPI, site: Site) -> None:
 
         return JSONResponse(worker_snapshot(fresh.config, RunStore(fresh.config.garden_dir)))
 
+    @app.get("/api/worker-configurations")
+    def api_worker_configurations():
+        from ...routing import worker_configuration_views
+
+        return JSONResponse(worker_configuration_views(hub.fresh()))
+
+    @app.get("/api/tasks/{task_id}/routing")
+    def api_task_routing(task_id: str, activity: str = "work"):
+        if activity not in {"work", "review", "check", "persona", "edit", "trial"}:
+            raise HTTPException(422, "unsupported routing activity")
+        fresh = hub.fresh()
+        try:
+            task = fresh.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        from ...routing import task_routing_view
+
+        return JSONResponse(task_routing_view(fresh, task, activity=activity))
+
     @app.get("/api/operations/{task_id}/{run_id}")
     def api_operation(task_id: str, run_id: str):
         """Read one durable launch identity directly; never scan run history."""

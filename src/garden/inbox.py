@@ -28,6 +28,7 @@ GROUPS = [
     ("deferred", "Deferred work", "This work is intentionally paused by phase policy or a saved owner deferral. Reconsider it deliberately when that policy changes; it never needs approval or cancellation merely to clear a badge.", "notice"),
     ("attention", "Needs your decision", "The loop stopped because an unresolved product judgment needs you.", "decision"),
     ("retrying", "Auto-retrying", "A previous attempt failed; a new run is queued or in progress. No action needed unless you want to cancel.", "notice"),
+    ("routing", "Worker routing waits", "Repeated no-match results are grouped by safe reason code. Requirements and policy remain enforced while an operator adjusts a task or trusted profile.", "notice"),
     ("harness", "Harness paused", "A harness hit its account's quota or spend limit. Dispatch for it is paused; a cheap probe resumes it on its own once it responds again.", "notice"),
     ("config_hold", "Confirm a held config change", "garden.yaml changed while a worker run was in flight; the executable parts of the change (notify.command, checks, setup commands, harness bin/command, worker_env.pass) are held until the run is reaped or you confirm it.", "decision"),
     ("manual_mode", "Reserved in Manual mode", "Garden continues observing these tasks but performs no automatic lifecycle actions until they are explicitly returned.", "notice"),
@@ -903,6 +904,20 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             ], kind="operator_scope", kind_title="Operator-owned configuration",
                 kind_blurb="This configuration is outside the worker checkout. Verify it as an operator, then dispatch resumes without granting production-write access.",
                 reason=summary, evidence=[])
+
+    unmatched: dict[str, list[Task]] = {}
+    for task in tasks.values():
+        match = state.get(task.id).get("worker_match") or {}
+        reason = str(match.get("reason") or "")
+        if reason and reason != "matched" and not task.status.terminal:
+            unmatched.setdefault(reason, []).append(task)
+    for reason, waiting in sorted(unmatched.items()):
+        task_ids = ", ".join(task.id for task in sorted(waiting, key=lambda item: item.id))
+        items.append({"group": "routing", "group_title": titles["routing"], "task": "",
+                      "title": f"{len(waiting)} task{'s' if len(waiting) != 1 else ''} waiting · {reason}",
+                      "phase": "", "status": "", "pr": "", "why": task_ids,
+                      "actions": [{"label": "Review trusted profiles", "kind": "link", "href": "/config"}],
+                      "age": "", "difficulty": ""})
 
     up = getattr(sched, "upgrade_available", lambda: None)()
     if up:

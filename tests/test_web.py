@@ -61,6 +61,82 @@ def test_pages_render(garden):
     assert '<div class="v">$0.00</div><div class="l">total cost</div>' in runs_page
 
 
+def test_routing_api_and_task_edit_are_read_only_validated_and_redacted(garden):
+    cfg_path = garden / "garden.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["capability_definitions"] = {
+        "data.private-ledger": {"type": "data", "description": "private",
+                                "issuer": "security", "privileged": True},
+    }
+    cfg["worker_configurations"] = {"restricted": {
+        "contract_version": "garden.worker-configuration/v1", "version": "7", "generation": 2,
+        "activities": ["work"], "projects": ["other"],
+        "identity_references": ["identity.hidden-environment"],
+        "resource_ceilings": {"memory_mib": 4096, "vcpu": 2},
+        "grants": [{"capability": "data.private-ledger", "approved_by": "operator",
+                    "approved_at": 1, "profile_generation": 2}],
+    }}
+    cfg["worker_instances"] = [{
+        "instance_id": "secret-host-id", "configuration": "restricted",
+        "configuration_version": "7", "profile_generation": 2,
+        "operating_user": "another-user", "installation_id": "secret-installation",
+        "authenticated_at": 1, "readiness_checked_at": 1, "readiness_expires_at": 9999999999,
+    }]
+    cfg_path.write_text(yaml.safe_dump(cfg))
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DRAFT
+    task.owner = "alice"
+    store.save(task)
+    c = client(garden)
+
+    before = list((garden / ".garden" / "runs").glob("**/*"))
+    response = c.post("/tasks/DM-001/brief", data={
+        "acceptance": "- [ ] finished", "reading": "demo/product.md",
+        "execution_requirements": "capabilities:\n  all_of: [data.private-ledger]\nresources:\n  memory_mib: 1024\n",
+    })
+    assert response.status_code == 200
+    explanation = c.get("/api/tasks/DM-001/routing", params={
+        "owner": "another-user", "project": "other",
+    }).json()
+    assert explanation["owner"] == "alice"
+    assert explanation["effective_requirements"]["capabilities"]["all_of"] == ["data.private-ledger"]
+    assert explanation["match"]["reason"] == "no_compatible_profile"
+    assert "private-ledger" not in explanation["match"]["explanation"]
+    assert explanation["dry_run"] is True
+    assert list((garden / ".garden" / "runs").glob("**/*")) == before
+
+    profiles = c.get("/api/worker-configurations").json()
+    assert profiles[0]["version"] == "7"
+    assert profiles[0]["capacity"] == {"instances": 1, "verified": 1,
+                                       "reserved": 0, "available": 1}
+    rendered = json.dumps(profiles)
+    assert "secret-host-id" not in rendered
+    assert "hidden-environment" not in rendered
+    assert "secret-installation" not in rendered
+
+    invalid = c.post("/tasks/DM-001/brief", data={
+        "acceptance": "- [ ] finished", "reading": "demo/product.md",
+        "execution_requirements": "resources:\n  memory_mib: -1\n",
+    })
+    assert invalid.status_code == 422
+    assert Store(garden).task("DM-001").execution_requirements.resources.memory_mib == 1024
+
+
+def test_inbox_groups_repeated_worker_no_match_reasons(garden):
+    state = State(garden / ".garden" / "state.json")
+    for task_id in ("DM-001", "DM-002"):
+        state.get(task_id)["worker_match"] = {
+            "reason": "no_compatible_profile", "detail": "private capability data.secret",
+        }
+    state.save()
+
+    page = client(garden).get("/inbox").text
+    assert "2 tasks waiting · no_compatible_profile" in page
+    assert "private capability" not in page
+    assert page.count("2 tasks waiting · no_compatible_profile") == 1
+
+
 def test_rail_truthfully_reports_missing_standalone_and_disabled_embedded_watch(garden):
     page = client(garden).get("/").text
     assert "scheduler: no standalone watcher detected · embedded watch off" in page
@@ -4019,9 +4095,13 @@ def test_exposed_listener_separates_worker_and_operator_authority(garden, monkey
     spoofed = {"Authorization": "Bearer worker-secret", "X-Forwarded-For": "127.0.0.1",
                "X-Forwarded-Host": "localhost", "X-Forwarded-Proto": "http"}
     assert c.get("/api/tasks", headers=spoofed).status_code == 403
+    assert c.get("/api/tasks/DM-001/routing", headers=spoofed).status_code == 403
+    assert c.get("/api/worker-configurations", headers=spoofed).status_code == 403
     assert c.post("/tick", headers=spoofed, follow_redirects=False).status_code == 403
     operator = {"Authorization": "Bearer operator-secret"}
     assert c.get("/api/tasks", headers=operator).status_code == 200
+    assert c.get("/api/tasks/DM-001/routing", headers=operator).status_code == 200
+    assert c.get("/api/worker-configurations", headers=operator).status_code == 200
     assert c.post("/tick", headers=operator, follow_redirects=False).status_code == 303
     # The operator token is a different authority and is refused at worker ingress.
     assert c.post("/api/runs/claim", headers=operator, json={}).status_code == 403
