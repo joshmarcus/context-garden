@@ -262,13 +262,25 @@ class MultiplayerClient:
         if row.get("owner") != self.member_id:
             raise MultiplayerUnavailable(f"{kind} {scope} is not assigned to this member")
         operation = uuid.uuid4().hex
-        claim = self.command(
-            "/claims",
-            {"kind": kind, "scope": scope, "accepted_owner": self.member_id,
-             "authority_generation": int(row["authority_generation"]),
-             "operation_id": f"{operation}-claim", "protocol_version": PROTOCOL_VERSION},
-            kind=kind, scope=scope, expected_version=int(row["version"]),
-        )
+        active = next((item for item in view.snapshot.get("active_claims", [])
+                       if item.get("kind") == kind and item.get("scope") == scope
+                       and item.get("owner") == self.member_id
+                       and item.get("installation_id") == self.installation_id
+                       and int(item.get("authority_generation", -1))
+                       == int(row["authority_generation"])), None)
+        if active is not None:
+            claim = {key: active[key] for key in (
+                "garden_id", "kind", "scope", "owner_id", "authority_generation",
+                "installation_id", "operation_id", "fence", "lease_expires_at",
+            )}
+        else:
+            claim = self.command(
+                "/claims",
+                {"kind": kind, "scope": scope, "accepted_owner": self.member_id,
+                 "authority_generation": int(row["authority_generation"]),
+                 "operation_id": f"{operation}-claim", "protocol_version": PROTOCOL_VERSION},
+                kind=kind, scope=scope, expected_version=int(row["version"]),
+            )
         return self.command(
             "/transitions",
             {"claim": claim, "new_state": new_state, "markdown": markdown,
