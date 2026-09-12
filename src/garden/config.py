@@ -1198,6 +1198,7 @@ def _validate_worker_configurations(data: dict[str, Any]) -> None:
             )
     instances = [worker_instance_from_dict(value) for value in raw_instances]
     identities: set[tuple[str, str]] = set()
+    credential_owners: dict[str, tuple[str, str]] = {}
     for instance in instances:
         profile = profiles.get(instance.configuration)
         if profile is None:
@@ -1217,6 +1218,13 @@ def _validate_worker_configurations(data: dict[str, Any]) -> None:
                     f"worker instance {instance.instance_id!r} has an identity binding outside "
                     "its profile, operating user, or installation"
                 )
+            if binding.credential_reference:
+                owner = credential_owners.setdefault(binding.credential_reference, identity)
+                if owner != identity:
+                    raise ValueError(
+                        f"credential reference {binding.credential_reference!r} is enrolled to "
+                        "more than one user-owned installation"
+                    )
 
 
 def _validate_capability_definitions(value: Any) -> None:
