@@ -32,7 +32,7 @@ VISIBILITIES = frozenset({"all", "assigned"})
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
-_Result = TypeVar("_Result")
+ _Result = TypeVar("_Result")
 
 
 def operating_system_username() -> str:
