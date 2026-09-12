@@ -643,7 +643,6 @@ class ReviewMixin:
         if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
             raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
         self._refuse_if_phase_not_admitted(task)
-        execution_requirements, worker_match = self._execution_match(task, "review")
         harness_name, ladder_model, writer = self._review_route(task, work_run)
         review_tier = str(self.effective("review.difficulty", None, task.product)
                           or task.difficulty or "medium")
