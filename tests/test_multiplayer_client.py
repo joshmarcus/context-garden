@@ -22,12 +22,20 @@ class Service:
         self.online = True
         self.posts = []
 
-    def __call__(self, method, _url, **kwargs):
+    def __call__(self, method, url, **kwargs):
         if not self.online:
             raise httpx.ConnectError("offline")
         if method == "GET":
             return response(200, self.snapshot)
         self.posts.append(kwargs["json"])
+        if url.endswith("/claims"):
+            body = kwargs["json"]
+            return response(200, {
+                "garden_id": "garden", "kind": body["kind"], "scope": body["scope"],
+                "owner_id": "alice", "authority_generation": body["authority_generation"],
+                "installation_id": "alice-a", "operation_id": body["operation_id"],
+                "fence": 1, "lease_expires_at": "2026-09-12T00:02:00+00:00",
+            })
         return response(200, {"version": kwargs["json"]["expected_version"] + 1})
 
 
