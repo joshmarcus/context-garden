@@ -218,13 +218,17 @@ class OriginCheck:
 
     def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = (), worker_tokens: Iterable[str] = (),
                  worker_authenticator: Callable[[str], bool] | None = None, operator_token: str = "",
-                 require_operator_auth: bool = False):
+                 require_operator_auth: bool = False,
+                 member_authenticator: Callable[[str], Any | None] | None = None,
+                 member_authorizer: Callable[[Any, str, str], bool] | None = None):
         self.app = app
         self.allowed = [str(o) for o in allowed_origins]
         self.worker_tokens = {str(t) for t in worker_tokens if t}
         self.worker_authenticator = worker_authenticator
         self.operator_token = operator_token
         self.require_operator_auth = require_operator_auth
+        self.member_authenticator = member_authenticator
+        self.member_authorizer = member_authorizer
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -259,7 +263,14 @@ class OriginCheck:
                     "worker authentication required", status_code=status, headers=response_headers
                 )(scope, receive, send)
                 return
-            if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth and not operator_ok:
+            principal = self.member_authenticator(supplied) if supplied and self.member_authenticator else None
+            if principal is not None:
+                scope.setdefault("state", {})["principal"] = principal
+            member_ok = bool(principal) and (
+                self.member_authorizer(principal, method, path) if self.member_authorizer else True
+            )
+            if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth \
+                    and not operator_ok and not member_ok:
                 status = 401 if not auth else 403
                 response_headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
                 await PlainTextResponse(
