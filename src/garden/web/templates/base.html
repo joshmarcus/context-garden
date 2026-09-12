@@ -427,6 +427,11 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
 </aside>
 <main>
+{% if coordinator_status.configured and coordinator_status.stale %}
+<div class="warn" role="status"><b>Shared garden is offline.</b> Showing the last authorized view; changes are disabled until authority refreshes.{% if coordinator_status.error %} {{ coordinator_status.error }}{% endif %}</div>
+{% elif coordinator_status.projection_lag %}
+<div class="warn" role="status"><b>Local projection is behind shared authority.</b> {{ coordinator_status.projection_lag|join(', ') }}</div>
+{% endif %}
 {% if flash %}
 <div class="warn flash">
   <b>{{ flash }}</b>
