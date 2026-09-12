@@ -1464,6 +1464,7 @@ class HumanMixin:
             self._reopen_phase(phase, owner_generation)
 
     def _reopen_phase(self, phase: Phase, owner_generation: int | None = None) -> None:
+    def _reopen_phase(self, phase: Phase, owner_generation: int | None = None) -> None:
         self.require_phase_authority(phase, expected_generation=owner_generation)
         if not phase.closed:
             raise RuntimeError(f"{phase.key} is not closed")
