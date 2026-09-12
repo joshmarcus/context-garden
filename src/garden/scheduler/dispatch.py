@@ -182,6 +182,16 @@ class DispatchMixin:
         encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
         source_envelope = source_snapshot.get("execution_envelope") or {}
+        source_requirements = source_snapshot.get("execution_requirements")
+        if source_requirements and source_requirements != requirement_data:
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.error = "source execution requirements changed; continuation fenced before launch"
+            run.save()
+            raise ResourcePressureError(
+                "source execution requirements changed; fenced recovery requires "
+                "the original authorized worker"
+            )
         instance = match.instance if match is not None else None
         source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
         source_instance = str(source_envelope.get("worker_instance")
