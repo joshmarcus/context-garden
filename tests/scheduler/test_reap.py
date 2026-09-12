@@ -971,6 +971,64 @@ def test_check_admission_wait_does_not_inherit_old_checkout_idle_time(sched, tmp
     assert "idle 8 min" in run.error
 
 
+def test_reap_does_not_enumerate_a_worktree_larger_than_the_activity_scan_budget(sched, tmp_path, monkeypatch):
+    """CGS-023: a live local run whose worktree is far larger than the activity-scan budget must
+    not make a reap step walk the rest of the tree, and must fail open rather than be idle-killed
+    for a probe it could not finish."""
+    from garden import runs as runs_module
+
+    budget = 50
+    monkeypatch.setattr(runs_module, "_ACTIVITY_SCAN_BUDGET", budget)
+    sched.cfg.data["idle_kill_minutes"] = 5
+    sched.cfg.data["timeout_minutes"] = 0
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local", mode="check")
+    checkout = tmp_path / "huge-checkout"
+    checkout.mkdir()
+    old = datetime.now(UTC).timestamp() - 30 * 60
+    for n in range(budget * 10):
+        p = checkout / f"f{n}"
+        p.touch()
+        os.utime(p, (old, old))
+    run.worktree = str(checkout)
+    run.pid = os.getpid()  # the in-process liveness sentinel, with no exit_code
+    run.started_at = datetime.fromtimestamp(old, UTC).isoformat()
+    run.save()
+
+    visited = {"n": 0}
+    real_scandir = os.scandir
+
+    class _CountingScandirResult:
+        def __init__(self, real_iterator):
+            self._it = real_iterator
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            entry = next(self._it)
+            visited["n"] += 1
+            return entry
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self._it.close()
+            return False
+
+    monkeypatch.setattr(runs_module.os, "scandir", lambda path=".": _CountingScandirResult(real_scandir(path)))
+
+    runner = sched.runner_for(task, run.runner)
+    # Every file predates the run by 30 minutes, well past idle_kill_minutes=5. An exhaustive
+    # scan would call it idle; the bounded probe cannot finish, so it fails open instead.
+    assert not sched._finished_or_timed_out(run, runner)
+    assert run.status == "running"
+    # Bounded by the budget, not by the checkout's actual 500 files: proof the reap step never
+    # enumerated the rest of the tree.
+    assert visited["n"] <= budget + 1
+
+
 def test_check_admission_wait_has_a_bounded_truthful_timeout(sched):
     sched.cfg.data["timeout_minutes"] = 0
     sched.cfg.data["resources"]["admission_wait_minutes"] = 30
