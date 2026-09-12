@@ -101,6 +101,12 @@ def test_web_api_task_and_retro_surfaces_show_defects(garden):
     })
     assert amended.status_code == 200
     assert amended.json()["defect"]["history"][0]["changed_by"] == "api"
+    too_long = client.patch(f"/api/tasks/{task.id}/defects/{defect['id']}", json={
+        "expected_revision": 2, "description": "x" * 1001,
+    })
+    assert too_long.status_code == 422
+    assert too_long.json()["detail"] == "description must be at most 1000 characters"
+    assert DefectStore(store.config.garden_dir).get(defect["id"])["revision"] == 2
     listing = client.get("/api/defects?severity=major&disposition=reviewed").json()
     assert listing["summary"]["total"] == 1
     assert defect["id"] in client.get(f"/tasks/{task.id}").text

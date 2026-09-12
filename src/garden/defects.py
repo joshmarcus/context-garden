@@ -157,6 +157,8 @@ class DefectStore:
                 normalized["disposition"] = disposition
             if "description" in normalized and not normalized["description"]:
                 raise ValueError("description is required")
+            if "description" in normalized and len(normalized["description"]) > 1000:
+                raise ValueError("description must be at most 1000 characters")
             changed = {name: value for name, value in normalized.items() if row.get(name) != value}
             if not changed:
                 return dict(row)
