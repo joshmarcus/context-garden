@@ -179,8 +179,8 @@ def _origin_of(url: str) -> str:
 _LOOPBACK_BINDS = frozenset({"", "0.0.0.0", "::", "[::]", "*", "localhost", "127.0.0.1", "::1", "[::1]"})
 
 
-def server_origins(host: str, port: int | None = None) -> list[str]:
-    """The http origins that address `garden serve` itself, for the origin allowlist.
+def server_origins(host: str, port: int | None = None, scheme: str = "http") -> list[str]:
+    """The origins that address `garden serve` itself, for the origin allowlist.
 
     A loopback or wildcard bind is reached as localhost, 127.0.0.1 or [::1]; a specific host
     is reached as itself. The request's own `Host` header is deliberately not used to derive
@@ -189,7 +189,7 @@ def server_origins(host: str, port: int | None = None) -> list[str]:
     h = (host or "").strip().lower()
     hosts = ["localhost", "127.0.0.1", "[::1]"] if h in _LOOPBACK_BINDS else [h]
     suffix = f":{port}" if port else ""
-    return [f"http://{name}{suffix}" for name in hosts]
+    return [f"{scheme}://{name}{suffix}" for name in hosts]
 
 
 def origin_problem(headers: Headers, allowed: Iterable[str] = ()) -> str:
