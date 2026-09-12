@@ -306,7 +306,7 @@ class Task:
     difficulty: str = "medium"  # easy | medium | hard -> picks the model tier
     model: str = ""  # explicit model override
     execution_requirements: ExecutionRequirements = field(default_factory=ExecutionRequirements)
-    owner: str = ""  # stable logical owner id; never an execution or permission identity
+    owner: str = ""  # stable operator-user id; capability routing binds it to owned workers
     owner_unassigned: bool = False  # explicit task-level opt-out of a phase default
     discovered_from: str = ""  # task id that reported this one as discovered work
     freeze_exception: bool = False  # with freeze_exception_reason, lets this task through a frozen phase
@@ -638,8 +638,9 @@ def _owner_id(value: Any, path: Path) -> str:
 def effective_owner(task: Task, phase: Phase | None = None) -> tuple[str, str]:
     """Return ``(owner, source)`` using task override, then phase default, then unassigned.
 
-    Ownership is planning metadata only.  Callers must not use it to select credentials,
-    runners, permissions, or approval gates.
+    Ownership remains contact-free planning metadata. Capability routing may compare this
+    stable operator-user id with an authenticated worker owner, but it never selects or
+    transports credential material.
     """
     if task.owner_unassigned:
         return "", "unassigned"

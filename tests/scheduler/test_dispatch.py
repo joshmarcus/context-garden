@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from garden.cli import app
-from garden.model import Status
+from garden.model import Status, parse_execution_requirements
 from garden.scheduler import StateCorruptionError
 from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
 from garden.scheduler.report import TickReport
@@ -27,6 +27,62 @@ def test_tick_refuses_to_schedule_from_corrupt_state(sched):
 
     assert sched.state.path.read_bytes() == corrupt
     assert list(sched.runs.active()) == runs_before
+
+
+def test_constrained_task_without_same_user_match_consumes_no_attempt(sched):
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    task.execution_requirements = parse_execution_requirements({
+        "capabilities": {"all_of": ["tool.build"]},
+    })
+    sched.store.save(task)
+    sched.cfg.data["capability_definitions"] = {
+        "tool.build": {"type": "tool", "description": "builder",
+                       "issuer": "operator", "privileged": False},
+    }
+
+    report = sched.tick()
+
+    current = sched.store.task(task.id)
+    assert current.status is Status.READY
+    assert current.attempts == 0
+    assert sched.runs.latest(task.id) is None
+    assert any("no_compatible_profile" in error for error in report.errors)
+
+
+def test_manual_take_cannot_bypass_constrained_worker_claim(sched):
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    task.runner = "manual"
+    task.execution_requirements = parse_execution_requirements({
+        "capabilities": {"all_of": ["tool.build"]},
+    })
+    sched.store.save(task)
+    sched.cfg.data.update({
+        "capability_definitions": {
+            "tool.build": {"type": "tool", "description": "builder",
+                           "issuer": "operator", "privileged": False},
+        },
+        "worker_configurations": {"builder": {
+            "contract_version": "garden.worker-configuration/v1", "version": "1",
+            "generation": 1, "activities": ["work"], "projects": ["demo"],
+            "grants": [{"capability": "tool.build", "approved_by": "operator",
+                        "approved_at": 1, "profile_generation": 1}],
+        }},
+        "worker_instances": [{
+            "instance_id": "build-1", "configuration": "builder",
+            "configuration_version": "1", "profile_generation": 1,
+            "operating_user": "alice", "installation_id": "install-a",
+            "authenticated_at": 1, "readiness_checked_at": 1,
+            "readiness_expires_at": 4_102_444_800,
+        }],
+    })
+
+    with pytest.raises(RuntimeError, match="authenticated pull-worker claim"):
+        sched.take_manual(task)
+
+    assert sched.store.task(task.id).attempts == 0
+    assert sched.runs.latest(task.id) is None
 
 
 def test_duplicate_task_id_quarantined_the_tick_survives_and_dispatch_continues(sched, garden, fake_github):

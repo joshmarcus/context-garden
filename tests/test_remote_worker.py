@@ -1203,6 +1203,53 @@ def test_remote_claim_carries_mapping_but_not_config_contents(garden, tmp_path, 
     assert "SECRET_SENTINEL_TOOL_CREDENTIAL" not in response.text
 
 
+def test_remote_claim_uses_trusted_same_user_match(garden, monkeypatch):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["capability_definitions"] = {
+        "tool.build": {"type": "tool", "description": "builder",
+                       "issuer": "operator", "privileged": False},
+    }
+    config["worker_configurations"] = {
+        "builder": {
+            "contract_version": "garden.worker-configuration/v1",
+            "version": "1", "generation": 1, "activities": ["work"],
+            "projects": ["demo"], "resource_ceilings": {"memory_mib": 4096},
+            "grants": [{"capability": "tool.build", "approved_by": "operator",
+                        "approved_at": 1, "profile_generation": 1}],
+        },
+    }
+    config["worker_instances"] = [
+        {"instance_id": "build-1", "configuration": "builder",
+         "configuration_version": "1", "profile_generation": 1,
+         "operating_user": "alice", "installation_id": "install-a",
+         "authenticated_at": 1, "readiness_checked_at": 1,
+         "readiness_expires_at": 4_102_444_800},
+        {"instance_id": "other-user", "configuration": "builder",
+         "configuration_version": "1", "profile_generation": 1,
+         "operating_user": "bob", "installation_id": "install-b",
+         "authenticated_at": 1, "readiness_checked_at": 1,
+         "readiness_expires_at": 4_102_444_800},
+    ]
+    path.write_text(yaml.safe_dump(config))
+    client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    run.env_snapshot.update({
+        "product": "demo", "execution_owner": "alice", "worker_instance": "build-1",
+        "execution_requirements": {"capabilities": {"all_of": ["tool.build"]},
+                                   "resources": {"memory_mib": 1024}},
+    })
+    run.save()
+
+    response = client.post(
+        "/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == run.run_id
+
+
 @pytest.mark.parametrize("mode", ["work", "review", "persona"])
 def test_worker_with_no_harnesses_cannot_claim_harness_backed_run(garden, monkeypatch, mode):
     client, store = remote_client(garden, monkeypatch)
