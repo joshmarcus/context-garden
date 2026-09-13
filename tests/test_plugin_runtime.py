@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +11,7 @@ import pytest
 from garden.plugins import (
     API_VERSION,
     ActionProvenance,
+    CommandCancelled,
     CommandTimedOut,
     JsonLinesCommand,
     LoadedPlugin,
@@ -88,34 +91,39 @@ def test_plugin_runner_rejects_checkout_widening(monkeypatch, tmp_path: Path) ->
     assert run.worktree == str(tmp_path.resolve())
 
 
-def test_json_lines_command_handshake_and_bounded_stderr(monkeypatch) -> None:
-    def run(_argv, *, input, **_kwargs):
-        request = [json.loads(line) for line in input.splitlines()]
-        key = request[1]["idempotency_key"]
-        stdout = "\n".join((
-            json.dumps({"type": "handshake", "protocol_version": "garden.plugin-command/v1",
-                        "capabilities": ["runner_transport"]}),
-            json.dumps({"type": "response", "idempotency_key": key, "result": {"ok": True}}),
-        ))
-        return SimpleNamespace(stdout=stdout, stderr="0123456789", returncode=0)
-
-    monkeypatch.setattr("garden.plugins.command.subprocess.run", run)
-    reply = JsonLinesCommand(["adapter"], capability="runner_transport", max_stderr_bytes=4).invoke(
+def test_json_lines_command_handshake_and_bounded_stderr() -> None:
+    script = """
+import json, sys
+request = [json.loads(sys.stdin.readline()) for _ in range(2)]
+key = request[1]["idempotency_key"]
+print(json.dumps({"type":"handshake","protocol_version":"garden.plugin-command/v1","capabilities":["runner_transport"]}))
+print(json.dumps({"type":"response","idempotency_key":key,"result":{"ok":True}}))
+sys.stderr.write("x" * 100000 + "tail")
+"""
+    reply = JsonLinesCommand(
+        [sys.executable, "-c", script], capability="runner_transport", max_stderr_bytes=4,
+    ).invoke(
         "start", {"run": "one"}, idempotency_key="stable-key",
     )
 
     assert reply.result == {"ok": True}
-    assert reply.stderr == "6789"
+    assert reply.stderr == "tail"
     assert reply.idempotency_key == "stable-key"
 
 
 def test_json_lines_command_has_distinct_failure_types_and_redacted_audit(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr("garden.plugins.command.subprocess.run", lambda *_a, **_kw: SimpleNamespace(
-        stdout='{"type":"handshake","protocol_version":"garden.plugin-command/v1","capabilities":[]}\n{}',
-        stderr="", returncode=0,
-    ))
+    monkeypatch.setattr(
+        JsonLinesCommand,
+        "_run_process",
+        lambda *_a: (
+            0,
+            '{"type":"handshake","protocol_version":"garden.plugin-command/v1",'
+            '"capabilities":[]}\n{}',
+            "",
+        ),
+    )
     audit = tmp_path / "plugin-actions.jsonl"
     with pytest.raises(UnsupportedCapabilities):
         JsonLinesCommand(
@@ -126,16 +134,26 @@ def test_json_lines_command_has_distinct_failure_types_and_redacted_audit(
     assert recorded["idempotency_key"] == "request-1"
     assert "runner_transport" not in recorded["error"]
 
-    monkeypatch.setattr("garden.plugins.command.subprocess.run", lambda *_a, **_kw: SimpleNamespace(
-        stdout="not json", stderr="", returncode=0,
-    ))
+    monkeypatch.setattr(JsonLinesCommand, "_run_process", lambda *_a: (0, "not json", ""))
     with pytest.raises(MalformedOutput):
         JsonLinesCommand(["adapter"], capability="runner_transport").invoke("start", {})
 
-    def timeout(*_args, **_kwargs):
-        from subprocess import TimeoutExpired
-        raise TimeoutExpired("adapter", 1)
+    def timeout(*_args):
+        raise CommandTimedOut("timed out")
 
-    monkeypatch.setattr("garden.plugins.command.subprocess.run", timeout)
+    monkeypatch.setattr(JsonLinesCommand, "_run_process", timeout)
     with pytest.raises(CommandTimedOut):
         JsonLinesCommand(["adapter"], capability="runner_transport").invoke("start", {})
+
+
+def test_json_lines_command_observes_cancellation_during_execution() -> None:
+    started = time.monotonic()
+
+    with pytest.raises(CommandCancelled):
+        JsonLinesCommand(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            capability="runner_transport", timeout_seconds=10,
+            cancelled=lambda: time.monotonic() - started > 0.05,
+        ).invoke("start", {})
+
+    assert time.monotonic() - started < 2

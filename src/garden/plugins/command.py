@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -66,6 +68,8 @@ class JsonLinesCommand:
             raise ValueError("plugin command must be a non-empty argv list")
         if not 0 < timeout_seconds <= 3600:
             raise ValueError("plugin command timeout_seconds must be in (0, 3600]")
+        if max_stderr_bytes < 0:
+            raise ValueError("plugin command max_stderr_bytes must be non-negative")
         self.command = tuple(command)
         self.capability = capability
         self.timeout_seconds = timeout_seconds
@@ -94,23 +98,12 @@ class JsonLinesCommand:
                    "idempotency_key": key, "payload": payload}
         stdin = "".join(json.dumps(row, separators=(",", ":")) + "\n"
                         for row in (handshake, request))
-        try:
-            completed = subprocess.run(
-                self.command, input=stdin, text=True, capture_output=True,
-                timeout=self.timeout_seconds, check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise CommandTimedOut(
-                f"plugin command {operation} timed out after {self.timeout_seconds:g}s"
-            ) from exc
-        except OSError as exc:
-            raise TransportLost(f"plugin command could not start: {exc}") from exc
-        stderr = completed.stderr[-self.max_stderr_bytes:]
-        rows = self._rows(completed.stdout)
-        if completed.returncode != 0:
+        returncode, stdout, stderr = self._run_process(stdin, operation)
+        rows = self._rows(stdout)
+        if returncode != 0:
             detail = stderr.strip()
             raise TransportLost(
-                f"plugin command exited {completed.returncode}" + (f": {detail}" if detail else "")
+                f"plugin command exited {returncode}" + (f": {detail}" if detail else "")
             )
         if len(rows) != 2:
             raise MalformedOutput("plugin command must write one handshake and one response to stdout")
@@ -133,6 +126,80 @@ class JsonLinesCommand:
         if "result" not in response:
             raise MalformedOutput("plugin command response is missing result")
         return CommandReply(response["result"], stderr, key)
+
+    def _run_process(self, stdin: str, operation: str) -> tuple[int, str, str]:
+        """Supervise the child while continuously draining its output pipes."""
+        try:
+            process = subprocess.Popen(
+                self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise TransportLost(f"plugin command could not start: {exc}") from exc
+
+        stdout = bytearray()
+        stderr = bytearray()
+        stderr_lock = threading.Lock()
+
+        def drain_stdout() -> None:
+            assert process.stdout is not None
+            for chunk in iter(lambda: process.stdout.read(8192), b""):
+                stdout.extend(chunk)
+
+        def drain_stderr() -> None:
+            assert process.stderr is not None
+            for chunk in iter(lambda: process.stderr.read(8192), b""):
+                with stderr_lock:
+                    stderr.extend(chunk)
+                    overflow = len(stderr) - self.max_stderr_bytes
+                    if overflow > 0:
+                        del stderr[:overflow]
+
+        def write_stdin() -> None:
+            assert process.stdin is not None
+            try:
+                process.stdin.write(stdin.encode())
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                # The return code and collected logs provide the actionable failure.
+                pass
+
+        readers = [
+            threading.Thread(target=drain_stdout, daemon=True),
+            threading.Thread(target=drain_stderr, daemon=True),
+        ]
+        workers = [*readers, threading.Thread(target=write_stdin, daemon=True)]
+        for worker in workers:
+            worker.start()
+
+        deadline = time.monotonic() + self.timeout_seconds
+        failure: CommandProtocolError | None = None
+        while process.poll() is None:
+            if self.cancelled():
+                failure = CommandCancelled(f"plugin command {operation} was cancelled")
+                break
+            if time.monotonic() >= deadline:
+                failure = CommandTimedOut(
+                    f"plugin command {operation} timed out after {self.timeout_seconds:g}s"
+                )
+                break
+            time.sleep(0.01)
+        if failure is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        for worker in workers:
+            worker.join()
+        if failure is not None:
+            raise failure
+        return (
+            process.returncode,
+            stdout.decode("utf-8", errors="replace"),
+            bytes(stderr).decode("utf-8", errors="replace"),
+        )
 
     def _audit(self, operation: str, key: str, status: str, error: str) -> None:
         """Append a secret-scrubbed recovery record when the caller supplies durable storage."""
