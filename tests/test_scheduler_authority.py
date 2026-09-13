@@ -4,8 +4,12 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
+from garden.members import Principal
 from garden.scheduler import Scheduler
+from garden.scheduler.human import task_action
+from garden.store import Store
 
 
 class CoordinatorStub:
@@ -14,9 +18,15 @@ class CoordinatorStub:
         self.installation_id = f"{member_id}-laptop"
         self.snapshot = snapshot
         self.effects = []
+        self.prepare_calls = 0
 
     def refresh(self, *, allow_stale):
         assert not allow_stale
+        return SimpleNamespace(snapshot=self.snapshot)
+
+    def prepare(self, *, mutation):
+        assert mutation
+        self.prepare_calls += 1
         return SimpleNamespace(snapshot=self.snapshot)
 
     @contextmanager
@@ -25,10 +35,17 @@ class CoordinatorStub:
         yield {"fence": 1}
 
 
+class MembersStub:
+    def authorize_task_execution(self, *_args, **_kwargs):
+        return None
+
+
 def scheduler(snapshot, member_id="alice"):
     value = Scheduler.__new__(Scheduler)
     value.cfg = {"multiplayer.enabled": True}
     value.coordinator = CoordinatorStub(snapshot, member_id)
+    value.principal = Principal("garden", member_id, f"{member_id}-laptop", "member", "all")
+    value.members = MembersStub()
     value._authority_snapshot = snapshot
     value.store = SimpleNamespace(
         phase=lambda _product, _phase: SimpleNamespace(default_owner="alice")
@@ -58,6 +75,16 @@ def snapshot(*, assignment=True):
     }
 
 
+def test_execution_authority_preserves_standalone_and_prepares_multiplayer_once(garden):
+    standalone = Scheduler(Store(garden))
+    standalone.require_execution_authority()
+
+    coordinated = scheduler(snapshot())
+    coordinated.require_execution_authority()
+
+    assert coordinated.coordinator.prepare_calls == 1
+
+
 def test_task_lifecycle_requires_assignment_owner_and_phase():
     sched = scheduler(snapshot())
 
@@ -82,11 +109,168 @@ def test_task_effect_carries_current_generation_and_revision():
     }]
 
 
-def test_unassigned_member_has_no_executable_tick_scope():
-    sched = scheduler(snapshot(assignment=False))
+def test_direct_task_action_denial_happens_before_its_first_side_effect():
+    class Action:
+        def __init__(self):
+            self.scheduler = scheduler(snapshot(), "bob")
+            self.cfg = self.scheduler.cfg
+            self.coordinator = self.scheduler.coordinator
+            self.principal = self.scheduler.principal
+            self.members = self.scheduler.members
+            self.store = self.scheduler.store
+            self.mutations = []
+
+        def require_execution_authority(self):
+            return self.scheduler.require_execution_authority()
+
+        def task_effect(self, item, key):
+            return self.scheduler.task_effect(item, key)
+
+        @task_action("cancel")
+        def cancel(self, item):
+            self.mutations.append(item.id)
+
+    action = Action()
+    with pytest.raises(PermissionError):
+        action.cancel(task("A-1"))
+    assert action.mutations == []
+
+
+@pytest.mark.parametrize(
+    ("member_id", "task_phase"),
+    [("bob", "p1"), ("alice", "p2")],
+)
+def test_redispatch_denial_cannot_touch_an_existing_run(member_id, task_phase):
+    sched = scheduler(snapshot(), member_id)
+    touched = []
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: touched.append("stop") or True,
+        save=lambda: touched.append("save"),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(emit=lambda *_args, **_kwargs: touched.append("event"))
+    sched.dispatch = lambda *_args, **_kwargs: touched.append("dispatch")
+
+    with pytest.raises(PermissionError):
+        sched.redispatch(task("A-1", phase=task_phase))
+
+    assert touched == []
+
+
+def test_redispatch_acquires_current_effect_before_stopping_and_launches_separately():
+    sched = scheduler(snapshot())
+    order = []
+
+    @contextmanager
+    def effect(**request):
+        order.append(("permit", request["effect_key"]))
+        yield {"fence": 1}
+
+    sched.coordinator.effect = effect
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: order.append(("stop", "run-1")) or True,
+        save=lambda: order.append(("save", "run-1")),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(
+        emit=lambda *_args, **_kwargs: order.append(("event", "run-1"))
+    )
+    replacement = object()
+    sched.dispatch = lambda *_args, **_kwargs: order.append(("dispatch", "A-1")) or replacement
+
+    assert sched.redispatch(task("A-1")) is replacement
+    assert order == [
+        ("permit", "redispatch-stop:A-1:run-1"),
+        ("stop", "run-1"),
+        ("save", "run-1"),
+        ("event", "run-1"),
+        ("dispatch", "A-1"),
+    ]
+
+
+def test_redispatch_stale_generation_is_rejected_before_stopping():
+    sched = scheduler(snapshot())
+    touched = []
+
+    @contextmanager
+    def stale_effect(**_request):
+        raise RuntimeError("stale authority generation")
+        yield
+
+    sched.coordinator.effect = stale_effect
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: touched.append("stop") or True,
+        save=lambda: touched.append("save"),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(emit=lambda *_args, **_kwargs: touched.append("event"))
+    sched.dispatch = lambda *_args, **_kwargs: touched.append("dispatch")
+
+    with pytest.raises(RuntimeError, match="stale authority generation"):
+        sched.redispatch(task("A-1"))
+
+    assert touched == []
+
+
+def test_redispatch_unconfirmed_stop_preserves_record_and_skips_replacement():
+    sched = scheduler(snapshot())
+    touched = []
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: False, save=lambda: touched.append("save"),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(emit=lambda *_args, **_kwargs: touched.append("event"))
+    sched.dispatch = lambda *_args, **_kwargs: touched.append("dispatch")
+
+    with pytest.raises(RuntimeError, match="could not confirm"):
+        sched.redispatch(task("A-1"))
+
+    assert run.status == "running"
+    assert touched == []
+
+
+def test_return_to_automation_denial_happens_before_manual_state_mutation():
+    sched = scheduler(snapshot(), "bob")
+    sched._set_manual_reservation = lambda *_args, **_kwargs: pytest.fail(
+        "Manual reservation state must not be touched before authority is granted"
+    )
+
+    with pytest.raises(PermissionError):
+        sched.return_to_automation(task("A-1"), reservation_id="reservation", expected={})
+
+    assert sched.coordinator.effects == []
+
+
+def test_unassigned_member_has_no_executable_tick_scope(garden, monkeypatch):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["multiplayer"] = {"enabled": True}
+    config_path.write_text(yaml.safe_dump(config))
+    coordinator = CoordinatorStub(snapshot(assignment=False))
+    monkeypatch.setattr(
+        "garden.scheduler.MultiplayerClient.from_config",
+        lambda _config: coordinator,
+    )
+    before = {
+        path.relative_to(garden): path.read_bytes()
+        for path in garden.rglob("*") if path.is_file()
+    }
+
+    principal = Principal("garden", "alice", "alice-laptop", "member", "all")
+    sched = Scheduler(Store(garden), github=object(), principal=principal)
 
     assert not sched._refresh_execution_authority()
     assert not sched.task_is_authorized(task("A-1"))
+    assert sched.tick().summary() == "nothing to do"
+    after = {
+        path.relative_to(garden): path.read_bytes()
+        for path in garden.rglob("*") if path.is_file()
+    }
+    assert after == before
 
 
 def test_phase_authority_is_distinct_from_task_and_admin_visibility():
@@ -99,7 +283,7 @@ def test_phase_authority_is_distinct_from_task_and_admin_visibility():
 
     assert not sched.phase_is_authorized("demo", "p2")
     with pytest.raises(PermissionError, match="not owned"):
-        sched.require_phase_authority("demo", "p1")
+        sched.phase_effect("demo", "p1", "phase-review:demo/p1").__enter__()
 
 
 def test_phase_owner_must_have_an_enabled_matching_assignment():
@@ -130,3 +314,34 @@ def test_handoff_cancellation_fences_matching_local_run_without_losing_record():
     assert run.status == "cancelled"
     assert run.finished_at and run.error == "fenced by multiplayer ownership handoff"
     assert saved == [True]
+
+
+def test_two_installations_and_mixed_owners_cannot_exchange_lifecycle_effects():
+    value = snapshot()
+    value["authority"][-1].update({
+        "owner": "alice", "version": 3, "authority_generation": 6,
+    })
+    alice_laptop = scheduler(value)
+    alice_desktop = scheduler(value)
+    alice_desktop.coordinator.installation_id = "alice-desktop"
+    bob = scheduler(value, "bob")
+    bob.store.phase = lambda _product, _phase: SimpleNamespace(default_owner="bob")
+
+    lifecycle = ("dispatch", "result", "revision", "ci", "merge")
+    for stage in lifecycle:
+        with alice_laptop.task_effect(task("A-1"), f"{stage}:A-1"):
+            pass
+        with alice_desktop.task_effect(task("A-1"), f"{stage}:A-1:retry"):
+            pass
+        with pytest.raises(PermissionError):
+            bob.task_effect(task("A-1"), f"{stage}:A-1").__enter__()
+
+    with alice_laptop.phase_effect("demo", "p1", "retro-queue:demo/p1:source"):
+        pass
+    with pytest.raises(PermissionError):
+        bob.phase_effect("demo", "p1", "retro-queue:demo/p1:source").__enter__()
+
+    assert [effect["effect_key"] for effect in alice_laptop.coordinator.effects] == [
+        *(f"{stage}:A-1" for stage in lifecycle),
+        "retro-queue:demo/p1:source",
+    ]

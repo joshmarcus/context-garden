@@ -15,7 +15,7 @@ from garden.events import DECISION_KINDS, EventLog
 from garden.git_coordination import GitStateStore
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
-from garden.runs import RunStore
+from garden.runs import Run, RunStore
 from garden.scheduler import (
     MULTIPLAYER_EXECUTION_UNAVAILABLE,
     MultiplayerExecutionUnavailable,
@@ -389,7 +389,9 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    assert accepted.status_code == 303
+    # The authenticated browser cannot replace this installation's execution
+    # principal, which has no assignment in this fixture.
+    assert accepted.status_code == 409
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -542,7 +544,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 409
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -562,7 +564,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_action
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
@@ -577,7 +578,8 @@ def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_action
     for path in ("/", "/board", "/inbox", "/now"):
         assert client.get(path, headers=bob).status_code == 200
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    # Bob may inspect his task, but this Alice-bound server cannot execute it.
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
@@ -858,7 +860,9 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
+    other_token = registry.issue_installation(admin, "bob", "bob-desktop")
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
@@ -877,9 +881,20 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
     )
     assert claim.status_code == 200
-    assert claim.json()["repo"] == "https://example.test/team/demo.git"
+    assert claim.json()["repo"] == run.env_snapshot["remote_repo"]
     assert claim.json()["source_head"] == source_head
     lease_token = claim.json()["lease_token"]
+    claimed = Run.load(run.path)
+    assert (claimed.execution_member_id, claimed.execution_installation_id) == (
+        "bob", "bob-worker"
+    )
+    wrong_installation = client.post(
+        "/api/runs/member-visible-run/heartbeat",
+        headers={"Authorization": f"Bearer {other_token}"},
+        json={"lease_token": lease_token, "transcript": "must not persist"},
+    )
+    assert wrong_installation.status_code == 403
+    assert not (run.path / "stdout.json").exists()
 
     bob = registry.authenticate(token)
     assert bob is not None
@@ -891,6 +906,16 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         registry.set_member_active(admin, "bob", False)
     else:
         registry.revoke_installation(bob, "bob-worker")
+    # Each parameter tests its own revocation; do not mask it by also disabling assignment.
+    replay = client.post(
+        "/api/runs/claim", headers=headers,
+        json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
+    )
+    assert replay.status_code == 403
+
+    state = json.loads(registry.path.read_text())
+    state["members"]["bob"]["projects"] = []
+    registry.path.write_text(json.dumps(state))
     heartbeat = client.post(
         "/api/runs/member-visible-run/heartbeat", headers=headers,
         json={"lease_token": lease_token, "transcript": "must not persist"},
@@ -907,6 +932,118 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
 
 
 def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
+    enrollment.parent.mkdir(parents=True, mode=0o700)
+    enrollment.write_text(json.dumps({"hosts": [{
+        "name": "legacy", "token_sha256": hashlib.sha256(b"legacy-secret").hexdigest()
+    }]}))
+    enrollment.chmod(0o600)
+    config.setdefault("workers", {})["enrollment_registry"] = str(enrollment)
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    runs = RunStore(garden / ".garden")
+    leased = runs.new_run("DM-001", "remote", mode="check", run_id="legacy-leased-run")
+    source_head = "c" * 40
+    leased.source_head = source_head
+    leased.env_snapshot = {
+        "product": "demo",
+        "remote_repo": "https://example.test/team/project.git",
+        "prepared_source_head": source_head,
+    }
+    leased.save()
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    headers = {"Authorization": "Bearer legacy-secret"}
+    claim = client.post(
+        "/api/runs/claim", headers=headers,
+        json={"host": "legacy", "claim_request_id": "legacy-before-enable"},
+    )
+    assert claim.status_code == 200
+    lease_token = claim.json()["lease_token"]
+
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    _registry(garden)
+    queued = runs.new_run("DM-002", "remote", mode="check", run_id="legacy-queued-run")
+    queued.env_snapshot = {"product": "demo"}
+    queued.save()
+    client = TestClient(_git_enrolled_app(garden))
+
+    response = client.post(
+        "/api/runs/claim",
+        headers=headers,
+        json={"host": "legacy", "claim_request_id": "legacy-after-enable"},
+    )
+    assert response.status_code == 403
+    # Migration rejects legacy credentials in middleware, before JSON route handling.
+    heartbeat = client.post(
+        "/api/runs/legacy-leased-run/heartbeat", headers=headers,
+        json={"lease_token": lease_token, "transcript": "must not persist"},
+    )
+    finish = client.post(
+        "/api/runs/legacy-leased-run/finish", headers=headers,
+        json={"lease_token": lease_token, "result": {}, "final_text": "must not persist"},
+    )
+    assert heartbeat.status_code == 403
+    assert finish.status_code == 403
+    saved_leased = RunStore(garden / ".garden").runs_for("DM-001")[0]
+    saved_queued = RunStore(garden / ".garden").runs_for("DM-002")[0]
+    assert not (saved_leased.path / "stdout.json").exists()
+    assert not (saved_leased.path / "final.md").exists()
+    assert not saved_leased.process_finished()
+    assert saved_queued.host == ""
+
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        {"project": "demo", "phase": "p1", "enabled": False},
+        {"project": "private", "phase": "p1", "enabled": True},
+        {"project": "demo", "phase": "p2", "enabled": True},
+    ],
+    ids=["paused", "project-changed", "phase-advanced"],
+)
+def test_member_worker_claim_requires_current_matching_assignment(garden, assignment):
+    for project, phase in (("private", "p1"), ("demo", "p2")):
+        project_path = garden / project
+        project_path.mkdir(exist_ok=True)
+        product_path = project_path / "product.md"
+        if not product_path.exists():
+            product_path.write_text(f"# {project}\n")
+        phase_path = project_path / phase
+        phase_path.mkdir(exist_ok=True)
+        (phase_path / "goals.md").write_text(f"# {phase}\n")
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo", "private"))
+    registry.set_assignment(admin, "bob", "demo", "p1")
+    token = registry.issue_installation(admin, "bob", "bob-worker")
+    run = RunStore(garden / ".garden").new_run(
+        "DM-001", "remote", mode="check", run_id="assignment-fenced-run"
+    )
+    run.env_snapshot = {"product": "demo"}
+    run.save()
+    registry.set_assignment(admin, "bob", assignment["project"], assignment["phase"],
+                            enabled=assignment["enabled"], expected_generation=1)
+    client = TestClient(_git_enrolled_app(garden))
+
+    response = client.post(
+        "/api/runs/claim", headers={"Authorization": f"Bearer {token}"},
+        json={"host": "bob-worker", "claim_request_id": "assignment-fenced-claim"},
+    )
+
+    assert response.status_code == 204
+    unchanged = Run.load(run.path)
+    assert unchanged.host == ""
+    assert unchanged.execution_member_id == ""
+    assert unchanged.lease_token == ""
+
+
+def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
     enrollment.parent.mkdir(parents=True, mode=0o700)
@@ -1007,6 +1144,7 @@ def test_multiplayer_watch_and_direct_dispatch_without_installation_fail_closed(
     }
     assert RunStore(garden / ".garden").active() == []
 
+
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
@@ -1028,10 +1166,8 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.get("/api/tasks", headers=eve).json() == []
     assert client.get("/config", headers=bob).status_code == 403
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
-
-
 
 
 def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
@@ -1056,6 +1192,8 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
+
+
 def test_legacy_loopback_behavior_is_unchanged(garden):
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     assert client.get("/api/tasks").status_code == 200
