@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from garden.coordination_api import create_coordination_app
 from garden.events import DECISION_KINDS, EventLog
-from garden.git_coordination import GitStateStore
+from garden.git_coordination import GitMultiplayerClient, GitStateStore
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
 from garden.runs import Run, RunStore
@@ -910,15 +910,14 @@ def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner
         json={"host": "bob-worker", "claim_request_id": "bob-after-handoff"},
     ).status_code == 200
 
+    # Completing task authority does not let Bob's browser credentials turn Alice's local
+    # server into Bob's phase operator; execution identity remains installation-bound.
     created = client.post(
         "/phases/demo/p1/new-task", headers=bob_headers,
         data={"title": "Inherited later", "goal": "Later"}, follow_redirects=False,
     )
-    assert created.status_code == 303
-    created_id = created.headers["location"].split("/tasks/", 1)[1].split("?", 1)[0]
-    accepted = authority.read()[1]
-    assert accepted["entities"][f"task:{created_id}"]["owner"] == "bob"
-    assert f"task:{created_id}" not in accepted["handoffs"]
+    assert created.status_code == 403
+    assert created.text == "operator authentication required"
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
