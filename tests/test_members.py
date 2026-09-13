@@ -640,7 +640,7 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
     )
     assert claim.status_code == 200
-    assert claim.json()["repo"] == "https://example.test/team/demo.git"
+    assert claim.json()["repo"] == run.env_snapshot["remote_repo"]
     assert claim.json()["source_head"] == source_head
     lease_token = claim.json()["lease_token"]
 
@@ -792,6 +792,12 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
+
+
+
+
+
+
 def test_legacy_loopback_behavior_is_unchanged(garden):
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     assert client.get("/api/tasks").status_code == 200
