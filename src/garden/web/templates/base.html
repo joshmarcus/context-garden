@@ -333,9 +333,8 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .decision-action { display:flex; gap:8px; align-items:center; flex-wrap:wrap; min-width:0; }
 .decision-action .faint { flex:0 1 72ch; min-width:0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
-  .rail { position:relative; padding:10px 14px; gap:0; border-right:0; border-bottom:1px solid var(--line); }
+  .rail { padding:10px 14px; gap:0; border-right:0; border-bottom:1px solid var(--line); }
   .rail .wordmark { min-height:44px; }
-  .rail::after { content:"Menu"; position:absolute; right:14px; top:14px; font:12px var(--mono); color:var(--muted); }
   .rail > :not(.wordmark):not(.nav) { display:none; }
   .rail .nav { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:2px; padding-top:6px; border-top:1px solid var(--line); }
   .rail .nav a { min-height:36px; padding:0 6px; border-left:0; border-bottom:2px solid transparent; }
