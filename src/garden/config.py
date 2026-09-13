@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import tempfile
 import warnings
 from copy import deepcopy
@@ -28,6 +29,13 @@ from .configuration import (
     validate_configuration,
 )
 from .github import is_git_remote_url
+from .model import (
+    ExecutionRequirements,
+    Phase,
+    Task,
+    merge_execution_requirements,
+    parse_execution_requirements,
+)
 
 CONFIG_NAME = "garden.yaml"
 
@@ -411,6 +419,8 @@ DEFAULTS: dict[str, Any] = {
     "profiles": {},               # name -> partial stop (workers, reviews, models, review_difficulty, retro_difficulty, observe);
                                   # see garden.profiles.BUILTIN_PROFILES for the built-in economy/balanced/fast stops
     "products": {},
+    # Trusted logical names. Definitions describe authority; requesting a name never grants it.
+    "capability_definitions": {},
 }
 
 
@@ -565,6 +575,31 @@ class Config:
     def setting(self, key: str, product: str | None = None) -> ConfigProvenance:
         """A configuration value with its global/project/policy provenance."""
         return resolve_value(self.data, key, product)
+
+    def execution_requirements(self, task: Task, phase: Phase | None = None) -> ExecutionRequirements:
+        """Resolve product, phase, and task policy monotonically with source attribution."""
+        product = self.product(task.product)
+        layers = [parse_execution_requirements(
+            product.get("execution_requirements"), source=f"product:{task.product}"
+        )]
+        if phase is not None:
+            layers.append(parse_execution_requirements(
+                phase.meta.get("execution_requirements"), source=f"phase:{phase.key}"
+            ))
+        layers.append(task.execution_requirements)
+        effective = merge_execution_requirements(*layers)
+        definitions = self.data.get("capability_definitions") or {}
+        unknown = sorted(set(effective.capabilities) - set(definitions))
+        if unknown:
+            raise ValueError(f"unknown capability requirements: {', '.join(unknown)}")
+        _enforce_execution_limits(
+            effective, self.data.get("execution_limits") or {}, "execution_limits"
+        )
+        _enforce_execution_limits(
+            effective, product.get("execution_limits") or {},
+            f"products.{task.product}.execution_limits",
+        )
+        return effective
 
     def save_changes(self, changes: dict[str, Any], *, product: str | None = None,
                      expected_revision: str | None = None, reset: bool = False) -> Config:
@@ -1036,12 +1071,30 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
     if not isinstance(github, dict):
         raise ValueError("github must be a mapping")
     _validate_project_users(github.get("project_users", []), "github.project_users")
+    _validate_capability_definitions(data.get("capability_definitions", {}))
+    if "execution_limits" in data:
+        _validate_execution_limits(data["execution_limits"], "execution_limits")
     products = data.get("products") or {}
     if not isinstance(products, dict):
         raise ValueError("products must be a mapping")
     for name, product in products.items():
         if not isinstance(product, dict):
             raise ValueError(f"products.{name} must be a mapping")
+        product_requirements = parse_execution_requirements(
+            product.get("execution_requirements"), source=f"products.{name}"
+        )
+        unknown = sorted(set(product_requirements.capabilities) - set(
+            data.get("capability_definitions", {})
+        ))
+        if unknown:
+            raise ValueError(
+                f"products.{name}.execution_requirements has unknown capabilities: "
+                + ", ".join(unknown)
+            )
+        if "execution_limits" in product:
+            _validate_execution_limits(
+                product["execution_limits"], f"products.{name}.execution_limits"
+            )
         owner = product.get("stack_owner", "garden")
         if owner not in ("garden", "external"):
             raise ValueError(f"products.{name}.stack_owner must be 'garden' or 'external'")
@@ -1098,6 +1151,59 @@ def _validate_project_users(value: Any, dotted: str) -> None:
         not isinstance(user, str) or not user.strip() for user in value
     ):
         raise ValueError(f"{dotted} must be a list of non-empty GitHub logins")
+
+
+def _validate_capability_definitions(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("capability_definitions must be a mapping")
+    for name, definition in value.items():
+        if not isinstance(name, str) or not re.fullmatch(
+                r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*", name):
+            raise ValueError(f"invalid capability definition name {name!r}")
+        if (not isinstance(definition, dict) or set(definition) - {
+                "type", "description", "issuer", "privileged"}):
+            raise ValueError(f"capability_definitions.{name} has unknown fields")
+        for key in ("type", "description", "issuer"):
+            if not isinstance(definition.get(key), str) or not definition[key].strip():
+                raise ValueError(f"capability_definitions.{name}.{key} must be a non-empty string")
+        if not isinstance(definition.get("privileged"), bool):
+            raise ValueError(f"capability_definitions.{name}.privileged must be true or false")
+
+
+def _validate_execution_limits(value: Any, source: str) -> None:
+    if not isinstance(value, dict) or set(value) - {"memory_mib", "vcpu", "gpu"}:
+        raise ValueError(f"{source} must contain only memory_mib, vcpu, and gpu")
+    for key in ("memory_mib", "vcpu"):
+        limit = value.get(key)
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+            raise ValueError(f"{source}.{key} must be a non-negative whole number")
+    gpu = value.get("gpu")
+    if gpu is not None:
+        if not isinstance(gpu, dict) or set(gpu) - {"count", "min_device_memory_mib"}:
+            raise ValueError(f"{source}.gpu has unknown fields")
+        for key, limit in gpu.items():
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+                raise ValueError(f"{source}.gpu.{key} must be a non-negative whole number")
+
+
+def _enforce_execution_limits(requirements: ExecutionRequirements, value: Any, source: str) -> None:
+    _validate_execution_limits(value, source)
+    checks = {
+        "memory_mib": requirements.resources.memory_mib,
+        "vcpu": requirements.resources.vcpu,
+    }
+    for key, requested in checks.items():
+        if key in value and requested > value[key]:
+            raise ValueError(f"{key} requirement {requested} exceeds deployment ceiling {value[key]}")
+    gpu = requirements.resources.gpu
+    gpu_limits = value.get("gpu") or {}
+    if gpu:
+        for key, requested in (("count", gpu.count),
+                               ("min_device_memory_mib", gpu.min_device_memory_mib)):
+            if key in gpu_limits and requested > gpu_limits[key]:
+                raise ValueError(
+                    f"gpu.{key} requirement {requested} exceeds deployment ceiling {gpu_limits[key]}"
+                )
 
 
 def find_root(start: Path | None = None) -> Path:
