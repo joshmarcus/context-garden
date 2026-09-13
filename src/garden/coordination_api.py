@@ -34,7 +34,7 @@ def create_coordination_app(garden_dir: Path, *, authentication: str = "credenti
     """
     app = FastAPI(title="context-garden coordinator", version="1")
     coordinator = Coordinator(garden_dir / "coordination.db")
-    registry = MemberRegistry(garden_dir)
+    registry = MemberRegistry(garden_dir, coordinator)
 
     if authentication not in {"credential", "temporary-username"}:
         raise ValueError("authentication must be credential or temporary-username")
