@@ -115,8 +115,10 @@ def test_routing_api_and_task_edit_are_read_only_validated_and_redacted(garden):
     assert explanation["dry_run"] is True
     assert explanation["runs"][0]["profile"] == "restricted"
     assert explanation["runs"][0]["profile_version"] == "7"
+    assert explanation["runs"][0]["readiness"] == {"status": "unknown"}
     assert "secret-historical-host" not in json.dumps(explanation)
     assert list((garden / ".garden" / "runs").glob("**/*")) == before
+    assert "readiness unknown" in c.get("/tasks/DM-001").text
 
     profiles = c.get("/api/worker-configurations").json()
     assert profiles[0]["version"] == "7"
