@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -58,6 +59,42 @@ def test_disabled_members_and_revoked_or_rotated_installations_are_rejected(tmp_
     second = registry.issue_installation(alice, "bob", "bob-phone")
     registry.set_member_active(alice, "bob", False)
     assert registry.authenticate(second) is None
+
+
+def test_disable_and_revocation_fence_affected_member_claims(tmp_path):
+    calls = []
+    coordinator = SimpleNamespace(
+        fence_member_claims=lambda actor, **request: calls.append((actor, request))
+    )
+    registry = MemberRegistry(tmp_path / ".garden", coordinator)
+    token = registry.enroll_administrator("garden-1", "alice", "alice-laptop")
+    alice = registry.authenticate(token)
+    assert alice is not None
+    registry.add_member(alice, "bob", "member")
+    bob_token = registry.issue_installation(alice, "bob", "bob-desktop")
+    bob = registry.authenticate(bob_token)
+    assert bob is not None
+
+    rotated = registry.rotate_installation(bob, "bob-desktop")
+    bob = registry.authenticate(rotated)
+    assert bob is not None
+    registry.revoke_installation(bob, "bob-desktop")
+    registry.set_member_active(alice, "bob", False)
+
+    assert calls[0][1] == {
+        "garden_id": "garden-1", "member_id": "bob",
+        "installation_id": "bob-desktop",
+        "operation_id": "membership:credential:bob-desktop:bob:1",
+    }
+    assert calls[1][1] == {
+        "garden_id": "garden-1", "member_id": "bob",
+        "installation_id": "bob-desktop",
+        "operation_id": "membership:credential:bob-desktop:bob:2",
+    }
+    assert calls[2][1] == {
+        "garden_id": "garden-1", "member_id": "bob", "installation_id": "",
+        "operation_id": "membership:disable:bob:1",
+    }
 
 
 def test_assigned_visibility_records_concrete_projects(tmp_path):
@@ -559,6 +596,44 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
         "DM-002": "ready",
     }
     assert RunStore(garden / ".garden").active() == []
+
+
+def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    bob_token = registry.issue_installation(admin, "bob", "bob-browser")
+    registry.add_member(admin, "eve", "viewer", "assigned", ())
+    eve_token = registry.issue_installation(admin, "eve", "eve-browser")
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    bob = {"Authorization": f"Bearer {bob_token}"}
+    eve = {"Authorization": f"Bearer {eve_token}"}
+    rows = client.get("/api/tasks", headers=bob).json()
+    assert rows and {row["product"] for row in rows} == {"demo"}
+    assert client.get("/api/tasks", headers=eve).json() == []
+    assert client.get("/config", headers=bob).status_code == 403
+    assert client.get("/tasks/DM-001", headers=bob).status_code == 200
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
+
+
+def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, admin_token, _admin = _registry(garden)
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    auth = {"Authorization": f"Bearer {admin_token}"}
+
+    assert client.post("/api/runs/claim", headers=auth,
+                       json={"host": "alice-laptop"}).status_code == 204
+    assert client.post("/api/runs/claim", headers=auth,
+                       json={"host": "spoofed"}).status_code == 403
 
 
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):

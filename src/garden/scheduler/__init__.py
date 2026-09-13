@@ -166,7 +166,30 @@ class Scheduler(
         snapshot = view.snapshot
         assignment = snapshot.get("assignment")
         self._authority_snapshot = snapshot
+        acknowledge = getattr(self.coordinator, "acknowledge_cancellations", None)
+        if acknowledge is not None:
+            acknowledge(snapshot, self._cancel_fenced_scope)
         return bool(assignment and assignment.get("enabled"))
+
+    def _cancel_fenced_scope(self, kind: str, scope: str) -> bool:
+        """Stop this installation's old-generation workers without adopting their result."""
+        if kind == "task":
+            runs = [run for run in self.runs.active() if run.task_id == scope]
+        elif kind == "phase":
+            runs = [run for run in self.runs.active()
+                    if run.phase_claim_scope == scope]
+        else:
+            return False
+        for run in runs:
+            run.kill()
+        if any(not run.process_finished() for run in runs):
+            return False
+        for run in runs:
+            run.status = "cancelled"
+            run.finished_at = now_iso()
+            run.error = "fenced by multiplayer ownership handoff"
+            run.save()
+        return True
 
     def _task_authority(self, task: Task) -> dict[str, Any] | None:
         """Return current authority only inside this operator's assigned project/phase."""
@@ -239,12 +262,21 @@ class Scheduler(
         if self.coordinator is None:
             yield
             return
+        previous = getattr(self, "_phase_claim_parent", None)
         with self.coordinator.effect(
             kind="phase", scope=f"{product}/{phase}", owner_id=self.coordinator.member_id,
             authority_generation=int(row["authority_generation"]),
             expected_version=int(row["version"]), effect_key=effect_key,
-        ):
-            yield
+        ) as claim:
+            self._phase_claim_parent = {
+                "scope": f"{product}/{phase}",
+                "authority_generation": int(row["authority_generation"]),
+                "fence": int(claim["fence"]),
+            }
+            try:
+                yield
+            finally:
+                self._phase_claim_parent = previous
 
     @contextmanager
     def task_effect(self, task: Task, effect_key: str) -> Iterator[None]:
