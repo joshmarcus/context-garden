@@ -23,6 +23,7 @@ from markupsafe import Markup
 from ..harness import DIFFICULTIES
 from ..members import MemberRegistry, authorize
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
+from ..multiplayer_client import MultiplayerUnavailable
 from ..now1 import board_run_fact_html, live_clock_html
 from ..plants import (
     DEFS,
@@ -112,6 +113,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     operator_token = os.environ.get(operator_env, "") if operator_env else ""
     multiplayer = bool(store.config.get("multiplayer.enabled", False))
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
+    multiplayer_tls_files(store, host)
     require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
     if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
@@ -198,8 +200,16 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         store,
         watch,
         github=github,
-        scheduler_blocked_reason=(MULTIPLAYER_EXECUTION_UNAVAILABLE
-                                  if multiplayer and background_principal is None else ""),
+        scheduler_blocked_reason=(
+            MULTIPLAYER_EXECUTION_UNAVAILABLE
+            if multiplayer and (background_principal is None or not all((
+                store.config.get("multiplayer.garden_id", ""),
+                store.config.get("multiplayer.coordinator_url", ""),
+                store.config.get("multiplayer.member_id", ""),
+                store.config.get("multiplayer.installation_id", ""),
+                os.environ.get(str(store.config.get("multiplayer.credential_env", "")), ""),
+            ))) else ""
+        ),
     )
     app.state.hub = hub
 
@@ -210,8 +220,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         Safe requests borrow the current copy-on-write generation; actions get a private
         Store because schedulers intentionally mutate their task objects before saving.
         """
-        token = (hub.begin_request() if request.method in {"GET", "HEAD", "OPTIONS"}
-                 else hub.begin_action_request())
+        safe = request.method in {"GET", "HEAD", "OPTIONS"}
+        try:
+            hub.prepare_authoritative_request(mutation=not safe)
+        except MultiplayerUnavailable as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=503)
+        token = hub.begin_request() if safe else hub.begin_action_request()
         try:
             return await call_next(request)
         finally:

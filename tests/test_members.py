@@ -256,7 +256,8 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 409
+    assert response.json()["detail"] == MULTIPLAYER_EXECUTION_UNAVAILABLE
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -497,6 +498,44 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
         "DM-002": "ready",
     }
     assert RunStore(garden / ".garden").active() == []
+
+
+def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    bob_token = registry.issue_installation(admin, "bob", "bob-browser")
+    registry.add_member(admin, "eve", "viewer", "assigned", ())
+    eve_token = registry.issue_installation(admin, "eve", "eve-browser")
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    bob = {"Authorization": f"Bearer {bob_token}"}
+    eve = {"Authorization": f"Bearer {eve_token}"}
+    rows = client.get("/api/tasks", headers=bob).json()
+    assert rows and {row["product"] for row in rows} == {"demo"}
+    assert client.get("/api/tasks", headers=eve).json() == []
+    assert client.get("/config", headers=bob).status_code == 403
+    assert client.get("/tasks/DM-001", headers=bob).status_code == 200
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
+
+
+def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, admin_token, _admin = _registry(garden)
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    auth = {"Authorization": f"Bearer {admin_token}"}
+
+    assert client.post("/api/runs/claim", headers=auth,
+                       json={"host": "alice-laptop"}).status_code == 204
+    assert client.post("/api/runs/claim", headers=auth,
+                       json={"host": "spoofed"}).status_code == 403
 
 
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):

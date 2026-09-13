@@ -107,6 +107,11 @@ class Coordinator:
                     garden TEXT NOT NULL, evidence_id TEXT NOT NULL, operation_id TEXT NOT NULL,
                     payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
                     PRIMARY KEY (garden, evidence_id));
+                CREATE TABLE IF NOT EXISTS projections (
+                    garden TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL,
+                    version INTEGER NOT NULL, path TEXT NOT NULL, markdown TEXT NOT NULL,
+                    base_revision TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY (garden, kind, scope));
             """)
             self._migrate_effect_scope(db)
 
@@ -246,9 +251,23 @@ class Coordinator:
         """Return an authenticated versioned authority snapshot with useful wait states."""
         self._protocol(protocol_version)
         self._garden(principal, garden_id)
+        now = self.clock()
         with self._connect() as db:
             authority = [dict(row) for row in db.execute(
                 "SELECT * FROM authority WHERE garden=? ORDER BY kind,scope", (garden_id,))]
+            claims = [dict(row) for row in db.execute(
+                "SELECT kind,scope,owner,authority_generation,installation,operation_id,fence,lease_expires_at "
+                "FROM claims WHERE garden=? ORDER BY kind,scope", (garden_id,))]
+            claims = [
+                claim for claim in claims
+                if dt.datetime.fromisoformat(claim["lease_expires_at"]) > now
+            ]
+            for claim in claims:
+                # Keep the established diagnostic field while also returning the wire name
+                # needed to reconstruct and reuse the authenticated Claim after a restart.
+                claim["installation_id"] = claim["installation"]
+                claim["owner_id"] = claim["owner"]
+                claim["garden_id"] = garden_id
             pending = [dict(row) for row in db.execute(
                 "SELECT effect_kind,scope,status,last_error FROM outbox WHERE garden=? AND status!='done'",
                 (garden_id,))]
@@ -257,15 +276,25 @@ class Coordinator:
                     authority_generation,status FROM effects
                     WHERE garden=? AND status IN ('pending','unknown')""",
                 (garden_id,))]
+            projections = [dict(row) for row in db.execute(
+                "SELECT kind,scope,version,path,markdown,base_revision FROM projections "
+                "WHERE garden=? ORDER BY kind,scope", (garden_id,))]
         return {"protocol_version": PROTOCOL_VERSION, "garden_id": garden_id,
-                "authority": authority, "pending_outbox": pending, "blocking_effects": effects}
+                "member_id": principal.member_id, "installation_id": principal.installation_id,
+                "role": principal.role,
+                "authority": authority, "active_claims": claims, "projections": projections,
+                "pending_outbox": pending, "blocking_effects": effects}
 
     def transition(self, principal: Principal, claim: Claim, *, expected_version: int,
                    new_state: str, markdown: str, operation_id: str,
-                   evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+                   evidence: dict[str, Any] | None = None, path: str = "",
+                   canonical_revision: str = "") -> dict[str, Any]:
         """Commit authority plus its Git projection journal atomically."""
         request = {"claim_operation_id": claim.operation_id, "expected_version": expected_version,
-                   "new_state": new_state, "markdown": markdown, "evidence": evidence or {}}
+                   "new_state": new_state, "markdown": markdown, "evidence": evidence or {},
+                   "path": path, "canonical_revision": canonical_revision}
+        if path and not canonical_revision:
+            raise ValueError("a projected transition requires its canonical revision")
         with self._transaction() as db:
             repeated = self._repeat(db, principal, claim.garden_id, operation_id, "transition", request)
             if repeated is not None:
@@ -276,6 +305,13 @@ class Coordinator:
                        (version, claim.garden_id, claim.kind, claim.scope))
             payload = {"state": new_state, "markdown": markdown, "owner": claim.owner_id,
                        "authority_generation": claim.authority_generation}
+            if path:
+                db.execute("""INSERT INTO projections VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(garden,kind,scope) DO UPDATE SET version=excluded.version,
+                    path=excluded.path,markdown=excluded.markdown,
+                    base_revision=excluded.base_revision,updated_at=excluded.updated_at""",
+                    (claim.garden_id, claim.kind, claim.scope, version, path, markdown,
+                     canonical_revision, _iso(self.clock())))
             for effect_kind in ("task_transition", "git_projection"):
                 db.execute("""INSERT INTO outbox
                     (garden,operation_id,effect_kind,scope,authority_version,fence,payload_json,status,created_at)
