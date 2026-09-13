@@ -46,6 +46,8 @@
 </div>
 {% endif %}
 
+<section class="panel prose task-goal" aria-label="Task goal">{{ body_html|safe }}</section>
+
 {% if attach_command %}
 <p class="muted">Live worker session: <code>{{ attach_command }}</code></p>
 {% endif %}
@@ -68,19 +70,6 @@
   </form>
 </div>
 {% endif %}
-
-<div class="panel" id="routing" style="margin-bottom:14px">
-  <div class="eyebrow">Worker routing · read-only dry run</div>
-  <h3>{{ routing.match.reason|replace('_', ' ') }}</h3>
-  <p>{{ routing.match.explanation }}</p>
-  <p class="metadata">Activity: {{ routing.activity }} · owner {{ routing.owner or 'unassigned' }} ({{ routing.owner_source }}) · no claim, credential, or instance is created by this explanation.</p>
-  <details><summary>Effective requirements and inheritance</summary>
-    <pre>{{ routing.effective_requirements|tojson }}</pre>
-    {% for layer in routing.layers %}<p class="metadata"><strong>{{ layer.source }}</strong> · {{ layer.requirements|tojson }}</p>{% endfor %}
-  </details>
-  {% if routing.selected_worker %}<p><strong>Selected profile:</strong> {{ routing.selected_worker.profile }} {{ routing.selected_worker.version }} · generation {{ routing.selected_worker.generation }} · readiness {{ routing.selected_worker.readiness }}</p>{% endif %}
-  {% if routing.runs %}<details><summary>Recorded run provenance ({{ routing.runs|length }})</summary>{% for run in routing.runs %}<p class="metadata"><a href="/runs/{{ task.id }}/{{ run.run_id }}">{{ run.run_id }}</a> · {{ run.mode }} · {{ run.profile or 'legacy profile not recorded' }}{% if run.profile_version %} {{ run.profile_version }}{% endif %} · readiness {{ run.readiness.status }}{% if run.readiness.checked_at is defined %} (checked {{ run.readiness.checked_at }}, expires {{ run.readiness.expires_at }}){% endif %}</p>{% endfor %}</details>{% endif %}
-</div>
 
 {% if state.harness_hold and task.status.value == 'ready' %}
 <div class="panel" style="border-color:var(--warn);margin-bottom:14px">
@@ -107,8 +96,8 @@
 </div>
 {% endif %}
 
-<div class="actions" style="margin-bottom:14px">
-  {% if not manual_reservation and not task.status.terminal %}<button class="quiet" data-toggle="manual-mode-form">Manual mode…</button>{% endif %}
+<section class="task-actions" aria-label="Task actions">
+<div class="actions task-primary-actions" style="margin-bottom:10px">
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
     <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
@@ -118,6 +107,11 @@
   {% if task.status.value == 'ready' %}<form class="inline" method="post" action="/tasks/{{ task.id }}/unapprove"><button>Back to draft</button></form>{% endif %}
   {% if not phase_hold and task.status.value in ('ready','changes_requested') and (not manual_runner or not manual_take_reason) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/{{ 'take' if manual_runner else 'dispatch' }}"><button class="primary" {% if blockers %}title="blocked by {{ blockers|join(', ') }}"{% endif %}>{% if manual_runner %}{{ 'Resume task' if task.status.value == 'changes_requested' else 'Take task' }}{% else %}{{ 'Dispatch revise run' if task.status.value == 'changes_requested' else 'Dispatch now' }}{% endif %}</button></form>{% endif %}
   {% if (not state.ssh_recovery_hold or task.status.value == 'failed') and (task.status.value in ('failed','cancelled','changes_requested') or (state.needs_human and not task.status.terminal)) %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><button>{{ 'Reopen' if task.status.value == 'cancelled' else 'Continue the loop' }}</button></form>{% endif %}
+  {% if task.status.value == 'running' and not state.needs_human %}<span class="muted">Work is running automatically; no action is needed.</span>{% endif %}
+</div>
+<details class="panel task-secondary-actions" style="margin-bottom:14px"><summary>More actions and settings</summary>
+<div class="actions" style="margin-top:12px">
+  {% if not manual_reservation and not task.status.terminal %}<button class="quiet" data-toggle="manual-mode-form">Manual mode…</button>{% endif %}
   {% if state.revisions %}<form class="inline" method="post" action="/tasks/{{ task.id }}/reset-revisions"><button class="quiet">Reset revision counter ({{ state.revisions }})</button></form>{% endif %}
   {% if not phase_hold and task.pr and task.status.value in ('in_review','awaiting_triage','changes_requested') and not state.review_run %}<form class="inline" method="post" action="/tasks/{{ task.id }}/review"><button class="quiet">Automated review</button></form>{% endif %}
   {% if not phase_hold and (task.pr or task.branch) %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
@@ -136,6 +130,21 @@
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
+</details>
+</section>
+<details class="panel task-details" id="routing" style="margin-bottom:14px"{% if routing.match.reason != 'matched' %} open{% endif %}>
+  <summary>{{ 'No eligible worker' if routing.match.reason != 'matched' else 'Details · worker routing' }}</summary>
+  <div class="eyebrow" style="margin-top:12px">Worker routing</div>
+  <h3>{{ routing.match.reason|replace('_', ' ') }}</h3>
+  <p>{{ routing.match.explanation }}</p>
+  <p class="metadata">Activity: {{ routing.activity }} · owner {{ routing.owner or 'unassigned' }} ({{ routing.owner_source }})</p>
+  <details><summary>Effective requirements and inheritance</summary>
+    <pre>{{ routing.effective_requirements|tojson }}</pre>
+    {% for layer in routing.layers %}<p class="metadata"><strong>{{ layer.source }}</strong> · {{ layer.requirements|tojson }}</p>{% endfor %}
+  </details>
+  {% if routing.selected_worker %}<p><strong>Selected profile:</strong> {{ routing.selected_worker.profile }} {{ routing.selected_worker.version }} · generation {{ routing.selected_worker.generation }} · readiness {{ routing.selected_worker.readiness }}</p>{% endif %}
+  {% if routing.runs %}<details><summary>Recorded run provenance ({{ routing.runs|length }})</summary>{% for run in routing.runs %}<p class="metadata"><a href="/runs/{{ task.id }}/{{ run.run_id }}">{{ run.run_id }}</a> · {{ run.mode }} · {{ run.profile or 'legacy profile not recorded' }}{% if run.profile_version %} {{ run.profile_version }}{% endif %} · readiness {{ run.readiness.status }}{% if run.readiness.checked_at is defined %} (checked {{ run.readiness.checked_at }}, expires {{ run.readiness.expires_at }}){% endif %}</p>{% endfor %}</details>{% endif %}
+</details>
 {% if task.status.terminal %}<div id="defect-form" class="panel" hidden>
   <div class="eyebrow">Record a defect found after closure</div>
   <p class="muted">Minor: limited impact or workaround available. Major: substantial impact or core behavior fails. You choose the severity; analysis can be added later.</p>
@@ -211,7 +220,6 @@
 {% endif %}
 <div class="grid2">
   <div class="stack">
-    <div class="panel prose">{{ body_html|safe }}</div>
     {% if criteria_rows %}<div class="panel"><div class="eyebrow">Acceptance criteria</div>
       <table style="margin-top:6px;width:100%">
         <tr><th style="text-align:left">criterion</th><th style="text-align:left">worker evidence</th><th style="text-align:left">review</th></tr>

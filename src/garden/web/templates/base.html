@@ -333,7 +333,31 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 .decision-action { display:flex; gap:8px; align-items:center; flex-wrap:wrap; min-width:0; }
 .decision-action .faint { flex:0 1 72ch; min-width:0; overflow-wrap:anywhere; }
 @media (max-width:600px) {
+  .rail { position:relative; padding:10px 14px; gap:0; border-right:0; border-bottom:1px solid var(--line); }
+  .rail .wordmark { min-height:44px; }
+  .rail::after { content:"Menu"; position:absolute; right:14px; top:14px; font:12px var(--mono); color:var(--muted); }
+  .rail > :not(.wordmark):not(.nav) { display:none; }
+  .rail .nav { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:2px; padding-top:6px; border-top:1px solid var(--line); }
+  .rail .nav a { min-height:36px; padding:0 6px; border-left:0; border-bottom:2px solid transparent; }
+  .rail .nav a.on { border-bottom-color:var(--ink); }
   main { padding:18px 14px 42px; }
+  .project-picker { margin:0 0 12px; justify-content:flex-end; }
+  .page-head { margin-bottom:12px; gap:10px; }
+  .page-head h1 { font-size:26px; }
+  .task-heading { gap:2px; }
+  .task-heading p { align-items:flex-start !important; flex-wrap:wrap; }
+  .task-goal { margin-bottom:12px; }
+  .task-secondary-actions .actions { align-items:stretch; }
+  .phase-tasks { overflow:visible; }
+  .phase-tasks table, .phase-tasks tbody { display:block; }
+  .phase-tasks tr { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:4px 12px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .phase-tasks tr:first-child { display:none; }
+  .phase-tasks td { display:none; padding:0; border:0; }
+  .phase-tasks td:nth-child(1), .phase-tasks td:nth-child(2), .phase-tasks td:nth-child(3), .phase-tasks td:nth-child(6) { display:block; }
+  .phase-tasks td:nth-child(1) { grid-column:1; grid-row:1; }
+  .phase-tasks td:nth-child(2) { grid-column:2; grid-row:1; }
+  .phase-tasks td:nth-child(3) { grid-column:2; grid-row:2; color:var(--muted); }
+  .phase-tasks td:nth-child(6) { grid-column:1; grid-row:2; min-width:0; }
   .kpis { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   .item { grid-template-columns:26px minmax(18rem,1fr); gap:8px 10px; }
   .item .card-actions, .item .do { align-items:stretch; }
