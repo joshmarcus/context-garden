@@ -37,6 +37,7 @@ from ..plants import (
     vine_svg,
 )
 from ..runs import HistoryUnavailable
+from ..scheduler import State
 from ..store import Store
 from . import actions, pages
 from .access import (
@@ -163,6 +164,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # therefore administrative regardless of all-project visibility.
             return authorize(principal, "administer")
         # Configuration, lifecycle and phase-wide actions are administrator operations.
+        current_store = Store(store.root, config=store.config)
         task_id = ""
         parts = path.split("/")
         if path.startswith("/tasks/") and len(parts) > 2:
@@ -172,14 +174,36 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         elif path.startswith("/api/tasks/") and len(parts) > 3:
             task_id = parts[3]
         if not task_id:
+            if path.startswith("/decisions/") and len(parts) > 2:
+                decision = State(current_store.config.garden_dir / "state.json").get("_decisions").get(parts[2])
+                if not isinstance(decision, dict):
+                    return False
+                target = current_store.tasks().get(str(decision.get("target") or ""))
+                if target is not None:
+                    owner = registry.effective_task_owner(
+                        target, current_store.phase(target.product, target.phase),
+                    )[0]
+                    assignment = registry.assignment(principal.member_id)
+                    return bool(assignment and assignment.enabled
+                                and assignment.project == target.product
+                                and assignment.phase == target.phase
+                                and authorize(principal, "mutate_work", owner_id=owner,
+                                              project=target.product))
+                product, separator, phase = str(decision.get("phase") or "").partition("/")
+                return bool(separator and registry.authorize_phase_operation(
+                    principal, product, phase,
+                ))
+            if path.startswith("/phases/") and len(parts) > 3:
+                return registry.authorize_phase_operation(principal, parts[2], parts[3])
             return authorize(principal, "administer")
-        task = store.tasks().get(task_id)
+        task = current_store.tasks().get(task_id)
         if task is None:
             return False
-        from ..model import effective_owner
-
-        owner = effective_owner(task, store.phase(task.product, task.phase))[0]
-        return authorize(principal, "mutate_work", owner_id=owner, project=task.product)
+        owner = registry.effective_task_owner(task, current_store.phase(task.product, task.phase))[0]
+        assignment = registry.assignment(principal.member_id)
+        return bool(assignment and assignment.enabled
+                    and assignment.project == task.product and assignment.phase == task.phase
+                    and authorize(principal, "mutate_work", owner_id=owner, project=task.product))
 
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
