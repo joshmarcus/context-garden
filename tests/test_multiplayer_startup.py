@@ -180,6 +180,10 @@ def test_temporary_username_coordinator_and_cli_connect_without_credential(
         status = _run(local_garden, "members", "status")
         assert status.exit_code == 0, status.output
         assert f"identity: {username} (member)" in status.output
+        page = TestClient(create_app(Store(local_garden), watch=False)).get("/")
+        assert page.status_code == 200
+        assert f"identity: {username} (member)" in page.text
+        assert "No work assignment" in page.text
         first = yaml.safe_load((local_garden / "garden.local.yaml").read_text())
         assert first["multiplayer"]["credential_env"] == ""
         installation = first["multiplayer"]["installation_id"]

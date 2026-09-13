@@ -57,7 +57,8 @@ def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_in
     admin_token = registry.enroll_administrator("garden", "admin", "admin-host")
     admin = registry.authenticate(admin_token)
     assert admin is not None
-    registry.add_member(admin, "alice", "viewer")
+    registry.add_member(admin, "alice", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "alice", "demo", "p1")
     monkeypatch.setattr("garden.coordination_api.operating_system_username", lambda: "alice")
 
     credential = TestClient(create_coordination_app(garden_dir))
@@ -82,13 +83,16 @@ def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_in
     )
     assert response.status_code == 200
     assert response.json()["member_id"] == "alice"
-    assert response.json()["role"] == "viewer"
+    assert response.json()["role"] == "member"
+    assert response.json()["projects"] == ["demo"]
+    assert response.json()["assignment"]["phase"] == "p1"
     assert username.get(
         "/v1/gardens/garden/snapshot",
         headers={"Authorization": f"Bearer {admin_token}"},
     ).status_code == 401
 
     registry.add_member(admin, "bob", "member", "assigned", ("other",))
+    registry.set_assignment(admin, "bob", "other", "p2")
     monkeypatch.setattr("garden.coordination_api.operating_system_username", lambda: "bob")
     assert username.post(
         enrollment_path, json={"installation_id": "bob-local"},
@@ -100,6 +104,7 @@ def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_in
     assert bob.status_code == 200
     assert bob.json()["member_id"] == "bob"
     assert bob.json()["projects"] == ["other"]
+    assert bob.json()["assignment"]["phase"] == "p2"
     assert username.get(
         "/v1/gardens/garden/snapshot",
         headers={"Authorization": "Garden-Temporary-Username alice-local"},
