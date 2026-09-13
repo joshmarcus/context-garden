@@ -1,8 +1,10 @@
 # context-garden
 
-**Drive autonomous agent development by tending a context garden.** You maintain principles, product overviews, phase goals, and specs as Markdown; context-garden turns that context into plans, working code, and reviewed pull requests. As your project grows, you refine the documents that guide the agents, and the agents carry the work through implementation, checks, review, and revision. Your job is to shape the goals, make decisions, and choose what ships.
+**Drive autonomous agent development by tending a context garden.**  Context garden is a human-on-the-loop "software factory" "agent graph" system enabling you to build complex software through a web interface and a conversation with an "operator" agent that delegates work to other agents.  You maintain principles, product overviews, phase goals, and specs as Markdown; context-garden turns that context into plans, working code, and reviewed pull requests. As your project grows, you refine the documents that guide the agents, and the agents carry the work through implementation, checks, review, and revision. Your job is to shape the goals, make decisions, and choose what ships. The operator agent works as your proxy, keeps everything running smoothly, intervenes when trouble arises, and can help you add new tasks, project phases, and specifications.
 
 You can change the direction of the project in the same place you define it. Each worker gets a focused brief built from the shared context, and each phase leaves evidence you can use to improve the next one: what shipped, where agents got stuck, how reviewers responded, and what the work cost.
+
+Context Garden is built to be extensible for use in an enterprise environment or can be used directly with AWS.  It is model agnostic, and can help you make smart decisions about which models to use for tasks for varying difficulty.
 
 [![Context Garden's development loop: tasks return through revision on the left while growing file nodes and code dependencies fill the graph on the right.](docs/screenshots/history-film.png)](https://drive.google.com/file/d/146FxqsfkbsCL8AwFBRdbsInpjA0v0MQI/view?usp=sharing)
 
