@@ -404,11 +404,16 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
-    run.env_snapshot = {"product": "demo"}
+    run.source_head = "a" * 40
+    run.env_snapshot = {
+        "product": "demo",
+        "remote_repo": "https://example.test/demo.git",
+    }
     run.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
 
