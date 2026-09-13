@@ -143,6 +143,8 @@ class Run:
     pool_member: str = ""  # configured harness:model member selected from a tier/review pool
     difficulty: str = ""  # easy | medium | hard; determines the turn cap
     host: str = ""  # ssh runner: which host
+    execution_member_id: str = ""  # authenticated owner of a pull-worker claim
+    execution_installation_id: str = ""  # exact installation holding this lease generation
     claimed_at: str = ""  # pull-based remote runner lease
     queued_at: str = ""  # remote queue entry; legacy records fall back to started_at
     execution_started_at: str = ""  # first claim; execution timeout never includes queue age
