@@ -116,6 +116,7 @@ def _normalize_review_count_policy(data: dict[str, Any]) -> None:
 EXECUTABLE_KEYS: tuple[str, ...] = (
     "notify.command", "notify.recipient", "notify.destinations", "checks", "worker_env.pass",
     "worker_env.config_files", "sandbox", "runner_adapters", "workload_identity",
+    "worker_configurations", "worker_instances",
 )
 
 
@@ -242,6 +243,10 @@ DEFAULTS: dict[str, Any] = {
     # Host-trusted provider adapters and logical, least-privilege delivery policies.
     # Authority values are resolved only by operation-boundary code and never enter Config.
     "workload_identity": {"providers": {}, "references": {}, "boundaries": {}},
+    # Reusable trusted templates and private, per-user installation bindings. These are
+    # executable authority and therefore participate in the live-config fence above.
+    "worker_configurations": {},
+    "worker_instances": [],
     "harness": "claude",
     "max_parallel": 10,
     "phase_execution": "concurrent",  # concurrent (legacy behavior) or earliest open phase per product
@@ -600,6 +605,21 @@ class Config:
             f"products.{task.product}.execution_limits",
         )
         return effective
+
+    def worker_configurations(self):
+        """Return strictly parsed trusted worker templates keyed by logical name."""
+        from .hosts import worker_configuration_from_dict
+
+        return {
+            name: worker_configuration_from_dict(name, value)
+            for name, value in (self.data.get("worker_configurations") or {}).items()
+        }
+
+    def worker_instances(self):
+        """Return private authenticated instances; several may use the same template."""
+        from .hosts import worker_instance_from_dict
+
+        return tuple(worker_instance_from_dict(value) for value in self.data.get("worker_instances") or [])
 
     def save_changes(self, changes: dict[str, Any], *, product: str | None = None,
                      expected_revision: str | None = None, reset: bool = False) -> Config:
@@ -1072,6 +1092,7 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         raise ValueError("github must be a mapping")
     _validate_project_users(github.get("project_users", []), "github.project_users")
     _validate_capability_definitions(data.get("capability_definitions", {}))
+    _validate_worker_configurations(data)
     if "execution_limits" in data:
         _validate_execution_limits(data["execution_limits"], "execution_limits")
     products = data.get("products") or {}
@@ -1151,6 +1172,66 @@ def _validate_project_users(value: Any, dotted: str) -> None:
         not isinstance(user, str) or not user.strip() for user in value
     ):
         raise ValueError(f"{dotted} must be a list of non-empty GitHub logins")
+
+
+def _validate_worker_configurations(data: dict[str, Any]) -> None:
+    from .hosts import worker_configuration_from_dict, worker_instance_from_dict
+
+    raw_profiles = data.get("worker_configurations") or {}
+    raw_instances = data.get("worker_instances") or []
+    if not isinstance(raw_profiles, dict):
+        raise ValueError("worker_configurations must be a mapping")
+    if not isinstance(raw_instances, list):
+        raise ValueError("worker_instances must be a list")
+    profiles = {
+        name: worker_configuration_from_dict(name, value)
+        for name, value in raw_profiles.items()
+        if isinstance(name, str) and name
+    }
+    if len(profiles) != len(raw_profiles):
+        raise ValueError("worker configuration names must be non-empty strings")
+    known = set(data.get("capability_definitions") or {})
+    for name, profile in profiles.items():
+        unknown = sorted({grant.capability for grant in profile.grants} - known)
+        if unknown:
+            raise ValueError(
+                f"worker_configurations.{name}.grants contain unknown capabilities: "
+                + ", ".join(unknown)
+            )
+    instances = [worker_instance_from_dict(value) for value in raw_instances]
+    instance_ids: set[str] = set()
+    identities: set[tuple[str, str]] = set()
+    credential_owners: dict[str, tuple[str, str]] = {}
+    for instance in instances:
+        if (not isinstance(instance.instance_id, str) or not instance.instance_id.strip()
+                or instance.instance_id in instance_ids):
+            raise ValueError("worker instances require unique non-empty instance IDs")
+        instance_ids.add(instance.instance_id)
+        profile = profiles.get(instance.configuration)
+        if profile is None:
+            raise ValueError(f"worker instance {instance.instance_id!r} references unknown configuration")
+        if (instance.configuration_version != profile.version
+                or instance.profile_generation != profile.generation):
+            raise ValueError(f"worker instance {instance.instance_id!r} has a stale profile generation")
+        identity = (instance.operating_user, instance.installation_id)
+        if not all(identity) or identity in identities:
+            raise ValueError("worker instances require unique user-owned installation bindings")
+        identities.add(identity)
+        for binding in instance.identity_bindings:
+            if (binding.identity_reference not in profile.identity_references
+                    or binding.operating_user != instance.operating_user
+                    or binding.installation_id != instance.installation_id):
+                raise ValueError(
+                    f"worker instance {instance.instance_id!r} has an identity binding outside "
+                    "its profile, operating user, or installation"
+                )
+            if binding.credential_reference:
+                owner = credential_owners.setdefault(binding.credential_reference, identity)
+                if owner != identity:
+                    raise ValueError(
+                        f"credential reference {binding.credential_reference!r} is enrolled to "
+                        "more than one user-owned installation"
+                    )
 
 
 def _validate_capability_definitions(value: Any) -> None:
