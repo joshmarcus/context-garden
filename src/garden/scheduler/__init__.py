@@ -15,6 +15,7 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 from __future__ import annotations
 
 import fcntl
+import os
 import re
 import threading
 import time
@@ -33,6 +34,7 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
+<<<<<<< HEAD
 from ..members import MemberRegistry, Principal
 from ..migration import standalone_fence
 from ..model import Phase, Status, Task, effective_owner, now_iso
