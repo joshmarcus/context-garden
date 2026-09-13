@@ -72,8 +72,21 @@ def register(app: FastAPI, site: Site) -> None:
     def snap(request: Request, window: str) -> dict[str, Any]:
         s = hub.fresh()
         projects = site.allowed_projects(request)
-        return now1.snapshot(s, hub.reader(), window=window if window in WINDOW_KEYS else "hour",
-                             tick=hub.tick_state(), projects=projects)
+        sched = hub.reader()
+        items = site.inbox_items(request, s, sched, visible_tasks=site.visible_tasks(request, s))
+        attention_cards = [
+            {
+                "kind": "needs_you", "state": "needs_you",
+                "task": str(item.get("task") or ""),
+                "title": str(item.get("title") or item.get("task") or item.get("phase") or "Garden decision"),
+                "reason": str(item.get("why") or item.get("reason") or item.get("blurb") or "Open the Inbox to decide."),
+                "glyph": "waiting_human", "dot": "waiting_human",
+            }
+            for item in site.actionable_decisions(items)
+        ]
+        return now1.snapshot(s, sched, window=window if window in WINDOW_KEYS else "hour",
+                             tick=hub.tick_state(), projects=projects,
+                             attention_cards=attention_cards)
 
     def page_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
         return ctx(request, page="now", f=FORMAT, snap=snap(request, window), **kw)

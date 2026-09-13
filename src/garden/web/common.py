@@ -698,6 +698,11 @@ class Site:
                               "recipient": recipient, "read_only": not actionable})
         return projected
 
+    @staticmethod
+    def actionable_decisions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Decision items the current projection actually permits the viewer to resolve."""
+        return [item for item in decisions(items) if not item.get("read_only")]
+
     def _inbox_recipient(self, store: Store, tasks: dict[str, Any],
                          item: dict[str, Any]) -> str:
         if item.get("task"):
@@ -838,7 +843,7 @@ class Site:
             "products": visible_products,
             "has_design": any(product_design_root(s, p.name).is_dir() for p in visible_products),
             "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in visible_products},
-            "inbox_count": len(decisions(items)),
+            "inbox_count": len(self.actionable_decisions(items)),
             "env": s.config.env,
             "running": [run for run in running_now(s) if run.get("task") in visible_tasks],
             "worker_busy": sum(run.runner != "manual" and run.mode in WORKER_MODES

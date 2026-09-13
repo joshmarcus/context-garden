@@ -652,7 +652,8 @@ QUIET_PERIOD = "Nothing recorded in this window: no run finished, no merge, no h
 
 def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | None = None,
              tick: dict[str, Any] | None = None,
-             projects: frozenset[str] | None = None) -> dict[str, Any]:
+             projects: frozenset[str] | None = None,
+             attention_cards: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """The whole page as one dict: `garden` (slots, pause, the tick), `now` (strips and cards),
     `next` (the dispatch and merge queues), `where` (phase sheets) and `period` (the window's
     figures). `tick` is the hub's last pass (`at`, `next_at`), or None outside the web app."""
@@ -685,7 +686,12 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
     review_busy = sum(run.mode in REVIEW_MODES for run in active_runs)
     max_parallel = sched.effective_max_parallel()
     review_parallel = sched.review_parallel_limit()
-    hands = cards_needing_a_hand(tasks, state, control, include_global=projects is None)
+    if attention_cards is None:
+        hands = cards_needing_a_hand(tasks, state, control, include_global=projects is None)
+    else:
+        notices = cards_needing_a_hand(tasks, state, control, include_global=projects is None)
+        notices = [{**card, "kind": "notice"} for card in notices if card["kind"] == "paused"]
+        hands = attention_cards + notices
 
     visible_products = [p for p in store.products() if projects is None or p.name in projects]
     open_phases = [ph for p in visible_products for ph in p.phases if not ph.closed]
@@ -711,7 +717,8 @@ def snapshot(store: Store, sched: Any, window: str = "hour", now: dt.datetime | 
                    "worker_busy": worker_busy, "worker_without_process": worker_without_process, "review_busy": review_busy,
                    "free": sched.slots_free(),
                    "dispatch_paused": {k: str(control.get(k) or "") for k in ("by", "at", "reason")} if paused else None,
-                   "drafts": drafts, "inbox_decisions": len(hands)},
+                   "drafts": drafts,
+                   "inbox_decisions": len([card for card in hands if card["kind"] != "notice"])},
         "now": strips + hands,
         "next": {"dispatch": [line for line in dispatch_lines(sched) if line["task"] in tasks],
                  "merge": merge_queue(store, tasks, state, events, strips, sched, str(tick.get("at") or ""))},
