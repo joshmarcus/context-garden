@@ -558,11 +558,14 @@ class GitStateStore:
     def begin_handoff(
         self, operation_id: str, *, actor: str, installation: str,
         entity_key: str, expected_version: int, pending_owner: str,
+        projection: dict[str, Any] | None = None,
+        assignment: dict[str, Any] | None = None,
     ) -> AcceptedTransaction:
         """Accept draining intent without changing effective ownership or generation."""
         inputs = {
             "actor": actor, "installation": installation, "entity": entity_key,
             "expected_version": expected_version, "pending_owner": pending_owner,
+            "projection": projection, "assignment": assignment,
         }
 
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
@@ -581,18 +584,22 @@ class GitStateStore:
             entity["pending_owner"] = pending_owner
             entity["version"] = expected_version + 1
             prior_claim = state["claims"].get(entity_key) or {}
+            blockers = self._handoff_blockers(state, entity_key)
             state["handoffs"][entity_key] = {
                 "from_owner": effective_owner,
                 "from_generation": int(entity.get("authority_generation", 0)),
                 "from_installation": str(prior_claim.get("installation", "")),
                 "pending_owner": pending_owner,
-                "status": "blocked",
-                "stop_acknowledged": False,
+                "status": "ready" if not prior_claim and not blockers else "blocked",
+                "stop_acknowledged": not prior_claim and not blockers,
                 "external_fence": None,
+                "projection": deepcopy(projection),
+                "assignment": deepcopy(assignment),
             }
             return {
-                "status": "blocked", "effective_owner": effective_owner,
-                "pending_owner": pending_owner, "blockers": self._handoff_blockers(state, entity_key),
+                "status": state["handoffs"][entity_key]["status"],
+                "effective_owner": effective_owner,
+                "pending_owner": pending_owner, "blockers": blockers,
             }
 
         return self.transact(operation_id, inputs, mutate)
@@ -745,6 +752,17 @@ class GitStateStore:
                 "pending_owner": "",
                 "version": int(entity.get("version", 0)) + 1,
             })
+            projection = handoff.get("projection")
+            if projection:
+                state.setdefault("projections", []).append(deepcopy(projection))
+            assignment = handoff.get("assignment")
+            if assignment and handoff["pending_owner"]:
+                member = state["members"][handoff["pending_owner"]]
+                generation = int((member.get("assignment") or {}).get("generation", 0)) + 1
+                member["assignment"] = {
+                    "member_id": handoff["pending_owner"], **deepcopy(assignment),
+                    "generation": generation, "enabled": True,
+                }
             state["recovery"].append({"kind": "handoff", "entity": entity_key, **deepcopy(handoff)})
             del state["handoffs"][entity_key]
             return {
@@ -846,6 +864,7 @@ class GitMultiplayerClient:
 
     def synchronize(self, snapshot: dict[str, Any] | None = None) -> list[str]:
         """Update derived Markdown without touching unrelated authored checkout state."""
+        from .members import MemberRegistry
         from .multiplayer_client import ProjectionConflict, _atomic_json, _atomic_text, _digest
 
         snapshot = snapshot or self.refresh(allow_stale=False).snapshot
@@ -879,6 +898,7 @@ class GitMultiplayerClient:
                 changed.append(relative)
             ledger[relative] = {"version": version, "content_hash": _digest(content)}
         _atomic_json(self._projection_path, ledger)
+        MemberRegistry(self.root / ".garden").synchronize_authority(snapshot)
         return changed
 
     def projection_lag(self, snapshot: dict[str, Any]) -> list[str]:
@@ -922,7 +942,8 @@ class GitMultiplayerClient:
         )
 
     def begin_handoff(self, *, kind: str, scope: str, pending_owner: str,
-                      expected_version: int) -> dict[str, Any]:
+                      expected_version: int, projection: dict[str, Any] | None = None,
+                      assignment: dict[str, Any] | None = None) -> dict[str, Any]:
         """Record one assignment intent; draining and acknowledgement remain automatic."""
         operation = (
             f"handoff:{self.installation_id}:{kind}:{scope}:"
@@ -931,9 +952,38 @@ class GitMultiplayerClient:
         accepted = self.store.begin_handoff(
             operation, actor=self.member_id, installation=self.installation_id,
             entity_key=f"{kind}:{scope}", expected_version=expected_version,
-            pending_owner=pending_owner,
+            pending_owner=pending_owner, projection=projection, assignment=assignment,
         )
+        if accepted.result["status"] == "ready":
+            completed = self.store.complete_handoff(
+                f"handoff-complete:{kind}:{scope}:{expected_version}",
+                actor=self.member_id, installation=self.installation_id,
+                entity_key=f"{kind}:{scope}",
+            )
+            return completed.result
         return accepted.result
+
+    def acknowledge_cancellations(
+        self, snapshot: dict[str, Any], cancel: Callable[[str, str], bool]
+    ) -> list[str]:
+        """Stop this installation's claimed work, then finish its safe handoffs."""
+        completed: list[str] = []
+        for key, handoff in snapshot.get("handoffs", {}).items():
+            if handoff.get("from_installation") != self.installation_id:
+                continue
+            kind, separator, scope = key.partition(":")
+            if not separator or not cancel(kind, scope):
+                continue
+            self.store.acknowledge_stop(
+                f"handoff-stop:{key}:{handoff['from_generation']}",
+                actor=self.member_id, installation=self.installation_id, entity_key=key,
+            )
+            self.store.complete_handoff(
+                f"handoff-complete:{key}:{handoff['from_generation']}",
+                actor=self.member_id, installation=self.installation_id, entity_key=key,
+            )
+            completed.append(key)
+        return completed
 
     def claim(
         self,

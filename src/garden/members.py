@@ -618,3 +618,34 @@ class MemberRegistry:
         garden = base64.urlsafe_b64encode(state["garden_id"].encode()).decode().rstrip("=")
         installation = base64.urlsafe_b64encode(installation_id.encode()).decode().rstrip("=")
         return f"v1.{garden}.{installation}.{secret}"
+
+    @_locked_mutation
+    def synchronize_authority(self, snapshot: dict[str, Any]) -> None:
+        """Project accepted Git ownership and cursors into this installation's registry."""
+        state = self._read()
+        assignments = state.setdefault("assignments", {})
+        generations = state.setdefault("assignment_generations", {})
+        for member_id, member in snapshot.get("members", {}).items():
+            assignment = member.get("assignment")
+            if assignment:
+                row = {
+                    "project": assignment["project"], "phase": assignment["phase"],
+                    "generation": int(assignment.get("generation", 0)),
+                    "enabled": bool(assignment.get("enabled", True)),
+                    "advance": bool(assignment.get("advance", False)),
+                }
+                row["changed_by"] = "git-coordination"
+                assignments[member_id] = row
+                generations[member_id] = int(row["generation"])
+            else:
+                assignments.pop(member_id, None)
+        phase_owners = state.setdefault("phase_owners", {})
+        for entity in snapshot.get("authority", []):
+            if entity.get("kind") != "phase":
+                continue
+            phase_owners[str(entity["scope"])] = {
+                "owner_id": str(entity.get("owner", "")),
+                "generation": int(entity.get("authority_generation", 0)),
+                "changed_by": "git-coordination",
+            }
+        self._write(state)

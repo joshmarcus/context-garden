@@ -102,12 +102,28 @@ def test_client_starts_phase_handoff_from_one_assignment_intent(clones):
         kind="phase", scope="demo/p1", pending_owner="bob", expected_version=0,
     )
 
-    assert result == {
-        "status": "blocked", "effective_owner": "alice", "pending_owner": "bob",
-        "blockers": [],
-    }
+    assert result == {"status": "complete", "owner": "bob", "authority_generation": 2}
     snapshot = client.refresh(allow_stale=False).snapshot
-    assert snapshot["handoffs"]["phase:demo/p1"]["status"] == "blocked"
+    assert "phase:demo/p1" not in snapshot["handoffs"]
+    assert snapshot["entities"]["phase:demo/p1"]["owner"] == "bob"
+
+
+def test_client_automatically_stops_and_completes_claimed_handoff(clones):
+    _, one, _ = clones
+    client = GitMultiplayerClient(GitStateStore(one, garden_id="garden"), "alice", "one")
+    client.claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    client.begin_handoff(
+        kind="task", scope="CG-1", pending_owner="bob", expected_version=0,
+    )
+
+    snapshot = client.refresh(allow_stale=False).snapshot
+    assert client.acknowledge_cancellations(snapshot, lambda kind, scope: True) == ["task:CG-1"]
+    final = client.refresh(allow_stale=False).snapshot
+    assert final["entities"]["task:CG-1"]["owner"] == "bob"
+    assert "task:CG-1" not in final["handoffs"]
 
 
 def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
