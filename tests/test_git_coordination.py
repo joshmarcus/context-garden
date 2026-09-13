@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from garden.cli import app as cli_app
 from garden.config import Config
 from garden.git_coordination import (
     GitContention,
@@ -13,6 +16,7 @@ from garden.git_coordination import (
     GitMultiplayerClient,
     GitStateStore,
 )
+from garden.multiplayer_client import MultiplayerUnavailable, ProjectionConflict
 
 
 def git(path: Path, *args: str) -> str:
@@ -675,3 +679,70 @@ def test_multiplayer_enabled_is_strict_boolean(tmp_path: Path, enabled):
     (tmp_path / "garden.yaml").write_text(f"multiplayer:\n  enabled: {enabled!r}\n")
     with pytest.raises(ValueError, match="must be true or false"):
         Config.load(tmp_path)
+
+
+def test_two_dirty_installations_connect_without_service_and_preserve_conflicts(clones):
+    remote, one, two = clones
+    for repo in (one, two):
+        (repo / "garden.yaml").write_text("name: shared\n")
+    (one / "unrelated.txt").write_text("alex edits\n")
+    (two / "tasks").mkdir()
+    (two / "tasks" / "CG-1.md").write_text("blair proposal\n")
+
+    previous = Path.cwd()
+    os.chdir(one)
+    try:
+        result = CliRunner().invoke(cli_app, [
+            "members", "connect", "garden", "alice", "one",
+        ])
+    finally:
+        os.chdir(previous)
+    assert result.exit_code == 0, result.output
+    os.chdir(one)
+    try:
+        status = CliRunner().invoke(cli_app, ["members", "status"])
+    finally:
+        os.chdir(previous)
+    assert status.exit_code == 0, status.output
+    assert "multiplayer.enabled from garden.local.yaml" in status.output
+    assert "Git: synchronized at" in status.output
+    config = Config.load(one)
+    client = GitMultiplayerClient.from_config(config)
+    assert client is not None
+    view = client.prepare(mutation=True)
+    assert view.snapshot["observed_revision"]
+    assert (one / "unrelated.txt").read_text() == "alex edits\n"
+
+    seed = GitStateStore(one, garden_id="garden")
+    seed.transact(
+        "publish-projection",
+        {"actor": "alice", "installation": "one"},
+        lambda state: (
+            state.update({"projections": [{
+                "kind": "task", "scope": "CG-1", "path": "tasks/CG-1.md",
+                "markdown": "accepted\n", "base_revision": "missing-base", "version": 1,
+            }]}),
+            {},
+        )[-1],
+    )
+    second = GitMultiplayerClient(GitStateStore(two, garden_id="garden"), "alice", "two")
+    with pytest.raises(ProjectionConflict, match="tasks/CG-1.md"):
+        second.prepare(mutation=True)
+    assert (two / "tasks" / "CG-1.md").read_text() == "blair proposal\n"
+    assert "unrelated.txt" in git(one, "status", "--short")
+    head = git(remote, "rev-parse", "refs/heads/garden-state")
+    git(remote, "update-ref", "-d", "refs/heads/garden-state", head)
+    stale = client.refresh()
+    assert stale.stale and stale.snapshot["observed_revision"]
+    with pytest.raises(MultiplayerUnavailable, match="unavailable|missing"):
+        client.prepare(mutation=True)
+
+
+def test_enabled_mode_rejects_obsolete_coordinator_configuration(tmp_path: Path):
+    (tmp_path / "garden.yaml").write_text(
+        "multiplayer:\n  enabled: true\n  coordinator_url: https://obsolete.test\n"
+    )
+    from garden.multiplayer_client import MultiplayerClient, MultiplayerUnavailable
+
+    with pytest.raises(MultiplayerUnavailable, match="obsolete"):
+        MultiplayerClient.from_config(Config.load(tmp_path))

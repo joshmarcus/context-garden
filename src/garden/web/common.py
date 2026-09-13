@@ -245,10 +245,6 @@ class Hub:
         if not self.store.config.get("multiplayer.enabled", False):
             return None
         if self.coordinator is None:
-            # The pre-coordinator member-authenticated web mode remains supported. A
-            # partially configured coordinator enrollment, however, is never standalone.
-            if not self.coordinator_error:
-                return None
             raise MultiplayerUnavailable(self.coordinator_error or MULTIPLAYER_EXECUTION_UNAVAILABLE)
         return self.coordinator.prepare(mutation=mutation)
 
@@ -256,16 +252,18 @@ class Hub:
         if self.coordinator is None:
             configured = bool(self.coordinator_error)
             return {"configured": configured, "stale": configured,
-                    "error": self.coordinator_error, "projection_lag": []}
+                    "error": self.coordinator_error, "projection_lag": [], "revision": ""}
         try:
             view = self.authoritative_view()
             assert view is not None
             return {"configured": True, "stale": view.stale, "error": view.error,
+                    "revision": str(view.snapshot.get("observed_revision", "")),
                     "projection_lag": [
                         *view.projection_lag(), *self.coordinator.projection_lag(view.snapshot),
                     ]}
         except MultiplayerUnavailable as exc:
-            return {"configured": True, "stale": True, "error": str(exc), "projection_lag": []}
+            return {"configured": True, "stale": True, "error": str(exc),
+                    "projection_lag": [], "revision": ""}
 
     def execution_status(self) -> dict[str, str]:
         """The local execution scope, separate from an HTTP caller's view scope."""
