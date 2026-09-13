@@ -878,7 +878,13 @@ class DispatchMixin:
         if mode in ("work", "revise", "resume") and st.get("investigation"):
             investigation = st["investigation"]
             if investigation.get("status") in ("requested", "draining", "active", "report_ready"):
-                raise RuntimeError(f"{task.id} is paused for investigation ({investigation.get('status')})")
+                status = investigation.get("status")
+                action = ("run `garden investigation-take` after the writer run is terminal"
+                          if investigation.get("owner") == "operator" and status == "draining"
+                          else "complete the investigation action")
+                raise RuntimeError(
+                    f"{task.id} is paused for investigation ({status}); {action} before implementation dispatch"
+                )
         if mode == "revise" and not st.get("pending_feedback_easy") and not st.get("pending_feedback_rebase"):
             self._apply_revision_policy(task, st)
         attached_pr = None
