@@ -436,6 +436,23 @@ def register(app: FastAPI, site: Site) -> None:
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(since=since, kinds=DECISION_KINDS)
         tasks = site.visible_tasks(request, s)
         evs = site.visible_events(request, evs, tasks)
+        principal = getattr(request.state, "principal", None)
+        if principal is not None and site.registry is not None:
+            allowed_events = []
+            for event in evs:
+                recipient = str(event.get("recipient") or "")
+                task = tasks.get(str(event.get("task") or ""))
+                if not recipient and task is not None:
+                    recipient = site.registry.effective_task_owner(
+                        task, s.phase(task.product, task.phase),
+                    )[0]
+                elif not recipient:
+                    product, separator, phase = str(event.get("phase") or "").partition("/")
+                    owner = site.registry.phase_owner(product, phase) if separator else None
+                    recipient = owner.owner_id if owner else ""
+                if recipient == principal.member_id or (not recipient and principal.role == "administrator"):
+                    allowed_events.append(event)
+            evs = allowed_events
         titles = {t.id: t.title for t in tasks.values()}
         return JSONResponse(decision_notifications(evs, titles))
 

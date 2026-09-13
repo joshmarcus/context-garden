@@ -765,6 +765,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             if question:
                 add("question", t, question,
                     [{"label": "Answer", "kind": "answer", "command": f'garden answer {t.id} "..."'}], question=question,
+                    recipient=str(st.get("question_recipient") or ""),
                     decision_card=decision_card_view(t, st, runs), card_task=t)
             else:
                 card = decision_card_view(t, st, runs)
@@ -939,6 +940,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 ],
                 "age": _age(str(d.get("at") or "")), "difficulty": "",
                 "decision": str(d.get("id") or ""), "decision_kind": "question",
+                "recipient": str(d.get("recipient") or ""),
             })
             continue
         target = str(d.get("target", ""))
@@ -966,6 +968,7 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
             "age": _age(tgt.updated if tgt else str(d.get("at") or "")),
             "difficulty": tgt.difficulty if tgt else "",
             "decision": str(d.get("id") or ""), "decision_kind": str(d.get("kind") or ""),
+            "recipient": str(d.get("recipient") or ""),
         })
 
     for v in getattr(sched, "pending_retro_verdicts", list)():
