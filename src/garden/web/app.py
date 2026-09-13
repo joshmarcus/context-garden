@@ -23,6 +23,7 @@ from markupsafe import Markup
 from ..harness import DIFFICULTIES
 from ..members import MemberRegistry, authorize
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
+from ..multiplayer_client import MultiplayerUnavailable
 from ..now1 import board_run_fact_html, live_clock_html
 from ..plants import (
     DEFS,
@@ -252,8 +253,12 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         Safe requests borrow the current copy-on-write generation; actions get a private
         Store because schedulers intentionally mutate their task objects before saving.
         """
-        token = (hub.begin_request() if request.method in {"GET", "HEAD", "OPTIONS"}
-                 else hub.begin_action_request())
+        safe = request.method in {"GET", "HEAD", "OPTIONS"}
+        try:
+            hub.prepare_authoritative_request(mutation=not safe)
+        except MultiplayerUnavailable as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=503)
+        token = hub.begin_request() if safe else hub.begin_action_request()
         try:
             response = await call_next(request)
             selected_project = request.query_params.get("project")
