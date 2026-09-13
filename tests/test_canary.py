@@ -108,6 +108,78 @@ def test_run_canary_reports_an_install_failure(tmp_path, monkeypatch):
     assert (tmp_path / "canary" / "install.log").read_text() == "pip: no such ref"
 
 
+def test_install_build_creates_venv_in_selected_interpreter_subprocess(tmp_path, monkeypatch):
+    """Bootstrap uses an argv boundary, including when the destination contains spaces."""
+    calls = []
+    venv_dir = tmp_path / "canary output" / "throwaway venv"
+    selected = tmp_path / "selected python"
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[1:3] == ["-m", "venv"]:
+            python = venv_dir / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(canary.sys, "executable", str(selected))
+    monkeypatch.setattr(canary.subprocess, "run", fake_run)
+
+    ok, python, _ = canary.install_build("/repo with spaces", "deadbeef", venv_dir)
+
+    assert ok
+    assert python == venv_dir / "bin" / "python"
+    assert calls[0] == [str(selected), "-m", "venv", str(venv_dir)]
+    assert calls[1][0] == str(python)
+
+
+def test_install_build_bootstraps_usable_python_and_pip_with_real_interpreter(tmp_path, monkeypatch):
+    """The venv command is exercised against Python, not only inspected as argv."""
+    venv_dir = tmp_path / "canary output" / "throwaway venv"
+    real_run = canary.subprocess.run
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[1:3] == ["-m", "venv"]:
+            return real_run(command, **kwargs)
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(canary.subprocess, "run", run)
+    ok, python, _ = canary.install_build("/repo", "deadbeef", venv_dir)
+
+    assert ok
+    assert calls[0] == [canary.sys.executable, "-m", "venv", str(venv_dir)]
+    check = real_run(
+        [str(python), "-c", "import pip, sys; print(sys.executable); print(pip.__version__)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert str(python) in check.stdout
+    assert check.stdout.splitlines()[1]
+
+
+def test_install_build_reports_bootstrap_exit_and_clears_partial_venv(tmp_path, monkeypatch):
+    venv_dir = tmp_path / "partial venv"
+    venv_dir.mkdir()
+    (venv_dir / "partial").write_text("left behind")
+
+    def failed_run(command, **kwargs):
+        return type("Completed", (), {"returncode": 134, "stdout": "", "stderr": "ensurepip aborted"})()
+
+    monkeypatch.setattr(canary.subprocess, "run", failed_run)
+    ok, _, output = canary.install_build("/repo", "deadbeef", venv_dir)
+
+    assert not ok
+    assert "virtualenv creation failed" in output
+    assert "-m venv" in output
+    assert "--with-pip" not in output
+    assert "exit 134" in output
+    assert "ensurepip aborted" in output
+    assert not venv_dir.exists()
+
+
 def test_run_canary_needs_a_url_for_a_pinned_build(tmp_path):
     report = canary.run_canary("deadbeef", url="", out=tmp_path / "canary")
     assert not report.ok and "no install URL" in report.install_error

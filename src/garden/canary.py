@@ -16,6 +16,8 @@ second. No network beyond the one `pip install` of the pinned build.
 
 from __future__ import annotations
 
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -271,11 +273,33 @@ def self_check(out: Path, log: Callable[[str], None] | None = None) -> CanaryRep
 def install_build(url: str, sha: str, venv_dir: Path, log: Callable[[str], None] | None = None) -> tuple[bool, Path, str]:
     """Create a throwaway venv and `pip install` the build at `sha` from `url` (a git URL or a
     local path). Returns (ok, the venv's python, combined pip output)."""
-    import venv as _venv
-
     say = log or (lambda m: None)
-    _venv.create(venv_dir, with_pip=True)
     py = venv_dir / ("Scripts" if sys.platform == "win32" else "bin") / "python"
+    venv_command = [sys.executable, "-m", "venv", str(venv_dir)]
+    try:
+        # A failed venv bootstrap can leave enough files behind to fool a later attempt. Start
+        # every attempt from a known state; the subprocess boundary also avoids macOS ensurepip
+        # aborts observed when venv creation is called from the controller process.
+        if venv_dir.exists():
+            shutil.rmtree(venv_dir)
+        proc = subprocess.run(venv_command, capture_output=True, text=True)
+    except OSError as exc:
+        detail = f"{shlex.join(venv_command)} could not run: {exc}"
+        say(f"virtualenv creation failed: {detail}")
+        return False, py, f"virtualenv creation failed: {detail}"
+    if proc.returncode != 0:
+        cause = f"exit {proc.returncode}"
+        detail = f"{shlex.join(venv_command)} failed with {cause}"
+        output = (proc.stdout + proc.stderr).strip()
+        if output:
+            detail = f"{detail}: {output}"
+        say(f"virtualenv creation failed: {detail}")
+        return False, py, f"virtualenv creation failed: {detail}"
+    if not py.is_file():
+        detail = f"{shlex.join(venv_command)} succeeded but did not create {py}"
+        say(f"virtualenv creation failed: {detail}")
+        return False, py, f"virtualenv creation failed: {detail}"
+
     spec = git_install_spec(url, sha)
     say(f"pip install {spec}")
     proc = subprocess.run([str(py), "-m", "pip", "install", spec], capture_output=True, text=True)
@@ -305,7 +329,9 @@ def run_canary(
     ok, py, output = install_build(url, sha, venv_dir, say)
     (out / "install.log").write_text(output)
     if not ok:
-        return CanaryReport(out=out, install_ok=False, install_error=f"pip install failed (see {out / 'install.log'})")
+        error = output if output.startswith("virtualenv creation failed:") else f"pip install failed: {output}"
+        return CanaryReport(out=out, install_ok=False,
+                            install_error=f"{error} (see {out / 'install.log'})")
     say(f"running the pinned build's own canary self-check ({py})")
     self_out = out / "self"
     proc = subprocess.run([str(py), "-m", "garden", "canary", "--self-check", "--out", str(self_out)],
