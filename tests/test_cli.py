@@ -125,6 +125,8 @@ def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garde
 
 
 def test_attach_resolves_a_confirmed_ssh_run_to_the_current_configured_route(garden, monkeypatch):
+    from garden.cli import diagnostics
+
     record = RunStore(garden / ".garden").new_run("DM-001", "ssh", run_id="live-run")
     record.host = "boxA"
     record.status = "running"
@@ -138,17 +140,20 @@ def test_attach_resolves_a_confirmed_ssh_run_to_the_current_configured_route(gar
         subprocess, "run",
         lambda argv, check: calls.append((argv, check)) or SimpleNamespace(returncode=7),
     )
+    monkeypatch.setattr(diagnostics, "_interactive_terminal", lambda: True)
 
     result = run(garden, "attach", "DM-001")
 
     assert result.exit_code == 7
     assert calls == [([
-        str(Path(__file__).parent / "fake_ssh.py"), "-o", "BatchMode=yes", "boxA", "tmux",
-        "attach-session", "-r", "-t", "garden-DM-001-live",
+        str(Path(__file__).parent / "fake_ssh.py"), "-o", "BatchMode=yes", "-tt", "boxA",
+        "tmux attach-session -r -t =garden-DM-001-live",
     ], False)]
 
 
 def test_attach_requires_an_exact_live_session_and_never_launches_for_invalid_records(garden, monkeypatch):
+    from garden.cli import diagnostics
+
     runs = RunStore(garden / ".garden")
     local = runs.new_run("DM-001", "local", run_id="local-run")
     local.status = "running"
@@ -164,6 +169,7 @@ def test_attach_requires_an_exact_live_session_and_never_launches_for_invalid_re
         subprocess, "run",
         lambda *args, **kwargs: launched.append(args) or SimpleNamespace(returncode=0),
     )
+    monkeypatch.setattr(diagnostics, "_interactive_terminal", lambda: True)
 
     assert run(garden, "attach", "DM-001").exit_code == 1
     selected = run(garden, "attach", "DM-001", "--run", "local-run")
@@ -174,6 +180,8 @@ def test_attach_requires_an_exact_live_session_and_never_launches_for_invalid_re
 
 
 def test_attach_requires_an_unambiguous_current_route(garden, monkeypatch):
+    from garden.cli import diagnostics
+
     runs = RunStore(garden / ".garden")
     for run_id in ("live-one", "live-two"):
         record = runs.new_run("DM-001", "ssh", run_id=run_id)
@@ -189,6 +197,7 @@ def test_attach_requires_an_unambiguous_current_route(garden, monkeypatch):
         subprocess, "run",
         lambda *args, **kwargs: launched.append(args) or SimpleNamespace(returncode=0),
     )
+    monkeypatch.setattr(diagnostics, "_interactive_terminal", lambda: True)
 
     ambiguous = run(garden, "attach", "DM-001")
     assert ambiguous.exit_code == 1 and "multiple live SSH sessions" in ambiguous.output

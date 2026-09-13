@@ -5,14 +5,26 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import typer
 from rich.table import Table
 
-from .common import PANEL_BOARD, PANEL_DIAG, PANEL_LOOP, _scheduler, _store, app, console, err
+from .common import (
+    PANEL_BOARD,
+    PANEL_DIAG,
+    PANEL_LOOP,
+    _scheduler,
+    _store,
+    _task,
+    app,
+    console,
+    err,
+)
 
 
 @app.command(rich_help_panel=PANEL_DIAG)
@@ -295,47 +307,95 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         console.print(f"[red]error:[/red] {r.error}")
 
 
+def _attach_run(store, task_id: str, run_id: str):
+    """Find one live SSH run without guessing at a retry or completed attempt."""
+    from ..runs import RunStore
+    from ..ssh_attach import attachment_problem
+
+    runs = RunStore(store.config.garden_dir).runs_for(task_id)
+    if run_id:
+        matches = [run for run in runs if run.run_id == run_id]
+        if not matches:
+            raise ValueError(f"run {run_id!r} was not found for {task_id}")
+        run = matches[0]
+        problem = attachment_problem(run)
+        if problem:
+            raise ValueError(f"cannot attach to {run_id!r}: {problem}; use garden log {task_id}")
+        if run.process_finished():
+            raise ValueError(f"run {run_id!r} is no longer running; use garden log {task_id}")
+        return run
+    active = [
+        run for run in runs
+        if attachment_problem(run) is None and not run.process_finished()
+    ]
+    if not active:
+        raise ValueError(f"no confirmed live SSH session for {task_id}; use garden log {task_id}")
+    if len(active) != 1:
+        ids = ", ".join(run.run_id for run in active)
+        raise ValueError(f"multiple live SSH sessions for {task_id} ({ids}); pass --run RUN_ID")
+    return active[0]
+
+
+def _attach_authorized(store, task) -> bool:
+    """Require the task owner in multiplayer mode, never a broad administrative role."""
+    if not store.config.get("multiplayer.enabled", False):
+        return True
+    from ..members import MemberRegistry, authorize
+    from ..model import effective_owner
+
+    token = os.environ.get("GARDEN_MEMBER_TOKEN", "")
+    principal = MemberRegistry(store.config.garden_dir).authenticate(token)
+    owner = effective_owner(task, store.phase(task.product, task.phase))[0]
+    return bool(principal and authorize(principal, "mutate_work", owner_id=owner,
+                                        project=task.product))
+
+
+def _attach_command(store, run) -> list[str]:
+    """Build an argv for an exact, read-only tmux attachment on the recorded host."""
+    session = str((run.env_snapshot or {}).get("ssh_tmux_session") or "")
+    if run.runner != "ssh" or not session:
+        raise ValueError("this run has no SSH tmux session; use garden log for its recorded output")
+    host = next((item for item in (store.config.get("ssh.hosts") or [])
+                 if item.get("name") == run.host), None)
+    if not host or not host.get("host"):
+        raise ValueError("the recorded SSH host is no longer configured; use garden log for its recorded output")
+    remote = shlex.join(["tmux", "attach-session", "-r", "-t", f"={session}"])
+    return [str(store.config.get("ssh.ssh_bin") or "ssh"),
+            *[str(option) for option in (store.config.get("ssh.options") or ["-o", "BatchMode=yes"])],
+            "-tt", str(host["host"]), remote]
+
+
+def _interactive_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 @app.command("attach", rich_help_panel=PANEL_BOARD)
 def attach(
     task_id: str,
-    run_id: str = typer.Option("", "--run", help="Attach to this exact run ID."),
+    run_id: str = typer.Option("", "--run", help="Exact running attempt to attach when a task has several."),
 ):
-    """Attach this task's one live SSH worker session."""
-    from ..runs import RunStore
-    from ..ssh_attach import SSHAttachmentError, attachment_argv, attachment_problem
-
+    """Join one running SSH worker's read-only tmux session (Ctrl-b d detaches)."""
+    if not _interactive_terminal():
+        err.print("[red]garden attach needs an interactive local terminal; use garden log to stream recorded output[/red]")
+        raise typer.Exit(2)
     store = _store()
+    task = _task(store, task_id)
+    if not _attach_authorized(store, task):
+        err.print("[red]attach is allowed only for the member who owns this task's worker[/red]")
+        raise typer.Exit(1)
     try:
-        store.task(task_id)
-    except KeyError:
-        err.print(f"[red]unknown task {task_id!r}[/red]")
-        raise typer.Exit(1) from None
-    runs_for_task = RunStore(store.config.garden_dir).runs_for(task_id)
-    if run_id:
-        run = next((item for item in runs_for_task if item.run_id == run_id), None)
-        if run is None:
-            err.print(f"[red]unknown run {run_id!r} for task {task_id!r}[/red]")
-            raise typer.Exit(1) from None
-        candidates = [run]
-    else:
-        candidates = [item for item in runs_for_task if attachment_problem(item) is None]
-    if not candidates:
-        if run_id:
-            problem = attachment_problem(run)
-            err.print(f"[red]cannot attach to {run_id}: {problem}[/red]")
-        else:
-            err.print(f"[red]task {task_id!r} has no confirmed live SSH session[/red]")
-        raise typer.Exit(1) from None
-    if len(candidates) != 1:
-        err.print(f"[red]task {task_id!r} has multiple live SSH sessions; select one with --run[/red]")
-        raise typer.Exit(1) from None
-    try:
-        argv = attachment_argv(candidates[0], dict(store.config.get("ssh") or {}))
-        completed = subprocess.run(argv, check=False)
-    except (OSError, SSHAttachmentError) as exc:
+        command = _attach_command(store, _attach_run(store, task_id, run_id))
+    except ValueError as exc:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from None
-    raise typer.Exit(completed.returncode)
+    try:
+        result = subprocess.run(command, check=False)
+    except FileNotFoundError:
+        err.print("[red]SSH client is not available; use garden log for recorded output[/red]")
+        raise typer.Exit(1) from None
+    if result.returncode:
+        err.print("[red]attachment ended without changing the worker; confirm SSH reachability and that tmux is available, then use garden log if the run completed[/red]")
+        raise typer.Exit(result.returncode)
 
 
 @app.command("ssh-recover", rich_help_panel=PANEL_DIAG)

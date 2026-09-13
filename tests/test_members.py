@@ -233,7 +233,6 @@ def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeyp
     assert multiplayer_tls_files(Store(garden), "0.0.0.0") == (str(cert), str(key))
     assert loaded == [(str(cert), str(key))]
 
-
 def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkeypatch):
     cert = garden / "private/server.crt"
     key = garden / "private/server.key"
@@ -409,7 +408,13 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
-    run.env_snapshot = {"product": "demo"}
+    source_head = "a" * 40
+    run.source_head = source_head
+    run.env_snapshot = {
+        "product": "demo",
+        "remote_repo": "https://example.test/team/demo.git",
+        "prepared_source_head": source_head,
+    }
     run.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
 
@@ -418,6 +423,8 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
         json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
     )
     assert claim.status_code == 200
+    assert claim.json()["repo"] == "https://example.test/team/demo.git"
+    assert claim.json()["source_head"] == source_head
     lease_token = claim.json()["lease_token"]
 
     state = json.loads(registry.path.read_text())
