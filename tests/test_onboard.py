@@ -3,16 +3,131 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 import yaml
 
 from garden.checks import run_check
+from garden.model import Status
 from garden.onboard import _add_github_metadata, discover_project, onboard_project
 from garden.planner import run_planner
+from garden.plugins import (
+    API_VERSION,
+    LoadedPlugin,
+    LoadedPlugins,
+    PluginError,
+    PluginInvocationCancelled,
+    PluginInvocationTimedOut,
+    PluginRedactor,
+    manifest_from_dict,
+    run_check_provider,
+    run_doctor_checks,
+)
+from garden.scheduler.report import TickReport
 from garden.store import Store
 from tests.conftest import FAKE_CLAUDE, git, write
+
+
+def _plugin_capabilities() -> LoadedPlugins:
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [
+            {"name": "example-plugin/check", "kind": "check_provider",
+             "entry_point": "example_plugin:check"},
+            {"name": "example-plugin/doctor", "kind": "doctor_check",
+             "entry_point": "example_plugin:doctor"},
+        ],
+    })
+    return LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor(("private-value",)), "sha256:" + "0" * 64,
+        "sha256:" + "1" * 64,
+    ),))
+
+
+def test_plugin_check_and_doctor_results_are_normalized_and_provenanced(monkeypatch):
+    def load(reference):
+        if reference.endswith(":check"):
+            return lambda **_kwargs: {
+                "status": "pass", "observed_revision": "abc123",
+                "evidence": {"summary": "private-value passed"},
+            }
+        return lambda **_kwargs: {
+            "severity": "error", "message": "private-value unavailable",
+            "remediation": "configure private-value", "dispatch_impact": "block",
+        }
+
+    monkeypatch.setattr("garden.plugins.loading._load_object", load)
+    loaded = _plugin_capabilities()
+
+    check = run_check_provider(loaded, "example-plugin/check", revision="abc123")
+    doctor = run_doctor_checks(loaded)
+
+    assert check.status == "pass"
+    assert check.observed_revision == "abc123"
+    assert check.evidence == {"summary": "<redacted> passed"}
+    assert check.provenance.capability_name == "example-plugin/check"
+    assert not doctor.admission_allowed
+    assert doctor.results[0].message == "<redacted> unavailable"
+    assert doctor.results[0].provenance.capability_name == "example-plugin/doctor"
+
+
+def test_plugin_check_rejects_malformed_and_self_provenanced_results(monkeypatch):
+    loaded = _plugin_capabilities()
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object",
+        lambda _reference: lambda **_kwargs: {"status": "pass", "evidence": {}},
+    )
+    with pytest.raises(PluginError, match="malformed check evidence"):
+        run_check_provider(loaded, "example-plugin/check", revision="abc123")
+
+
+def test_plugin_check_timeout_and_doctor_cancellation_are_core_owned(monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object",
+        lambda _reference: lambda **_kwargs: release.wait(1),
+    )
+    loaded = _plugin_capabilities()
+    loaded.timeout_seconds = 0.01
+    with pytest.raises(PluginInvocationTimedOut, match="example-plugin/check"):
+        run_check_provider(loaded, "example-plugin/check", revision="abc123")
+    release.set()
+
+    loaded.cancelled = lambda: True
+    with pytest.raises(PluginInvocationCancelled, match="example-plugin/doctor"):
+        run_doctor_checks(loaded)
+
+
+def test_blocking_plugin_doctor_result_holds_dispatch_admission(sched, monkeypatch):
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object",
+        lambda reference: (
+            (lambda **_kwargs: {
+                "severity": "error",
+                "message": "environment unavailable",
+                "remediation": "repair the environment",
+                "dispatch_impact": "block",
+            })
+            if reference.endswith(":doctor")
+            else (lambda **_kwargs: {
+                "status": "pass", "observed_revision": "abc123", "evidence": {},
+            })
+        ),
+    )
+    sched.plugins = _plugin_capabilities()
+    report = TickReport()
+
+    sched.dispatch_ready(report)
+
+    assert sched.store.task("DM-001").status == Status.READY
+    assert not sched.runs.active()
+    assert report.dispatched == []
+    assert report.errors == [
+        "DM-001: dispatch blocked by required plugin doctor checks: example-plugin/doctor"
+    ]
 
 
 def _node_repo(tmp_path: Path) -> Path:

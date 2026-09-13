@@ -72,6 +72,10 @@ class CIStatus:
     evidence_url: str = ""
     failures: list[str] = field(default_factory=list)
     provider: str = "github"
+    provenance: dict[str, str] = field(default_factory=dict)
+    observed_revision: str = ""
+    unavailable_reason: str = ""
+    failure_reason: str = ""
 
     @property
     def green(self) -> bool:

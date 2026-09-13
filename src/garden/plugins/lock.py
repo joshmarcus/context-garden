@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -64,15 +65,26 @@ def read_lock(path: Path) -> dict[str, Any]:
     return value
 
 
-def inspect_lock(root: Path, configured: Any) -> tuple[LoadedPlugins, PluginLockStatus]:
+def inspect_lock(
+    root: Path,
+    configured: Any,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> tuple[LoadedPlugins, PluginLockStatus]:
     """Load the observed set and diagnose drift without changing the lock."""
     if not configured:
         empty = load_configured_plugins(None)
+        if cancelled is not None:
+            empty.cancelled = cancelled
         return empty, PluginLockStatus(True, (), locked_identity(empty))
     try:
         loaded = load_configured_plugins(configured)
+        if cancelled is not None:
+            loaded.cancelled = cancelled
     except PluginConfigurationError as exc:
         empty = load_configured_plugins(None)
+        if cancelled is not None:
+            empty.cancelled = cancelled
         return empty, PluginLockStatus(False, (str(exc),), {})
     observed = locked_identity(loaded)
     try:

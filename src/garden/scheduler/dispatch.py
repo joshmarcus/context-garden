@@ -33,6 +33,10 @@ from .selection import worker_candidates
 MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 
 
+class DispatchAdmissionError(RuntimeError):
+    """A recoverable environment condition currently prevents a task launch."""
+
+
 class DispatchMixin:
     def _execution_match(self, task: Task, mode: str, *, source_run: Run | None = None,
                          checkpoint_run: Run | None = None):
@@ -450,10 +454,10 @@ class DispatchMixin:
                         old_state["resource_bypasses"] = int(old_state.get("resource_bypasses", 0)) + 1
                     if blocked_local:
                         self.state.save()
-            except ResourcePressureError as e:
+            except (ResourcePressureError, DispatchAdmissionError) as e:
                 rep.errors.append(f"{task.id}: {e}")
-                # A transient host constraint is not a task or model failure. The run, if
-                # preparation had begun, is closed by dispatch() and the task stays queued.
+                # A transient admission constraint is not a task or model failure. The run,
+                # if preparation had begun, is closed by dispatch() and the task stays queued.
                 continue
             except Exception as e:  # noqa: BLE001
                 rep.errors.append(f"{task.id}: dispatch failed: {e}")
@@ -763,6 +767,27 @@ class DispatchMixin:
         self._task_authority(task)
         if not self.plugin_lock.valid:
             raise RuntimeError(self.plugin_lock.hold_message)
+        from ..plugins import provenance_dict, run_doctor_checks
+
+        doctor_report = run_doctor_checks(self.plugins)
+        for result in doctor_report.results:
+            self.events.emit(
+                "plugin_doctor", task.id,
+                severity=result.severity,
+                message=result.message,
+                remediation=result.remediation,
+                dispatch_impact=result.dispatch_impact,
+                provenance=(provenance_dict(result.provenance) if result.provenance else {}),
+            )
+        if not doctor_report.admission_allowed:
+            blocked = [
+                result.provenance.capability_name
+                for result in doctor_report.results
+                if result.dispatch_impact == "block" and result.provenance is not None
+            ]
+            raise DispatchAdmissionError(
+                "dispatch blocked by required plugin doctor checks: " + ", ".join(blocked)
+            )
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after

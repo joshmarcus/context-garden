@@ -429,12 +429,33 @@ def doctor():
     console.print(f"root: {store.root}")
     from ..plugins import inspect_lock
 
-    _, plugin_lock = inspect_lock(store.root, store.config.get("plugins"))
+    loaded_plugins, plugin_lock = inspect_lock(store.root, store.config.get("plugins"))
     if plugin_lock.valid:
         console.print("plugin lock: [green]matching[/green]")
     else:
         console.print(f"plugin lock: [red]{plugin_lock.hold_message}[/red]")
         fail("plugin lock")
+    if plugin_lock.valid:
+        from ..plugins import PluginError, run_doctor_checks
+
+        try:
+            plugin_doctor = run_doctor_checks(loaded_plugins)
+        except PluginError as exc:
+            console.print(f"plugin doctor: [red]{exc}[/red]")
+            fail("plugin doctor")
+        else:
+            for result in plugin_doctor.results:
+                capability = result.provenance.capability_name if result.provenance else "plugin"
+                style = "red" if result.severity == "error" else (
+                    "yellow" if result.severity == "warning" else "green"
+                )
+                remediation = f" (fix: {result.remediation})" if result.remediation else ""
+                console.print(
+                    f"plugin doctor {capability}: [{style}]{result.message}[/{style}]"
+                    f"{remediation}"
+                )
+                if result.dispatch_impact == "block":
+                    fail(f"plugin doctor {capability}")
     self_products = [n for n in (store.config.data.get("products", {}) or {}) if store.config.product_self(n)]
     wd = store.config.work_dir
     inside = wd == store.config.garden_dir or store.root in wd.parents

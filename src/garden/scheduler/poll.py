@@ -206,6 +206,33 @@ class PollMixin:
         if not pr.head_sha:
             status_pr = copy.copy(pr)
             status_pr.head_sha = str(self.state.get(task.id).get("head_sha") or "")
+        if "/" in provider:
+            from ..plugins import provenance_dict, run_check_provider
+
+            result = run_check_provider(
+                self.plugins, provider, revision=str(status_pr.head_sha or ""),
+                context={"task_id": task.id, "repository": str(self.slug_for(task) or "")},
+            )
+            states = {
+                "pass": "success", "fail": "failure", "pending": "pending",
+                "error": "error", "unavailable": "unavailable",
+            }
+            # Core, not the provider, binds the evidence to the requested immutable head.
+            requested_head = str(status_pr.head_sha or "")
+            exact_head = result.observed_revision == requested_head
+            evidence_url = str(result.evidence.get("url") or "")
+            failures = result.evidence.get("failures") or []
+            return CIStatus(
+                states[result.status], requested_head,
+                stale=not exact_head, exists_for_sha=exact_head,
+                evidence_url=evidence_url,
+                failures=[str(item) for item in failures] if isinstance(failures, list) else [],
+                provider=provider,
+                provenance=(provenance_dict(result.provenance) if result.provenance else {}),
+                observed_revision=result.observed_revision,
+                unavailable_reason=result.unavailable_reason,
+                failure_reason=result.failure_reason,
+            )
         return resolve_status(provider, self.cfg.garden_dir, task.id, status_pr, policy)
 
     # ---- poll --------------------------------------------------------------
