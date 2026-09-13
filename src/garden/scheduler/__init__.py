@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import fcntl
 import os
-import hashlib
 import re
 import threading
 import time
