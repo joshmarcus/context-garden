@@ -25,6 +25,15 @@ def test_brief_sections(garden):
     assert b.tokens > 100
 
 
+def test_author_rules_require_each_criterion_but_allow_alternatives_and_amendments(garden):
+    brief = build_brief(Store(garden), Store(garden).task("DM-001"), branch="garden/x", base="main")
+
+    assert "Address every acceptance criterion" in brief.text
+    assert "test, inspection, alternate evidence, or honest attestation" in brief.text
+    assert "exact quotations and JSON shape are not required" in brief.text
+    assert "propose a justified replacement in `criteria_amended`" in brief.text
+
+
 def test_brief_replaces_configured_connection_targets_and_credentials_with_safe_text(garden):
     config_path = garden / "garden.yaml"
     config = yaml.safe_load(config_path.read_text())
@@ -386,3 +395,19 @@ def test_brief_gaps_flags_a_parent_escaping_reading_entry(garden):
     t = _task_with(store, body, reading=["../outside.md"])
     gaps = brief_gaps(store, t)
     assert any("../outside.md" in g for g in gaps)
+
+
+def test_owner_context_snapshot_does_not_use_product_branch_ref(garden):
+    import subprocess
+
+    context = garden / "docs" / "current-owner.md"
+    context.parent.mkdir(exist_ok=True)
+    context.write_text("Current owner guidance and actual diagnosis.")
+    subprocess.run(["git", "init", "-b", "context-main"], cwd=garden, check=True, capture_output=True)
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.reading = ["docs/current-owner.md"]
+    brief = build_brief(store, task, branch="feature", base="product-only-ref")
+    assert "Current owner guidance" in brief.files["context/reading/docs/current-owner.md"]
+    context.write_text("Later owner update.")
+    assert "Current owner guidance" in brief.files["context/reading/docs/current-owner.md"]

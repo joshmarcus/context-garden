@@ -615,7 +615,7 @@ class ReviewMixin:
 
     def _review_source_for_head(self, task: Task, head: str,
                                 explicit: Run | None = None) -> Run | None:
-        """Find the completed author result that produced exactly the reviewed head."""
+        """Find author evidence for this head, including proven mechanical rebases."""
         candidates = ([explicit] if explicit is not None else []) + list(
             reversed(self.runs.runs_for(task.id))
         )
@@ -626,7 +626,8 @@ class ReviewMixin:
             seen.add(candidate.run_id)
             if candidate.mode not in ("work", "revise", "resume") or candidate.status != "done":
                 continue
-            if self._review_source_head(candidate) == head:
+            source_head = self._review_source_head(candidate)
+            if self._head_is_mechanically_derived(task, source_head, head):
                 return candidate
         return None
 
@@ -919,8 +920,10 @@ class ReviewMixin:
             text += ("\n\n## Exact-head CI evidence\n\nThe controller admitted this review with "
                      f"`{ci_status.get('provider', 'unknown')}` status `{ci_status.get('state', 'unknown')}` "
                      f"for `{ci_status.get('queried_sha', '')}`. Evidence: "
-                     f"{ci_status.get('evidence_url') or 'not available'}. Treat a different review head "
-                     "as stale and do not approve it.\n")
+                     f"{ci_status.get('evidence_url') or 'not available'}. This records CI provenance; "
+                     "a different identifier or pending/stale/unavailable CI alone is not a source "
+                     "defect. Report an actual failed check, and leave current-head CI readiness to "
+                     "the controller.\n")
         run.branch, run.base, run.worktree = branch, base, str(wt)
         # Remembered so a quota env_error on this run (reap_review, below) knows whether this
         # dispatch actually counted a round — an after-rebase round is exempt from
@@ -1348,7 +1351,10 @@ class ReviewMixin:
             return False
         observed = str(self.state.get(task.id).get("head_sha") or "")
         current = gitops.head_sha(Path(run.worktree) if run.worktree else self.worktree_for(task))
-        if current != reviewed or (observed and observed != reviewed):
+        expected = observed or current
+        if not self._head_is_mechanically_derived(task, reviewed, expected):
+            return False
+        if current not in (reviewed, expected):
             return False
         slug = self.slug_for(task)
         number = self._pr_number(task)
@@ -1361,7 +1367,7 @@ class ReviewMixin:
                 return None
             if not provider_head:
                 return None
-            return provider_head == reviewed
+            return self._head_is_mechanically_derived(task, reviewed, provider_head)
         return True
 
     def _close_obsolete_review(self, task: Task, run: Run, rep: TickReport) -> bool:
@@ -1527,6 +1533,23 @@ class ReviewMixin:
                           f"automated review: {verdict} (description rewritten){cost}", task.pr or "")
                 return True
             if verdict == "request_changes":
+                blockers = [item for item in review.get("criteria", [])
+                            if isinstance(item, dict) and item.get("met") is False]
+                blockers += [item for item in review.get("findings", [])
+                             if isinstance(item, dict) and item.get("severity") == "blocking"]
+                operator_categories = {"infrastructure", "admission", "unavailable_evidence",
+                                       "owner_input", "external_gate", "stale_check"}
+                if blockers and all(item.get("failure_category") in operator_categories
+                                    for item in blockers):
+                    # The review and CI facts stay intact. The operator diagnoses the
+                    # missing capability/evidence instead of sending unchanged code to an author.
+                    self._set_needs_human(task, "review_evidence",
+                                          "Review requires operator evidence or infrastructure recovery",
+                                          run=run.run_id, owner="operator")
+                    task.log("review routed to operator recovery; no author revision queued")
+                    self.store.save(task)
+                    self.state.save()
+                    return True
                 signal = review_implementation_failure_signal(review)
                 if signal:
                     self._record_implementation_failure(

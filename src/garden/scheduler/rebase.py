@@ -60,6 +60,37 @@ class RebaseOutcome:
 
 
 class RebaseMixin:
+    def _head_is_mechanically_derived(self, task: Task, source: str, target: str) -> bool:
+        """Whether stable patch-identical rebase records connect ``source`` to ``target``.
+
+        This is source provenance, not approval: it lets author evidence and an already
+        completed review survive identifier churn without granting a verdict. Every hop is
+        still backed by a durable completed rebase run and matching before/after patch ids.
+        """
+        if not source or not target:
+            return False
+        if source == target:
+            return True
+        reachable = {source}
+        pending = list(self.runs.runs_for(task.id))
+        advanced = True
+        while advanced:
+            advanced = False
+            for run in pending:
+                snapshot = run.env_snapshot or {}
+                before = str(snapshot.get("rebase_head_before") or "")
+                local_before = str(snapshot.get("rebase_local_head_before") or "")
+                after = str(snapshot.get("rebase_head_after") or "")
+                if (run.mode != "rebase" or run.status != "done" or before not in reachable
+                        or local_before != before or not after or not run.patch_id_before
+                        or run.patch_id_before != run.patch_id_after or after in reachable):
+                    continue
+                reachable.add(after)
+                advanced = True
+                if after == target:
+                    return True
+        return False
+
     def _review_approval_is_proven(self, task: Task, st: dict[str, object]) -> bool:
         """Whether the stored approval is backed by its immutable review run and head."""
         review_head = str(st.get("last_review_head") or "")
@@ -115,7 +146,12 @@ class RebaseMixin:
 
     def _effective_approved_head(self, task: Task, st: dict[str, object]) -> str:
         """The reviewed head, advanced only through a fully proven mechanical lineage."""
-        return self._derived_approved_head(task, st) or str(st.get("last_review_head") or "")
+        reviewed = str(st.get("last_review_head") or "")
+        current = str(st.get("head_sha") or "")
+        if (self._review_approval_is_proven(task, st)
+                and self._head_is_mechanically_derived(task, reviewed, current)):
+            return current
+        return self._derived_approved_head(task, st) or reviewed
 
     def _extend_approved_head_lineage(self, task: Task, run: Run) -> bool:
         """Bind an unchanged-patch rebase head to the existing approval without rewriting it."""
