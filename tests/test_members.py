@@ -891,7 +891,7 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
 
 
 
-def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
+def test_multiplayer_filters_project_api_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -911,7 +911,7 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     assert client.get("/api/tasks", headers=eve).json() == []
     assert client.get("/config", headers=bob).status_code == 403
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
