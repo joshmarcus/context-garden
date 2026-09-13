@@ -54,7 +54,13 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
             state["members"].update(
                 {
                     "admin": {"active": True, "role": "administrator"},
-                    "alice": {"active": True},
+                    "alice": {
+                        "active": True,
+                        "assignment": {
+                            "member_id": "alice", "project": "demo", "phase": "p1",
+                            "enabled": True, "generation": 1,
+                        },
+                    },
                     "bob": {"active": True},
                 }
             ),
@@ -68,7 +74,15 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
                         "owner": "alice",
                         "authority_generation": 1,
                         "version": 0,
-                    }
+                    },
+                    "task:CG-2": {
+                        "kind": "task", "scope": "CG-2", "owner": "-",
+                        "authority_generation": 1, "version": 0,
+                    },
+                    "phase:demo/p1": {
+                        "kind": "phase", "scope": "demo/p1", "owner": "alice",
+                        "authority_generation": 1, "version": 0,
+                    },
                 }
             ),
             {},
@@ -390,6 +404,10 @@ def test_two_dirty_installations_connect_without_service_and_preserve_conflicts(
     assert client is not None
     view = client.prepare(mutation=True)
     assert view.snapshot["observed_revision"]
+    authority = {row["scope"]: row for row in view.snapshot["authority"]}
+    assert authority["CG-2"]["owner"] == "-"
+    assert authority["demo/p1"]["owner"] == "alice"
+    assert view.snapshot["assignment"]["phase"] == "p1"
     assert (one / "unrelated.txt").read_text() == "alex edits\n"
 
     seed = GitStateStore(one, garden_id="garden")
