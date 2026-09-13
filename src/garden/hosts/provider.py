@@ -54,6 +54,10 @@ class AcquisitionProvider(HostProvider, Protocol):
 
     def renew_admission(self, provider_id: str, *, lease_id: str) -> HostAdmission: ...
 
+    def activate_admission(
+        self, provider_id: str, *, lease_id: str, requirements: HostRequirements
+    ) -> HostAdmission: ...
+
     def release_admission(self, provider_id: str, *, lease_id: str) -> None: ...
 
 

@@ -94,12 +94,19 @@ class ExecutionRequirements:
     def to_host_requirements(self, *, activity: str, host_class: str = "",
                              environment: str = "", disk_gib: int = 0,
                              heavy: bool = False) -> Any:
-        """Project the subset understood by v1 host admission; later protocols add CPU/GPU."""
+        """Project canonical execution resources into host admission."""
         from .hosts.models import HostRequirements
 
         return HostRequirements(
             activity=activity, host_class=host_class, environment=environment,
             capabilities=self.capabilities, memory_mib=self.resources.memory_mib,
+            vcpu=self.resources.vcpu,
+            gpu_count=self.resources.gpu.count if self.resources.gpu else 0,
+            gpu_vendor=self.resources.gpu.vendor if self.resources.gpu else "",
+            gpu_device_memory_mib=(
+                self.resources.gpu.min_device_memory_mib if self.resources.gpu else 0
+            ),
+            gpu_features=self.resources.gpu.features if self.resources.gpu else (),
             disk_gib=disk_gib, heavy=heavy,
         )
 
