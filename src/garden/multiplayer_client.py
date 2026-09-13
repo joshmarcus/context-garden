@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ import httpx
 
 from .config import Config
 from .coordination import PROTOCOL_VERSION
-from .members import ROLES, VISIBILITIES, Principal
+from .members import ROLES, VISIBILITIES, Principal, operating_system_username
 
 
 class MultiplayerUnavailable(RuntimeError):
@@ -129,9 +130,15 @@ class MultiplayerClient:
         self.member_id = member_id
         self.installation_id = installation_id
         self.authentication = authentication
+        username = operating_system_username() if authentication == "temporary-username" else ""
+        if username and member_id != username:
+            raise MultiplayerUnavailable(
+                "temporary username enrollment belongs to a different operating-system account"
+            )
+        assertion = base64.urlsafe_b64encode(username.encode()).decode().rstrip("=")
         self._headers = {"Authorization": (
             f"Bearer {credential}" if authentication == "credential"
-            else f"Garden-Temporary-Username {installation_id}"
+            else f"Garden-Temporary-Username {assertion}.{installation_id}"
         )}
         self._request = request or httpx.request
         self._cache_path = self.root / ".garden" / "authoritative-snapshot.json"

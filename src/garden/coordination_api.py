@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,20 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 from .coordination import Claim, CoordinationError, Coordinator, ProtocolMismatch
-from .members import MemberRegistry, Principal, operating_system_username
+from .members import MemberRegistry, Principal
+
+
+def _username_assertion(authorization: str) -> tuple[str, str] | None:
+    prefix = "Garden-Temporary-Username "
+    if not authorization.startswith(prefix):
+        return None
+    try:
+        encoded_username, installation_id = authorization.removeprefix(prefix).split(".", 1)
+        padding = "=" * (-len(encoded_username) % 4)
+        username = base64.urlsafe_b64decode(encoded_username + padding).decode()
+    except (ValueError, UnicodeError):
+        return None
+    return username, installation_id
 
 
 def create_coordination_app(garden_dir: Path, *, authentication: str = "credential") -> FastAPI:
@@ -31,25 +45,27 @@ def create_coordination_app(garden_dir: Path, *, authentication: str = "credenti
             detail = "valid member bearer credential required"
             valid_scheme = authorization.startswith("Bearer ")
         else:
-            prefix = "Garden-Temporary-Username "
-            actor = registry.authenticate_username(
-                operating_system_username(), authorization.removeprefix(prefix),
-            )
+            assertion = _username_assertion(authorization)
+            actor = registry.authenticate_username(*assertion) if assertion else None
             detail = "enrolled local username installation required"
-            valid_scheme = authorization.startswith(prefix)
+            valid_scheme = assertion is not None
         if not valid_scheme or actor is None:
             raise HTTPException(401, detail)
         return actor
 
     @app.post("/v1/gardens/{garden_id}/username-installations")
-    def enroll_username_installation(garden_id: str, body: dict[str, Any]):
+    def enroll_username_installation(garden_id: str, body: dict[str, Any],
+                                     authorization: str = Header(default="")):
         if authentication != "temporary-username":
             raise HTTPException(404, "temporary username authentication is not enabled")
         if garden_id != registry.garden_id():
             raise HTTPException(403, "garden does not match")
+        assertion = _username_assertion(authorization)
+        if assertion is None or assertion[1]:
+            raise HTTPException(401, "local username assertion required")
         try:
             return asdict(registry.enroll_username_installation(
-                operating_system_username(), str(body.get("installation_id", "")),
+                assertion[0], str(body.get("installation_id", "")),
             ))
         except (PermissionError, ValueError) as exc:
             raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None

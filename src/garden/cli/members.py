@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import os
 import tempfile
@@ -138,10 +139,13 @@ def connect_username(garden_id: str, coordinator_url: str) -> None:
             and store.config.get("multiplayer.garden_id", "") == garden_id):
         existing = store.config.get("multiplayer.installation_id", "")
     installation_id = str(existing) or f"local-{uuid.uuid4().hex}"
+    username = operating_system_username()
+    assertion = base64.urlsafe_b64encode(username.encode()).decode().rstrip("=")
     try:
         response = httpx.post(
             f"{coordinator_url.rstrip('/')}/v1/gardens/{garden_id}/username-installations",
-            json={"installation_id": installation_id}, timeout=10,
+            json={"installation_id": installation_id},
+            headers={"Authorization": f"Garden-Temporary-Username {assertion}."}, timeout=10,
         )
         response.raise_for_status()
         identity = response.json()

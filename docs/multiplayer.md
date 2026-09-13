@@ -65,18 +65,21 @@ garden members status
 garden serve
 ```
 
-`connect-username` is the only operation that can register the generated local installation ID;
+`connect-username` derives and freezes the effective OS username in the local client and is the
+only operation that can register the generated local installation ID;
 ordinary reads cannot create one. The ID is retained in the ignored `garden.local.yaml` and reused
-after restart. The coordinator derives the effective account name with the POSIX user database
+after restart. The client derives the effective account name with the POSIX user database
 (`geteuid`/`getpwuid`); on platforms without that interface it uses Python's `getpass.getuser`
-environment-based account lookup. It then loads the admitted member's role, project visibility and
+environment-based account lookup, and asserts that name to the coordinator. The coordinator then
+loads the admitted member's role, project visibility and
 assignment from the existing registry. Unknown or disabled accounts, revoked installations, and an
 installation previously bound to another account are rejected.
 
 This is a temporary trusted-development identity assertion, not remote cryptographic
-authentication. The coordinator refuses this mode on a non-loopback host; the coordinator and
-local client must run under the same trusted OS account. It does not accept a username from an
-HTTP query, form, or header.
+authentication. The coordinator refuses this mode on a non-loopback host. Every local process
+that can reach that loopback port is inside the trust boundary and could forge another username;
+use credential mode on shared or untrusted hosts. Browser query, form and ordinary headers cannot
+change the username frozen by the local Garden client.
 Credential mode remains the default, still requires a valid bearer token, and never falls back to
 username mode; non-loopback coordinators retain the HTTPS requirements above.
 
