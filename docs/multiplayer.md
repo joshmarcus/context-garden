@@ -1,5 +1,8 @@
 # Multiplayer HTTP authorization
 
+The normative behavior contract is [True multiplayer gardens](../specs/multiplayer.md).
+This guide covers local enrollment, operation, publication, and recovery.
+
 Multiplayer mode authenticates every non-public HTTP request as a garden member installation.
 The route policy is deliberately split between admission and projection: middleware resolves
 resource ownership and rejects direct access outside the principal's projects, while collection
@@ -136,3 +139,29 @@ An `all` visibility principal can read every project. An `assigned` principal ca
 explicit project keys in the private member registry; an empty assignment has no project read
 access. Mutations remain separately authorized as administrator operations or work owned by the
 authenticated member. Legacy single-user mode does not install this policy.
+
+## Verify a local deployment before activation
+
+Use disposable independent checkouts for two members and connect both to the same coordinator.
+Give each member a distinct assignment and task, then confirm each scheduler sees only its own
+executable work while ordinary dependency, hold, review, CI, and resource gates remain visible.
+Start a second installation for one member and confirm it cannot claim that member's active scope.
+An unassigned installation should report `No work assignment`; leave it running through a tick and
+verify that no run or provider operation appears.
+
+Before relying on handoff recovery, rehearse one reassignment with an active claim. Stop the old
+worker, reconcile every pending or unknown provider effect and projection, and preserve a late
+result as stale evidence. Restart the coordinator and one scheduler during the exercise. The new
+assignee must remain blocked until reconciliation, then acquire a higher fence and make progress;
+the old installation must still be unable to mutate the task. Disconnect a client once as well:
+cached reads should be labelled stale and direct actions must fail until a fresh reconnect.
+
+Finally, check the UI as each member: project selection filters ordinary views without changing
+the execution assignment, personal Inbox actions do not cross members, and old action forms fail
+after reassignment. Generate a public projection into a separate directory, serve only that
+directory, probe private reads and mutations for `404`, then remove the project and republish to
+confirm reads and an open event stream observe revocation.
+
+This rehearsal verifies the configured local processes and source version only. It is not evidence
+of hostile tenant isolation, public hosting, production availability, cloud workers, or release
+activation. Publication revocation cannot recall data a viewer has already cached.

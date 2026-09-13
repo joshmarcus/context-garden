@@ -242,15 +242,11 @@ class Scheduler(
 
     def phase_is_authorized(self, product: str, phase: str) -> bool:
         """Phase-wide work belongs only to its explicit owner, never to an administrator."""
-        if self.coordinator is None:
-            return True
-        snapshot = getattr(self, "_authority_snapshot", None) or self.coordinator.refresh(
-            allow_stale=False
-        ).snapshot
-        scope = f"{product}/{phase}"
-        return any(row.get("kind") == "phase" and row.get("scope") == scope
-                   and row.get("owner") == self.coordinator.member_id
-                   for row in snapshot.get("authority", []))
+        try:
+            self._phase_authority(product, phase)
+        except (PermissionError, MultiplayerUnavailable):
+            return False
+        return True
 
     def _phase_authority(self, product: str, phase: str) -> dict[str, Any]:
         if self.coordinator is None:
@@ -259,6 +255,12 @@ class Scheduler(
             allow_stale=False
         ).snapshot
         scope = f"{product}/{phase}"
+        assignment = snapshot.get("assignment") or {}
+        if (not assignment.get("enabled")
+                or assignment.get("member_id") != self.coordinator.member_id
+                or assignment.get("project") != product
+                or assignment.get("phase") != phase):
+            raise PermissionError(f"{scope} is outside the authenticated member's assignment")
         row = next((value for value in snapshot.get("authority", [])
                     if value.get("kind") == "phase" and value.get("scope") == scope), None)
         if row is None or row.get("owner") != self.coordinator.member_id:
