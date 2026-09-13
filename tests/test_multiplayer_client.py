@@ -381,6 +381,7 @@ def test_stale_effect_rejection_invalidates_and_reacquires_cached_claim(tmp_path
     local = client(tmp_path, service)
     local.claim(kind="task", scope="CG-1", owner_id="alice",
                 authority_generation=2, expected_version=3)
+    service.snapshot["active_claims"] = [local._claims[("task", "CG-1")].copy()]
     service.reject_next_effect = True
 
     with local.effect(kind="task", scope="CG-1", owner_id="alice",
