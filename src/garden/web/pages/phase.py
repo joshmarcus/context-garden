@@ -14,7 +14,6 @@ from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, metrics, phase_summary
 from ...inbox import split_log
 from ...members import current_principal
-from ...model import effective_owner
 from ...plants import plant_info
 from ...runs import RunStore
 from ...scheduler import State
