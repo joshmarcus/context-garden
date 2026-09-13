@@ -184,8 +184,6 @@ def test_transition_outbox_is_recoverable_and_stale_projection_is_blocked(tmp_pa
             admin, garden_id="garden", outbox_id=projection["id"], authority_version=2,
             success=True,
         )
-
-
 @pytest.mark.parametrize("field,value", [
     ("owner_id", "bob"),
     ("authority_generation", 5),
@@ -204,6 +202,19 @@ def test_transition_rejects_claim_material_not_issued_by_server(tmp_path, field,
         )
 
     assert coordinator.pending_outbox("garden") == []
+
+
+def test_provider_effect_rejects_a_stale_authority_version(tmp_path):
+    admin, alice, _alice_b, _bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+
+    with pytest.raises(Conflict, match="stale authority version"):
+        coordinator.begin_effect(
+            alice, claim, provider="github", effect_key="publish:CG-1",
+            operation_id="stale-publish", credential_scope="pull_requests:write",
+            precondition="head=abc", request={"head": "abc"}, expected_version=0,
+        )
 
 
 def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
