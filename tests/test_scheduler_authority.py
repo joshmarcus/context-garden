@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from garden.members import Principal
 from garden.scheduler import Scheduler
 from garden.scheduler.human import task_action
 from garden.store import Store
@@ -32,10 +33,17 @@ class CoordinatorStub:
         yield {"fence": 1}
 
 
+class MembersStub:
+    def authorize_task_execution(self, *_args, **_kwargs):
+        return None
+
+
 def scheduler(snapshot, member_id="alice"):
     value = Scheduler.__new__(Scheduler)
     value.cfg = {"multiplayer.enabled": True}
     value.coordinator = CoordinatorStub(snapshot, member_id)
+    value.principal = Principal("garden", member_id, f"{member_id}-laptop", "member", "all")
+    value.members = MembersStub()
     value._authority_snapshot = snapshot
     value.store = SimpleNamespace(
         phase=lambda _product, _phase: SimpleNamespace(default_owner="alice")
@@ -93,7 +101,15 @@ def test_direct_task_action_denial_happens_before_its_first_side_effect():
     class Action:
         def __init__(self):
             self.scheduler = scheduler(snapshot(), "bob")
+            self.cfg = self.scheduler.cfg
+            self.coordinator = self.scheduler.coordinator
+            self.principal = self.scheduler.principal
+            self.members = self.scheduler.members
+            self.store = self.scheduler.store
             self.mutations = []
+
+        def require_execution_authority(self):
+            return self.scheduler.require_execution_authority()
 
         def task_effect(self, item, key):
             return self.scheduler.task_effect(item, key)
@@ -135,7 +151,8 @@ def test_unassigned_member_has_no_executable_tick_scope(garden, monkeypatch):
         for path in garden.rglob("*") if path.is_file()
     }
 
-    sched = Scheduler(Store(garden), github=object())
+    principal = Principal("garden", "alice", "alice-laptop", "member", "all")
+    sched = Scheduler(Store(garden), github=object(), principal=principal)
 
     assert not sched._refresh_execution_authority()
     assert not sched.task_is_authorized(task("A-1"))
@@ -157,7 +174,7 @@ def test_phase_authority_is_distinct_from_task_and_admin_visibility():
 
     assert sched.phase_is_authorized("demo", "p2")
     with pytest.raises(PermissionError, match="not owned"):
-        sched.require_phase_authority("demo", "p1")
+        sched.phase_effect("demo", "p1", "phase-review:demo/p1").__enter__()
 
 
 def test_handoff_cancellation_fences_matching_local_run_without_losing_record():
