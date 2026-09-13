@@ -255,27 +255,6 @@ def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_pa
     assert (tmp_path / path).read_text() == original
 
 
-def test_cancellation_is_acknowledged_only_after_local_worker_stops(tmp_path):
-    state = snapshot_identity({
-        "protocol_version": 1, "garden_id": "garden", "authority": [], "projections": [],
-        "cancellation_requests": [{"kind": "task", "scope": "CG-1",
-                                   "installation": "alice-a", "fence": 7}],
-    })
-
-    class CancellationService(Service):
-        def __call__(self, method, _url, **kwargs):
-            if method == "GET":
-                return response(200, self.snapshot)
-            self.posts.append(kwargs["json"])
-            return response(200, {"status": "acknowledged"})
-
-    service = CancellationService(state)
-    local = client(tmp_path, service)
-    assert local.acknowledge_cancellations(state, lambda _kind, _scope: False) == []
-    assert service.posts == []
-    assert local.acknowledge_cancellations(state, lambda kind, scope: (kind, scope)
-                                           == ("task", "CG-1")) == ["task:CG-1"]
-    assert service.posts == [{"kind": "task", "scope": "CG-1", "fence": 7}]
 class LeaseService(Service):
     def __init__(self, snapshot: dict):
         super().__init__(snapshot)

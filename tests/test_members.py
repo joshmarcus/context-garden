@@ -726,7 +726,15 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
 def test_member_worker_claim_requires_current_matching_assignment(garden, assignment):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
+    config["products"]["private"] = {
+        "repo": "../repo", "base_branch": "main", "id_prefix": "PV", "github": "test/private",
+    }
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    for project, phase in (("private", "p1"), ("demo", "p2")):
+        target = garden / project / phase
+        target.mkdir(parents=True, exist_ok=True)
+        (garden / project / "product.md").write_text(f"# {project}\n")
+        (target / "goals.md").write_text(f"# {phase}\n")
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
@@ -754,7 +762,7 @@ def test_member_worker_claim_requires_current_matching_assignment(garden, assign
     assert unchanged.lease_token == ""
 
 
-def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):
+def test_multiplayer_worker_protocol_requires_member_owned_credentials(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
@@ -773,7 +781,7 @@ def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden)
         headers={"Authorization": "Bearer legacy-secret"},
         json={"host": "legacy"},
     )
-    assert response.status_code == 204
+    assert response.status_code == 403
 
 
 def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(garden):
