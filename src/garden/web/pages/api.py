@@ -440,12 +440,13 @@ def register(app: FastAPI, site: Site) -> None:
         if principal is not None and site.registry is not None:
             allowed_events = []
             for event in evs:
+                recipient = str(event.get("recipient") or "")
                 task = tasks.get(str(event.get("task") or ""))
-                if task is not None:
+                if not recipient and task is not None:
                     recipient = site.registry.effective_task_owner(
                         task, s.phase(task.product, task.phase),
                     )[0]
-                else:
+                elif not recipient:
                     product, separator, phase = str(event.get("phase") or "").partition("/")
                     owner = site.registry.phase_owner(product, phase) if separator else None
                     recipient = owner.owner_id if owner else ""

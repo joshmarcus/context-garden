@@ -37,11 +37,7 @@ from ..plants import (
     vine_svg,
 )
 from ..runs import HistoryUnavailable
-<<<<<<< HEAD
 from ..scheduler import MULTIPLAYER_EXECUTION_UNAVAILABLE, State
-=======
-from ..scheduler import State
->>>>>>> 1e61e1c4 (Personalize multiplayer inbox actions)
 from ..store import Store
 from . import actions, pages
 from .access import (
