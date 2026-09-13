@@ -108,6 +108,7 @@ def test_server_clock_expiry_restart_and_stale_fences(tmp_path):
     _authority, old = authority_and_claim(coordinator, admin, alice)
     clock.now += dt.timedelta(seconds=121)
     restarted = Coordinator(path, clock=clock)
+    assert restarted.snapshot(alice, "garden")["active_claims"] == []
     new = restarted.claim(
         alice, garden_id="garden", kind="task", scope="CG-1", expected_version=1,
         accepted_owner="alice", authority_generation=4, operation_id="replacement",
