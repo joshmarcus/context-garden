@@ -238,7 +238,7 @@ def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeyp
     assert multiplayer_tls_files(Store(garden), "0.0.0.0") == (str(cert), str(key))
     assert loaded == [(str(cert), str(key))]
 
-def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkeypatch):
+def test_multiplayer_https_applies_origin_check_before_execution_authority(garden, monkeypatch):
     cert = garden / "private/server.crt"
     key = garden / "private/server.key"
     cert.parent.mkdir()
@@ -261,7 +261,8 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 409
+    assert response.json()["detail"].startswith("multiplayer execution is waiting")
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",

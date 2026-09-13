@@ -343,30 +343,19 @@ class Scheduler(
     ):
         self.store = store
         self.cfg = store.config
-<<<<<<< HEAD
-=======
         self.members = MemberRegistry(self.cfg.garden_dir)
         credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
         self.principal = principal or current_principal() or (
             self.members.authenticate(credential) if credential else None
         )
         self.coordinator_error = ""
->>>>>>> 8bb838ee (Enforce authoritative multiplayer workflows)
         try:
             self.coordinator = MultiplayerClient.from_config(self.cfg)
         except MultiplayerUnavailable as exc:
             # Existing multiplayer startup remains fail-closed and can render its setup
             # diagnostic even when enrollment is incomplete.
             self.coordinator = None
-<<<<<<< HEAD
-        self.members = MemberRegistry(self.cfg.garden_dir)
-        credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
-        self.principal = principal or current_principal() or (
-            self.members.authenticate(credential) if credential else None
-        )
-=======
             self.coordinator_error = str(exc)
->>>>>>> 8bb838ee (Enforce authoritative multiplayer workflows)
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)
