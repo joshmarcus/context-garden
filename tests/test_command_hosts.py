@@ -30,6 +30,9 @@ class Wrapper:
         self.calls = []
         self.ready = True
         self.ready_error = ""
+        self.stop_error = False
+        self.stop_state = "stopped"
+        self.release_error = False
         self.acquire_response = DEFAULT_ACQUIRE
         self.inspect_response = DEFAULT_INSPECT
         self.admissions = {}
@@ -105,6 +108,12 @@ class Wrapper:
                     "gpu_device_memory_mib": [
                         request["gpu_device_memory_mib"] for _ in range(request["gpu_count"])
                     ],
+                    "gpu_device_vendors": [
+                        request["gpu_vendor"] for _ in range(request["gpu_count"])
+                    ],
+                    "gpu_device_features": [
+                        request["gpu_features"] for _ in range(request["gpu_count"])
+                    ],
                     "resources_enforced": True,
                     **self.admission,
                 }
@@ -117,13 +126,17 @@ class Wrapper:
             value = {**value, "lease_expires_at": time.time() + 120}
             self.admissions[request["lease_id"]] = value
         elif action == "release-admission":
+            if self.release_error:
+                return CommandResult(tuple(argv), stdin, b"", b"release failed", 5)
             self.admissions.pop(request["lease_id"], None)
             value = {"released": True}
         elif action == "retire":
             value = {**self.hosts[0], "state": "terminated"}
             self.hosts[:] = [value]
         elif action == "release":
-            value = {**self.hosts[0], "state": "stopped"}
+            if self.stop_error:
+                return CommandResult(tuple(argv), stdin, b"", b"stop failed", 6)
+            value = {**self.hosts[0], "state": self.stop_state}
             self.hosts[:] = [value]
         elif action == "start":
             value = {**self.hosts[0], "state": "ready"}
@@ -697,6 +710,133 @@ def test_cpu_and_exclusive_gpu_shape_must_be_enforced(tmp_path):
             command_pool(), workspace="/work", revision="abc", harness="codex",
             process_terminal=lambda _: True, requirements=requirements,
         )
+
+
+@pytest.mark.parametrize(
+    ("admission_change", "reason"),
+    [
+        ({"gpu_device_vendors": []}, "GPU vendor evidence is incomplete"),
+        ({"gpu_device_vendors": ["nvidia", "amd"]}, "GPU vendor does not match"),
+        ({"gpu_device_features": []}, "GPU feature evidence is incomplete"),
+        ({"gpu_device_features": [["cuda"], []]}, "GPU features do not match"),
+    ],
+)
+def test_every_assigned_gpu_must_prove_compatible_shape(
+    tmp_path, admission_change, reason
+):
+    wrapper = Wrapper()
+    wrapper.admission.update(admission_change)
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+
+    with pytest.raises(EnvironmentStop, match=reason):
+        lifecycle.acquire_ready(
+            command_pool(), workspace="/work", revision="abc", harness="codex",
+            process_terminal=lambda _: True,
+            requirements=_requirements(
+                gpu_count=2, gpu_vendor="nvidia", gpu_device_memory_mib=12_000,
+                gpu_features=("cuda",),
+            ),
+        )
+
+    assert not wrapper.admissions
+
+
+def test_gpu_shape_is_rechecked_at_activation(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True,
+        requirements=_requirements(
+            gpu_count=1, gpu_vendor="nvidia", gpu_device_memory_mib=12_000,
+            gpu_features=("cuda",),
+        ),
+    )
+    lease_id = next(iter(wrapper.admissions))
+    wrapper.admissions[lease_id]["gpu_device_features"] = [[]]
+
+    with pytest.raises(EnvironmentStop, match="GPU features do not match"):
+        lifecycle.activate_admission(command_pool(), host.provider_id)
+
+
+@pytest.mark.parametrize("stop_failure", ["error", "still-live"])
+def test_release_retains_admission_until_stop_is_proven(tmp_path, stop_failure):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    lifecycle.activate_admission(command_pool(), host.provider_id)
+    lease_id = next(iter(wrapper.admissions))
+    wrapper.stop_error = stop_failure == "error"
+    wrapper.stop_state = "ready" if stop_failure == "still-live" else "stopped"
+
+    with pytest.raises(EnvironmentStop, match="host stop"):
+        lifecycle.release(command_pool(), host.provider_id)
+
+    assert lease_id in wrapper.admissions
+    saved = json.loads(path.read_text())
+    assert saved["leases"][host.provider_id]["admission"]["lease_id"] == lease_id
+    assert not any(call[0][-1] == "release-admission" for call in wrapper.calls)
+
+
+def test_confirmed_stop_precedes_one_admission_release(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+
+    lifecycle.release(command_pool(), host.provider_id)
+
+    actions = [call[0][-1] for call in wrapper.calls]
+    assert actions[-2:] == ["release", "release-admission"]
+    assert actions.count("release-admission") == 1
+
+
+def test_cancel_after_activation_uses_fenced_release_order(tmp_path):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    lifecycle.activate_admission(command_pool(), host.provider_id)
+
+    lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+
+    actions = [call[0][-1] for call in wrapper.calls]
+    assert actions[-2:] == ["release", "release-admission"]
+
+
+def test_admission_release_failure_keeps_recoverable_lease_state(tmp_path):
+    wrapper = Wrapper()
+    path = tmp_path / "hosts.json"
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    lease_id = next(iter(wrapper.admissions))
+    wrapper.release_error = True
+
+    with pytest.raises(EnvironmentStop, match="admission lease release failed"):
+        lifecycle.release(command_pool(), host.provider_id)
+
+    saved = json.loads(path.read_text())
+    assert saved["leases"][host.provider_id]["admission"]["lease_id"] == lease_id
+    assert wrapper.hosts[0]["state"] == "stopped"
 
 
 def test_renewal_rejects_capacity_drift_and_requirement_change(tmp_path):

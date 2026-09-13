@@ -252,6 +252,13 @@ class _BoundCommandProvider(CommandProvider):
                 gpu_device_memory_mib=tuple(
                     int(item) for item in value.get("gpu_device_memory_mib", [])
                 ),
+                gpu_device_vendors=tuple(
+                    str(item) for item in value.get("gpu_device_vendors", [])
+                ),
+                gpu_device_features=tuple(
+                    tuple(str(feature) for feature in item)
+                    for item in value.get("gpu_device_features", [])
+                ),
                 resources_enforced=value.get("resources_enforced") is True,
                 lease_id=str(value.get("lease_id", "")),
                 lease_expires_at=float(value.get("lease_expires_at", 0)),
