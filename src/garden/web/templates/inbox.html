@@ -2,9 +2,10 @@
 {% block title %}Inbox{% endblock %}
 {% block body %}
 <div class="page-head">
-  <div><h1>What needs you</h1><p>Decision cards need your judgment; operator cards name a bounded repair. Beyond that, the garden grows.</p></div>
+  <div><h1>{{ 'Administration Inbox' if inbox_view == 'admin' else 'Team Inbox' if inbox_view == 'team' else 'Mine Inbox' }}</h1><p>Decision cards need the named recipient's judgment; team cards are read-only for everyone else.</p></div>
   <div class="tools"><button class="quiet" data-toggle="incident-deep-dive">Deep dive…</button><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
 </div>
+{% if identity_status %}<nav class="actions" aria-label="Inbox views" style="margin-bottom:12px"><a class="btn {{ 'primary' if inbox_view == 'mine' else 'quiet' }}" href="/inbox?view=mine">Mine</a><a class="btn {{ 'primary' if inbox_view == 'team' else 'quiet' }}" href="/inbox?view=team">Team</a><a class="btn {{ 'primary' if inbox_view == 'admin' else 'quiet' }}" href="/inbox?view=admin">Administration</a></nav>{% endif %}
 <div id="incident-deep-dive" class="panel" hidden style="margin-bottom:14px"><div class="eyebrow">Garden incident deep dive</div><p>Ask a local investigation agent about an event that is broader than one task.</p><form method="post" action="/investigations"><select name="scope" required>{% for value, label in investigation_scopes %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select><textarea name="question" required placeholder="What happened, and what should the investigation explain?"></textarea><textarea name="references" placeholder="Optional task, run, PR, issue, or event references"></textarea><button class="primary">Queue deep dive</button></form></div>
 <div class="kpis">
   <div class="kpi {{ 'hot' if inbox_count else '' }}"><div class="v">{{ inbox_count }}</div><div class="l">need you</div></div>
@@ -70,6 +71,8 @@
       {% endif %}
     </div>
     <div class="card-actions decision-actions">
+    {% if it.get('read_only') %}<span class="muted">Addressed to {{ it.recipient or 'an administrator' }} · read-only</span>
+    {% else %}
     {% if it.task and manual_reservations.get(it.task) %}<a class="btn primary" href="/tasks/{{ it.task }}">Manual mode · return…</a>{% elif it.task %}<form method="post" action="/tasks/{{ it.task }}/manual-mode"><input type="hidden" name="actor" value="human_owner"><button class="quiet">Manual mode</button></form>{% endif %}
     <div class="do">
       {% if it.get('decision_card') %}
@@ -161,6 +164,7 @@
         <a class="btn quiet" href="/config">Config page ↗</a>
       {% endif %}
     </div>
+    {% endif %}
     </div>
   </div>
   {% endfor %}
