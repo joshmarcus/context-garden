@@ -962,8 +962,7 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size)
     assert rs.read_count - reads == history_size + 3
 
 
-def test_now_partial_fanout_shares_one_snapshot_and_skips_global_context(garden, monkeypatch):
-    from garden.web import common
+def test_now_partial_fanout_shares_one_snapshot(garden, monkeypatch):
     from garden.web.pages import now1 as now_page
 
     original = now_page.now1.snapshot
@@ -976,11 +975,7 @@ def test_now_partial_fanout_shares_one_snapshot_and_skips_global_context(garden,
             calls += 1
         return original(*args, **kwargs)
 
-    def global_context_work(*_args, **_kwargs):
-        raise AssertionError("a Now partial rebuilt the global Inbox/sidebar context")
-
     monkeypatch.setattr(now_page.now1, "snapshot", counted)
-    monkeypatch.setattr(common, "build_inbox", global_context_work)
     c = client(garden)
     urls = [f"/partials/now/{region}?burst=event-1"
             for region in ("head", "now", "next", "where", "period")]

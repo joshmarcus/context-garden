@@ -684,6 +684,17 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     assert "BOB_PRIVATE_QUESTION" in bob_mine and "ALICE_PRIVATE_QUESTION" not in bob_mine
     assert "PHASE_OWNER_QUESTION" not in bob_mine
 
+    # A browser event uses the same burst id for every partial. The cache must still
+    # preserve each authenticated member's actionable projection.
+    alice_now = client.get(
+        "/partials/now/head?burst=shared-event", headers=alice_headers,
+    ).text
+    bob_now = client.get(
+        "/partials/now/head?burst=shared-event", headers=bob_headers,
+    ).text
+    assert "2 waiting on you" in alice_now
+    assert "1 waiting on you" in bob_now
+
     team = client.get("/inbox?view=team", headers=bob_headers).text
     assert "ALICE_PRIVATE_QUESTION" in team and "Addressed to alice · read-only" in team
     assert "ADMINISTRATION_QUESTION" not in team
