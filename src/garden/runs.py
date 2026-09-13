@@ -189,6 +189,9 @@ class Run:
     preparer_pid: int | None = None  # process preparing it; never reported as a worker pid
     fence_paths: list[str] = field(default_factory=list)  # dirs a worker must not write (garden, product clone)
     fence_manifest_sha256: str = ""  # controller-owned authority for this run's fence
+    phase_claim_scope: str = ""  # exact phase-operation claim that delegated this run
+    phase_claim_generation: int = 0
+    phase_claim_fence: int = 0
     # What dispatch() cleared from state to start a revise/rebase round (the feedback text,
     # its easy/rebase tags, or that rebase_pending was popped): a quota env_error restores
     # these instead of losing the round's context (see reap._handle_quota_env_error).
