@@ -133,7 +133,7 @@
   {% if not task.status.terminal and not state.investigation %}<button class="quiet" data-toggle="deep-dive-form">Deep dive…</button>{% endif %}
   {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
   {% if not phase_hold and ((task.status.value in ('ready','draft','failed') and not task.pr) or trial_again) %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
-  {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
+  {% if can_mark_done %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"{% if mark_done_warning %} onsubmit="return confirm('Mark this task done? Garden will leave any external PR and active worker unchanged; fenced late results cannot replace the completed status.');"{% endif %} style="display:inline-flex;gap:6px;align-items:center"><label class="muted" for="done-reason">completion reason</label><input id="done-reason" name="note" required maxlength="240" placeholder="Tested elsewhere"><button class="quiet">Mark done</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 {% if task.status.terminal %}<div id="defect-form" class="panel" hidden>

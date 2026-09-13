@@ -738,6 +738,12 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
     inbox = client.get("/inbox", headers=headers).text
     assert "OUTSIDE_ASSIGNMENT_QUESTION" in inbox and "Addressed to bob · read-only" in inbox
     assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "no"}).status_code == 403
+    task_page = client.get("/tasks/DM-001", headers=headers).text
+    assert 'action="/tasks/DM-001/done"' not in task_page
+    assert client.post(
+        "/tasks/DM-001/done", headers=headers, data={"note": "not mine"},
+        follow_redirects=False,
+    ).status_code == 403
 
     registry.set_assignment(admin, "bob", "demo", "p1")
     assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
