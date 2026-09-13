@@ -565,17 +565,48 @@ class HumanMixin:
 
     @task_action("take-investigation")
     def take_investigation(self, task: Task) -> None:
-        """Let the operator claim a ready investigation without changing task work."""
+        """Let the operator claim a ready investigation without changing task work.
+
+        A draining request is takeable only after every task run is terminal.  Keep a
+        small snapshot of those runs with the request so the operator's handoff does
+        not depend on a later run-store cleanup or a live worker lookup.
+        """
         ensure_open(task)
-        inv = self.state.get(task.id).get("investigation")
-        if not isinstance(inv, dict) or inv.get("status") not in ("requested", "failed"):
+        st = self.state.get(task.id)
+        inv = st.get("investigation")
+        if not isinstance(inv, dict):
             raise RuntimeError(f"{task.id} has no operator investigation ready to take")
+        if inv.get("owner") != "operator":
+            raise RuntimeError(f"{task.id} has no operator investigation ready to take; agent investigations are dispatched automatically")
+        if inv.get("status") == "active":
+            return
+        if inv.get("status") not in ("requested", "draining", "failed"):
+            raise RuntimeError(f"{task.id} has no operator investigation ready to take")
+        if inv.get("status") == "draining":
+            active = [run for run in self.runs.runs_for(task.id)
+                      if run.status in ("requested", "preparing", "running")]
+            if active:
+                raise RuntimeError(
+                    f"{task.id} is still draining active work; wait for the writer run to become terminal"
+                )
+            terminal_runs = [
+                {"run": run.run_id, "mode": run.mode, "status": run.status,
+                 "finished_at": run.finished_at, "exit_code": run.exit_code,
+                 "error": run.error}
+                for run in self.runs.runs_for(task.id)
+            ]
+            evidence = {"checked_at": now_iso(), "terminal_runs": terminal_runs}
+            inv["drain_evidence"] = evidence
+        else:
+            evidence = None
         if inv.get("status") == "failed":
-            st = self.state.get(task.id)
             st.setdefault("investigation_history", []).append(dict(inv))
+        previous_status = inv.get("status")
         inv.update({"status": "active", "owner": "operator", "taken_at": now_iso()})
         self._set_needs_human(task, "investigation", "operator investigation active; implementation remains paused")
-        self.events.emit("investigation_taken", task.id, owner="operator", request_id=inv["request_id"])
+        self.events.emit("investigation_taken", task.id, owner="operator",
+                         request_id=inv.get("request_id", ""), from_status=previous_status,
+                         drain_evidence=evidence or {})
         self.state.save()
 
     @task_action("complete-investigation")
@@ -1304,6 +1335,18 @@ class HumanMixin:
             self.members.authorize_task_execution(
                 self.principal, task, self.store.phase(task.product, task.phase),
                 expected_generation=assignment_generation,
+            )
+        investigation = self.state.get(task.id).get("investigation")
+        if isinstance(investigation, dict) and investigation.get("status") in (
+            "requested", "draining", "active", "report_ready"
+        ):
+            status = investigation.get("status")
+            action = ("garden investigation-take" if investigation.get("owner") == "operator"
+                      else "wait for the agent investigation")
+            if status == "report_ready":
+                action = "complete the investigation decision"
+            raise RuntimeError(
+                f"{task.id} is paused for investigation ({status}); {action} before retrying implementation"
             )
         self._cancel_active_run(task)
         self.events.emit("retry", task.id, actor=self._validate_action_actor(actor), reason="continued loop")

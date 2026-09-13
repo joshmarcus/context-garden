@@ -840,6 +840,46 @@ def test_investigation_drains_then_uses_shared_admission_and_preserves_failed_ru
         sched.retry_investigation(task)
 
 
+def test_operator_can_take_drained_investigation_only_after_terminal_loss(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.CHANGES_REQUESTED
+    sched.store.save(task)
+    writer = sched.runs.new_run(task.id, "local", mode="revise", initial_status="running")
+    sched.pause_for_investigation(task, "diagnose lost writer", owner="operator", scope="logs",
+                                  budget="$1", origins={"source": "review"})
+
+    with pytest.raises(RuntimeError, match="still draining"):
+        sched.take_investigation(task)
+
+    writer.status = "failed"
+    writer.error = "terminal worker loss"
+    writer.finished_at = now_iso()
+    writer.save()
+    sched.take_investigation(task)
+    inv = sched.state.get(task.id)["investigation"]
+    assert inv["status"] == "active"
+    assert inv["reason"] == "diagnose lost writer"
+    assert inv["scope"] == "logs" and inv["budget"] == "$1"
+    assert inv["origins"] == {"source": "review"}
+    assert inv["drain_evidence"]["terminal_runs"][0]["error"] == "terminal worker loss"
+    event = sched.events.read(task_id=task.id, kinds=["investigation_taken"])[-1]
+    assert event["from_status"] == "draining"
+    assert event["drain_evidence"]["terminal_runs"][0]["run"] == writer.run_id
+
+    before = dict(inv)
+    sched.take_investigation(task)
+    assert sched.state.get(task.id)["investigation"] == before
+
+
+def test_agent_investigation_cannot_be_taken_and_retry_reports_investigation_action(sched):
+    task = sched.store.task("DM-001")
+    sched.pause_for_investigation(task, "agent diagnosis", owner="agent")
+    with pytest.raises(RuntimeError, match="agent investigations are dispatched automatically"):
+        sched.take_investigation(task)
+    with pytest.raises(RuntimeError, match="wait for the agent investigation"):
+        sched.retry(task)
+
+
 def test_investigation_report_is_separate_from_revision_cost_and_waits_for_followup(sched, monkeypatch):
     task = sched.store.task("DM-001")
     task.status = Status.RUNNING
