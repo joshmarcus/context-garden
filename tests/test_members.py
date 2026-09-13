@@ -842,8 +842,7 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         registry.set_member_active(admin, "bob", False)
     else:
         registry.revoke_installation(bob, "bob-worker")
-    registry.set_assignment(admin, "bob", "demo", "p1", enabled=False,
-                            expected_generation=1)
+    # Each parameter tests its own revocation; do not mask it by also disabling assignment.
     replay = client.post(
         "/api/runs/claim", headers=headers,
         json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
@@ -869,6 +868,68 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
 
 
 def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
+    enrollment.parent.mkdir(parents=True, mode=0o700)
+    enrollment.write_text(json.dumps({"hosts": [{
+        "name": "legacy", "token_sha256": hashlib.sha256(b"legacy-secret").hexdigest()
+    }]}))
+    enrollment.chmod(0o600)
+    config.setdefault("workers", {})["enrollment_registry"] = str(enrollment)
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    runs = RunStore(garden / ".garden")
+    leased = runs.new_run("DM-001", "remote", mode="check", run_id="legacy-leased-run")
+    source_head = "c" * 40
+    leased.source_head = source_head
+    leased.env_snapshot = {
+        "product": "demo",
+        "remote_repo": "https://example.test/team/project.git",
+        "prepared_source_head": source_head,
+    }
+    leased.save()
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    headers = {"Authorization": "Bearer legacy-secret"}
+    claim = client.post(
+        "/api/runs/claim", headers=headers,
+        json={"host": "legacy", "claim_request_id": "legacy-before-enable"},
+    )
+    assert claim.status_code == 200
+    lease_token = claim.json()["lease_token"]
+
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    _registry(garden)
+    queued = runs.new_run("DM-002", "remote", mode="check", run_id="legacy-queued-run")
+    queued.env_snapshot = {"product": "demo"}
+    queued.save()
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    response = client.post(
+        "/api/runs/claim",
+        headers=headers,
+        json={"host": "legacy", "claim_request_id": "legacy-after-enable"},
+    )
+    assert response.status_code == 403
+    # Migration rejects legacy credentials in middleware, before JSON route handling.
+    heartbeat = client.post(
+        "/api/runs/legacy-leased-run/heartbeat", headers=headers,
+        json={"lease_token": lease_token, "transcript": "must not persist"},
+    )
+    finish = client.post(
+        "/api/runs/legacy-leased-run/finish", headers=headers,
+        json={"lease_token": lease_token, "result": {}, "final_text": "must not persist"},
+    )
+    assert heartbeat.status_code == 403
+    assert finish.status_code == 403
+    saved_leased = RunStore(garden / ".garden").runs_for("DM-001")[0]
+    saved_queued = RunStore(garden / ".garden").runs_for("DM-002")[0]
+    assert not (saved_leased.path / "stdout.json").exists()
+    assert not (saved_leased.path / "final.md").exists()
+    assert not saved_leased.process_finished()
+    assert saved_queued.host == ""
+
+
+
 @pytest.mark.parametrize(
     "assignment",
     [
@@ -879,6 +940,15 @@ def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(gard
     ids=["paused", "project-changed", "phase-advanced"],
 )
 def test_member_worker_claim_requires_current_matching_assignment(garden, assignment):
+    for project, phase in (("private", "p1"), ("demo", "p2")):
+        project_path = garden / project
+        project_path.mkdir(exist_ok=True)
+        product_path = project_path / "product.md"
+        if not product_path.exists():
+            product_path.write_text(f"# {project}\n")
+        phase_path = project_path / phase
+        phase_path.mkdir(exist_ok=True)
+        (phase_path / "goals.md").write_text(f"# {phase}\n")
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
