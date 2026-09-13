@@ -76,6 +76,16 @@ def test_mobile_styles_compact_navigation_and_phase_task_rows(garden):
     phase_page = client(garden).get("/phases/demo/p1").text
     assert "@media (max-width:600px)" in task_page
     assert ".rail .nav { display:grid" in task_page
+    assert 'class="rail-phases"' in task_page
+    assert 'class="project-switcher" data-project-switcher' in task_page
+    assert task_page.index('class="project-switcher"') < task_page.index('class="phase-list"')
+    assert task_page.index('class="project-switcher"') < task_page.index("<main>")
+    assert task_page.count('id="garden-project"') == 0  # a single project is context, not a switcher
+    assert "event.detail.parameters.project = selected;" in task_page
+    assert "event.detail.parameters.project = picker.value;" not in task_page
+    assert ".rail > .rail-phases { display:block" in task_page
+    assert ".rail-phases > h4, .rail-phases > .phase-list { display:none; }" in task_page
+    assert "select:focus-visible" in task_page
     assert 'class="scroll phase-tasks"' in phase_page
     assert ".phase-tasks td:nth-child(3)" in phase_page
 

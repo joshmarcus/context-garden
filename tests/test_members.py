@@ -625,6 +625,9 @@ updated: '2026-01-01T00:00:00+00:00'
     assert assigned.status_code == 200
     assert "DM-001" in assigned.text and "PRIVATE_SELECTOR_MARKER" not in assigned.text
     assert '<option value="demo" selected>' in assigned.text
+    assert assigned.text.index('class="project-switcher"') < assigned.text.index("</aside>")
+    assert assigned.text.index('class="project-switcher"') < assigned.text.index("<main>")
+    assert 'class="project-picker"' not in assigned.text
 
     selected = client.get("/board?project=private", headers=headers)
     assert selected.status_code == 200
