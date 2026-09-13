@@ -226,6 +226,64 @@ class Coordinator:
             self._record(db, principal, garden_id, operation_id, "set_authority", request, response)
             return response
 
+    def fence_member_claims(self, principal: Principal, *, garden_id: str, member_id: str,
+                            operation_id: str, installation_id: str = "",
+                            protocol_version: int = PROTOCOL_VERSION) -> dict[str, Any]:
+        """Advance authority for work invalidated by assignment or credential changes."""
+        self._protocol(protocol_version)
+        self._garden(principal, garden_id)
+        if (not authorize(principal, "administer")
+                and not (installation_id and principal.member_id == member_id
+                         and principal.installation_id == installation_id)):
+            raise PermissionError("administrator role required")
+        request = {"member_id": member_id, "installation_id": installation_id}
+        with self._transaction() as db:
+            repeated = self._repeat(
+                db, principal, garden_id, operation_id, "fence_member_claims", request,
+            )
+            if repeated is not None:
+                return repeated
+            rows = db.execute(
+                "SELECT authority.*,claims.installation,claims.fence FROM authority "
+                "LEFT JOIN claims ON claims.garden=authority.garden "
+                "AND claims.kind=authority.kind AND claims.scope=authority.scope "
+                "WHERE authority.garden=? AND authority.owner=?",
+                (garden_id, member_id),
+            ).fetchall()
+            fenced = []
+            for row in rows:
+                if installation_id and row["installation"] != installation_id:
+                    continue
+                generation = int(row["authority_generation"]) + 1
+                version = int(row["version"]) + 1
+                db.execute(
+                    "UPDATE authority SET version=?,authority_generation=? "
+                    "WHERE garden=? AND kind=? AND scope=?",
+                    (version, generation, garden_id, row["kind"], row["scope"]),
+                )
+                db.execute(
+                    """INSERT INTO handoffs VALUES(?,?,?,?,?,?,?,?,?,?,'')
+                    ON CONFLICT(garden,kind,scope,to_generation) DO NOTHING""",
+                    (garden_id, row["kind"], row["scope"], member_id, member_id,
+                     int(row["authority_generation"]), generation, version,
+                     "reconciling", _iso(self.clock())),
+                )
+                if row["installation"]:
+                    db.execute(
+                        """INSERT OR REPLACE INTO cancellations
+                        VALUES(?,?,?,?,?,'requested',?,'')""",
+                        (garden_id, row["kind"], row["scope"], row["installation"],
+                         int(row["fence"]), _iso(self.clock())),
+                    )
+                db.execute("DELETE FROM claims WHERE garden=? AND kind=? AND scope=?",
+                           (garden_id, row["kind"], row["scope"]))
+                fenced.append(f"{row['kind']}:{row['scope']}")
+            response = {"fenced": fenced}
+            self._record(
+                db, principal, garden_id, operation_id, "fence_member_claims", request, response,
+            )
+            return response
+
     def claim(self, principal: Principal, *, garden_id: str, kind: Literal["task", "phase"],
               scope: str, expected_version: int, accepted_owner: str,
               authority_generation: int, operation_id: str, lease_seconds: int = 120,
