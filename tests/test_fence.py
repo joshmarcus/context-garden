@@ -888,6 +888,42 @@ def test_fresh_scheduler_holds_a_worker_config_write_before_reap(sched, garden, 
     assert not fresh.config_hold()
 
 
+def test_fresh_scheduler_does_not_load_a_held_plugin_change(sched, garden, monkeypatch):
+    """Startup restores the dispatch-time plugin selection before loading entry points."""
+    from garden.config import Config
+    from garden.scheduler import Scheduler
+    from garden.store import Store
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "stall")
+    sched.tick()  # leave a fenced run active with the plugin-free config in its manifest
+
+    data = yaml.safe_load((garden / "garden.yaml").read_text())
+    data["plugins"] = {
+        "unaccepted": {
+            "distribution": "unaccepted-plugin",
+            "version": "1.0.0",
+        },
+    }
+    (garden / "garden.yaml").write_text(yaml.safe_dump(data))
+
+    loaded_from: list[object] = []
+
+    def load_plugins(config):
+        selected = config.get("plugins")
+        loaded_from.append(selected)
+        if selected:
+            raise AssertionError("held plugin entry point was loaded")
+        return "trusted-plugin-registry"
+
+    monkeypatch.setattr(Config, "load_plugins", load_plugins)
+    fresh = Scheduler(Store(garden))
+
+    assert loaded_from == [None]
+    assert fresh.plugins == "trusted-plugin-registry"
+    assert fresh.cfg.get("plugins") is None
+    assert "plugins" in fresh.config_hold()["keys"]
+
+
 def test_accept_config_reload_applies_despite_runs_in_flight(sched, garden, monkeypatch):
     """`accept_config_reload` (the CLI's `garden config accept`, or the Config page) lets the
     operator vouch for their own garden.yaml edit even while a run dispatched before it is

@@ -117,7 +117,7 @@ EXECUTABLE_KEYS: tuple[str, ...] = (
     "notify.command", "notify.recipient", "notify.destinations", "checks", "worker_env.pass",
     "worker_env.config_files", "sandbox", "runner_adapters", "workload_identity",
     "restricted_data",
-    "worker_configurations", "worker_instances",
+    "worker_configurations", "worker_instances", "plugins",
 )
 
 
@@ -545,6 +545,12 @@ class Config:
                 return default
             cur = cur[part]
         return cur
+
+    def load_plugins(self):
+        """Activate only the installed plugins explicitly selected by this configuration."""
+        from .plugins import load_configured_plugins
+
+        return load_configured_plugins(self.get("plugins"))
 
     def review_max_rounds(self) -> int | None:
         """The optional hard automated-review cap.

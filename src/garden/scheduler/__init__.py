@@ -389,6 +389,9 @@ class Scheduler(
             # A new CLI process has no old Store instance to compare against.  Check active
             # dispatch manifests before constructing anything that could use garden.yaml.
             self._hold_startup_config_against_fences()
+        # Plugin manifests are executable entry points.  Activate them only after the
+        # startup fence has replaced any unaccepted worker-written configuration.
+        self.plugins = self.cfg.load_plugins()
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
