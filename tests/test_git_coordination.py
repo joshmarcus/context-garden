@@ -64,7 +64,9 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
                     "bob": {"active": True},
                 }
             ),
-            state["installations"].update({"one": "alice", "two": "alice", "bob": "bob"}),
+            state["installations"].update(
+                {"admin": "admin", "one": "alice", "two": "alice", "bob": "bob"}
+            ),
             state["policy"]["pools"].update({"workers": {"units": 1, "spend_micros": 10}}),
             state["entities"].update(
                 {
@@ -365,6 +367,104 @@ def test_pending_execution_permit_blocks_owner_handoff(clones):
     state = store.read()[1]
     assert state["entities"]["task:CG-1"]["owner"] == "alice"
     assert "run:pending" in state["permits"]
+
+
+@pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
+def test_acknowledged_handoff_blocks_new_work_then_advances_generation(clones, entity_key):
+    _, one, two = clones
+    first = GitStateStore(one, garden_id="garden")
+    kind, scope = entity_key.split(":", 1)
+    client = GitMultiplayerClient(first, "alice", "one")
+    client.claim(
+        kind=kind, scope=scope, owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+
+    draining = first.begin_handoff(
+        f"drain:{entity_key}", actor="alice", installation="one",
+        entity_key=entity_key, expected_version=0, pending_owner="bob",
+    )
+    assert draining.result == {
+        "status": "blocked", "effective_owner": "alice", "pending_owner": "bob",
+        "blockers": [],
+    }
+    state = GitStateStore(two, garden_id="garden").read()[1]
+    assert state["entities"][entity_key]["owner"] == "alice"
+    assert state["entities"][entity_key]["pending_owner"] == "bob"
+    with pytest.raises(GitCoordinationError, match="draining"):
+        first.apply(
+            f"late-permit:{entity_key}", actor="alice", installation="one",
+            expected_versions={}, changes={"permits": {
+                f"late:{entity_key}": {
+                    "claim": state["claims"][entity_key]["operation_id"],
+                }
+            }},
+        )
+
+    # A restarted prior installation can acknowledge its own confirmed stop.
+    restarted = GitStateStore(one, garden_id="garden")
+    restarted.acknowledge_stop(
+        f"stop:{entity_key}", actor="alice", installation="one", entity_key=entity_key,
+    )
+    completed = GitStateStore(two, garden_id="garden").complete_handoff(
+        f"complete:{entity_key}", actor="bob", installation="bob", entity_key=entity_key,
+    )
+    assert completed.result["authority_generation"] == 2
+    final = first.read()[1]
+    assert final["entities"][entity_key]["owner"] == "bob"
+    assert not final["entities"][entity_key]["draining"]
+    assert entity_key not in final["claims"]
+
+
+def test_external_fence_requires_provider_reconciliation_and_preserves_late_evidence(clones):
+    _, one, two = clones
+    first = GitStateStore(one, garden_id="garden")
+    claim = GitMultiplayerClient(first, "alice", "one").claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    effect_id = "effect:provider-original"
+    first.apply(
+        "accepted-before-partition", actor="alice", installation="one",
+        expected_versions={"task:CG-1": 0}, changes={
+            "permits": {effect_id: {"claim": claim["operation_id"]}},
+            "effects": {effect_id: {
+                "claim": claim["operation_id"], "provider": "source-host",
+                "scope": "task:CG-1", "effect_key": "publish", "outcome": "unknown",
+            }},
+        },
+    )
+    first.begin_handoff(
+        "drain-partitioned", actor="alice", installation="one",
+        entity_key="task:CG-1", expected_version=0, pending_owner="bob",
+    )
+    recovery = GitStateStore(two, garden_id="garden")
+    with pytest.raises(GitCoordinationError, match="unresolved effects"):
+        recovery.record_external_fence(
+            "fence-too-soon", actor="admin", installation="admin", entity_key="task:CG-1",
+            proof={"execution": "process tree stopped", "publication": "credential revoked"},
+        )
+    recovery.reconcile_effect(
+        "observe-original-effect", actor="bob", installation="bob",
+        effect_operation_id=effect_id, outcome="fenced",
+        evidence={"provider_operation_id": "provider-7", "observed": "not published"},
+    )
+    recovery.record_external_fence(
+        "fence-partitioned", actor="admin", installation="admin", entity_key="task:CG-1",
+        proof={"execution": "process tree stopped", "publication": "credential revoked"},
+    )
+    recovery.complete_handoff(
+        "complete-partitioned", actor="bob", installation="bob", entity_key="task:CG-1",
+    )
+    evidence = first.retain_late_evidence(
+        "late-result", actor="alice", installation="one", entity_key="task:CG-1",
+        prior_generation=1, evidence_id="run-old-result", payload={"commit": "abc123"},
+    )
+    assert evidence.result == {"retained": "run-old-result", "applied": False}
+    state = recovery.read()[1]
+    assert state["entities"]["task:CG-1"]["owner"] == "bob"
+    assert state["effects"][effect_id]["evidence"]["provider_operation_id"] == "provider-7"
+    assert state["recovery"][-1]["payload"] == {"commit": "abc123"}
 
 
 @pytest.mark.parametrize("enabled", ["false", 1, []])
