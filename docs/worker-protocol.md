@@ -148,6 +148,9 @@ when `web.operator_token_env` is absent or its environment variable is empty.
 
 ### Trusted worker configurations
 
+For staged migration, routing diagnostics, profile rotation, and the boundary between synthetic
+tests and live data/GPU checks, see [Capability routing operations](capability-routing.md).
+
 `worker_configurations` are versioned logical templates. They bound activities, projects,
 resources, identity references, and operator-approved capability grants. `worker_instances`
 are private enrollment records: more than one authenticated user/installation may instantiate
