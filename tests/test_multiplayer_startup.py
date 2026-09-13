@@ -34,8 +34,13 @@ class _Coordinator:
             "installation_id": self.installation_id, "role": role, "assignment": assignment,
             "authority": [], "projections": [], "cancellation_requests": [],
         }
+        self.preparations = []
 
     def refresh(self, **_kwargs):
+        return AuthoritativeView(self.snapshot, False)
+
+    def prepare(self, *, mutation=False):
+        self.preparations.append(mutation)
         return AuthoritativeView(self.snapshot, False)
 
     def projection_lag(self, _snapshot):
@@ -290,5 +295,7 @@ def test_viewer_serve_rejects_worker_ingress_and_controller_helpers(garden, monk
         assert getattr(client, method)(
             path, headers={"Authorization": "Bearer worker-credential"},
         ).status_code == 404
+    assert True in coordinator.preparations
+    assert False in coordinator.preparations
 
     assert client.get("/healthz").status_code == 200

@@ -1528,7 +1528,6 @@ class RetroMixin:
             return self._retro_decide(phase, choice, note, by)
 
     def _retro_decide(self, phase: Phase, choice: str, note: str, by: str) -> dict[str, Any]:
-=======
         self.require_phase_authority(phase)
         choice = normalize_verdict(choice)
         if not choice:
