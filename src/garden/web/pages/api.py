@@ -26,6 +26,8 @@ from ..common import Site
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+    member_registry = (MemberRegistry(hub.store.config.garden_dir)
+                       if hub.store.config.get("multiplayer.enabled", False) else None)
     controller_worker_log = WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl")
 
     def record_worker_event(event: str, body: dict[str, Any], operation: str,
@@ -273,6 +275,10 @@ def register(app: FastAPI, site: Site) -> None:
         principal = host.get("member_principal")
         if task is None or principal is None:
             raise HTTPException(403, "scheduler is not authorized for this task")
+        assignment = member_registry.assignment(member_id) if member_registry else None
+        if (assignment is None or not assignment.enabled
+                or assignment.project != task.product or assignment.phase != task.phase):
+            raise HTTPException(403, "task is outside the member's current assignment")
         try:
             MemberRegistry(fresh.config.garden_dir).authorize_task_execution(
                 principal, task, fresh.phase(task.product, task.phase),
@@ -498,6 +504,7 @@ def register(app: FastAPI, site: Site) -> None:
                 if replay.claim_request_id != request_id or replay.host != body["host"] \
                         or not response_token:
                     raise HTTPException(409, "claim request identity cannot be replayed")
+                authorize_member_run(replay, host_cfg)
                 claimed_run(replay.run_id, host_cfg, response_token)
                 response = dict(replay.claim_response)
                 from ...reference_snapshot import read_reference_files
@@ -543,6 +550,12 @@ def register(app: FastAPI, site: Site) -> None:
                     if (task is None or principal is None
                             or not authorize(principal, "mutate_work", owner_id=owner,
                                              project=task.product)):
+                        continue
+                    assignment = (member_registry.assignment(str(host_cfg["member_id"]))
+                                  if member_registry else None)
+                    if (assignment is None or not assignment.enabled
+                            or assignment.project != task.product
+                            or assignment.phase != task.phase):
                         continue
                 weight = int((run.env_snapshot or {}).get("resource_weight") or 1)
                 if not in_place and used + weight > capacity:
