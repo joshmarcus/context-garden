@@ -11,6 +11,7 @@ import json
 import os
 import secrets
 import uuid
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,34 @@ TEXT_FIELDS = (
     "unknowns", "could_have_caught", "prevention", "proposed_follow_up",
 )
 LIST_FIELDS = ("evidence_links",)
+
+
+def _discovery_bound(value: str, *, upper: bool) -> datetime | None:
+    """Parse a UTC calendar date or an explicit timezone-aware ISO timestamp."""
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        if len(value) == 10:
+            parsed_date = date.fromisoformat(value)
+            edge = time.max if upper else time.min
+            return datetime.combine(parsed_date, edge, tzinfo=UTC)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.tzinfo is None:
+        raise ValueError(
+            "discovery bounds must be ISO 8601 dates or timezone-aware timestamps"
+        )
+    return parsed.astimezone(UTC)
+
+
+def _discovery_bounds(discovered_from: str, discovered_to: str) -> tuple[datetime | None, datetime | None]:
+    lower = _discovery_bound(discovered_from, upper=False)
+    upper = _discovery_bound(discovered_to, upper=True)
+    if lower is not None and upper is not None and lower > upper:
+        raise ValueError("discovered_from must not be after discovered_to")
+    return lower, upper
 
 
 class DefectConflict(RuntimeError):
@@ -183,13 +212,20 @@ class DefectStore:
              severity: str = "", disposition: str = "", discovered_from: str = "",
              discovered_to: str = "", allowed_projects: frozenset[str] | None = None) -> list[dict[str, Any]]:
         rows = self._read()["defects"]
+        discovered_from_bound, discovered_to_bound = _discovery_bounds(
+            discovered_from, discovered_to
+        )
         filters = {"task_id": task_id, "product": product, "phase": phase,
                    "severity": severity, "disposition": disposition}
         out = [dict(row) for row in rows
                if all(not value or row.get(name) == value for name, value in filters.items())
                and (allowed_projects is None or row.get("product") in allowed_projects)
-               and (not discovered_from or row.get("discovered_at", "") >= discovered_from)
-               and (not discovered_to or row.get("discovered_at", "") <= discovered_to)]
+               and (discovered_from_bound is None or datetime.fromisoformat(
+                   row.get("discovered_at", "").replace("Z", "+00:00")
+               ).astimezone(UTC) >= discovered_from_bound)
+               and (discovered_to_bound is None or datetime.fromisoformat(
+                   row.get("discovered_at", "").replace("Z", "+00:00")
+               ).astimezone(UTC) <= discovered_to_bound)]
         return sorted(out, key=lambda row: (row.get("discovered_at", ""), row.get("id", "")), reverse=True)
 
     def summary(self, **filters: Any) -> dict[str, Any]:

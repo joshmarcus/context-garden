@@ -161,3 +161,48 @@ def test_cli_record_list_and_analyze_workflow(garden, monkeypatch):
     listed = runner.invoke(app, ["defect-list", "--task", "DM-001"])
     assert listed.exit_code == 0, listed.output
     assert json.loads(listed.output)["summary"]["reviewed"] == 1
+
+
+def test_cli_and_api_discovery_date_filters_are_inclusive_and_validated(garden, monkeypatch):
+    monkeypatch.chdir(garden)
+    store = Store(garden)
+    task = _closed(store)
+    ledger = DefectStore(store.config.garden_dir)
+    rows = [
+        ledger.create(task, "minor", description, "alice", idempotency_key=description)[0]
+        for description in ("early", "late", "next day")
+    ]
+    state = json.loads(ledger.path.read_text())
+    discovered_at = {
+        rows[0]["id"]: "2026-09-13T00:00:00+00:00",
+        rows[1]["id"]: "2026-09-13T23:59:59.999999+00:00",
+        rows[2]["id"]: "2026-09-14T00:00:00+00:00",
+    }
+    for row in state["defects"]:
+        row["discovered_at"] = discovered_at[row["id"]]
+    ledger.path.write_text(json.dumps(state))
+
+    runner = CliRunner()
+    listed = runner.invoke(app, ["defect-list", "--discovered-to", "2026-09-13"])
+    assert listed.exit_code == 0, listed.output
+    assert {row["description"] for row in json.loads(listed.output)["defects"]} == {
+        "early", "late",
+    }
+    invalid = runner.invoke(app, ["defect-list", "--discovered-from", "not-a-date"])
+    assert invalid.exit_code == 1
+    assert "ISO 8601 dates or timezone-aware timestamps" in invalid.output
+
+    client = TestClient(create_app(store, watch=False))
+    exact = client.get(
+        "/api/defects?discovered_from=2026-09-13T23%3A59%3A59.999999%2B00%3A00"
+        "&discovered_to=2026-09-14T00%3A00%3A00%2B00%3A00"
+    )
+    assert exact.status_code == 200
+    assert {row["description"] for row in exact.json()["defects"]} == {"late", "next day"}
+    reversed_range = client.get(
+        "/api/defects?discovered_from=2026-09-14&discovered_to=2026-09-13"
+    )
+    assert reversed_range.status_code == 422
+    assert reversed_range.json()["detail"] == "discovered_from must not be after discovered_to"
+    naive = client.get("/api/defects?discovered_from=2026-09-13T12%3A00%3A00")
+    assert naive.status_code == 422
