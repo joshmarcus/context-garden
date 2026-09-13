@@ -60,6 +60,20 @@ policy mismatches raise `WorkloadIdentityError`. Callers classify that as an env
 failure and must not retry as an author revision or fall back to ambient credentials. Remote
 hosts construct the same resolver from host-local trusted configuration; claims, briefs,
 transcripts, and finish payloads carry neither provider registration nor authority values.
+An optional `restricted_data.boundaries.worker` policy binds that resolved automation identity
+to exact projects, activities, logical dataset read/read-write grants, permitted models and
+tools, a private artifact boundary, named evidence-export classes, and synthetic export markers.
+The local runner checks the policy before it writes the brief or launches the worker. An
+independent remote host checks its host-local copy after materialisation but before persisting
+the brief or launching the harness; the claim supplies only the project and activity being
+authorized, never policy or credentials. Requested dataset access may only
+narrow these host-owned grants; task text, execution requirements, and worker labels cannot add
+authority. Raw and private-derived artifacts have no export class. Export helpers reject
+synthetic restricted markers and can report an honest `insufficient` validation state without
+exporting private payloads. Before a remote host pushes or posts a result, it rejects changed
+files under the private artifact boundary and synthetic markers in changed text files or the
+finish payload. That small export policy is retained in its protected active-claim handoff so
+recovery cannot bypass it.
 While the subprocess runs, its owner validates the authority and renews it when the provider
 allows. Because a process environment cannot be changed after launch, a renewal that rotates an
 environment-delivered value terminates the process and reports an actionable workload-identity

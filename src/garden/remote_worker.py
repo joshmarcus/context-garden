@@ -35,7 +35,7 @@ from .worker_diagnostics import (
     endpoint_class,
     safe_correlation_id,
 )
-from .workload_identity import AuthorityRedactor
+from .workload_identity import AuthorityRedactor, subprocess_authority
 
 
 class WorkerRequestError(RuntimeError):
@@ -733,6 +733,39 @@ class _LeaseHeartbeat:
         self.thread.join(timeout=5)
 
 
+class _TranscriptExporter:
+    """Keep restricted transcripts local until their complete contents are safe."""
+
+    def __init__(self, heartbeat: _LeaseHeartbeat, markers: tuple[str, ...], *,
+                 restricted: bool, export_allowed: bool):
+        self.heartbeat = heartbeat
+        self.markers = markers
+        self.restricted = restricted
+        self.export_allowed = export_allowed
+        self.offset = 0
+        self.buffer: list[str] = []
+
+    def add(self, chunk: str) -> None:
+        if not chunk:
+            return
+        if self.restricted:
+            # A marker may span any number of reads. Holding the complete restricted
+            # transcript prevents a safe-looking prefix from crossing the boundary;
+            # marker absence is never treated as export permission.
+            self.buffer.append(chunk)
+            return
+        self.offset = self.heartbeat.upload(self.offset, chunk)
+
+    def finish(self) -> None:
+        if not self.buffer or not self.export_allowed:
+            return
+        transcript = "".join(self.buffer)
+        from .restricted_data import validate_restricted_markers
+
+        validate_restricted_markers(transcript, self.markers)
+        self.offset = self.heartbeat.upload(self.offset, transcript)
+
+
 def _stop_obsolete_process(proc: subprocess.Popen[Any]) -> None:
     """Stop a supervised process tree after its remote authority is lost."""
     if proc.poll() is not None:
@@ -902,6 +935,13 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
                 ["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"],
                 cwd=repo, check=True, pass_fds=(lock_fd,),
             )
+        # Keep the exact admitted object boundary in the durable claim. Publication uses
+        # this rather than the working-tree state, so authored commits remain inspectable
+        # after a daemon restart (including files committed and later deleted).
+        run["publication_base_head"] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
+            check=True, pass_fds=(lock_fd,),
+        ).stdout.strip()
         stage = "configuration"
         try:
             env = _env(list(run.get("env_allowlist") or []), repo, run)
@@ -934,11 +974,60 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         ) from exc
 
 
+def _validate_restricted_publication(run: dict[str, Any], repo: Path) -> None:
+    """Validate every path and blob crossing the admitted Git boundary."""
+    from .restricted_data import RestrictedDataError
+
+    base_head = str(run.get("publication_base_head") or run.get("source_head") or "")
+    if not base_head:
+        raise RestrictedDataError("restricted publication has no admitted source head")
+    revision_range = f"{base_head}..HEAD"
+    artifact_boundary = str(run.get("restricted_artifact_boundary") or "").strip("/")
+    commits = subprocess.run(
+        ["git", "rev-list", revision_range], cwd=repo, capture_output=True, text=True,
+        check=True,
+    ).stdout.splitlines()
+    for commit in commits:
+        paths = subprocess.run(
+            ["git", "diff-tree", "--root", "-m", "--no-commit-id", "--name-only", "-r",
+             "-z", commit],
+            cwd=repo, capture_output=True, check=True,
+        ).stdout.split(b"\0")
+        for raw_path in paths:
+            relative = raw_path.decode("utf-8", errors="surrogateescape")
+            if artifact_boundary and (
+                relative == artifact_boundary or relative.startswith(artifact_boundary + "/")
+            ):
+                raise RestrictedDataError("private artifact cannot leave its boundary")
+
+    markers = tuple(str(value) for value in run.get("restricted_export_markers") or [])
+    if not markers:
+        return
+    objects = subprocess.run(
+        ["git", "rev-list", "--objects", revision_range], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    for entry in objects:
+        object_id = entry.split(" ", 1)[0]
+        if subprocess.run(
+            ["git", "cat-file", "-t", object_id], cwd=repo, capture_output=True,
+            text=True, check=True,
+        ).stdout.strip() != "blob":
+            continue
+        content = subprocess.run(
+            ["git", "cat-file", "blob", object_id], cwd=repo, capture_output=True, check=True,
+        ).stdout
+        if any(marker and marker.encode() in content for marker in markers):
+            raise RestrictedDataError("evidence contains a restricted synthetic marker")
+
+
 def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
                           heartbeat: _LeaseHeartbeat, *, final: str,
                           parsed: dict[str, Any], usage: dict[str, Any],
                           cost: float | None, error: str, rc: int,
                           execution_dir: Path | None = None) -> None:
+    markers = tuple(str(value) for value in run.get("restricted_export_markers") or [])
+    artifact_boundary = str(run.get("restricted_artifact_boundary") or "")
     if subprocess.run(
         ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
     ).stdout.strip():
@@ -948,6 +1037,8 @@ def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
              "commit", "-m", f"{run['task_id']}: remote worker changes"],
             cwd=repo, check=False,
         )
+    if markers or artifact_boundary:
+        _validate_restricted_publication(run, repo)
     heartbeat.ensure_current()
     subprocess.run(
         ["git", "push", "--force", "origin", f"HEAD:{run['push_ref']}"],
@@ -964,6 +1055,12 @@ def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
     }
     if execution_dir is not None:
         finish_payload["validation_receipts"] = _validation_receipts(execution_dir)
+    if markers:
+        from .restricted_data import validate_restricted_markers
+
+        # The marker set is persisted in the active-claim handoff, so restart recovery
+        # cannot bypass the same final export boundary.
+        validate_restricted_markers(finish_payload, markers)
     safe_finish_payload = AuthorityRedactor(()).redact_data(finish_payload)
     pending_result = _persist_pending_result(root, str(run["id"]), safe_finish_payload)
     heartbeat.finish(safe_finish_payload)
@@ -1127,6 +1224,47 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             return
         setup = dict(run.get("setup") or {})
         identity_target = "check" if run.get("mode") == "check" else "worker"
+        restricted_authorization = None
+        restricted = (host_config or {}).get("restricted_data") or {}
+        boundaries = restricted.get("boundaries") if isinstance(restricted, dict) else None
+        if isinstance(boundaries, dict) and identity_target in boundaries:
+            from .restricted_data import RestrictedDataError, authorize_restricted_workload
+            from .workload_identity import WorkloadIdentityError
+
+            identity_boundary = ((host_config or {}).get("workload_identity") or {}).get(
+                "boundaries", {}
+            ).get(identity_target, {})
+            try:
+                with subprocess_authority(
+                    host_config or {}, identity_target, f"automation:{run['id']}", env,
+                ) as (_identity_env, metadata, _redactor, _authority):
+                    if metadata is None:
+                        raise WorkloadIdentityError(
+                            "restricted-data dispatch requires a workload identity"
+                        )
+                    restricted_authorization = authorize_restricted_workload(
+                        host_config or {}, identity_target, identity=metadata,
+                        identity_reference=str(identity_boundary.get("reference") or ""),
+                        project=str(run.get("product") or ""),
+                        activity=("work" if run.get("mode") in {
+                            "work", "revise", "resume", "rebase"
+                        } else str(run.get("mode") or "")),
+                        model=str(run.get("model") or ""), tool=str(run.get("harness") or ""),
+                    )
+                    run["restricted_export_markers"] = list(
+                        restricted_authorization.synthetic_markers
+                    )
+                    run["restricted_data_authorized"] = True
+                    run["restricted_transcript_export"] = (
+                        "transcript" in restricted_authorization.evidence_exports
+                    )
+                    run["restricted_artifact_boundary"] = (
+                        restricted_authorization.artifact_boundary
+                    )
+            except (RestrictedDataError, WorkloadIdentityError) as exc:
+                failure = ClaimMaterializationError("authorization", str(exc))
+                _finish_materialization_failure(run, heartbeat, failure)
+                return
         if run.get("mode") == "check":
             check_data = _host_check_data(run, repo)
             # A managed consumer passes the product command above so admission covers it.
@@ -1221,7 +1359,12 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                     start_new_session=True,
                 )
                 transcript_read_offset = 0
-                transcript_upload_offset = 0
+                transcript_exporter = _TranscriptExporter(
+                    heartbeat,
+                    tuple(str(value) for value in run.get("restricted_export_markers") or []),
+                    restricted=bool(run.get("restricted_data_authorized")),
+                    export_allowed=bool(run.get("restricted_transcript_export")),
+                )
                 timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
                 deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
                 while proc.poll() is None:
@@ -1245,16 +1388,15 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         transcript_file.seek(transcript_read_offset)
                         chunk = transcript_file.read()
                         transcript_read_offset = transcript_file.tell()
-                    if chunk:
-                        transcript_upload_offset = heartbeat.upload(transcript_upload_offset, chunk)
+                    transcript_exporter.add(chunk)
                 stdout_file.flush()
                 stdout_file.seek(0)
                 stderr_file.seek(0)
                 stdout, stderr = stdout_file.read(), stderr_file.read()
                 stdout_file.seek(transcript_read_offset)
                 tail = stdout_file.read()
-                if tail:
-                    transcript_upload_offset = heartbeat.upload(transcript_upload_offset, tail)
+                transcript_exporter.add(tail)
+                transcript_exporter.finish()
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
