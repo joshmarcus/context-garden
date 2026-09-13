@@ -14,6 +14,7 @@ from garden.model import Status, parse_execution_requirements
 from garden.scheduler import StateCorruptionError
 from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
 from garden.scheduler.report import TickReport
+from garden.scheduler.resources import ResourcePressureError
 from garden.suggestions import record_suggestion
 from tests.scheduler.conftest import statuses
 
@@ -84,6 +85,294 @@ def test_manual_take_cannot_bypass_constrained_worker_claim(sched):
 
     assert sched.store.task(task.id).attempts == 0
     assert sched.runs.latest(task.id) is None
+
+
+def _configure_capability_worker(sched, task, *, activities):
+    task.owner = "alice"
+    task.execution_requirements = parse_execution_requirements({
+        "capabilities": {"all_of": ["tool.build"]},
+        "resources": {"memory_mib": 1024},
+    })
+    sched.store.save(task)
+    sched.cfg.data.update({
+        "capability_definitions": {
+            "tool.build": {"type": "tool", "description": "builder",
+                           "issuer": "operator", "privileged": False},
+        },
+        "worker_configurations": {"builder": {
+            "contract_version": "garden.worker-configuration/v1", "version": "1",
+            "generation": 1, "activities": activities, "projects": ["demo"],
+            "resource_ceilings": {"memory_mib": 2048},
+            "grants": [{"capability": "tool.build", "approved_by": "operator",
+                        "approved_at": 1, "profile_generation": 1}],
+        }},
+        "worker_instances": [{
+            "instance_id": "build-1", "configuration": "builder",
+            "configuration_version": "1", "profile_generation": 1,
+            "operating_user": "alice", "installation_id": "install-a",
+            "authenticated_at": 1, "readiness_checked_at": 1,
+            "readiness_expires_at": 4_102_444_800,
+        }],
+    })
+
+
+def test_execution_envelope_records_activity_owner_requirements_and_claim_fence(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["review"])
+    requirements, match = sched._execution_match(task, "review")
+    run = sched.runs.new_run(task.id, "remote", mode="review")
+
+    sched._record_execution_envelope(task, run, "review", requirements, match)
+
+    envelope = run.env_snapshot["execution_envelope"]
+    assert envelope["version"] == "garden.execution-envelope/v1"
+    assert envelope["activity"] == "review"
+    assert envelope["owner"] == "alice"
+    assert envelope["worker_instance"] == "build-1"
+    assert run.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
+
+
+def test_execution_envelope_records_explicit_empty_requirements(sched):
+    task = sched.store.task("DM-001")
+    requirements, match = sched._execution_match(task, "work")
+    run = sched.runs.new_run(task.id, "local", mode="work")
+
+    sched._record_execution_envelope(task, run, "work", requirements, match)
+
+    assert run.env_snapshot["execution_requirements"] == {}
+    assert run.env_snapshot["execution_envelope"]["requirements_sha256"]
+    assert run.env_snapshot["execution_envelope"]["worker_instance"] == ""
+
+
+@pytest.mark.parametrize("mode", ["revise", "check", "review"])
+def test_continuation_checkpoints_first_added_requirement_before_launch(sched, mode):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot["execution_requirements"] = {}
+    source.save()
+    _configure_capability_worker(sched, task, activities=["work", "check", "review"])
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched._execution_match(task, mode, source_run=source)
+
+    continuation = sched.runs.latest(task.id)
+    assert continuation is not source
+    assert continuation.mode == mode
+    assert continuation.status == "failed"
+    assert continuation.pid is None
+    assert continuation.env_snapshot["execution_envelope"]["source_run_id"] == source.run_id
+    assert source.status == "done"
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched._execution_match(task, mode, source_run=source)
+    assert len(sched.runs.runs_for(task.id)) == 2
+
+
+def test_legacy_source_cannot_authorize_new_constrained_continuation(sched):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.save()
+    _configure_capability_worker(sched, task, activities=["review"])
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched._execution_match(task, "review", source_run=source)
+
+    assert sched.runs.latest(task.id).status == "failed"
+    assert source.status == "done"
+
+
+def test_legacy_unconstrained_source_can_continue_unconstrained(sched):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.save()
+
+    requirements, match = sched._execution_match(task, "review", source_run=source)
+
+    assert requirements.empty
+    assert match is None
+    assert sched.runs.latest(task.id).run_id == source.run_id
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
+def test_empty_envelope_continuation_rejects_owner_handoff(sched):
+    task = sched.store.task("DM-001")
+    task.owner = "bob"
+    sched.store.save(task)
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": {},
+        "execution_owner": "alice",
+        "execution_envelope": {"owner": "alice", "worker_instance": ""},
+    })
+    source.save()
+
+    with pytest.raises(ResourcePressureError, match="source activity belongs.*current owner"):
+        sched._execution_match(task, "review", source_run=source)
+
+    assert source.status == "done"
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
+def test_empty_envelope_continuation_accepts_same_owner(sched):
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    sched.store.save(task)
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": {},
+        "execution_owner": "alice",
+        "execution_envelope": {"owner": "alice", "worker_instance": ""},
+    })
+    source.save()
+
+    requirements, match = sched._execution_match(task, "review", source_run=source)
+
+    assert requirements.empty
+    assert match is None
+
+
+def test_empty_envelope_continuation_enforces_pinned_instance(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work", "review"])
+    task.execution_requirements = parse_execution_requirements({})
+    sched.store.save(task)
+    source = sched.runs.new_run(task.id, "remote", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": {},
+        "execution_owner": "alice",
+        "worker_instance": "retired-builder",
+        "execution_envelope": {"owner": "alice", "worker_instance": "retired-builder"},
+    })
+    source.save()
+
+    with pytest.raises(ResourcePressureError, match="pinned worker instance is not configured"):
+        sched._execution_match(task, "review", source_run=source)
+
+    assert source.status == "done"
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
+def test_revision_entrypoint_checkpoints_first_added_requirement(sched):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot["execution_requirements"] = {}
+    source.save()
+    _configure_capability_worker(sched, task, activities=["work"])
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched.dispatch(task, mode="revise")
+
+    continuation = sched.runs.latest(task.id)
+    assert continuation.status == "failed"
+    assert continuation.pid is None
+    assert continuation.env_snapshot["execution_envelope"]["source_run_id"] == source.run_id
+    assert source.status == "done"
+
+
+def test_revision_entrypoint_checkpoints_changed_unsupported_requirement(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work", "review"])
+    source = sched.runs.new_run(task.id, "remote", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": task.execution_requirements.to_dict(),
+        "execution_owner": "alice",
+        "worker_instance": "build-1",
+        "execution_envelope": {"owner": "alice", "worker_instance": "build-1"},
+    })
+    source.save()
+    task.execution_requirements = parse_execution_requirements({
+        "capabilities": {"all_of": ["tool.build"]},
+        "resources": {"memory_mib": 4096},
+    })
+    sched.store.save(task)
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched.dispatch(task, mode="revise")
+
+    continuation = sched.runs.latest(task.id)
+    assert continuation is not None
+    assert continuation is not source
+    assert continuation.mode == "revise"
+    assert continuation.status == "failed"
+    assert "continuation fenced before launch" in continuation.error
+    assert continuation.pid is None
+    assert continuation.env_snapshot["execution_envelope"]["source_run_id"] == source.run_id
+    assert continuation.env_snapshot["execution_envelope"]["worker_instance"] == "build-1"
+    assert continuation.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
+    assert source.status == "done"
+    assert len(sched.runs.runs_for(task.id)) == 2
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched.dispatch(task, mode="revise")
+    assert len(sched.runs.runs_for(task.id)) == 2
+
+
+def test_continuation_stays_on_source_worker_when_an_equivalent_worker_is_idle(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work", "review"])
+    second = dict(sched.cfg.data["worker_instances"][0])
+    second.update({"instance_id": "build-2", "installation_id": "install-b"})
+    sched.cfg.data["worker_instances"].append(second)
+    source = sched.runs.new_run(task.id, "remote", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": task.execution_requirements.to_dict(),
+        "execution_owner": "alice",
+        "worker_instance": "build-2",
+        "execution_envelope": {"owner": "alice", "worker_instance": "build-2"},
+    })
+    source.save()
+
+    _requirements, match = sched._execution_match(task, "review", source_run=source)
+
+    assert match.instance.instance_id == "build-2"
+
+
+def test_continuation_does_not_fallback_when_source_worker_is_unavailable(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work", "review"])
+    source = sched.runs.new_run(task.id, "remote", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": task.execution_requirements.to_dict(),
+        "execution_owner": "alice",
+        "worker_instance": "retired-builder",
+        "execution_envelope": {"owner": "alice", "worker_instance": "retired-builder"},
+    })
+    source.save()
+
+    with pytest.raises(ResourcePressureError, match="pinned worker instance is not configured"):
+        sched._execution_match(task, "review", source_run=source)
+
+
+def test_continuation_rejects_owner_handoff(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work", "review"])
+    source = sched.runs.new_run(task.id, "remote", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": task.execution_requirements.to_dict(),
+        "execution_owner": "alice",
+        "worker_instance": "build-1",
+        "execution_envelope": {"owner": "alice", "worker_instance": "build-1"},
+    })
+    source.save()
+    task.owner = "bob"
+    sched.store.save(task)
+
+    with pytest.raises(ResourcePressureError, match="source activity belongs.*current owner"):
+        sched._execution_match(task, "review", source_run=source)
+
+    assert source.status == "done"
+    assert len(sched.runs.runs_for(task.id)) == 1
 
 
 def test_duplicate_task_id_quarantined_the_tick_survives_and_dispatch_continues(sched, garden, fake_github):
