@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 import yaml
 
+from ..coordination import Coordinator
 from ..members import MemberRegistry
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from .common import PANEL_LOOP, _store, app, console, err
@@ -18,7 +19,8 @@ app.add_typer(members_app, name="members", rich_help_panel=PANEL_LOOP)
 
 
 def _registry() -> MemberRegistry:
-    return MemberRegistry(_store().config.garden_dir)
+    garden_dir = _store().config.garden_dir
+    return MemberRegistry(garden_dir, Coordinator(garden_dir / "coordination.db"))
 
 
 @members_app.command("coordinator")

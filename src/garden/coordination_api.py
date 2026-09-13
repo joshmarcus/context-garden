@@ -20,7 +20,7 @@ def create_coordination_app(garden_dir: Path) -> FastAPI:
     """
     app = FastAPI(title="context-garden coordinator", version="1")
     coordinator = Coordinator(garden_dir / "coordination.db")
-    registry = MemberRegistry(garden_dir)
+    registry = MemberRegistry(garden_dir, coordinator)
 
     def principal(authorization: str = Header(default="")) -> Principal:
         actor = registry.authenticate(authorization.removeprefix("Bearer "))
