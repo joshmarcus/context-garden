@@ -1833,6 +1833,7 @@ def test_pending_external_gate_preserves_requirement_without_requesting_author_c
     ("implementation", ""),
     ("external_gate", "failure"),
     ("external_gate", ""),
+    ("stale_check", ""),
 ])
 def test_real_or_untyped_failure_remains_actionable(category, state):
     criterion = {
@@ -1850,6 +1851,20 @@ def test_real_or_untyped_failure_remains_actionable(category, state):
     assert review_implementation_failure_signal(review) == (
         "unmet_acceptance_criteria" if category == "implementation" else ""
     )
+
+
+def test_stale_check_contradiction_remains_blocking():
+    finding = {
+        "severity": "blocking", "failure_category": "stale_check",
+        "summary": "Claimed source identity contradicts the inspected checkout",
+    }
+
+    review = enforce_criteria_verdict({
+        "verdict": "approve", "criteria": [], "findings": [finding],
+    })
+
+    assert review["verdict"] == "request_changes"
+    assert review["findings"] == [finding]
 
 
 def test_second_review_dispatch_supersedes_the_first(sched, fake_github):

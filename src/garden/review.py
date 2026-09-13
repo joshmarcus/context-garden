@@ -52,11 +52,9 @@ SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
 
 def is_pending_external_gate(item: object) -> bool:
     """Whether a typed review item records a merge gate that is still waiting."""
-    return (isinstance(item, dict) and (
-        item.get("failure_category") == "stale_check"
-        or (item.get("failure_category") == PENDING_EXTERNAL_GATE
+    return (isinstance(item, dict)
+            and item.get("failure_category") == PENDING_EXTERNAL_GATE
             and item.get("gate_state") in {"pending", "stale", "unavailable"})
-    ))
 
 # The walkthrough deliberately has a larger inventory than a normal PR needs.  Keep this
 # mapping here, beside the review policy, so the check runner and reviewer consume one plan.
@@ -512,10 +510,12 @@ outcome or failed requirement must remain visible and blocking. For every unmet 
 `failure_category` to exactly one of `implementation`, `external_gate`, `infrastructure`,
 `admission`, `stale_check`, `unavailable_evidence`, or `owner_input`. Use `implementation`
 only when the reviewed source owns a defect or unmet required outcome. Use `external_gate`
-with `gate_state: "pending"` only for a source-bound merge requirement (such as exact-head
-CI) that has not finished yet: preserve that requirement, but approve source that is
-otherwise accepted because the controller independently enforces the gate before merge.
-Stale check evidence is also a waiting gate, not a source rejection. Infrastructure,
+with `gate_state: "pending"`, `"stale"`, or `"unavailable"` only for a source-bound merge
+requirement (such as exact-head CI) whose usable evidence is not ready: preserve that
+requirement, but approve source that is otherwise accepted because the controller
+independently enforces the gate before merge. `stale_check` does not identify a pending
+external gate and remains actionable; use it for contradictory source/check identity or
+another stale-check problem that requires correction. Infrastructure,
 admission, unavailable-evidence and owner-input problems go to operator recovery and must
 not launch an unchanged author revision. A failed external check is not pending; report the concrete failure. Use
 `findings` with severity `blocking` for changes needed before merge and `nit` for optional

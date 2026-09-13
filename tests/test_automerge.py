@@ -662,7 +662,8 @@ def test_stale_ci_only_review_does_not_queue_author_revision(sched, fake_github)
     review = next(run for run in sched.runs.runs_for(task.id) if run.run_id == "rev-1")
     result = {"verdict": "request_changes", "criteria": [
         {"criterion": "Requested behavior", "met": True},
-        {"criterion": "CI identifier", "met": False, "failure_category": "stale_check"},
+        {"criterion": "CI identifier", "met": False, "failure_category": "external_gate",
+         "gate_state": "stale"},
     ], "findings": []}
     sched._apply_review(task, review, result, TickReport(), emitted=True)
     assert state["last_review"]["verdict"] == "approve"
