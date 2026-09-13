@@ -35,7 +35,10 @@ class Clock:
         return self.now
 
 
-def enroll_two_people(garden):
+def enroll_two_people(garden, source=None):
+    # Durable assignments validate against the authoritative project/phase catalog.
+    if source is not None:
+        shutil.copytree(source, garden)
     registry = MemberRegistry(garden / ".garden")
     admin_token = registry.enroll_administrator("shared", "admin", "coordinator")
     admin = registry.authenticate(admin_token)
@@ -48,7 +51,7 @@ def enroll_two_people(garden):
         "blair": registry.issue_installation(admin, "blair", "blair-local"),
     }
     registry.set_assignment(admin, "alex", "demo", "p1", advance=True)
-    registry.set_assignment(admin, "blair", "demo", "p2")
+    registry.set_assignment(admin, "blair", "demo", "p1")
     people = {name: registry.authenticate(token) for name, token in tokens.items()}
     assert all(people.values())
     return registry, admin, people, tokens
@@ -88,7 +91,7 @@ def local_scheduler(source, root, principal, token, request):
 
 def test_two_local_users_reassign_and_recover_without_duplicate_ownership(garden, tmp_path):
     shared = tmp_path / "shared"
-    registry, admin, people, tokens = enroll_two_people(shared)
+    registry, admin, people, tokens = enroll_two_people(shared, garden)
     registry.set_assignment(admin, "blair", "demo", "p1", expected_generation=1)
     clock = Clock()
     state_dir = shared / ".garden"
@@ -199,7 +202,7 @@ def test_phase_owner_is_exclusive_fenced_and_keeps_separate_child_reviews(
     garden, tmp_path, monkeypatch,
 ):
     shared = tmp_path / "shared"
-    registry, admin, people, tokens = enroll_two_people(shared)
+    registry, admin, people, tokens = enroll_two_people(shared, garden)
     registry.set_assignment(admin, "blair", "demo", "p1", expected_generation=1)
     state_dir = shared / ".garden"
     coordinator = Coordinator(state_dir / "coordination.db")

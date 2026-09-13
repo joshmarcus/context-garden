@@ -6,9 +6,17 @@ import pytest
 
 from garden.members import MemberRegistry, Principal
 from garden.model import Phase, Status, Task
+from garden.runner.manual import ManualRunner
+from garden.scheduler import Scheduler
 
 
 def _registry(tmp_path: Path):
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "product.md").write_text("# Demo\n")
+    for phase in ("p1", "p2", "p3"):
+        path = tmp_path / "demo" / phase
+        path.mkdir()
+        (path / "goals.md").write_text(f"# {phase}\n")
     registry = MemberRegistry(tmp_path / ".garden")
     token = registry.enroll_administrator("garden", "admin", "admin-machine")
     admin = registry.authenticate(token)
@@ -91,6 +99,30 @@ def test_assignment_is_single_versioned_cursor_and_new_members_have_none(tmp_pat
     assert recreated.generation == 4
 
 
+def test_assignment_mutations_reject_scopes_outside_the_garden_catalog(tmp_path):
+    registry, admin, _alice = _registry(tmp_path)
+
+    with pytest.raises(ValueError, match="unknown project/phase target: missing/p1"):
+        registry.set_assignment(admin, "alice", "missing", "p1")
+    with pytest.raises(ValueError, match="unknown project/phase target: demo/missing"):
+        registry.set_assignment(admin, "alice", "demo", "missing")
+    assert registry.assignment("alice") is None
+
+    assigned = registry.set_assignment(admin, "alice", "demo", "p1", advance=True)
+    with pytest.raises(ValueError, match="unknown project/phase target: demo/missing"):
+        registry.advance_assignment(
+            admin, "alice", "missing", {}, expected_generation=assigned.generation,
+        )
+    assert registry.assignment("alice") == assigned
+
+    with pytest.raises(ValueError, match="unknown project/phase target: missing/p1"):
+        registry.set_phase_owner(admin, "missing", "p1", "alice")
+    with pytest.raises(ValueError, match="unknown project/phase target: demo/missing"):
+        registry.set_phase_owner(admin, "demo", "missing", "alice")
+    assert registry.phase_owner("missing", "p1") is None
+    assert registry.phase_owner("demo", "missing") is None
+
+
 def test_phase_owner_is_explicit_distinct_versioned_and_attributed(tmp_path):
     registry, admin, alice = _registry(tmp_path)
     assert registry.phase_owner("demo", "p1") is None
@@ -135,6 +167,10 @@ def test_execution_scope_keeps_dependencies_holds_and_other_phases_out(tmp_path)
     ready.freeze_exception = True
     ready.freeze_exception_reason = "owner-approved repair"
     assert [task.id for task in registry.executable_tasks("alice", tasks, phases)] == ["DM-2"]
+    ready.status = Status.DONE
+    advanced = registry.advance_assignment(admin, "alice", "p2", tasks,
+                                            expected_generation=1)
+    assert (advanced.phase, advanced.generation) == ("p2", 2)
 
 
 def test_cross_project_dependency_remains_a_blocker_without_disclosing_details(tmp_path):
@@ -151,3 +187,129 @@ def test_cross_project_dependency_remains_a_blocker_without_disclosing_details(t
     )
     assert information == {"blockers": (), "inaccessible_blocker_count": 1}
     assert "PV-1" not in repr(information)
+
+
+def test_real_dispatch_enforces_authenticated_owner_cursor_and_generation(sched):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    token = registry.enroll_administrator("garden", "alice", "alice-machine")
+    alice = registry.authenticate(token)
+    assert alice is not None
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    sched.store.save(task)
+    assignment = registry.set_assignment(alice, "alice", task.product, task.phase)
+
+    unbound = Scheduler(sched.store, github=sched.github)
+    with pytest.raises(RuntimeError, match="identity-less scheduling"):
+        unbound.dispatch(task, runner=ManualRunner({}), worktree=False)
+
+    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    with pytest.raises(RuntimeError, match="stale assignment"):
+        bound.dispatch(task, runner=ManualRunner({}), worktree=False,
+                       assignment_generation=assignment.generation - 1)
+    run = bound.dispatch(task, runner=ManualRunner({}), worktree=False,
+                         assignment_generation=assignment.generation)
+    assert run.task_id == task.id
+
+
+def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutation(sched):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    token = registry.enroll_administrator("garden", "alice", "alice-machine")
+    alice = registry.authenticate(token)
+    assert alice is not None
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    task.status = Status.FAILED
+    sched.store.save(task)
+    assignment = registry.set_assignment(alice, "alice", task.product, task.phase)
+
+    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    with pytest.raises(RuntimeError, match="stale assignment"):
+        bound.retry(task, assignment_generation=assignment.generation - 1)
+    assert task.status == Status.FAILED
+
+    paused = registry.set_assignment(
+        alice, "alice", task.product, task.phase, enabled=False,
+        expected_generation=assignment.generation,
+    )
+    with pytest.raises(PermissionError, match="paused"):
+        bound.retry(task, assignment_generation=paused.generation)
+    assert task.status == Status.FAILED
+
+    other_phase = sched.store.root / task.product / "p2"
+    other_phase.mkdir()
+    (other_phase / "goals.md").write_text("# P2\n")
+    wrong_phase = registry.set_assignment(
+        alice, "alice", task.product, "p2", expected_generation=paused.generation,
+    )
+    with pytest.raises(PermissionError, match="outside"):
+        bound.retry(task, assignment_generation=wrong_phase.generation)
+    assert task.status == Status.FAILED
+
+    registry.clear_assignment(alice, "alice", expected_generation=wrong_phase.generation)
+    with pytest.raises(PermissionError, match="no execution assignment"):
+        bound.retry(task)
+    assert task.status == Status.FAILED
+
+    current = registry.set_assignment(alice, "alice", task.product, task.phase,
+                                      expected_generation=wrong_phase.generation + 1)
+    bound.retry(task, assignment_generation=current.generation)
+    assert task.status == Status.READY
+
+
+def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-machine")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member")
+    alice_token = registry.issue_installation(admin, "alice", "alice-machine")
+    alice = registry.authenticate(alice_token)
+    assert alice is not None
+    phase = sched.store.phase("demo", "p1")
+    sched.store.set_phase_closed(phase, "2026-09-12")
+    sched.store.invalidate()
+    phase = sched.store.phase("demo", "p1")
+
+    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    with pytest.raises(PermissionError, match="explicit active phase owner"):
+        bound.reopen_phase(phase)
+    owner = registry.set_phase_owner(admin, phase.product, phase.name, "alice")
+    with pytest.raises(RuntimeError, match="stale phase owner"):
+        bound.reopen_phase(phase, owner_generation=owner.generation - 1)
+    bound.reopen_phase(phase, owner_generation=owner.generation)
+    assert not bound.store.phase(phase.product, phase.name).closed
+
+
+def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparation(sched, monkeypatch):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-machine")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member")
+    alice_token = registry.issue_installation(admin, "alice", "alice-machine")
+    alice = registry.authenticate(alice_token)
+    assert alice is not None
+    phase = sched.store.phase("demo", "p1")
+    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    run = object()
+    calls = []
+
+    monkeypatch.setattr(
+        bound, "prepare_persona_phase",
+        lambda *args, **kwargs: calls.append("prepare") or {"run": run},
+    )
+    monkeypatch.setattr(bound, "_commit_prepared_aux", lambda payload: calls.append("commit"))
+    monkeypatch.setattr(bound, "_launch_prepared_aux", lambda payload: calls.append("launch"))
+
+    with pytest.raises(PermissionError, match="explicit active phase owner"):
+        bound.dispatch_persona_phase(phase, "security")
+    assert calls == []
+
+    registry.set_phase_owner(admin, phase.product, phase.name, "alice")
+    assert bound.dispatch_persona_phase(phase, "security") is run
+    assert calls == ["prepare", "commit", "launch"]

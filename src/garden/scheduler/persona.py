@@ -51,6 +51,7 @@ class PersonaMixin:
     def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
                                min_severity: str = "low", run_id: str = "") -> Run:
         self.require_execution_authority()
+        self.require_phase_authority(phase)
         prepared = self.prepare_persona_phase(phase, name, file_tasks, min_severity, run_id)
         self._commit_prepared_aux(prepared)
         self._launch_prepared_aux(prepared)
