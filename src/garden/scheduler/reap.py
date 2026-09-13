@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -1492,6 +1493,45 @@ class ReapMixin:
             == hashlib.sha256(run.lease_token.encode()).hexdigest()
         )
 
+    def _retire_terminal_ssh_recovery(self, task: Task | None, run: Run,
+                                      rep: TickReport) -> bool:
+        """Close an old SSH record after a terminal task outlives its collector.
+
+        A legacy recovery probe can prove that its identity has no remote process while
+        retaining a remote worktree as recovery evidence.  That is not a worker which
+        should keep a slot indefinitely once the task has independently become terminal.
+        Limit this to the probe's explicit, identity-matched observation: uncertainty or
+        a live remote process must remain fenced by the ordinary SSH recovery path.
+        """
+        if task is None or not task.status.terminal or run.runner != "ssh":
+            return False
+        try:
+            ssh_state = json.loads((run.path / "ssh-state.json").read_text())
+        except (OSError, ValueError):
+            return False
+        artifacts = ssh_state.get("artifacts") or {}
+        collector_stopped = run.pid is None or not pid_alive(run.pid)
+        remote_stopped = (
+            ssh_state.get("held_kind") == "legacy_artifacts_present"
+            and ssh_state.get("process_exists") is False
+            and artifacts.get("session_exists") is False
+        )
+        if not (collector_stopped and remote_stopped):
+            return False
+
+        note = "retired: task is terminal and SSH recovery confirmed no local or remote process"
+        run.status = "superseded"
+        run.finished_at = now_iso()
+        run.error = f"{run.error} ({note})" if run.error else note
+        run.save()
+        self.events.emit("run_finished", run.task_id, run=run.run_id, mode=run.mode,
+                         harness=run.harness, model=run.model, status=run.status,
+                         cost_usd=run.cost_usd, usage=run.usage, retired=True,
+                         terminal_task=True)
+        self.log(f"{run.task_id}: {run.mode} SSH run {run.run_id} retired; {note}")
+        rep.transitions.append(f"{run.task_id} {run.mode} run {run.run_id} retired (terminal task)")
+        return True
+
     def reap_dead_runs(self, rep: TickReport) -> None:
         """Close any `running` run record whose process has already exited and that no
         pointer above (`_owned_run_ids`) still leads a reap to: the generalisation of the
@@ -1504,10 +1544,12 @@ class ReapMixin:
         for run in self.runs.active():
             if run.runner == "manual":
                 continue
+            task = tasks.get(run.task_id)
+            if self._retire_terminal_ssh_recovery(task, run, rep):
+                continue
             if run.runner == "ssh":
                 # Lost collectors remain owned remote work, including after the task's
                 # status changes. They are reconciled, never reaped as vanished workers.
-                task = tasks.get(run.task_id)
                 if task is None and not run.process_finished():
                     continue
                 if run.preparer_pid is not None and pid_alive(run.preparer_pid):
@@ -1516,7 +1558,6 @@ class ReapMixin:
                     run, self.runner_for(task, run.runner, run.harness)
                 ):
                     continue
-            task = tasks.get(run.task_id)
             terminal_remote = bool(
                 run.runner == "remote" and task is not None and task.status.terminal
                 and self._accepted_terminal_remote_result(run)

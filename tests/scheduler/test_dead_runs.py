@@ -9,7 +9,9 @@ import os
 import pytest
 
 from garden.model import Status
-from garden.scheduler import TickReport
+from garden.now1 import snapshot
+from garden.scheduler import Scheduler, TickReport
+from garden.store import Store
 from tests.scheduler.conftest import stub_finished_run
 
 
@@ -38,6 +40,33 @@ def _finished_remote_run(sched, *, task_status=Status.DONE, exit_code=0):
         "session_id": "remote-session",
     }))
     (run.path / "exit_code").write_text(str(exit_code))
+    return task, run
+
+
+def _legacy_ssh_recovery(sched, *, task_status=Status.DONE, process_exists=False, session_exists=False):
+    """A stopped collector's identity-matched legacy recovery observation."""
+    task = sched.store.task("DM-001")
+    task.status = task_status
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "ssh", mode="work")
+    run.host = "worker-1"
+    run.error = "legacy recovery retained the remote worktree"
+    run.recovery_artifacts = [{"name": "uncommitted work", "restore": "git stash apply abc"}]
+    run.env_snapshot["ssh_tmux_session"] = "garden-DM-001-legacy"
+    run.save()
+    (run.path / "ssh-request.json").write_text("{}")
+    (run.path / "transport.log").write_text("collector diagnostic\n")
+    (run.path / "ssh-state.json").write_text(json.dumps({
+        "status": "held",
+        "held_kind": "legacy_artifacts_present",
+        "reason": "legacy recovery retained ownership because remote artifacts remain: worktree_exists",
+        "process_exists": process_exists,
+        "artifacts": {
+            "directory_exists": True,
+            "worktree_exists": True,
+            "session_exists": session_exists,
+        },
+    }))
     return task, run
 
 
@@ -285,6 +314,58 @@ def test_remote_result_for_running_task_stays_with_normal_reap(sched):
 
     current = next(r for r in sched.runs.runs_for(task.id) if r.run_id == run.run_id)
     assert current.status == "running"
+    assert not rep.transitions
+
+
+@pytest.mark.parametrize("task_status", [Status.DONE, Status.CANCELLED, Status.WONT_DO])
+def test_terminal_task_retires_dormant_legacy_ssh_recovery_and_frees_projections(
+    sched, task_status
+):
+    task, run = _legacy_ssh_recovery(sched, task_status=task_status)
+    diagnostic = run.error
+    recovery_artifacts = run.recovery_artifacts
+    ssh_state = (run.path / "ssh-state.json").read_text()
+    transport_log = (run.path / "transport.log").read_text()
+
+    rep = TickReport()
+    sched.reap_dead_runs(rep)
+
+    retired = next(r for r in sched.runs.runs_for(task.id) if r.run_id == run.run_id)
+    assert retired.status == "superseded" and retired.finished_at
+    assert diagnostic in retired.error
+    assert retired.host == "worker-1"
+    assert retired.recovery_artifacts == recovery_artifacts
+    assert (run.path / "ssh-state.json").read_text() == ssh_state
+    assert (run.path / "transport.log").read_text() == transport_log
+    assert any(
+        f"{run.run_id} retired (terminal task)" in transition
+        for transition in rep.transitions
+    )
+    assert sched.slots_free() == sched.effective_max_parallel()
+    now = snapshot(sched.store, sched)
+    assert not sched.runs.active()
+    assert not sched.active_runs()
+    assert sched.maintenance_readiness()["live"] == []
+    assert not now["now"]
+    assert now["garden"]["worker_busy"] == 0
+
+    # A fresh scheduler sees the persisted terminal record and does not retire it twice.
+    restarted = Scheduler(Store(sched.store.root))
+    second = TickReport()
+    restarted.reap_dead_runs(second)
+    assert not second.transitions
+
+
+def test_terminal_task_keeps_legacy_ssh_recovery_fenced_while_remote_process_is_live(sched):
+    task, run = _legacy_ssh_recovery(sched, process_exists=True, session_exists=True)
+
+    rep = TickReport()
+    sched.reap_dead_runs(rep)
+
+    current = next(r for r in sched.runs.runs_for(task.id) if r.run_id == run.run_id)
+    assert current.status == "running"
+    assert sched.slots_free() == sched.effective_max_parallel() - 1
+    assert sched.state.get(task.id)["ssh_recovery_hold"]
     assert not rep.transitions
 
 
