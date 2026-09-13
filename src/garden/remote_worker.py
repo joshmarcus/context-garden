@@ -1089,11 +1089,27 @@ def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
     }
     if execution_dir is not None:
         finish_payload["validation_receipts"] = _validation_receipts(execution_dir)
-    if markers:
+    if run.get("restricted_data_authorized"):
         from .restricted_data import validate_restricted_markers
 
-        # The marker set is persisted in the active-claim handoff, so restart recovery
-        # cannot bypass the same final export boundary.
+        exports = set(str(value) for value in run.get("restricted_evidence_exports") or [])
+        if "transcript" not in exports:
+            finish_payload["final_text"] = ""
+        if "result" not in exports:
+            finish_payload["result"] = {
+                "status": "insufficient_evidence",
+                "evidence": {
+                    "kind": "validation-state",
+                    "state": "insufficient",
+                    "summary": "Restricted result evidence was not exported.",
+                },
+            }
+            finish_payload["error"] = ""
+        if "validation-state" not in exports:
+            finish_payload.pop("validation_receipts", None)
+        # The policy and marker set are persisted in the active-claim handoff, so restart
+        # recovery cannot bypass the same content-class or marker boundary. Validation is
+        # intentionally applied even when the configured marker set is empty.
         validate_restricted_markers(finish_payload, markers)
     safe_finish_payload = AuthorityRedactor(()).redact_data(finish_payload)
     pending_result = _persist_pending_result(root, str(run["id"]), safe_finish_payload)
@@ -1292,6 +1308,9 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                     run["restricted_data_authorized"] = True
                     run["restricted_transcript_export"] = (
                         "transcript" in restricted_authorization.evidence_exports
+                    )
+                    run["restricted_evidence_exports"] = list(
+                        restricted_authorization.evidence_exports
                     )
                     run["restricted_artifact_boundary"] = (
                         restricted_authorization.artifact_boundary
