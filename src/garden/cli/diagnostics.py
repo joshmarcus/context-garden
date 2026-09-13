@@ -312,6 +312,7 @@ def doctor():
     from ..github import GitHub
     from ..graph import validate as _validate
     from ..host_identity import tracked_connection_target_fields
+    from ..run_supervisor import describe_runtime_dir_problem
     from ..runner import BUILTIN_NAMES, adapter_registration_problem, get_runner
     from ..runner.base import scrubbed_env
 
@@ -397,6 +398,31 @@ def doctor():
         harness_names.add("openrouter")
     runner_names = {str(store.config.get("runner") or "local")} | {
         str(p.get("runner")) for p in store.config.data.get("products", {}).values() if p and p.get("runner")}
+    def check_runtime_env(runtime_env: dict[str, str], boundary: str) -> None:
+        raw_runtime_dir = runtime_env.get("XDG_RUNTIME_DIR")
+        if raw_runtime_dir and runtime_env.get("GARDEN_XDG_RUNTIME_DIR_EXPLICIT") == "1":
+            reason = describe_runtime_dir_problem(raw_runtime_dir, os.getuid())
+            if reason:
+                console.print(
+                    f"[red]runtime directory: XDG_RUNTIME_DIR={raw_runtime_dir!r} is explicitly "
+                    f"configured ({boundary}) but {reason}[/red]  "
+                    "(fix: unset it there, or point it at a private mode-0700 directory this worker owns)"
+                )
+                fail("runtime directory")
+
+    try:
+        check_runtime_env(scrubbed_env(store.config.data), "worker_env.pass")
+        for product in (store.config.data.get("products") or {}):
+            setup = store.config.product_setup(str(product))
+            if "XDG_RUNTIME_DIR" in (setup.get("env") or {}):
+                check_runtime_env(
+                    scrubbed_env(store.config.data, setup),
+                    f"products.{product}.setup.env",
+                )
+    except Exception as exc:  # policy errors are reported without source paths/content
+        console.print(f"[red]runtime directory: worker configuration unavailable "
+                      f"({type(exc).__name__}: {exc})[/red]")
+        fail("runtime directory")
     for hn in sorted(harness_names):
         h = store.config.harness(hn)
         if h.api_key_env and not os.environ.get(h.api_key_env):

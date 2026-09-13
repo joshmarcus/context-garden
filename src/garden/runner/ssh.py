@@ -186,6 +186,11 @@ garden_scrub() {{
   export GARDEN_TASK_ID={task} GARDEN_RUN_ID={run_id} GARDEN_ROOT="$WT/.garden-no-live-garden"
   if [ -d "$GARDEN_RUN_DIR/{reference_dir}" ]; then export GARDEN_CONTEXT_DIR="$GARDEN_RUN_DIR/{reference_dir}"; fi
 {setup_env}
+  # GARDEN_ENV_ALLOW no longer keeps XDG_RUNTIME_DIR by default (runner.base.PASS_ENV), so
+  # its survival here always means worker_env.pass or setup.env named it explicitly for this
+  # host; run_supervisor._private_runtime_dir uses this marker to fail closed on an invalid
+  # value rather than silently falling back to its usual validated default.
+  if [ -n "${{XDG_RUNTIME_DIR:-}}" ]; then export GARDEN_XDG_RUNTIME_DIR_EXPLICIT=1; fi
   export GARDEN_VALIDATION_TIMEOUT_SECONDS={validation_timeout}
 }}
 # Reconciliation is per run, bounded, and followed by the same clean/branch readiness

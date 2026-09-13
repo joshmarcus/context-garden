@@ -1557,6 +1557,104 @@ def test_runtime_leases_accept_the_system_tmp_directory(monkeypatch):
     assert root.stat().st_mode & 0o777 == 0o700
 
 
+def test_describe_runtime_dir_problem_covers_every_defect(tmp_path):
+    """`describe_runtime_dir_problem` names the reason so a fallback decision and an
+    explicit-configuration error can both reuse the identical diagnosis."""
+    import garden.run_supervisor as supervisor
+
+    uid = os.getuid()
+    valid = tmp_path / "valid"
+    valid.mkdir(mode=0o700)
+    assert supervisor.describe_runtime_dir_problem(str(valid), uid) is None
+
+    missing = tmp_path / "does-not-exist-on-this-host"
+    assert "unavailable" in supervisor.describe_runtime_dir_problem(str(missing), uid)
+
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    assert "not a real directory" in supervisor.describe_runtime_dir_problem(str(link), uid)
+
+    not_a_dir = tmp_path / "plain-file"
+    not_a_dir.write_text("x")
+    assert "not a real directory" in supervisor.describe_runtime_dir_problem(str(not_a_dir), uid)
+
+    foreign = tmp_path / "foreign"
+    foreign.mkdir(mode=0o700)
+    assert "not a user-owned directory" in supervisor.describe_runtime_dir_problem(str(foreign), uid + 1)
+
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    loose.chmod(0o755)  # mkdir(mode=...) is itself narrowed by umask; chmod bypasses it
+    assert "not private" in supervisor.describe_runtime_dir_problem(str(loose), uid)
+
+
+@pytest.mark.parametrize("problem", ["missing", "wrong_mode", "symlink"])
+def test_private_runtime_dir_falls_back_from_an_ambient_invalid_value(tmp_path, monkeypatch, problem):
+    """a stale `XDG_RUNTIME_DIR` this process merely inherited — never configured for
+    this worker — must not silently zero out heavy-slot capacity (`heavy_conflict` stuffed with
+    a raw exception string); it falls back to the same validated default used when unset."""
+    import garden.run_supervisor as supervisor
+
+    if problem == "missing":
+        broken = tmp_path / "controller-only-path-absent-on-this-worker"
+    elif problem == "wrong_mode":
+        broken = tmp_path / "loose"
+        broken.mkdir()
+        broken.chmod(0o755)  # mkdir(mode=...) is itself narrowed by umask; chmod bypasses it
+    else:
+        real = tmp_path / "real"
+        real.mkdir(mode=0o700)
+        broken = tmp_path / "link"
+        broken.symlink_to(real)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(broken))
+    monkeypatch.delenv("GARDEN_XDG_RUNTIME_DIR_EXPLICIT", raising=False)
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    monkeypatch.setattr(supervisor, "_sticky_tmp_base", lambda uid: fallback)
+
+    root = supervisor._private_runtime_dir()
+
+    # Use an isolated equivalent of the validated /tmp base so the authoritative capacity
+    # assertion cannot alter the real cross-process capacity file used by concurrent tests.
+    assert root.parent == fallback
+    assert root.name == f"garden-{os.getuid()}"
+    assert root.stat().st_mode & 0o777 == 0o700
+    assert supervisor._authoritative_limit(2) == (2, None)
+
+
+def test_private_runtime_dir_fails_closed_on_an_explicit_invalid_value(tmp_path, monkeypatch):
+    """an operator who names XDG_RUNTIME_DIR in worker_env.pass or setup.env for this
+    exact worker gets a clear, actionable error identifying that configuration boundary, not a
+    silent fallback and not the old bare `heavy_conflict` exception string."""
+    import garden.run_supervisor as supervisor
+
+    broken = tmp_path / "missing"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(broken))
+    monkeypatch.setenv("GARDEN_XDG_RUNTIME_DIR_EXPLICIT", "1")
+
+    with pytest.raises(RuntimeError, match="explicitly configured for this worker"):
+        supervisor._private_runtime_dir()
+    with pytest.raises(RuntimeError, match="explicitly configured for this worker"):
+        supervisor._authoritative_limit(1)
+
+
+def test_private_runtime_dir_explicit_valid_value_is_unchanged(tmp_path, monkeypatch):
+    """marking a *valid* XDG_RUNTIME_DIR explicit must not change its behaviour —
+    the explicit/ambient distinction only matters once the value is invalid."""
+    import garden.run_supervisor as supervisor
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("GARDEN_XDG_RUNTIME_DIR_EXPLICIT", "1")
+
+    root = supervisor._private_runtime_dir()
+    assert root == runtime / f"garden-{os.getuid()}"
+    assert supervisor._authoritative_limit(1) == (1, None)
+
+
 @pytest.mark.parametrize("name", [
     "garden-heavy-test-{uid}-capacity.json",
     "garden-heavy-test-{uid}-capacity.lock",
@@ -1805,6 +1903,24 @@ def test_ssh_runner_sets_garden_root(sched, fake_github):
     remote_sh = (run.path / "remote.sh").read_text()
     assert 'GARDEN_ROOT="$WT/.garden-no-live-garden"' in remote_sh
     assert "GARDEN_VALIDATION_TIMEOUT_SECONDS=900" in remote_sh
+
+
+@pytest.mark.needs_remote_clone
+def test_ssh_remote_script_marks_an_explicit_xdg_runtime_dir(sched, fake_github):
+    """garden_scrub filters the remote shell's own ambient environment through the
+    same allowlist as the local scrubbed_env. Since that allowlist no longer keeps
+    XDG_RUNTIME_DIR by default, its survival on the remote side always means worker_env.pass
+    or setup.env named it for this exact host — the remote script must mark that the same way
+    scrubbed_env does, so run_supervisor._private_runtime_dir fails closed instead of falling
+    back on an invalid value there too."""
+    sched.cfg.data.setdefault("worker_env", {})["pass"] = ["XDG_RUNTIME_DIR"]
+    t = sched.store.task("DM-001")
+    t.runner = "ssh"
+    sched.store.save(t)
+    sched.tick()
+    run = sched.runs.latest("DM-001")
+    remote_sh = (run.path / "remote.sh").read_text()
+    assert 'if [ -n "${XDG_RUNTIME_DIR:-}" ]; then export GARDEN_XDG_RUNTIME_DIR_EXPLICIT=1; fi' in remote_sh
 
 
 @pytest.mark.needs_remote_clone

@@ -38,9 +38,21 @@ def run_temp_dir(work_dir: Path | str, run: Run) -> Path:
 # in garden.yaml adds names (`AWS_*` for a Bedrock-backed harness, a private registry token
 # for `setup.command`, or `HOME` to restore the operator's home); `"*"` restores full
 # inheritance.
+#
+# `XDG_RUNTIME_DIR` is deliberately not part of the default `XDG_*` passthrough: unlike the
+# other XDG base directories (plain cache/config paths), it is the root
+# `run_supervisor._private_runtime_dir` uses for security-sensitive shared-lease bookkeeping,
+# and a value that is merely ambient in the constructing process's environment may name a path
+# that does not exist, or means something else, on the machine that actually runs the worker.
+# An operator who wants a specific worker to keep an inherited `XDG_RUNTIME_DIR` (or set one via
+# `setup.env`) opts in by naming it explicitly; `scrubbed_env` then marks it with
+# `GARDEN_XDG_RUNTIME_DIR_EXPLICIT` so `_private_runtime_dir` fails closed on an invalid value
+# instead of silently falling back to its usual validated default.
 PASS_ENV: tuple[str, ...] = (
     "PATH", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "COLUMNS", "LINES",
-    "LANG", "LANGUAGE", "LC_*", "TZ", "TMPDIR", "TMP", "TEMP", "XDG_*",
+    "LANG", "LANGUAGE", "LC_*", "TZ", "TMPDIR", "TMP", "TEMP",
+    "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
+    "XDG_CONFIG_DIRS", "XDG_DATA_DIRS",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
     "ANTHROPIC_*", "CLAUDE_*",   # the claude harness's own credentials and settings
@@ -78,6 +90,15 @@ def pass_env_patterns(config: dict[str, Any] | None) -> list[str]:
     the remote login environment the same way, in shell)."""
     extra = [str(p) for p in (((config or {}).get("worker_env") or {}).get("pass") or []) if str(p)]
     return [*PASS_ENV, *extra]
+
+
+def xdg_runtime_dir_explicit(config: dict[str, Any] | None) -> bool:
+    """Whether `worker_env.pass` opts this target into keeping `XDG_RUNTIME_DIR`, as opposed
+    to it merely surviving via the built-in `PASS_ENV` defaults (which exclude it). A worker's
+    own `setup.env.XDG_RUNTIME_DIR` is unconditionally explicit and is marked separately, in
+    `scrubbed_env` and the ssh runner's remote script, once the value it carries is known."""
+    extra = [str(p) for p in (((config or {}).get("worker_env") or {}).get("pass") or []) if str(p)]
+    return any(fnmatch.fnmatchcase("XDG_RUNTIME_DIR", pattern) for pattern in extra)
 
 
 def worker_home(worktree: Path | str | None) -> str:
@@ -336,6 +357,12 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     env.update(_no_fsmonitor_env())
     for k, v in ((setup or {}).get("env") or {}).items():
         env[str(k)] = str(v)
+    # XDG_RUNTIME_DIR is excluded from PASS_ENV's default passthrough (see the comment above
+    # it), so its presence here always means the operator explicitly opted this worker into
+    # it — either via worker_env.pass or setup.env. run_supervisor._private_runtime_dir uses
+    # this marker to fail closed on an invalid value instead of silently falling back.
+    if env.get("XDG_RUNTIME_DIR"):
+        env["GARDEN_XDG_RUNTIME_DIR_EXPLICIT"] = "1"
     from ..validation import enforce_validation_policy_env
 
     enforce_validation_policy_env(env)

@@ -718,6 +718,91 @@ def test_doctor_success_with_valid_setup(garden, monkeypatch, _gh_available):
         assert "below doctor.min_free_mb=2048 MB" in r.output
 
 
+def test_doctor_flags_an_explicitly_configured_invalid_runtime_dir(garden, monkeypatch, _gh_available):
+    """an operator who names XDG_RUNTIME_DIR in worker_env.pass or setup.env for this
+    worker, and whose value turns out unusable here (e.g. a controller-only path), gets an
+    actionable doctor diagnostic identifying that configuration boundary — not a silent
+    heavy_limit=0 discovered only later, in scheduler status."""
+    import subprocess
+    from types import SimpleNamespace
+    from unittest import mock
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config.setdefault("worker_env", {})["pass"] = ["XDG_RUNTIME_DIR"]
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(garden / "controller-only-path-absent-here"))
+    monkeypatch.setattr("garden.cli.diagnostics.shutil.disk_usage", lambda path: SimpleNamespace(free=1024 * 1024))
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "config" in cmd and "git" in cmd:
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    elif "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+                elif _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                elif "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
+                elif "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
+
+        mock_run.side_effect = side_effect
+        r = run(garden, "doctor")
+
+    assert r.exit_code == 1, r.output
+    squeezed = " ".join(r.output.split())
+    assert "failed: runtime directory" in squeezed
+    assert "is explicitly configured (worker_env.pass) but" in squeezed
+    assert "runtime directory is unavailable" in squeezed
+
+
+def test_doctor_flags_product_setup_invalid_runtime_dir(garden, monkeypatch, _gh_available):
+    import subprocess
+    from types import SimpleNamespace
+    from unittest import mock
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    invalid = garden / "product-runtime-absent-here"
+    config["products"]["demo"]["setup"] = {"env": {"XDG_RUNTIME_DIR": str(invalid)}}
+    config_path.write_text(yaml.safe_dump(config))
+    monkeypatch.setattr(
+        "garden.cli.diagnostics.shutil.disk_usage",
+        lambda path: SimpleNamespace(free=1024 * 1024),
+    )
+
+    with mock.patch("subprocess.run") as mock_run:
+        def side_effect(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                cmd_str = " ".join(cmd)
+                if "config" in cmd and "git" in cmd:
+                    if "user.email" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="test@example.com\n")
+                    if "user.name" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, stdout="Test User\n")
+                if _is_claude_login_probe(cmd):
+                    return _claude_probe_result(cmd, logged_in=True)
+                if "auth" in cmd and "status" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0)
+                if "api" in cmd and "user" in cmd and "gh" in cmd_str:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="testuser\n")
+            raise RuntimeError(f"Unexpected subprocess.run call: {cmd}")
+
+        mock_run.side_effect = side_effect
+        result = run(garden, "doctor")
+
+    assert result.exit_code == 1, result.output
+    squeezed = " ".join(result.output.split())
+    assert "failed: runtime directory" in squeezed
+    assert "is explicitly configured (products.demo.setup.env) but" in squeezed
+    assert "runtime directory is unavailable" in squeezed
+
+
 def test_doctor_probes_and_names_the_configured_enterprise_host(
     garden, monkeypatch, _gh_available,
 ):
