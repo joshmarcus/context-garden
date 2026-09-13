@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import tempfile
 import uuid
@@ -11,7 +12,7 @@ import httpx
 import typer
 import yaml
 
-from ..members import MemberRegistry
+from ..members import MemberRegistry, operating_system_username
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from .common import PANEL_LOOP, _store, app, console, err
 
@@ -31,6 +32,13 @@ def coordinator(
     authentication: str = typer.Option("credential", help="credential or temporary-username"),
 ) -> None:
     """Serve this garden's authenticated multiplayer coordination endpoint."""
+    if authentication == "temporary-username":
+        try:
+            loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if not loopback:
+            raise typer.BadParameter("temporary-username authentication requires a loopback host")
     import uvicorn
 
     from ..coordination_api import create_coordination_app
@@ -110,9 +118,15 @@ def connect(garden_id: str, coordinator_url: str, member_id: str, installation_i
     _save_local_enrollment(store.root, {
         "garden_id": garden_id, "coordinator_url": coordinator_url,
         "member_id": member_id, "installation_id": installation_id,
-        "credential_env": credential_env,
+        "authentication": "credential", "credential_env": credential_env,
     })
     console.print(f"connected {view.snapshot['member_id']} ({view.snapshot['role']}) to {garden_id}")
+
+
+@members_app.command("current-username")
+def current_username() -> None:
+    """Print the OS account name used by temporary username authentication."""
+    typer.echo(operating_system_username())
 
 
 @members_app.command("connect-username")

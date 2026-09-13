@@ -51,7 +51,8 @@ temporary secretless mode. First admit a member whose Garden member ID exactly m
 account name, using the normal administrator credential:
 
 ```sh
-garden members add "$USER" --role member --credential-env GARDEN_ADMIN_CREDENTIAL
+MEMBER_ID="$(garden members current-username)"
+garden members add "$MEMBER_ID" --role member --credential-env GARDEN_ADMIN_CREDENTIAL
 garden members coordinator --garden /path/to/coordinator-garden --host 127.0.0.1 --port 8766 \
   --authentication temporary-username
 ```
@@ -73,8 +74,9 @@ assignment from the existing registry. Unknown or disabled accounts, revoked ins
 installation previously bound to another account are rejected.
 
 This is a temporary trusted-development identity assertion, not remote cryptographic
-authentication. It should be used only when the loopback coordinator and local client run under
-the same trusted OS account. It does not accept a username from an HTTP query, form, or header.
+authentication. The coordinator refuses this mode on a non-loopback host; the coordinator and
+local client must run under the same trusted OS account. It does not accept a username from an
+HTTP query, form, or header.
 Credential mode remains the default, still requires a valid bearer token, and never falls back to
 username mode; non-loopback coordinators retain the HTTPS requirements above.
 

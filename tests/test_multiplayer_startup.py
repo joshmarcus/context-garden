@@ -123,6 +123,8 @@ def test_documented_coordinator_command_connects_disposable_installation(
             "alex", "alex-laptop", "--credential-env", "GARDEN_ALEX_CREDENTIAL",
         )
         assert connected.exit_code == 0, connected.output
+        enrollment = yaml.safe_load((local_garden / "garden.local.yaml").read_text())
+        assert enrollment["multiplayer"]["authentication"] == "credential"
         status = _run(local_garden, "members", "status")
         assert status.exit_code == 0, status.output
         assert "identity: alex (member)" in status.output
@@ -189,6 +191,15 @@ def test_temporary_username_coordinator_and_cli_connect_without_credential(
     finally:
         os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=5)
+
+
+def test_temporary_username_coordinator_refuses_non_loopback(garden):
+    result = _run(
+        garden, "members", "coordinator", "--garden", str(garden),
+        "--host", "0.0.0.0", "--authentication", "temporary-username",
+    )
+    assert result.exit_code == 2
+    assert "requires a loopback host" in result.output
 
 
 def test_unassigned_member_tick_does_not_create_scheduler_state(garden, monkeypatch):

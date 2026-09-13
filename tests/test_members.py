@@ -88,6 +88,28 @@ def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_in
         headers={"Authorization": f"Bearer {admin_token}"},
     ).status_code == 401
 
+    registry.add_member(admin, "bob", "member", "assigned", ("other",))
+    monkeypatch.setattr("garden.coordination_api.operating_system_username", lambda: "bob")
+    assert username.post(
+        enrollment_path, json={"installation_id": "bob-local"},
+    ).status_code == 200
+    bob = username.get(
+        "/v1/gardens/garden/snapshot",
+        headers={"Authorization": "Garden-Temporary-Username bob-local"},
+    )
+    assert bob.status_code == 200
+    assert bob.json()["member_id"] == "bob"
+    assert bob.json()["projects"] == ["other"]
+    assert username.get(
+        "/v1/gardens/garden/snapshot",
+        headers={"Authorization": "Garden-Temporary-Username alice-local"},
+    ).status_code == 401
+    registry.set_member_active(admin, "bob", False)
+    assert username.get(
+        "/v1/gardens/garden/snapshot",
+        headers={"Authorization": "Garden-Temporary-Username bob-local"},
+    ).status_code == 401
+
 
 def test_enrollment_credentials_are_private_stable_and_garden_bound(tmp_path):
     registry, token, alice = _registry(tmp_path)
