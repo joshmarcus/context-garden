@@ -21,6 +21,30 @@ def _registry() -> MemberRegistry:
     return MemberRegistry(_store().config.garden_dir)
 
 
+@members_app.command("coordinator")
+def coordinator(
+    garden: Path = typer.Option(..., exists=True, file_okay=False, resolve_path=True),
+    host: str = typer.Option("127.0.0.1"),
+    port: int = typer.Option(8766, min=1, max=65535),
+) -> None:
+    """Serve this garden's authenticated multiplayer coordination endpoint."""
+    import uvicorn
+
+    from ..coordination_api import create_coordination_app
+    from ..store import Store
+    from ..web.app import multiplayer_tls_files
+
+    store = Store(garden)
+    tls = multiplayer_tls_files(store, host, require_multiplayer=True)
+    uvicorn.run(
+        create_coordination_app(store.config.garden_dir),
+        host=host,
+        port=port,
+        ssl_certfile=tls[0] if tls else None,
+        ssl_keyfile=tls[1] if tls else None,
+    )
+
+
 def _actor(registry: MemberRegistry, credential_env: str):
     token = os.environ.get(credential_env, "")
     actor = registry.authenticate(token)
@@ -59,7 +83,7 @@ def _save_local_enrollment(root: Path, values: dict[str, str]) -> None:
 def enroll_administrator(garden_id: str, member_id: str, installation_id: str) -> None:
     """Bootstrap an empty garden; save the printed credential in private local storage."""
     token = _registry().enroll_administrator(garden_id, member_id, installation_id)
-    console.print(token)
+    typer.echo(token)
 
 
 @members_app.command("connect")
@@ -131,7 +155,7 @@ def issue_installation(member_id: str, installation_id: str,
                        credential_env: str = typer.Option(...)) -> None:
     """Issue an installation and print its credential exactly once."""
     registry = _registry()
-    console.print(registry.issue_installation(
+    typer.echo(registry.issue_installation(
         _actor(registry, credential_env), member_id, installation_id,
     ))
 
@@ -140,7 +164,7 @@ def issue_installation(member_id: str, installation_id: str,
 def rotate_installation(installation_id: str, credential_env: str = typer.Option(...)) -> None:
     """Invalidate an installation's old secret and print its replacement once."""
     registry = _registry()
-    console.print(registry.rotate_installation(_actor(registry, credential_env), installation_id))
+    typer.echo(registry.rotate_installation(_actor(registry, credential_env), installation_id))
 
 
 @members_app.command("revoke-installation")

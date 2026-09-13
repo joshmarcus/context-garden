@@ -65,9 +65,12 @@ def _tojson(value: Any) -> Markup:
     return Markup(safe_json(value))
 
 
-def multiplayer_tls_files(store: Store, host: str) -> tuple[str, str] | None:
+def multiplayer_tls_files(
+    store: Store, host: str, *, require_multiplayer: bool = False,
+) -> tuple[str, str] | None:
     """Validate and return TLS material required by a non-local multiplayer listener."""
-    if not store.config.get("multiplayer.enabled", False) or loopback_listener(host):
+    if ((not require_multiplayer and not store.config.get("multiplayer.enabled", False))
+            or loopback_listener(host)):
         return None
     if store.config.get("multiplayer.transport", "") != "https":
         raise RuntimeError(
