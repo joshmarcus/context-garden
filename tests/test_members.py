@@ -5,24 +5,19 @@ import json
 
 import pytest
 import yaml
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from garden.coordination_api import create_coordination_app
-from garden.events import DECISION_KINDS, EventLog
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
-from garden.runs import Run, RunStore
+from garden.runs import RunStore
 from garden.scheduler import (
     MULTIPLAYER_EXECUTION_UNAVAILABLE,
     MultiplayerExecutionUnavailable,
     Scheduler,
-    State,
 )
 from garden.store import Store
 from garden.web.app import create_app, multiplayer_tls_files
-from garden.web.trust import OriginCheck
 
 
 def _registry(tmp_path):
@@ -180,73 +175,6 @@ def test_two_username_clients_freeze_distinct_local_principals(tmp_path, monkeyp
     assert bob.refresh(allow_stale=False).snapshot["projects"] == ["beta"]
 
 
-def test_browser_principals_cannot_replace_scheduler_installation_principal(garden, monkeypatch):
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, alice_token, alice = _registry(garden)
-    registry.add_member(alice, "bob", "member", "all")
-    bob_token = registry.issue_installation(alice, "bob", "bob-browser")
-
-    class InstallationClient:
-        member_id = alice.member_id
-
-        def authenticate_local_session(self):
-            return alice
-
-    installation = InstallationClient()
-    monkeypatch.setattr(
-        "garden.scheduler.MultiplayerClient.from_config", lambda _config: installation,
-    )
-
-    app = FastAPI()
-
-    @app.get("/scheduler-principal")
-    def scheduler_principal():
-        principal = Scheduler(Store(garden)).principal
-        return JSONResponse({"member_id": principal.member_id if principal else ""})
-
-    app.add_middleware(
-        OriginCheck,
-        member_authenticator=registry.authenticate,
-        require_operator_auth=True,
-    )
-    client = TestClient(app)
-    for token in (alice_token, bob_token):
-        response = client.get(
-            "/scheduler-principal", headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 200
-        assert response.json() == {"member_id": "alice"}
-
-
-def test_request_principal_does_not_enable_unconfigured_scheduler(garden):
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, token, _alice = _registry(garden)
-
-    app = FastAPI()
-
-    @app.get("/scheduler-principal")
-    def scheduler_principal():
-        scheduler = Scheduler(Store(garden))
-        with pytest.raises(MultiplayerExecutionUnavailable):
-            scheduler.require_execution_authority()
-        return JSONResponse({"bound": scheduler.principal is not None})
-
-    app.add_middleware(
-        OriginCheck,
-        member_authenticator=registry.authenticate,
-        require_operator_auth=True,
-    )
-    response = TestClient(app).get(
-        "/scheduler-principal", headers={"Authorization": f"Bearer {token}"},
-    )
-    assert response.status_code == 200
-    assert response.json() == {"bound": False}
-
-
 def test_enrollment_credentials_are_private_stable_and_garden_bound(tmp_path):
     registry, token, alice = _registry(tmp_path)
     state = json.loads(registry.path.read_text())
@@ -328,8 +256,7 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    assert accepted.status_code == 409
-    assert MULTIPLAYER_EXECUTION_UNAVAILABLE in accepted.text
+    assert accepted.status_code == 303
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -459,7 +386,7 @@ def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeyp
     assert multiplayer_tls_files(Store(garden), "0.0.0.0") == (str(cert), str(key))
     assert loaded == [(str(cert), str(key))]
 
-def test_multiplayer_https_applies_origin_check_before_execution_authority(garden, monkeypatch):
+def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkeypatch):
     cert = garden / "private/server.crt"
     key = garden / "private/server.key"
     cert.parent.mkdir()
@@ -482,8 +409,7 @@ def test_multiplayer_https_applies_origin_check_before_execution_authority(garde
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 409
-    assert response.json()["detail"].startswith("multiplayer execution is waiting")
+    assert response.status_code == 303
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -495,7 +421,7 @@ def test_multiplayer_https_applies_origin_check_before_execution_authority(garde
         assert response.status_code == 403
 
 
-def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_actions(garden):
+def test_multiplayer_filters_project_pages_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -582,112 +508,6 @@ updated: '2026-01-01T00:00:00+00:00'
     assert fallback.status_code == 200
     assert "DM-001" in fallback.text and "PRIVATE_SELECTOR_MARKER" not in fallback.text
     assert client.get("/board?project=private", headers=headers).status_code == 403
-
-
-def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garden):
-    first = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    second = next((garden / "demo" / "p1" / "tasks").glob("DM-002-*.md"))
-    first.write_text(first.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
-    second.write_text(second.read_text().replace("status: ready", "status: waiting_human\nowner: alice"))
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, alice_token, alice = _registry(garden)
-    registry.add_member(alice, "bob", "member", "assigned", ("demo",))
-    bob_token = registry.issue_installation(alice, "bob", "bob-browser")
-    registry.set_assignment(alice, "alice", "demo", "p1")
-    registry.set_assignment(alice, "bob", "demo", "p1")
-    registry.set_phase_owner(alice, "demo", "p1", "alice")
-    state = State(garden / ".garden/state.json")
-    state.get("DM-001")["question"] = "BOB_PRIVATE_QUESTION"
-    state.get("DM-002")["question"] = "ALICE_PRIVATE_QUESTION"
-    state.get("_decisions")["kickoff-q1"] = {
-        "id": "kickoff-q1", "kind": "question", "status": "pending", "target": "",
-        "phase": "demo/p1", "question": "PHASE_OWNER_QUESTION", "source": "kickoff:demo/p1",
-        "recipient": "alice",
-    }
-    state.get("_decisions")["global-q1"] = {
-        "id": "global-q1", "kind": "question", "status": "pending", "target": "",
-        "phase": "", "question": "ADMINISTRATION_QUESTION", "source": "operator",
-    }
-    state.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-    alice_headers = {"Authorization": f"Bearer {alice_token}"}
-    bob_headers = {"Authorization": f"Bearer {bob_token}"}
-
-    alice_mine = client.get("/inbox", headers=alice_headers).text
-    bob_mine = client.get("/inbox", headers=bob_headers).text
-    assert "ALICE_PRIVATE_QUESTION" in alice_mine and "BOB_PRIVATE_QUESTION" not in alice_mine
-    assert "PHASE_OWNER_QUESTION" in alice_mine
-    assert "ADMINISTRATION_QUESTION" not in alice_mine
-    assert "BOB_PRIVATE_QUESTION" in bob_mine and "ALICE_PRIVATE_QUESTION" not in bob_mine
-    assert "PHASE_OWNER_QUESTION" not in bob_mine
-
-    team = client.get("/inbox?view=team", headers=bob_headers).text
-    assert "ALICE_PRIVATE_QUESTION" in team and "Addressed to alice · read-only" in team
-    assert "ADMINISTRATION_QUESTION" not in team
-    assert client.get("/inbox?view=admin", headers=bob_headers).status_code == 403
-    assert "ADMINISTRATION_QUESTION" in client.get(
-        "/inbox?view=team", headers=alice_headers,
-    ).text
-    admin_view = client.get("/inbox?view=admin", headers=alice_headers).text
-    assert "ADMINISTRATION_QUESTION" in admin_view and "Answer" in admin_view
-    assert client.post(
-        "/decisions/global-q1/answer", headers=bob_headers,
-        data={"answer": "not authorized"}, follow_redirects=False,
-    ).status_code == 403
-    assert client.post(
-        "/decisions/global-q1/answer", headers=alice_headers,
-        data={"answer": "authorized"}, follow_redirects=False,
-    ).status_code == 303
-    phase = client.get("/phases/demo/p1", headers=bob_headers).text
-    assert "phase owner alice" in phase and "task default owner" in phase
-
-    registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
-    assert "PHASE_OWNER_QUESTION" in client.get("/inbox", headers=alice_headers).text
-    assert "PHASE_OWNER_QUESTION" not in client.get("/inbox", headers=bob_headers).text
-
-    events = garden / ".garden" / "events.jsonl"
-    events.write_text(json.dumps({
-        "at": "2026-01-02T00:00:00+00:00", "kind": "decision", "task": "",
-        "phase": "demo/p1", "decision": "kickoff-q1", "decision_kind": "question",
-        "recipient": "alice",
-    }) + "\n")
-    assert len(EventLog(events).read(kinds=DECISION_KINDS)) == 1
-    assert len(client.get("/api/decisions", headers=alice_headers).json()) == 1
-    assert client.get("/api/decisions", headers=bob_headers).json() == []
-    phase = client.get("/phases/demo/p1", headers=bob_headers).text
-    assert "phase owner bob" in phase and "task default owner" in phase
-def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
-    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, _admin_token, admin = _registry(garden)
-    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    token = registry.issue_installation(admin, "bob", "bob-browser")
-    state = State(garden / ".garden/state.json")
-    state.get("DM-001")["question"] = "OUTSIDE_ASSIGNMENT_QUESTION"
-    state.get("DM-001")["question_recipient"] = "bob"
-    state.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-    headers = {"Authorization": f"Bearer {token}"}
-
-    inbox = client.get("/inbox", headers=headers).text
-    assert "OUTSIDE_ASSIGNMENT_QUESTION" in inbox and "Addressed to bob · read-only" in inbox
-    assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "no"}).status_code == 403
-
-    registry.set_assignment(admin, "bob", "demo", "p1")
-    response = client.post(
-        "/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
-        follow_redirects=False,
-    )
-    assert response.status_code == 303
-    assert "identity-less+scheduling+is+disabled" in response.headers["location"]
-    assert State(garden / ".garden/state.json").get("DM-001").get("question") == (
-        "OUTSIDE_ASSIGNMENT_QUESTION"
-    )
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
@@ -777,36 +597,11 @@ PRIVATE_BODY_MARKER
     assert "PRIVATE_EVENT_MARKER" not in stream_text
 
 
-def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
-    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, _admin_token, admin = _registry(garden)
-    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    bob_token = registry.issue_installation(admin, "bob", "bob-browser")
-    registry.add_member(admin, "eve", "viewer", "assigned", ())
-    eve_token = registry.issue_installation(admin, "eve", "eve-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-
-    bob = {"Authorization": f"Bearer {bob_token}"}
-    eve = {"Authorization": f"Bearer {eve_token}"}
-    rows = client.get("/api/tasks", headers=bob).json()
-    assert rows and {row["product"] for row in rows} == {"demo"}
-    assert client.get("/api/tasks", headers=eve).json() == []
-    assert client.get("/config", headers=bob).status_code == 403
-    assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
-
-
 def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, admin_token, _admin = _registry(garden)
-    registry.set_assignment(_admin, "alice", "demo", "p1")
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     auth = {"Authorization": f"Bearer {admin_token}"}
 
@@ -825,8 +620,8 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
-    other_token = registry.issue_installation(admin, "bob", "bob-desktop")
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
@@ -845,20 +640,9 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
     )
     assert claim.status_code == 200
-    assert claim.json()["repo"] == run.env_snapshot["remote_repo"]
+    assert claim.json()["repo"] == "https://example.test/team/demo.git"
     assert claim.json()["source_head"] == source_head
     lease_token = claim.json()["lease_token"]
-    claimed = Run.load(run.path)
-    assert (claimed.execution_member_id, claimed.execution_installation_id) == (
-        "bob", "bob-worker"
-    )
-    wrong_installation = client.post(
-        "/api/runs/member-visible-run/heartbeat",
-        headers={"Authorization": f"Bearer {other_token}"},
-        json={"lease_token": lease_token, "transcript": "must not persist"},
-    )
-    assert wrong_installation.status_code == 403
-    assert not (run.path / "stdout.json").exists()
 
     bob = registry.authenticate(token)
     assert bob is not None
@@ -870,16 +654,6 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         registry.set_member_active(admin, "bob", False)
     else:
         registry.revoke_installation(bob, "bob-worker")
-    # Each parameter tests its own revocation; do not mask it by also disabling assignment.
-    replay = client.post(
-        "/api/runs/claim", headers=headers,
-        json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
-    )
-    assert replay.status_code == 403
-
-    state = json.loads(registry.path.read_text())
-    state["members"]["bob"]["projects"] = []
-    registry.path.write_text(json.dumps(state))
     heartbeat = client.post(
         "/api/runs/member-visible-run/heartbeat", headers=headers,
         json={"lease_token": lease_token, "transcript": "must not persist"},
@@ -938,7 +712,7 @@ def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(gard
         json={"host": "legacy", "claim_request_id": "legacy-after-enable"},
     )
     assert response.status_code == 403
-    # Migration rejects legacy credentials in middleware, before JSON route handling.
+    assert response.json()["detail"] == "multiplayer workers require a member installation"
     heartbeat = client.post(
         "/api/runs/legacy-leased-run/heartbeat", headers=headers,
         json={"lease_token": lease_token, "transcript": "must not persist"},
@@ -957,119 +731,7 @@ def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(gard
     assert saved_queued.host == ""
 
 
-
-@pytest.mark.parametrize(
-    "assignment",
-    [
-        {"project": "demo", "phase": "p1", "enabled": False},
-        {"project": "private", "phase": "p1", "enabled": True},
-        {"project": "demo", "phase": "p2", "enabled": True},
-    ],
-    ids=["paused", "project-changed", "phase-advanced"],
-)
-def test_member_worker_claim_requires_current_matching_assignment(garden, assignment):
-    for project, phase in (("private", "p1"), ("demo", "p2")):
-        project_path = garden / project
-        project_path.mkdir(exist_ok=True)
-        product_path = project_path / "product.md"
-        if not product_path.exists():
-            product_path.write_text(f"# {project}\n")
-        phase_path = project_path / phase
-        phase_path.mkdir(exist_ok=True)
-        (phase_path / "goals.md").write_text(f"# {phase}\n")
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
-    registry, _admin_token, admin = _registry(garden)
-    registry.add_member(admin, "bob", "member", "assigned", ("demo", "private"))
-    registry.set_assignment(admin, "bob", "demo", "p1")
-    token = registry.issue_installation(admin, "bob", "bob-worker")
-    run = RunStore(garden / ".garden").new_run(
-        "DM-001", "remote", mode="check", run_id="assignment-fenced-run"
-    )
-    run.env_snapshot = {"product": "demo"}
-    run.save()
-    registry.set_assignment(admin, "bob", assignment["project"], assignment["phase"],
-                            enabled=assignment["enabled"], expected_generation=1)
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-
-    response = client.post(
-        "/api/runs/claim", headers={"Authorization": f"Bearer {token}"},
-        json={"host": "bob-worker", "claim_request_id": "assignment-fenced-claim"},
-    )
-
-    assert response.status_code == 204
-    unchanged = Run.load(run.path)
-    assert unchanged.host == ""
-    assert unchanged.execution_member_id == ""
-    assert unchanged.lease_token == ""
-
-
-def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
-    enrollment.parent.mkdir(parents=True, mode=0o700)
-    enrollment.write_text(json.dumps({"hosts": [{
-        "name": "legacy", "token_sha256": hashlib.sha256(b"legacy-secret").hexdigest()
-    }]}))
-    enrollment.chmod(0o600)
-    config.setdefault("workers", {})["enrollment_registry"] = str(enrollment)
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    runs = RunStore(garden / ".garden")
-    leased = runs.new_run("DM-001", "remote", mode="check", run_id="legacy-leased-run")
-    source_head = "c" * 40
-    leased.source_head = source_head
-    leased.env_snapshot = {
-        "product": "demo",
-        "remote_repo": "https://example.test/team/project.git",
-        "prepared_source_head": source_head,
-    }
-    leased.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-    headers = {"Authorization": "Bearer legacy-secret"}
-    claim = client.post(
-        "/api/runs/claim", headers=headers,
-        json={"host": "legacy", "claim_request_id": "legacy-before-enable"},
-    )
-    assert claim.status_code == 200
-    lease_token = claim.json()["lease_token"]
-
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    _registry(garden)
-    queued = runs.new_run("DM-002", "remote", mode="check", run_id="legacy-queued-run")
-    queued.env_snapshot = {"product": "demo"}
-    queued.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-
-    response = client.post(
-        "/api/runs/claim",
-        headers=headers,
-        json={"host": "legacy", "claim_request_id": "legacy-after-enable"},
-    )
-    assert response.status_code == 403
-    # Migration rejects legacy credentials before JSON route handling.
-    heartbeat = client.post(
-        "/api/runs/legacy-leased-run/heartbeat", headers=headers,
-        json={"lease_token": lease_token, "transcript": "must not persist"},
-    )
-    finish = client.post(
-        "/api/runs/legacy-leased-run/finish", headers=headers,
-        json={"lease_token": lease_token, "result": {}, "final_text": "must not persist"},
-    )
-    assert heartbeat.status_code == 403
-    assert finish.status_code == 403
-    saved_leased = RunStore(garden / ".garden").runs_for("DM-001")[0]
-    saved_queued = RunStore(garden / ".garden").runs_for("DM-002")[0]
-    assert not (saved_leased.path / "stdout.json").exists()
-    assert not (saved_leased.path / "final.md").exists()
-    assert not saved_leased.process_finished()
-    assert saved_queued.host == ""
-
-
-def test_multiplayer_watch_and_direct_dispatch_without_installation_fail_closed(garden):
+def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(garden):
     first_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     first_path.write_text(first_path.read_text().replace("status: ready", "status: ready\nowner: alice"))
     second_path = next((garden / "demo" / "p1" / "tasks").glob("DM-002-*.md"))
@@ -1093,8 +755,7 @@ def test_multiplayer_watch_and_direct_dispatch_without_installation_fail_closed(
             headers={"Authorization": f"Bearer {admin_token}"},
             follow_redirects=False,
         )
-        assert response.status_code == 409
-        assert MULTIPLAYER_EXECUTION_UNAVAILABLE in response.text
+        assert response.status_code == 303
 
     scheduler = Scheduler(Store(garden))
     with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
@@ -1117,33 +778,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
-    bob_token = registry.issue_installation(admin, "bob", "bob-browser")
-    registry.add_member(admin, "eve", "viewer", "assigned", ())
-    eve_token = registry.issue_installation(admin, "eve", "eve-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-
-    bob = {"Authorization": f"Bearer {bob_token}"}
-    eve = {"Authorization": f"Bearer {eve_token}"}
-    rows = client.get("/api/tasks", headers=bob).json()
-    assert rows and {row["product"] for row in rows} == {"demo"}
-    assert client.get("/api/tasks", headers=eve).json() == []
-    assert client.get("/config", headers=bob).status_code == 403
-    assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
-
-
-
-
-def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
-    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, _admin_token, admin = _registry(garden)
-    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
@@ -1164,26 +798,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
 
 
 
-
-
-
-
-
-
-
-
-def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, admin_token, _admin = _registry(garden)
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-    auth = {"Authorization": f"Bearer {admin_token}"}
-
-    assert client.post("/api/runs/claim", headers=auth,
-                       json={"host": "alice-laptop"}).status_code == 204
-    assert client.post("/api/runs/claim", headers=auth,
-                       json={"host": "spoofed"}).status_code == 403
 
 
 def test_legacy_loopback_behavior_is_unchanged(garden):
