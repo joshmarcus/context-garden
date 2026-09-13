@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
+import os
 import re
 import threading
 import time
@@ -35,7 +36,7 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..members import MemberRegistry, Principal
+from ..members import MemberRegistry, Principal, current_principal
 from ..migration import standalone_fence
 from ..model import Phase, Status, Task, effective_owner, now_iso
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
@@ -305,15 +306,21 @@ class Scheduler(
             product, phase_name = phase_or_product, phase
         if phase_name is None:
             raise TypeError("phase name is required")
-        if self.cfg.get("multiplayer.enabled", False) and hasattr(self, "principal"):
+        if self.coordinator is not None:
+            self._phase_authority(product, phase_name)
+            return
+        if self.cfg.get("multiplayer.enabled", False) or standalone_fence(self.store.root):
             self.require_execution_authority()
             assert self.principal is not None
             self.members.require_phase_operation(
                 self.principal, product, phase_name,
                 expected_generation=expected_generation,
             )
+<<<<<<< HEAD
         if self.coordinator is not None:
             self._phase_authority(product, phase_name)
+=======
+>>>>>>> a1efb9a3 (Restore member-bound scheduler wiring)
 
     @contextmanager
     def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
@@ -372,9 +379,12 @@ class Scheduler(
         # Execution identity belongs to this installation, not to the browser request
         # that happened to construct a scheduler.  Request principals authorize HTTP
         # actions in OriginCheck; they must never select workers or phase authority.
-        self.principal = principal or (
+        credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
+        self.principal = principal or current_principal() or (
             self.coordinator.authenticate_local_session() if self.coordinator else None
         )
+        if self.principal is None and credential:
+            self.principal = self.members.authenticate(credential)
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)

@@ -754,8 +754,9 @@ class DispatchMixin:
                  external_pr: str = "", external_pr_number: int | None = None,
                  pool_member: str = "", assignment_generation: int | None = None) -> Run:
         self.require_execution_authority()
-        self._task_authority(task)
-        if self.cfg.get("multiplayer.enabled", False):
+        if self.coordinator is not None:
+            self._task_authority(task)
+        elif self.cfg.get("multiplayer.enabled", False) or standalone_fence(self.store.root):
             assert self.principal is not None
             self.members.authorize_task_execution(
                 self.principal, task, self.store.phase(task.product, task.phase),
