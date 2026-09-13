@@ -61,6 +61,13 @@ def test_pages_render(garden):
     assert '<div class="v">$0.00</div><div class="l">total cost</div>' in runs_page
 
 
+def test_standalone_inbox_has_no_multiplayer_identity_filter(garden):
+    page = client(garden).get("/inbox").text
+
+    assert "logical owner id" not in page
+    assert 'aria-label="Inbox views"' not in page
+
+
 def test_routing_api_and_task_edit_are_read_only_validated_and_redacted(garden):
     cfg_path = garden / "garden.yaml"
     cfg = yaml.safe_load(cfg_path.read_text())
