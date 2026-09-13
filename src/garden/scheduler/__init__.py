@@ -301,7 +301,10 @@ class Scheduler(
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         self._closing_review_claims: list[tuple[str, str, str]] = []
         self.log = log or (lambda msg: None)
-        if not read_only:
+        # Multiplayer startup recovery is deferred to reap/tick, after a fresh
+        # assignment check.  In particular, constructing an unassigned local
+        # scheduler must remain observational and cannot migrate scheduler state.
+        if not read_only and not self.cfg.get("multiplayer.enabled", False):
             self._restore_operational_history()
             self._migrate_fence_bookkeeping()
             # A new CLI process has no old Store instance to compare against.  Check active
