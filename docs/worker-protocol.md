@@ -1,5 +1,13 @@
 # How the scheduler talks to a worker
 
+Before a constrained activity becomes a run, the scheduler selects a fresh, trusted worker
+instance owned by the task's operator user. The claim endpoint rechecks that same instance and
+the snapshotted requirements. A worker with matching self-reported labels but without active
+operator grants is not eligible, and another user's otherwise identical worker is never
+borrowed. Busy, stale/offline, incompatible, access-denied, invalid, and held outcomes remain
+admission outcomes: they do not launch setup or model execution and do not increment the task's
+implementation-attempt count. Unconstrained legacy runs retain their existing claim behavior.
+
 The scheduler is a Python function that runs for a few seconds every `tick_interval`.
 A worker is an agent CLI that runs for minutes, started by the scheduler but not
 attached to it. This page walks through everything that passes between them.

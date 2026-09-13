@@ -24,7 +24,9 @@ def configuration(**changes):
         "generation": 3,
         "activities": ("work", "check"),
         "projects": ("analytics",),
-        "resource_ceilings": ResourceCeilings(32768, 8, 1, 24576),
+        "resource_ceilings": ResourceCeilings(
+            32768, 8, 1, 24576, "nvidia", ("cuda", "tensor")
+        ),
         "identity_references": ("identity.analytics-reader",),
         "grants": (
             CapabilityGrant("data.analytics", "security@example.test", 100, 3),
@@ -62,11 +64,19 @@ def test_verified_grants_are_distinct_from_observations_and_provider_lifecycle()
     admitted = verify_worker_configuration(
         configuration(), instance(), activity="work", project="analytics",
         required_capabilities=("data.analytics",), required_memory_mib=16000,
-        required_gpu_count=1, now=200,
+        required_gpu_count=1, required_gpu_vendor="nvidia",
+        required_gpu_features=("cuda",), now=200,
     )
     assert admitted.eligible
     assert admitted.authoritative_capabilities == ("data.analytics", "tool.cuda")
     assert admitted.observed_capabilities == ("tool.untrusted-label",)
+
+    wrong_shape = verify_worker_configuration(
+        configuration(), instance(), activity="work", project="analytics",
+        required_gpu_count=1, required_gpu_vendor="amd", now=200,
+    )
+    assert not wrong_shape.eligible
+    assert "vendor" in wrong_shape.detail
 
     denied = verify_worker_configuration(
         configuration(), instance(), activity="work", project="analytics",
@@ -130,7 +140,11 @@ def test_config_supports_multiple_user_owned_instances_and_redacts_identity_refs
                 "version": "1", "generation": 2,
                 "activities": ["work"], "projects": ["demo"],
                 "identity_references": ["identity.reader"],
-                "resource_ceilings": {"memory_mib": 8192, "vcpu": 4},
+                "resource_ceilings": {
+                    "memory_mib": 8192, "vcpu": 4, "gpu_count": 1,
+                    "gpu_device_memory_mib": 24576, "gpu_vendor": "nvidia",
+                    "gpu_features": ["cuda"],
+                },
                 "grants": [{"capability": "data.analytics", "approved_by": "operator",
                             "approved_at": 10, "profile_generation": 2}],
             },
@@ -151,6 +165,8 @@ def test_config_supports_multiple_user_owned_instances_and_redacts_identity_refs
     assert len(config.worker_instances()) == 2
     public = config.worker_configurations()["restricted"].public_dict()
     assert public["identity_references"] == ["<redacted>"]
+    assert public["resource_ceilings"]["gpu_vendor"] == "nvidia"
+    assert public["resource_ceilings"]["gpu_features"] == ("cuda",)
     assert "identity.reader" not in str(public)
     assert executable_diff({}, data) == ["worker_configurations", "worker_instances"]
 

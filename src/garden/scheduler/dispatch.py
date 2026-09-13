@@ -12,7 +12,16 @@ from ..canonical import configured_root
 from ..criteria import parse_criteria
 from ..github import is_git_remote_url
 from ..graph import blockers, ready, stack_parents
-from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
+from ..model import (
+    Phase,
+    Status,
+    Task,
+    effective_owner,
+    ensure_open,
+    now_iso,
+    parse_execution_requirements,
+    phase_refusal,
+)
 from ..notify import notify
 from ..review import validation_plan
 from ..runner.base import Runner
@@ -25,6 +34,59 @@ MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 
 
 class DispatchMixin:
+    def _execution_match(self, task: Task, mode: str):
+        """Use the shared worker matcher before creating a constrained execution run."""
+        try:
+            requirements = self.cfg.execution_requirements(
+                task, self.store.phase(task.product, task.phase)
+            )
+        except ValueError as exc:
+            from ..hosts import MatchReason
+
+            self.state.get(task.id)["worker_match"] = {
+                "reason": MatchReason.INVALID_REQUIREMENTS.value, "detail": str(exc)
+            }
+            self.state.save()
+            raise ResourcePressureError(f"worker match invalid_requirements: {exc}") from None
+        if requirements.empty:
+            return requirements, None
+        from ..hosts import MatchReason, match_worker
+
+        owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
+        allocations: dict[str, list[Any]] = {}
+        for run in self.runs.active():
+            snapshot = run.env_snapshot or {}
+            instance_id = str(snapshot.get("worker_instance") or run.host or "")
+            raw = snapshot.get("execution_requirements")
+            if not instance_id or not raw:
+                continue
+            try:
+                reserved = parse_execution_requirements(
+                    raw, source=f"run:{run.run_id}"
+                ).resources
+            except ValueError:
+                continue
+            allocations.setdefault(instance_id, []).append(reserved)
+        routing = self.state.get("_worker_routing")
+        selection_counts = dict(routing.get("selection_counts") or {})
+        activity = "work" if mode in {"work", "revise", "resume", "rebase"} else mode
+        match = match_worker(
+            requirements, activity=activity, project=task.product, owner=owner,
+            configurations=self.cfg.worker_configurations(), instances=self.cfg.worker_instances(),
+            allocations=allocations,
+            selection_counts=selection_counts,
+            pinned_instance_id=str(task.extra.get("worker_instance") or ""),
+            held=self.budget_exceeded(task),
+        )
+        state = self.state.get(task.id)
+        state["worker_match"] = {"reason": match.reason.value, "detail": match.detail}
+        if match.instance is not None:
+            state["worker_match"]["instance_id"] = match.instance.instance_id
+        self.state.save()
+        if match.reason is not MatchReason.MATCHED:
+            raise ResourcePressureError(f"worker match {match.reason.value}: {match.detail}")
+        return requirements, match
+
     def _sweep_terminal_worktrees(self, rep: TickReport) -> None:
         """Reconcile terminal worktrees and their caches through the guarded storage sweep."""
         if int(self.cfg.get("storage_cleanup.limit", 20) or 0) <= 0:
@@ -560,6 +622,7 @@ class DispatchMixin:
                   pool_member: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
+        execution_requirements, worker_match = self._execution_match(task, mode)
         # A read-only local diagnosis may explain work in a closed or frozen phase, but it
         # is still new phase-owned model work and therefore obeys sequential phase order.
         if mode == "investigation":
@@ -581,6 +644,10 @@ class DispatchMixin:
                 # harness to use its own default.  It is not a missing value to fall back from.
                 model_override = member["model"]
             pool_member = pool_member or str((member or {}).get("label") or "")
+        if not execution_requirements.empty and runner.name != "remote":
+            raise ResourcePressureError(
+                "constrained activities require an authenticated pull-worker claim"
+            )
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
@@ -895,6 +962,13 @@ class DispatchMixin:
         run.env_snapshot["product"] = task.product
         run.env_snapshot["execution_timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
         run.env_snapshot.setdefault("resource_weight", self.cfg.product_resource_weight(task.product))
+        if not execution_requirements.empty:
+            owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
+            run.env_snapshot.update({
+                "execution_requirements": execution_requirements.to_dict(),
+                "execution_owner": owner,
+                "worker_instance": worker_match.instance.instance_id,
+            })
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
         run.env_snapshot["criteria"] = criteria_snapshot
@@ -931,6 +1005,13 @@ class DispatchMixin:
                 run.status = "running"
                 run.save()
             raise
+        if worker_match is not None and worker_match.instance is not None:
+            routing = self.state.get("_worker_routing")
+            counts = dict(routing.get("selection_counts") or {})
+            instance_id = worker_match.instance.instance_id
+            counts[instance_id] = int(counts.get(instance_id, 0)) + 1
+            routing["selection_counts"] = counts
+            self.state.save()
         if handoff_feedback:
             st.pop("investigation_handoff", None)
         if not branch_override:

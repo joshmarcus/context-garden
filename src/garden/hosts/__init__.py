@@ -3,6 +3,7 @@
 from .command import CommandProvider, CommandResult, CommandTransport
 from .config import pool_from_dict, worker_configuration_from_dict, worker_instance_from_dict
 from .core import EnvironmentStop, HostLifecycle, JsonStateStore
+from .matching import MatchReason, WorkerMatch, match_worker
 from .models import (
     CONTRACT_VERSION,
     WORKER_CONFIGURATION_CONTRACT_VERSION,
@@ -81,6 +82,9 @@ __all__ = [
     "WORKER_CONFIGURATION_CONTRACT_VERSION",
     "WORKER_PROTOCOL_VERSION",
     "verify_worker_configuration",
+    "MatchReason",
+    "WorkerMatch",
+    "match_worker",
     "ScaleOperation",
     "ScaleStatus",
     "WorkerDrainStore",
