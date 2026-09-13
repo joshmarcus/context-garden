@@ -132,6 +132,89 @@ def test_execution_envelope_records_activity_owner_requirements_and_claim_fence(
     assert run.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
 
 
+def test_execution_envelope_records_explicit_empty_requirements(sched):
+    task = sched.store.task("DM-001")
+    requirements, match = sched._execution_match(task, "work")
+    run = sched.runs.new_run(task.id, "local", mode="work")
+
+    sched._record_execution_envelope(task, run, "work", requirements, match)
+
+    assert run.env_snapshot["execution_requirements"] == {}
+    assert run.env_snapshot["execution_envelope"]["requirements_sha256"]
+    assert run.env_snapshot["execution_envelope"]["worker_instance"] == ""
+
+
+@pytest.mark.parametrize("mode", ["revise", "check", "review"])
+def test_continuation_checkpoints_first_added_requirement_before_launch(sched, mode):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot["execution_requirements"] = {}
+    source.save()
+    _configure_capability_worker(sched, task, activities=["work", "check", "review"])
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched._execution_match(task, mode, source_run=source)
+
+    continuation = sched.runs.latest(task.id)
+    assert continuation is not source
+    assert continuation.mode == mode
+    assert continuation.status == "failed"
+    assert continuation.pid is None
+    assert continuation.env_snapshot["execution_envelope"]["source_run_id"] == source.run_id
+    assert source.status == "done"
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched._execution_match(task, mode, source_run=source)
+    assert len(sched.runs.runs_for(task.id)) == 2
+
+
+def test_legacy_source_cannot_authorize_new_constrained_continuation(sched):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.save()
+    _configure_capability_worker(sched, task, activities=["review"])
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched._execution_match(task, "review", source_run=source)
+
+    assert sched.runs.latest(task.id).status == "failed"
+    assert source.status == "done"
+
+
+def test_legacy_unconstrained_source_can_continue_unconstrained(sched):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.save()
+
+    requirements, match = sched._execution_match(task, "review", source_run=source)
+
+    assert requirements.empty
+    assert match is None
+    assert sched.runs.latest(task.id).run_id == source.run_id
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
+def test_revision_entrypoint_checkpoints_first_added_requirement(sched):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot["execution_requirements"] = {}
+    source.save()
+    _configure_capability_worker(sched, task, activities=["work"])
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched.dispatch(task, mode="revise")
+
+    continuation = sched.runs.latest(task.id)
+    assert continuation.status == "failed"
+    assert continuation.pid is None
+    assert continuation.env_snapshot["execution_envelope"]["source_run_id"] == source.run_id
+    assert source.status == "done"
+
+
 def test_revision_entrypoint_checkpoints_changed_unsupported_requirement(sched):
     task = sched.store.task("DM-001")
     _configure_capability_worker(sched, task, activities=["work", "review"])
