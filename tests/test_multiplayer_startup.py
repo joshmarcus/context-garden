@@ -57,6 +57,15 @@ def _run(garden, *args):
         os.chdir(previous)
 
 
+def test_unenrolled_multiplayer_web_request_fails_closed(garden):
+    client = TestClient(create_app(_multiplayer_store(garden), watch=False))
+
+    response = client.get("/api/tasks")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "multiplayer Git enrollment is incomplete"}
+
+
 def test_unassigned_member_tick_does_not_create_scheduler_state(garden, monkeypatch):
     store = _multiplayer_store(garden)
     client = _Coordinator("member")
