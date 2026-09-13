@@ -108,6 +108,18 @@ def test_direct_task_action_denial_happens_before_its_first_side_effect():
     assert action.mutations == []
 
 
+def test_return_to_automation_denial_happens_before_manual_state_mutation():
+    sched = scheduler(snapshot(), "bob")
+    sched._set_manual_reservation = lambda *_args, **_kwargs: pytest.fail(
+        "Manual reservation state must not be touched before authority is granted"
+    )
+
+    with pytest.raises(PermissionError):
+        sched.return_to_automation(task("A-1"), reservation_id="reservation", expected={})
+
+    assert sched.coordinator.effects == []
+
+
 def test_unassigned_member_has_no_executable_tick_scope(garden, monkeypatch):
     config_path = garden / "garden.yaml"
     config = yaml.safe_load(config_path.read_text())

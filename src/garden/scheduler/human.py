@@ -143,6 +143,7 @@ class HumanMixin:
             "head_sha": str(observed.get("head_sha") or st.get("head_sha") or ""),
         }
 
+    @task_action("return-to-automation")
     def return_to_automation(
         self, task: Task, *, reservation_id: str, expected: dict[str, Any]
     ) -> None:
