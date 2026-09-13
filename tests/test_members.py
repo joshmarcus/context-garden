@@ -57,7 +57,8 @@ def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
     subprocess.run(["git", "init", "--bare", str(remote)], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     config = yaml.safe_load((garden / "garden.yaml").read_text())
-    installation, member_id = next(iter(registry_state["installations"].items()))
+    installation, installation_row = next(iter(registry_state["installations"].items()))
+    member_id = str(installation_row["member_id"])
     multiplayer = config.setdefault("multiplayer", {})
     multiplayer.update({
         "enabled": True, "garden_id": registry_state["garden_id"],
@@ -97,7 +98,11 @@ def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
         }
     def enroll(state):
         state["members"].update(members)
-        state["installations"].update(registry_state["installations"])
+        state["installations"].update({
+            key: str(row["member_id"])
+            for key, row in registry_state["installations"].items()
+            if not row.get("revoked")
+        })
         state["entities"].update(entities)
         return {}
 
@@ -740,7 +745,38 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     assert len(client.get("/api/decisions", headers=alice_headers).json()) == 1
     assert client.get("/api/decisions", headers=bob_headers).json() == []
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
-    assert "phase owner bob" in phase and "tasks inherit this owner unless overridden" in phase
+    # Local registry edits are only a projection in Git mode; accepted authority remains alice.
+    assert "phase owner alice" in phase and "tasks inherit this owner unless overridden" in phase
+
+
+def test_multiplayer_assignment_action_converges_authority_projection_and_cursor(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_phase_owner(admin, "demo", "p1", "alice")
+    client = TestClient(_git_enrolled_app(garden))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(
+        "/phases/demo/p1/owner", headers=headers,
+        data={"member_id": "bob", "generation": 1}, follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    assert "phase owner bob" in client.get("/phases/demo/p1", headers=headers).text
+    coordinator = GitMultiplayerClient.from_config(Store(garden).config)
+    assert coordinator is not None
+    snapshot = coordinator.refresh(allow_stale=False).snapshot
+    assert snapshot["members"]["bob"]["assignment"]["phase"] == "p1"
+
+    response = client.post(
+        "/tasks/DM-001/owner", headers=headers,
+        data={"note": "-"}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+    client.get("/tasks/DM-001", headers=headers)
+    assert Store(garden).task("DM-001").owner_unassigned
 
 
 def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
