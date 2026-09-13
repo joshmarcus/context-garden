@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from garden.cli import app as cli_app
+from garden.members import operating_system_username
 from garden.multiplayer_client import AuthoritativeView
 from garden.scheduler import Scheduler
 from garden.store import Store
@@ -133,6 +134,61 @@ def test_documented_coordinator_command_connects_disposable_installation(
         os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=5)
         assert process.returncode is not None
+
+
+def test_temporary_username_coordinator_and_cli_connect_without_credential(
+    garden, tmp_path, monkeypatch,
+):
+    coordinator_garden = tmp_path / "coordinator-username"
+    local_garden = tmp_path / "local-username"
+    shutil.copytree(garden, coordinator_garden)
+    shutil.copytree(garden, local_garden)
+    username = operating_system_username()
+    admin = _run(
+        coordinator_garden, "members", "enroll-administrator",
+        "garden-1", "admin", "coordinator-host",
+    )
+    assert admin.exit_code == 0, admin.output
+    monkeypatch.setenv("GARDEN_ADMIN_CREDENTIAL", admin.output.strip())
+    added = _run(
+        coordinator_garden, "members", "add", username, "--role", "member",
+        "--credential-env", "GARDEN_ADMIN_CREDENTIAL",
+    )
+    assert added.exit_code == 0, added.output
+
+    port = _available_port()
+    endpoint = f"http://127.0.0.1:{port}"
+    process = subprocess.Popen(
+        [
+            sys.executable, "-m", "garden", "members", "coordinator",
+            "--garden", str(coordinator_garden), "--host", "127.0.0.1", "--port", str(port),
+            "--authentication", "temporary-username",
+        ],
+        cwd=coordinator_garden,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        _wait_until_serving(f"{endpoint}/v1/gardens/garden-1/snapshot")
+        connected = _run(local_garden, "members", "connect-username", "garden-1", endpoint)
+        assert connected.exit_code == 0, connected.output
+        assert f"connected {username} (member)" in connected.output
+        status = _run(local_garden, "members", "status")
+        assert status.exit_code == 0, status.output
+        assert f"identity: {username} (member)" in status.output
+        first = yaml.safe_load((local_garden / "garden.local.yaml").read_text())
+        assert first["multiplayer"]["credential_env"] == ""
+        installation = first["multiplayer"]["installation_id"]
+        assert installation
+        again = _run(local_garden, "members", "connect-username", "garden-1", endpoint)
+        assert again.exit_code == 0, again.output
+        second = yaml.safe_load((local_garden / "garden.local.yaml").read_text())
+        assert second["multiplayer"]["installation_id"] == installation
+    finally:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=5)
 
 
 def test_unassigned_member_tick_does_not_create_scheduler_state(garden, monkeypatch):

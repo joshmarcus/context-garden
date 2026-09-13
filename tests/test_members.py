@@ -7,6 +7,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from garden.coordination_api import create_coordination_app
 from garden.members import MemberRegistry, Principal, authorize
 from garden.runs import RunStore
 from garden.scheduler import (
@@ -24,6 +25,68 @@ def _registry(tmp_path):
     principal = registry.authenticate(token)
     assert principal is not None
     return registry, token, principal
+
+
+def test_temporary_username_installations_are_explicit_bound_and_revocable(tmp_path):
+    registry = MemberRegistry(tmp_path / ".garden")
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-host")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member", "assigned", ("demo",))
+
+    alice = registry.enroll_username_installation("alice", "alice-local")
+    assert alice.member_id == "alice"
+    assert alice.role == "member"
+    assert alice.projects == frozenset({"demo"})
+    assert registry.authenticate_username("alice", "alice-local") == alice
+    assert registry.authenticate_username("bob", "alice-local") is None
+    with pytest.raises(PermissionError, match="not an active"):
+        registry.enroll_username_installation("unknown", "unknown-local")
+    with pytest.raises(PermissionError, match="unavailable"):
+        registry.enroll_username_installation("admin", "alice-local")
+
+    registry.revoke_installation(admin, "alice-local")
+    assert registry.authenticate_username("alice", "alice-local") is None
+
+
+def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_input(
+    tmp_path, monkeypatch,
+):
+    garden_dir = tmp_path / ".garden"
+    registry = MemberRegistry(garden_dir)
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-host")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "viewer")
+    monkeypatch.setattr("garden.coordination_api.operating_system_username", lambda: "alice")
+
+    credential = TestClient(create_coordination_app(garden_dir))
+    enrollment_path = "/v1/gardens/garden/username-installations"
+    assert credential.post(enrollment_path, json={"installation_id": "alice-local"}).status_code == 404
+    assert credential.get(
+        "/v1/gardens/garden/snapshot",
+        headers={"Authorization": "Garden-Temporary-Username alice-local"},
+    ).status_code == 401
+
+    username = TestClient(create_coordination_app(
+        garden_dir, authentication="temporary-username",
+    ))
+    enrolled = username.post(enrollment_path, json={"installation_id": "alice-local"})
+    assert enrolled.status_code == 200
+    response = username.get(
+        "/v1/gardens/garden/snapshot?username=admin",
+        headers={
+            "Authorization": "Garden-Temporary-Username alice-local",
+            "X-Garden-Username": "admin",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["member_id"] == "alice"
+    assert response.json()["role"] == "viewer"
+    assert username.get(
+        "/v1/gardens/garden/snapshot",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    ).status_code == 401
 
 
 def test_enrollment_credentials_are_private_stable_and_garden_bound(tmp_path):
