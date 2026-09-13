@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from garden.events import EventLog
 from garden.profiles import BUILTIN_PROFILES, resolve, scaled_concurrency, stops
 
@@ -74,3 +77,20 @@ def test_resolve_preserves_custom_profiles():
                     "profiles": {"night": {"workers": 1}}}.get(key, default)
 
     assert resolve(Config(), "night") == {"workers": 1}
+
+
+def test_cli_reports_default_and_accepts_fast(garden: Path):
+    from typer.testing import CliRunner
+
+    from garden.cli import app
+
+    previous = os.getcwd()
+    os.chdir(garden)
+    try:
+        shown = CliRunner().invoke(app, ["profile"])
+        changed = CliRunner().invoke(app, ["profile", "fast"])
+    finally:
+        os.chdir(previous)
+    assert shown.exit_code == 0 and "active: default" in shown.output
+    assert "choices: economy, default, fast" in shown.output
+    assert changed.exit_code == 0 and "operating profile: fast" in changed.output
