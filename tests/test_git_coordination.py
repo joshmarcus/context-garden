@@ -379,6 +379,7 @@ def test_pending_execution_permit_blocks_owner_handoff(clones):
     assert "run:pending" in state["permits"]
 
 
+<<<<<<< HEAD
 def test_pending_execution_permit_survives_claim_release_handoff_attempts(clones):
     _, one, _ = clones
     store = GitStateStore(one, garden_id="garden")
@@ -688,6 +689,21 @@ def test_terminal_obligation_allows_claim_release_and_handoff(clones, kind, scop
     state = store.read()[1]
     assert key not in state["claims"]
     assert state["entities"][key]["owner"] == "bob"
+
+
+def test_existing_version_one_ref_without_handoff_table_upgrades_additively(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    head, state = store.read()
+    state.pop("handoffs")
+    state["sequence"] += 1
+    legacy = store._commit(state, head, "legacy-before-handoffs")
+    store._push(legacy, head)
+
+    observed, upgraded = store.read()
+
+    assert observed == legacy
+    assert upgraded["handoffs"] == {}
 
 
 @pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
