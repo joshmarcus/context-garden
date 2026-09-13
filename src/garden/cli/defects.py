@@ -50,8 +50,12 @@ def defect_list(
     filters = {"severity": severity, "product": product, "phase": phase,
                "task_id": task_id, "disposition": disposition,
                "discovered_from": discovered_from, "discovered_to": discovered_to}
-    print(json.dumps({"defects": ledger.list(**filters), "summary": ledger.summary(**filters)},
-                     sort_keys=True))
+    try:
+        result = {"defects": ledger.list(**filters), "summary": ledger.summary(**filters)}
+    except ValueError as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    print(json.dumps(result, sort_keys=True))
 
 
 @app.command("defect-update", rich_help_panel=PANEL_QUALITY)

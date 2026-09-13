@@ -66,8 +66,11 @@ def register(app: FastAPI, site: Site) -> None:
                    "task_id": task_id, "disposition": disposition,
                    "discovered_from": discovered_from, "discovered_to": discovered_to,
                    "allowed_projects": site.allowed_projects(request)}
-        rows = ledger.list(**filters)
-        return {"defects": rows, "summary": ledger.summary(**filters)}
+        try:
+            rows = ledger.list(**filters)
+            return {"defects": rows, "summary": ledger.summary(**filters)}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
 
     @app.post("/api/tasks/{task_id}/defects", status_code=201)
     def create_defect_api(request: Request, task_id: str,
