@@ -239,6 +239,9 @@ DEFAULTS: dict[str, Any] = {
         "tls_certfile": "",
         "tls_keyfile": "",
     },
+    # Anonymous publication is a separate exported data boundary. Projects and fields are
+    # absent by default; free-form document content must be named explicitly per project.
+    "publication": {"projects": {}},
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
     "runner": "local",
