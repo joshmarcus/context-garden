@@ -37,7 +37,7 @@ from ..plants import (
     vine_svg,
 )
 from ..runs import HistoryUnavailable
-from ..scheduler import MULTIPLAYER_EXECUTION_UNAVAILABLE, State
+from ..scheduler import State
 from ..store import Store
 from . import actions, pages
 from .access import (
@@ -203,9 +203,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                                 and authorize(principal, "mutate_work", owner_id=owner,
                                               project=target.product))
                 product, separator, phase = str(decision.get("phase") or "").partition("/")
-                return bool(separator and registry.authorize_phase_operation(
-                    principal, product, phase,
-                ))
+                if separator:
+                    return registry.authorize_phase_operation(principal, product, phase)
+                return authorize(principal, "administer")
             if path.startswith("/phases/") and len(parts) > 3:
                 return registry.authorize_phase_operation(principal, parts[2], parts[3])
             return authorize(principal, "administer")

@@ -409,6 +409,14 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     assert client.get("/inbox?view=admin", headers=bob_headers).status_code == 403
     admin_view = client.get("/inbox?view=admin", headers=alice_headers).text
     assert "ADMINISTRATION_QUESTION" in admin_view and "Answer" in admin_view
+    assert client.post(
+        "/decisions/global-q1/answer", headers=bob_headers,
+        data={"answer": "not authorized"}, follow_redirects=False,
+    ).status_code == 403
+    assert client.post(
+        "/decisions/global-q1/answer", headers=alice_headers,
+        data={"answer": "authorized"}, follow_redirects=False,
+    ).status_code == 303
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
     assert "phase owner alice" in phase and "task default owner" in phase
 
