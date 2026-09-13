@@ -12,7 +12,6 @@ from fastapi.responses import HTMLResponse
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, metrics, phase_summary
 from ...inbox import split_log
-from ...model import effective_owner
 from ...plants import plant_info
 from ...runs import RunStore
 from ...scheduler import State
@@ -96,8 +95,8 @@ def register(app: FastAPI, site: Site) -> None:
 
         phase_events = [e for e in all_events if e.get("task") in phase_tasks]
         hide_done = hide == "done"
-        owner_for = (lambda task: sched.members.effective_task_owner(task, ph)[0]) \
-            if s.config.get("multiplayer.enabled", False) else (lambda task: effective_owner(task, ph)[0])
+        def owner_for(task):
+            return sched.effective_task_owner(task)[0]
         all_rows = [(t, owner_for(t), sched.task_effective_status(t, tasks), state.get(t.id),
                      usage.get(t.id) or no_usage, fixed_tokens + estimate_brief_tokens(s, t)[1])
                     for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]

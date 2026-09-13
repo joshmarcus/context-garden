@@ -57,7 +57,9 @@ def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
     subprocess.run(["git", "init", "--bare", str(remote)], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     config = yaml.safe_load((garden / "garden.yaml").read_text())
-    installation, member_id = next(iter(registry_state["installations"].items()))
+    installation, installation_row = next(iter(registry_state["installations"].items()))
+    member_id = (installation_row.get("member_id")
+                 if isinstance(installation_row, dict) else installation_row)
     multiplayer = config.setdefault("multiplayer", {})
     multiplayer.update({
         "enabled": True, "garden_id": registry_state["garden_id"],
@@ -92,6 +94,7 @@ def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
         assignment = (registry_state.get("assignments") or {}).get(owner, {})
         entities[f"task:{task.id}"] = {
             "kind": "task", "scope": task.id, "owner": owner,
+            "project": task.product,
             "authority_generation": int(assignment.get("generation", 0)), "version": 0,
         }
     def enroll(state):
@@ -713,7 +716,7 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
         data={"answer": "authorized"}, follow_redirects=False,
     ).status_code == 303
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
-    assert "phase owner alice" in phase and "task default owner" in phase
+    assert "phase owner alice" in phase and "tasks inherit this owner unless overridden" in phase
 
     registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
     assert "PHASE_OWNER_QUESTION" in client.get("/inbox", headers=alice_headers).text
@@ -729,7 +732,9 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     assert len(client.get("/api/decisions", headers=alice_headers).json()) == 1
     assert client.get("/api/decisions", headers=bob_headers).json() == []
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
-    assert "phase owner bob" in phase and "task default owner" in phase
+    assert "phase owner bob" in phase and "tasks inherit this owner unless overridden" in phase
+
+
 def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
@@ -761,9 +766,104 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
                        follow_redirects=False).status_code == 303
     task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
     stale_inbox = client.get("/inbox", headers=headers).text
-    assert "OUTSIDE_ASSIGNMENT_QUESTION" not in stale_inbox
+    assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
+    # Authorization still reaches the accepted owner; the action itself conflicts with the
+    # task's waiting state instead of being rejected at the ownership boundary.
     assert client.post("/tasks/DM-001/retry", headers=headers,
-                       follow_redirects=False).status_code == 403
+                       follow_redirects=False).status_code == 409
+
+
+def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, alice_token, alice = _registry(garden)
+    registry.set_assignment(alice, "alice", "demo", "p1")
+    registry.set_phase_owner(alice, "demo", "p1", "alice")
+    registry.add_member(alice, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(alice, "bob", "demo", "p1")
+    bob_token = registry.issue_installation(alice, "bob", "bob-worker")
+    app = _git_enrolled_app(garden)
+
+    running_scheduler = Scheduler(Store(garden))
+    with running_scheduler.task_effect(
+        running_scheduler.store.task("DM-001"), "test-active-phase-owner-change",
+    ):
+        pass
+    # The supported assignment path stages accepted task authority without test-only claims.
+    Scheduler(Store(garden)).set_phase_owner(
+        alice, "demo", "p1", "bob", expected_generation=1,
+    )
+    authority = GitStateStore(
+        garden, garden_id="garden-1", remote=str(garden / ".garden/test-state.git"),
+    )
+    accepted = authority.read()[1]
+    assert accepted["entities"]["task:DM-001"]["owner"] == "alice"
+    assert accepted["handoffs"]["task:DM-001"]["pending_owner"] == "bob"
+    assert accepted["entities"]["task:DM-002"]["owner"] == "bob"
+    assert "task:DM-002" not in accepted["handoffs"]
+    client = TestClient(app)
+    alice_headers = {"Authorization": f"Bearer {alice_token}"}
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+
+    task_row = next(row for row in client.get("/api/tasks", headers=bob_headers).json()
+                    if row["id"] == "DM-001")
+    assert task_row["effective_owner"] == "alice"
+    pending_owner = client.post(
+        "/tasks/DM-001/retry", headers=bob_headers,
+    )
+    accepted_owner = client.post(
+        "/tasks/DM-001/retry", headers=alice_headers,
+        follow_redirects=False,
+    )
+    assert pending_owner.status_code == 403
+    assert accepted_owner.status_code != 403
+
+    run = RunStore(garden / ".garden").new_run(
+        "DM-001", "remote", mode="check", run_id="pending-owner-claim",
+    )
+    run.source_head = "a" * 40
+    run.env_snapshot = {
+        "product": "demo", "remote_repo": "https://example.test/team/demo.git",
+        "prepared_source_head": run.source_head,
+    }
+    run.save()
+    bob_pending_claim = client.post(
+        "/api/runs/claim", headers=bob_headers,
+        json={"host": "bob-worker", "claim_request_id": "bob-pending-owner"},
+    )
+    assert bob_pending_claim.status_code == 204, bob_pending_claim.text
+    assert client.post(
+        "/api/runs/claim", headers=alice_headers,
+        json={"host": "alice-laptop", "claim_request_id": "alice-accepted-owner"},
+    ).status_code == 204
+
+    authority.acknowledge_stop(
+        "accepted-owner-stopped", actor="alice", installation=alice.installation_id,
+        entity_key="task:DM-001",
+    )
+    authority.complete_handoff(
+        "pending-owner-accepted", actor="bob", installation="bob-worker",
+        entity_key="task:DM-001",
+    )
+    assert client.post(
+        "/api/runs/claim", headers=alice_headers,
+        json={"host": "alice-laptop", "claim_request_id": "alice-after-handoff"},
+    ).status_code == 204
+    assert client.post(
+        "/api/runs/claim", headers=bob_headers,
+        json={"host": "bob-worker", "claim_request_id": "bob-after-handoff"},
+    ).status_code == 200
+
+    created = client.post(
+        "/phases/demo/p1/new-task", headers=bob_headers,
+        data={"title": "Inherited later", "goal": "Later"}, follow_redirects=False,
+    )
+    assert created.status_code == 303
+    created_id = created.headers["location"].split("/tasks/", 1)[1].split("?", 1)[0]
+    accepted = authority.read()[1]
+    assert accepted["entities"][f"task:{created_id}"]["owner"] == "bob"
+    assert f"task:{created_id}" not in accepted["handoffs"]
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
@@ -868,15 +968,37 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
                        json={"host": "spoofed"}).status_code == 403
 
 
+def test_inherited_phase_owner_drives_inbox_item_and_owner_filter(garden):
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human"))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
+    registry.set_phase_owner(admin, "demo", "p1", "bob")
+    state = State(garden / ".garden/state.json")
+    state.get("DM-001")["question"] = "INHERITED_OWNER_QUESTION"
+    state.save()
+    client = TestClient(_git_enrolled_app(garden))
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    bob_page = client.get("/inbox?view=team&owner=bob", headers=headers).text
+    assert "INHERITED_OWNER_QUESTION" in bob_page
+    assert "INHERITED_OWNER_QUESTION" not in client.get(
+        "/inbox?view=team&owner=alice", headers=headers,
+    ).text
+
+
 @pytest.mark.parametrize("revocation", ["project", "member", "installation"])
 def test_member_worker_lifecycle_requires_current_authorization(garden, revocation):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_phase_owner(admin, "demo", "p1", "bob")
     registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
     other_token = registry.issue_installation(admin, "bob", "bob-desktop")

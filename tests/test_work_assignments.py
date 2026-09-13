@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
@@ -69,19 +70,50 @@ def _coordinated_scheduler(sched, principal, token):
 
 def test_effective_owner_requires_active_membership_and_preserves_precedence(tmp_path):
     registry, admin, _alice = _registry(tmp_path)
-    phase = _phase(tmp_path, default_owner="alice")
+    phase = _phase(tmp_path, default_owner="legacy-team")
     inherited = _task(tmp_path, "DM-1")
     override = _task(tmp_path, "DM-2", owner="bob")
     explicit_none = _task(tmp_path, "DM-3")
     explicit_none.owner_unassigned = True
 
+    assert registry.effective_task_owner(inherited, phase) == ("", "unassigned")
+    registry.set_phase_owner(admin, "demo", "p1", "alice")
     assert registry.effective_task_owner(inherited, phase) == ("alice", "phase")
     assert registry.effective_task_owner(override, phase) == ("bob", "task")
     assert registry.effective_task_owner(explicit_none, phase) == ("", "unassigned")
     registry.set_member_active(admin, "bob", False)
     assert registry.effective_task_owner(override, phase) == ("", "invalid")
-    phase.meta["default_owner"] = "legacy-team"
+    registry.set_member_active(admin, "alice", False)
     assert registry.effective_task_owner(inherited, phase) == ("", "invalid")
+
+
+def test_scheduler_keeps_accepted_task_owner_during_pending_phase_transfer(sched):
+    task = sched.store.task("DM-001")
+    task.owner = ""
+    sched.store.save(task)
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    token = registry.enroll_administrator("garden", "admin", "admin-machine")
+    admin = registry.authenticate(token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member")
+    registry.add_member(admin, "bob", "member")
+    registry.set_phase_owner(admin, task.product, task.phase, "bob")
+    sched.members = registry
+    snapshot = {"authority": [{
+        "kind": "task", "scope": task.id, "owner": "alice",
+        "authority_generation": 1, "version": 1, "draining": True,
+        "pending_owner": "bob",
+    }]}
+    sched.coordinator = SimpleNamespace(refresh=lambda **_kwargs: SimpleNamespace(snapshot=snapshot))
+
+    assert sched.effective_task_owner(task) == ("alice", "phase")
+
+    snapshot["authority"][0].update({
+        "owner": "bob", "authority_generation": 2, "version": 2,
+        "draining": False, "pending_owner": "",
+    })
+    assert sched.effective_task_owner(task) == ("bob", "phase")
 
 
 def test_owner_change_previews_separate_default_bulk_effects_from_override(tmp_path):
@@ -171,6 +203,8 @@ def test_phase_owner_is_explicit_distinct_versioned_and_attributed(tmp_path):
 def test_execution_scope_keeps_dependencies_holds_and_other_phases_out(tmp_path):
     registry, admin, _alice = _registry(tmp_path)
     registry.set_assignment(admin, "alice", "demo", "p1", advance=True)
+    registry.set_phase_owner(admin, "demo", "p1", "alice")
+    registry.set_phase_owner(admin, "demo", "p2", "alice")
     phase = _phase(tmp_path, default_owner="alice")
     other_phase = Phase("demo", "p2", tmp_path / "demo/p2", None, [], [], [],
                         meta={"default_owner": "alice"})

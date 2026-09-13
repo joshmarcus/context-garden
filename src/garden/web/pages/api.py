@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...members import MemberRegistry, Principal, authorize
-from ...model import effective_owner, parse_execution_requirements
+from ...model import parse_execution_requirements
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
 from ...workers import WorkerContactStore
@@ -399,10 +399,7 @@ def register(app: FastAPI, site: Site) -> None:
         for task in tasks.values():
             if principal is not None and not authorize(principal, "read", project=task.product):
                 continue
-            phase = scheduler.store.phase(task.product, task.phase)
-            owner = (scheduler.members.effective_task_owner(task, phase)
-                     if scheduler.cfg.get("multiplayer.enabled", False)
-                     else effective_owner(task, phase))
+            owner = scheduler.effective_task_owner(task)
             row = {
                 **task.to_frontmatter(),
                 "effective_status": scheduler.task_effective_status(task, tasks),
@@ -447,7 +444,10 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(404) from None
         from ...routing import task_routing_view
 
-        return JSONResponse(task_routing_view(fresh, task, activity=activity))
+        sched = hub.reader(fresh)
+        return JSONResponse(task_routing_view(
+            fresh, task, activity=activity, owner_resolver=sched.effective_task_owner,
+        ))
 
     @app.get("/api/operations/{task_id}/{run_id}")
     def api_operation(task_id: str, run_id: str):
@@ -491,9 +491,7 @@ def register(app: FastAPI, site: Site) -> None:
                 recipient = str(event.get("recipient") or "")
                 task = tasks.get(str(event.get("task") or ""))
                 if not recipient and task is not None:
-                    recipient = site.registry.effective_task_owner(
-                        task, s.phase(task.product, task.phase),
-                    )[0]
+                    recipient = hub.reader().effective_task_owner(task)[0]
                 elif not recipient:
                     product, separator, phase = str(event.get("phase") or "").partition("/")
                     owner = site.registry.phase_owner(product, phase) if separator else None
@@ -653,9 +651,13 @@ def register(app: FastAPI, site: Site) -> None:
                     continue
                 fresh = hub.fresh()
                 task = fresh.tasks().get(run.task_id)
+                claim_scheduler = hub.reader()
+                if task is not None and claim_scheduler.task_owner_handoff_pending(task):
+                    continue
                 if host_cfg.get("member_id"):
                     principal = host_cfg.get("member_principal")
-                    owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
+                    owner = claim_scheduler.effective_task_owner(task)[0] \
+                        if task and member_registry else ""
                     if (task is None or principal is None
                             or not authorize(principal, "mutate_work", owner_id=owner,
                                              project=task.product)):

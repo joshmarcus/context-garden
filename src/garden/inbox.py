@@ -687,7 +687,9 @@ def build_inbox(store: Store, sched: Any) -> list[dict[str, Any]]:
                 next_open_phase[ph.key] = f"{prod.name}/{nxt.name}"
 
     def add(group: str, t: Task, why: str, actions: list[dict[str, str]], **extra: Any) -> None:
-        owner, owner_source = effective_owner(t, store.phase(t.product, t.phase))
+        resolver = getattr(sched, "effective_task_owner", None)
+        owner, owner_source = (resolver(t) if callable(resolver)
+                               else effective_owner(t, store.phase(t.product, t.phase)))
         items.append({"group": group, "group_title": titles[group], "task": t.id, "title": t.title, "phase": t.key,
                       "status": t.status.value, "pr": t.pr, "why": why, "actions": actions, "age": _age(t.updated),
                       "difficulty": t.difficulty, "owner": owner, "owner_source": owner_source, **extra})

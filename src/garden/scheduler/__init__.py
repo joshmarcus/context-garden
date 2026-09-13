@@ -141,6 +141,65 @@ class Scheduler(
     `_transition()`; everything else lives in the mixin whose phase it belongs to, so two
     features in different parts of the loop edit different files."""
 
+    def effective_task_owner(self, task: Task) -> tuple[str, str]:
+        """Resolve ownership from the authority source selected for this installation."""
+        phase = self.store.phase(task.product, task.phase)
+        if self.coordinator is not None:
+            snapshot = getattr(self, "_authority_snapshot", None)
+            if snapshot is None:
+                snapshot = self.coordinator.refresh().snapshot
+            row = next((value for value in snapshot.get("authority", [])
+                        if value.get("kind") == "task" and value.get("scope") == task.id), None)
+            if row is not None:
+                owner = str(row.get("owner") or "")
+                if owner == "-":
+                    owner = ""
+                if hasattr(self.members, "effective_task_owner"):
+                    _local_owner, source = self.members.effective_task_owner(task, phase)
+                else:
+                    _local_owner, source = effective_owner(task, phase)
+                return owner, source
+        if (self.cfg.get("multiplayer.enabled", False)
+                and hasattr(self.members, "effective_task_owner")):
+            return self.members.effective_task_owner(task, phase)
+        return effective_owner(task, phase)
+
+    def task_owner_handoff_pending(self, task: Task) -> bool:
+        """Whether accepted authority is draining this task before an owner transfer."""
+        if self.coordinator is None:
+            return False
+        snapshot = getattr(self, "_authority_snapshot", None)
+        if snapshot is None:
+            snapshot = self.coordinator.refresh().snapshot
+        handoff = (snapshot.get("handoffs") or {}).get(f"task:{task.id}")
+        return isinstance(handoff, dict) and handoff.get("status") != "completed"
+
+    def set_phase_owner(self, actor: Principal, project: str, phase: str,
+                        owner_id: str | None, *, expected_generation: int = 0):
+        """Persist phase ownership and reconcile its inherited task authorities."""
+        row = self.members.set_phase_owner(
+            actor, project, phase, owner_id, expected_generation=expected_generation,
+        )
+        self.reconcile_phase_task_owners(project, phase, row.owner_id, row.generation)
+        return row
+
+    def reconcile_phase_task_owners(self, project: str, phase: str,
+                                    owner_id: str, generation: int) -> None:
+        """Project current inherited tasks into accepted authority after an app mutation."""
+        inherited = [
+            task.id for task in self.store.tasks().values()
+            if task.product == project and task.phase == phase
+            and not task.owner and not task.owner_unassigned
+        ]
+        if self.coordinator is not None and hasattr(
+            self.coordinator, "reconcile_inherited_task_owners"
+        ):
+            self.coordinator.reconcile_inherited_task_owners(
+                project=project, phase=phase, owner=owner_id,
+                tasks=inherited, generation=generation,
+            )
+            self._authority_snapshot = self.coordinator.refresh(allow_stale=False).snapshot
+
     def require_execution_authority(self) -> None:
         """Require an authenticated coordinator client in explicit multiplayer mode."""
         multiplayer = self.cfg.get("multiplayer.enabled", False) or standalone_fence(
@@ -253,7 +312,7 @@ class Scheduler(
                     if value.get("kind") == "task" and value.get("scope") == task.id), None)
         if row is None or row.get("owner") != self.coordinator.member_id:
             raise PermissionError(f"{task.id} is not owned by the authenticated member")
-        local_owner = effective_owner(task, self.store.phase(task.product, task.phase))[0]
+        local_owner = self.effective_task_owner(task)[0]
         if local_owner != self.coordinator.member_id:
             raise PermissionError(f"{task.id} local effective owner disagrees with authority")
         return row

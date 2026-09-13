@@ -343,7 +343,12 @@ class GitStateStore:
             ):
                 raise PermissionError("member or installation authority is draining")
             binding = state["installations"].get(installation)
-            if binding != actor or actor not in state["members"]:
+            binding_owner = (
+                binding.get("member_id")
+                if isinstance(binding, dict) and not binding.get("revoked")
+                else binding
+            )
+            if binding_owner != actor or actor not in state["members"]:
                 raise PermissionError("installation is not bound to an active member")
             if not state["members"][actor].get("active", False):
                 raise PermissionError("member is disabled")
@@ -557,7 +562,13 @@ class GitStateStore:
         state: dict[str, Any], actor: str, installation: str
     ) -> dict[str, Any]:
         member = state["members"].get(actor) or {}
-        if state["installations"].get(installation) != actor or not member.get("active"):
+        installation_row = state["installations"].get(installation)
+        installation_owner = (
+            installation_row.get("member_id")
+            if isinstance(installation_row, dict) and not installation_row.get("revoked")
+            else installation_row
+        )
+        if installation_owner != actor or not member.get("active"):
             raise PermissionError("handoff installation is not bound to an active member")
         return member
 
@@ -621,6 +632,61 @@ class GitStateStore:
                 "status": "blocked", "effective_owner": effective_owner,
                 "pending_owner": pending_owner, "blockers": self._handoff_blockers(state, entity_key),
             }
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def reconcile_inherited_task_owners(
+        self, operation_id: str, *, actor: str, installation: str,
+        project: str, phase: str, owner: str, tasks: list[str],
+    ) -> AcceptedTransaction:
+        """Create or safely transfer task authority implied by one phase owner change."""
+        inputs = {
+            "actor": actor, "installation": installation, "project": project,
+            "phase": phase, "owner": owner, "tasks": sorted(tasks),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            member = self._require_active_installation(state, actor, installation)
+            if member.get("role") not in {"owner", "admin", "administrator"}:
+                raise PermissionError("phase ownership changes require an administrator")
+            affected: list[str] = []
+            pending: list[str] = []
+            for task_id in sorted(set(tasks)):
+                key = f"task:{task_id}"
+                entity = state["entities"].get(key)
+                if entity is None:
+                    state["entities"][key] = {
+                        "kind": "task", "scope": task_id, "project": project,
+                        "owner": owner, "authority_generation": 1, "version": 0,
+                    }
+                    affected.append(task_id)
+                    continue
+                if str(entity.get("owner", "")) == owner:
+                    continue
+                if key in state["handoffs"]:
+                    if state["handoffs"][key].get("pending_owner") != owner:
+                        raise GitCoordinationError(f"authority already has a pending handoff: {key}")
+                    pending.append(task_id)
+                    continue
+                self._require_authorized_owner(state, entity, owner)
+                self._stage_lifecycle_handoff(state, key, pending_owner=owner)
+                affected.append(task_id)
+                handoff = state["handoffs"][key]
+                if handoff["status"] == "ready":
+                    entity.update({
+                        "owner": owner,
+                        "authority_generation": int(handoff["from_generation"]) + 1,
+                        "draining": False, "pending_owner": "",
+                        "version": int(entity.get("version", 0)) + 1,
+                    })
+                    state["claims"].pop(key, None)
+                    state["recovery"].append({
+                        "kind": "handoff", "entity": key, **deepcopy(handoff),
+                    })
+                    del state["handoffs"][key]
+                else:
+                    pending.append(task_id)
+            return {"affected": affected, "pending": pending}
 
         return self.transact(operation_id, inputs, mutate)
 
@@ -1132,6 +1198,17 @@ class GitMultiplayerClient:
             member.get("visibility", "assigned"),
             frozenset(member.get("projects", [])),
         )
+
+    def reconcile_inherited_task_owners(
+        self, *, project: str, phase: str, owner: str, tasks: list[str], generation: int,
+    ) -> dict[str, Any]:
+        task_set = hashlib.sha256("\0".join(sorted(tasks)).encode()).hexdigest()[:12]
+        accepted = self.store.reconcile_inherited_task_owners(
+            f"phase-owner:{project}:{phase}:{generation}:{task_set}", actor=self.member_id,
+            installation=self.installation_id, project=project, phase=phase,
+            owner=owner, tasks=tasks,
+        )
+        return accepted.result
 
     def claim(
         self,
