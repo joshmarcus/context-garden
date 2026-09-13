@@ -382,6 +382,53 @@ def test_pending_execution_permit_blocks_owner_handoff(clones):
     assert "run:pending" in state["permits"]
 
 
+def test_inherited_task_owner_stays_accepted_until_git_handoff_completes(clones):
+    """A changed phase default cannot transfer an active inherited task implicitly."""
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    alice = GitMultiplayerClient(store, "alice", "one")
+    claim = alice.claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    store.apply(
+        "active-inherited-run", actor="alice", installation="one",
+        expected_versions={"task:CG-1": 0},
+        changes={
+            "permits": {"run:inherited": {"claim": claim["operation_id"]}},
+            "effects": {"run:inherited": {
+                "claim": claim["operation_id"], "provider": "scheduler",
+                "scope": "task:CG-1", "effect_key": "run:inherited", "outcome": "pending",
+            }},
+        },
+    )
+
+    pending = store.begin_handoff(
+        "inherit-phase-owner-bob", actor="admin", installation="admin",
+        entity_key="task:CG-1", expected_version=0, pending_owner="bob",
+    )
+    assert pending.result["effective_owner"] == "alice"
+    assert store.read()[1]["entities"]["task:CG-1"]["owner"] == "alice"
+    with pytest.raises(GitCoordinationError, match="stop acknowledgement blocked"):
+        store.acknowledge_stop(
+            "early-stop", actor="alice", installation="one", entity_key="task:CG-1",
+        )
+
+    store.reconcile_effect(
+        "finish-inherited-run", actor="alice", installation="one",
+        effect_operation_id="run:inherited", outcome="succeeded",
+        evidence={"run": "completed and retained"},
+    )
+    store.acknowledge_stop(
+        "inherited-stopped", actor="alice", installation="one", entity_key="task:CG-1",
+    )
+    store.complete_handoff(
+        "accept-inherited-bob", actor="bob", installation="bob", entity_key="task:CG-1",
+    )
+    entity = store.read()[1]["entities"]["task:CG-1"]
+    assert (entity["owner"], entity["authority_generation"]) == ("bob", 2)
+
+
 @pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
 @pytest.mark.parametrize(
     "patch",
