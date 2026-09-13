@@ -1136,11 +1136,7 @@ class HostLifecycle:
             leases = data.setdefault("leases", {})
             assert isinstance(leases, dict)
             current = leases.get(provider_id)
-            current_raw = current.get("admission") if isinstance(current, dict) else None
-            current_id = (
-                str(current_raw.get("lease_id", "")) if isinstance(current_raw, dict) else ""
-            )
-            if current_id == lease_id and (lease_id or current == lease):
+            if current == lease:
                 leases.pop(provider_id, None)
                 self.state.write(data)
                 return
