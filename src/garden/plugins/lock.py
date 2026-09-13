@@ -40,7 +40,8 @@ def locked_identity(loaded: LoadedPlugins) -> dict[str, Any]:
             "distribution_fingerprint": plugin.distribution_fingerprint,
             "configuration_digest": plugin.configuration_digest,
             "resources": [
-                {"name": resource.name, "version": resource.version, "digest": resource.digest}
+                {"name": resource.name, "version": resource.version, "digest": resource.digest,
+                 "package_version": getattr(resource, "package_version", "")}
                 for resource in sorted(manifest.resources, key=lambda item: item.name)
             ],
         })

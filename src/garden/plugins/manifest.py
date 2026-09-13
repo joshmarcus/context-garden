@@ -187,6 +187,12 @@ class ResourceDeclaration:
     version: str
     digest: str
     products: tuple[str, ...] = ()
+    path: str = ""
+    audience: tuple[str, ...] = ()
+    media_type: str = ""
+    size_limit: int = 0
+    public_safe: bool | None = None
+    package_version: str = ""
 
     def __post_init__(self) -> None:
         _slug(self.name, what="resource name")
@@ -205,6 +211,35 @@ class ResourceDeclaration:
         for product in products:
             _slug(product, what=f"resource {self.name!r} product")
         object.__setattr__(self, "products", products)
+        audience = tuple(str(item) for item in self.audience)
+        for item in audience:
+            _slug(item, what=f"resource {self.name!r} audience")
+        object.__setattr__(self, "audience", audience)
+        if self.path and (self.path.startswith(("/", "\\")) or ".." in self.path.replace("\\", "/").split("/")):
+            raise ValueError(f"resource {self.name!r} path must be a relative package-data path")
+        if self.media_type and self.media_type not in {"text/markdown", "text/plain", "application/json"}:
+            raise ValueError(f"resource {self.name!r} has unsupported media_type {self.media_type!r}")
+        if isinstance(self.size_limit, bool) or self.size_limit < 0:
+            raise ValueError(f"resource {self.name!r} size_limit must be a non-negative integer")
+        if self.public_safe is not None and not isinstance(self.public_safe, bool):
+            raise ValueError(f"resource {self.name!r} public_safe must be true or false")
+        if self.package_version:
+            release(self.package_version)
+
+    def assert_complete(self, package_version: str) -> None:
+        """Fail closed when a context/profile declaration predates the serving contract."""
+        missing = [name for name, value in (
+            ("path", self.path), ("audience", self.audience), ("media_type", self.media_type),
+            ("size_limit", self.size_limit), ("public_safe", self.public_safe),
+            ("package_version", self.package_version),
+        ) if value in ("", (), 0, None)]
+        if missing:
+            raise ValueError(f"resource {self.name!r} lacks required declarations: {', '.join(missing)}")
+        if self.package_version != package_version:
+            raise ValueError(
+                f"resource {self.name!r} package_version {self.package_version!r} does not match "
+                f"installed plugin version {package_version!r}"
+            )
 
 
 @dataclass(frozen=True)

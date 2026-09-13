@@ -27,12 +27,50 @@ from .common import (
 def init(
     directory: Path = typer.Argument(Path("."), help="Directory to turn into a garden"),
     name: str = typer.Option("garden", help="Garden name"),
+    profile: str = typer.Option("", "--profile", help="Enabled plugin initialization profile"),
+    force: bool = typer.Option(False, "--force", help="Apply a profile despite previewed conflicts"),
 ):
     """Create garden.yaml and a principles digest in DIRECTORY."""
     from ..personas import write_default_personas
+    from ..plugins import (
+        PluginConfigurationError,
+        PluginError,
+        PluginResources,
+        apply_profile,
+        inspect_lock,
+        profile_files,
+    )
     from ..scaffold import init_garden
 
-    created = init_garden(directory.resolve(), name) + write_default_personas(directory.resolve())
+    root = directory.resolve()
+    profile_created = []
+    if profile:
+        from ..config import CONFIG_NAME, Config
+
+        if not (root / CONFIG_NAME).is_file():
+            err.print("[red]--profile requires an existing garden.yaml that explicitly enables the plugin[/red]")
+            raise typer.Exit(1)
+        try:
+            config = Config.load(root)
+            loaded, lock_status = inspect_lock(root, config.get("plugins"))
+            if not lock_status.valid:
+                raise PluginConfigurationError(lock_status.hold_message)
+            included = PluginResources(loaded).read(
+                profile, audience="garden-init", expected_kind="init_profile"
+            )
+            files = profile_files(included)
+            conflicts = [root.joinpath(*path.parts) for path in files if root.joinpath(*path.parts).exists()]
+            console.print(f"Profile preview: {len(files)} file(s), {len(conflicts)} conflict(s)")
+            for path in conflicts:
+                console.print(f"conflict {path}")
+            profile_created, _ = apply_profile(root, files, overwrite=force)
+            if conflicts and not force:
+                err.print("[red]profile not applied; review conflicts and rerun with --force[/red]")
+                raise typer.Exit(1)
+        except (OSError, ValueError, PluginConfigurationError, PluginError) as exc:
+            err.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from None
+    created = profile_created + init_garden(root, name) + write_default_personas(root)
     for p in created:
         console.print(f"created {p}")
     console.print("Next: `garden new-product <name>` then `garden new-phase <product> <phase>`.")

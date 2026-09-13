@@ -63,6 +63,12 @@ MANIFEST = manifest_from_dict({
             "version": "1.2.0",
             "digest": "sha256:<64 hex characters>",
             "products": ["example-product"],
+            "path": "example_garden_plugin/data/onboarding.md",
+            "audience": ["worker"],
+            "media_type": "text/markdown",
+            "size_limit": 24000,
+            "public_safe": true,
+            "package_version": "1.2.0",
         },
     ],
 })
@@ -132,9 +138,32 @@ can never arrive as an assertion in a manifest.
 
 ### Resources and redaction
 
-A resource declaration carries a `version` and a `sha256:` digest, so what a garden serves can
-be checked against what was reviewed. `products` is the closed list of products the resource is
-declared safe for; an empty list means *no* product, not every product.
+A resource declaration carries its stable `name`, resource `version`, installed package
+`path`, `media_type`, byte `size_limit`, `package_version`, and a `sha256:` digest, so core can
+check the bytes it serves against what was reviewed. `audience` is a closed list such as
+`worker` or `garden-init`; `products` is the closed list of products for a context pack.
+An empty list means *no* audience or product, not every one. `public_safe` is an explicit
+boolean: absence is not treated as false because a missing safety review must be distinguishable
+from a negative one.
+
+Core reads these files as installed package data without invoking the capability entry point.
+It rejects incomplete declarations, package-version drift, paths absent from the installed
+distribution inventory, unsupported media, invalid UTF-8, size overflow, digest drift, and an
+audience/product mismatch before constructing a brief. A public-product brief additionally
+requires `public_safe: true`. Every included pack adds plugin name/version, resource name/version,
+and digest to both its brief heading and the durable run record.
+Gardens select worker packs with a top-level `context_packs` list of
+`plugin-name/resource-name` references. A product entry may set `public: true`; those dispatches
+apply the additional public-safety gate. No list, including the default for existing gardens,
+adds no context and leaves brief construction unchanged.
+
+An `init_profile` is an `application/json` resource for audience `garden-init`. Its document is
+exactly `{\"files\": {\"relative/path\": \"text content\"}}`. Profiles are deliberately data,
+not hooks: core bounds the file count and resource size, rejects traversal, symlink escapes,
+`.garden` state and executable file extensions, previews every existing destination, and makes
+no writes when conflicts exist unless the operator repeats `garden init --profile ... --force`.
+The plugin must already be explicitly enabled in `garden.yaml`, and its compatibility lock must
+match before profile application can mutate the garden.
 
 `redacted_config_keys` names secrets inside the plugin's configuration block. Each key must be
 declared in `config_schema` — redacting a key the schema does not mention is a typo, and the
