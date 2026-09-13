@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import hashlib
 import os
 import re
 import threading
@@ -307,7 +308,10 @@ class Scheduler(
         if phase_name is None:
             raise TypeError("phase name is required")
         if self.coordinator is not None:
-            self._phase_authority(product, phase_name)
+            row = self._phase_authority(product, phase_name)
+            if (expected_generation is not None
+                    and int(row["authority_generation"]) != expected_generation):
+                raise RuntimeError("stale phase owner generation")
             return
         if self.cfg.get("multiplayer.enabled", False):
             self.require_execution_authority()

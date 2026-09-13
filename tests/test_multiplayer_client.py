@@ -196,6 +196,23 @@ def test_stale_cache_is_bound_to_the_authenticated_installation(tmp_path):
 
 
 def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_path):
+    class TransitionService(Service):
+        def __call__(self, method, url, **kwargs):
+            if method == "POST" and url.endswith("/claims"):
+                body = kwargs["json"]
+                self.posts.append(body)
+                return response(200, {
+                    "garden_id": "garden", "kind": body["kind"], "scope": body["scope"],
+                    "owner_id": body["accepted_owner"],
+                    "authority_generation": body["authority_generation"],
+                    "installation_id": "alice-a", "operation_id": body["operation_id"],
+                    "fence": 1,
+                    "lease_expires_at": (
+                        dt.datetime.now(dt.UTC) + dt.timedelta(minutes=2)
+                    ).isoformat(),
+                })
+            return super().__call__(method, url, **kwargs)
+
     path = "demo/p1/tasks/CG-1-task.md"
     original = "old\n"
     snapshot = snapshot_identity({
@@ -206,7 +223,7 @@ def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_pa
                          "path": path, "markdown": original,
                          "base_revision": hashlib.sha256(b"").hexdigest()}],
     })
-    service = Service(snapshot)
+    service = TransitionService(snapshot)
     local = client(tmp_path, service)
 
     result = local.transition(
