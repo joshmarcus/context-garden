@@ -135,6 +135,62 @@ def test_durable_handoff_releases_supervisor_workload_once(tmp_path, monkeypatch
     assert marker.read_text() == "run"
 
 
+def test_constrained_claim_activation_precedes_one_workload_launch(tmp_path, monkeypatch):
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "work"
+    execution_dir.mkdir(parents=True)
+    marker = execution_dir / "workload-started"
+    events = []
+    run = {
+        "id": "run-work", "task_id": "DM-001", "mode": "work",
+        "execution_requirements": {"resources": {"vcpu": 2}},
+    }
+
+    proc, _ = _launch_claim_supervisor(
+        [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+         f"printf run > {marker}"],
+        root=root, run=run, execution_dir=execution_dir, repo=repo,
+        final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+        activate_admission=lambda: events.append("activated"), start_new_session=True,
+    )
+    proc.wait(timeout=5)
+
+    assert events == ["activated"]
+    assert marker.read_text() == "run"
+
+
+def test_constrained_claim_activation_rejection_keeps_workload_blocked(tmp_path, monkeypatch):
+    isolated_execution_runtime(tmp_path, monkeypatch)
+    root = tmp_path / "host"
+    repo = root / "repos" / "DM-001"
+    repo.mkdir(parents=True)
+    execution_dir = root / "runs" / "work"
+    execution_dir.mkdir(parents=True)
+    marker = execution_dir / "workload-started"
+    run = {
+        "id": "run-work", "task_id": "DM-001", "mode": "work",
+        "execution_requirements": {"resources": {"vcpu": 2}},
+    }
+
+    def reject():
+        raise RuntimeError("admission rejected")
+
+    with pytest.raises(RuntimeError, match="admission rejected"):
+        _launch_claim_supervisor(
+            [sys.executable, "-m", "garden.run_supervisor", str(execution_dir),
+             f"printf run > {marker}"],
+            root=root, run=run, execution_dir=execution_dir, repo=repo,
+            final_path=repo.parent / "final.md", env=dict(os.environ), pass_fds=(),
+            activate_admission=reject, start_new_session=True,
+        )
+
+    assert not marker.exists()
+    assert (root / "active-claims" / "run-work.json").exists()
+
+
 def test_daemon_crash_after_gate_release_preserves_complete_brief(tmp_path, monkeypatch):
     """A detached supervisor never depends on its daemon surviving to stream input."""
     isolated_execution_runtime(tmp_path, monkeypatch)

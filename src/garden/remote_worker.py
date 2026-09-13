@@ -500,9 +500,10 @@ def _persist_active_claim(root: Path, run: dict[str, Any], execution_dir: Path,
 def _launch_claim_supervisor(
     command: list[str], *, root: Path, run: dict[str, Any], execution_dir: Path,
     repo: Path, final_path: Path, env: dict[str, str], pass_fds: tuple[int, ...],
+    activate_admission: Callable[[], Any] | None = None,
     **popen_kwargs: Any,
 ) -> tuple[subprocess.Popen[Any], Path]:
-    """Launch a supervisor whose workload is fenced behind its durable handoff."""
+    """Launch a supervisor whose workload is fenced behind handoff and admission."""
     gate_read, gate_write = os.pipe()
     launch_env = dict(env)
     launch_env["GARDEN_LAUNCH_GATE_FD"] = str(gate_read)
@@ -516,6 +517,14 @@ def _launch_claim_supervisor(
         active_claim = _persist_active_claim(
             root, run, execution_dir, repo, final_path, proc.pid,
         )
+        if run.get("execution_requirements"):
+            if activate_admission is None:
+                raise RuntimeError(
+                    "constrained claim has no host admission activation boundary"
+                )
+            # The child is blocked on GARDEN_LAUNCH_GATE_FD here. Activate only after
+            # its durable handoff exists and immediately before releasing the command.
+            activate_admission()
         os.write(gate_write, b"1")
         return proc, active_claim
     except BaseException:
@@ -533,6 +542,29 @@ def _launch_claim_supervisor(
             os.close(gate_read)
         if gate_write >= 0:
             os.close(gate_write)
+
+
+def _host_admission_activator(
+    run: dict[str, Any], host_config: dict[str, Any] | None,
+) -> Callable[[], Any] | None:
+    """Build the managed-host activation barrier from operator-owned local config."""
+    if not run.get("execution_requirements"):
+        return None
+    config = dict((host_config or {}).get("host_admission") or {})
+    try:
+        from .hosts import CommandProvider, HostLifecycle, JsonStateStore
+        from .hosts.config import pool_from_dict
+
+        pool = pool_from_dict(config["pool"])
+        provider_id = str(config["provider_id"])
+        lifecycle = HostLifecycle(
+            {"command": CommandProvider()}, JsonStateStore(Path(config["state_path"]))
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "constrained claim requires valid host_admission pool, provider_id, and state_path"
+        ) from exc
+    return lambda: lifecycle.activate_admission(pool, provider_id)
 
 
 def _collect_supervised_result(
@@ -1113,6 +1145,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
     heartbeat.start()
     repo_lock = None
     try:
+        activate_admission = _host_admission_activator(run, host_config)
         try:
             repo_lock = _acquire_repo_lock(run, root)
         except ClaimMaterializationError as failure:
@@ -1161,6 +1194,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 [sys.executable, "-m", "garden.run_supervisor", str(execution_dir), check_command],
                 root=root, run=run, execution_dir=execution_dir, repo=repo,
                 final_path=final_path,
+                activate_admission=activate_admission,
                 cwd=repo, env=execution_env, pass_fds=(repo_lock.fileno(),),
                 start_new_session=True,
             )
@@ -1216,6 +1250,7 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 proc, active_claim = _launch_claim_supervisor(
                     supervised, root=root, run=run, execution_dir=execution_dir,
                     repo=repo, final_path=final_path, env=execution_env,
+                    activate_admission=activate_admission,
                     pass_fds=(repo_lock.fileno(),), stdin=subprocess.DEVNULL,
                     stdout=stdout_file, stderr=stderr_file, text=True, cwd=repo,
                     start_new_session=True,
