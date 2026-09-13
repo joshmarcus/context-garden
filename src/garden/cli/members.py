@@ -173,3 +173,20 @@ def assign(member_id: str, project: str, phase: str,
         raise typer.Exit(2) from None
     state = "paused" if not assignment.enabled else "active"
     console.print(f"{member_id}: {project}/{phase} ({state}, generation {assignment.generation})")
+
+
+@members_app.command("assign-phase")
+def assign_phase(project: str, phase: str, member_id: str = typer.Argument(""),
+                 credential_env: str = typer.Option(...), generation: int = typer.Option(0)) -> None:
+    """Set explicit phase-workflow ownership; omit MEMBER_ID to leave it unassigned."""
+    registry = _registry()
+    try:
+        owner = registry.set_phase_owner(
+            _actor(registry, credential_env), project, phase, member_id or None,
+            expected_generation=generation,
+        )
+    except (PermissionError, RuntimeError, ValueError) as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from None
+    label = owner.owner_id or "unassigned"
+    console.print(f"{project}/{phase}: {label} (generation {owner.generation})")

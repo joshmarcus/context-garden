@@ -33,6 +33,7 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
+from ..migration import standalone_fence
 from ..model import Status, Task, effective_owner, now_iso
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from ..notify import notify, retry_pending, should_notify
@@ -137,12 +138,15 @@ class Scheduler(
 
     def require_execution_authority(self) -> None:
         """Require an authenticated coordinator client in explicit multiplayer mode."""
-        if self.cfg.get("multiplayer.enabled", False) and self.coordinator is None:
+        multiplayer = self.cfg.get("multiplayer.enabled", False) or standalone_fence(
+            self.store.root
+        )
+        if multiplayer and self.coordinator is None:
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
 
     def execution_status(self) -> dict[str, str]:
         """Describe this installation's execution boundary without starting work."""
-        if not self.cfg.get("multiplayer.enabled", False):
+        if not self.cfg.get("multiplayer.enabled", False) and not standalone_fence(self.store.root):
             return {"state": "legacy", "label": "Single-user execution"}
         if self.coordinator is None:
             return {"state": "unavailable", "label": MULTIPLAYER_EXECUTION_UNAVAILABLE}
