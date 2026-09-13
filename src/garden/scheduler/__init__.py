@@ -174,6 +174,32 @@ class Scheduler(
         handoff = (snapshot.get("handoffs") or {}).get(f"task:{task.id}")
         return isinstance(handoff, dict) and handoff.get("status") != "completed"
 
+    def set_phase_owner(self, actor: Principal, project: str, phase: str,
+                        owner_id: str | None, *, expected_generation: int = 0):
+        """Persist phase ownership and reconcile its inherited task authorities."""
+        row = self.members.set_phase_owner(
+            actor, project, phase, owner_id, expected_generation=expected_generation,
+        )
+        self.reconcile_phase_task_owners(project, phase, row.owner_id, row.generation)
+        return row
+
+    def reconcile_phase_task_owners(self, project: str, phase: str,
+                                    owner_id: str, generation: int) -> None:
+        """Project current inherited tasks into accepted authority after an app mutation."""
+        inherited = [
+            task.id for task in self.store.tasks().values()
+            if task.product == project and task.phase == phase
+            and not task.owner and not task.owner_unassigned
+        ]
+        if self.coordinator is not None and hasattr(
+            self.coordinator, "reconcile_inherited_task_owners"
+        ):
+            self.coordinator.reconcile_inherited_task_owners(
+                project=project, phase=phase, owner=owner_id,
+                tasks=inherited, generation=generation,
+            )
+            self._authority_snapshot = self.coordinator.refresh(allow_stale=False).snapshot
+
     def require_execution_authority(self) -> None:
         """Require an authenticated coordinator client in explicit multiplayer mode."""
         multiplayer = self.cfg.get("multiplayer.enabled", False) or standalone_fence(

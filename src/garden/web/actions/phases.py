@@ -275,6 +275,11 @@ def register(app: FastAPI, site: Site) -> None:
                 body = render_task_body(goal=goal, context=context, acceptance=_parse_acceptance(acceptance))
                 t = sched.store.create_task(product, phase, title, body, depends_on=deps, reading=reading_list,
                                   priority=priority_n, status="draft", difficulty=difficulty)
+                phase_owner = sched.members.phase_owner(product, phase)
+                if phase_owner is not None:
+                    sched.reconcile_phase_task_owners(
+                        product, phase, phase_owner.owner_id, phase_owner.generation,
+                    )
                 if ready:
                     # Goes through the same gate a hand approval does (CG-238): a placeholder
                     # acceptance criterion or an unresolved reading path leaves the task a

@@ -13,6 +13,7 @@ import yaml
 from ..git_coordination import GitCoordinationError, GitMultiplayerClient
 from ..members import MemberRegistry, operating_system_username
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
+from ..scheduler import Scheduler
 from .common import PANEL_LOOP, _store, app, console, err
 
 members_app = typer.Typer(help="Enroll garden members and manage private installation credentials.")
@@ -227,7 +228,7 @@ def assign_phase(project: str, phase: str, member_id: str = typer.Argument(""),
     """Set explicit phase-workflow ownership; omit MEMBER_ID to leave it unassigned."""
     registry = _registry()
     try:
-        owner = registry.set_phase_owner(
+        owner = Scheduler(_store()).set_phase_owner(
             _actor(registry, credential_env), project, phase, member_id or None,
             expected_generation=generation,
         )
@@ -264,7 +265,7 @@ def assign_phase_owner(target: str, owner_id: str,
         raise typer.BadParameter("target must be project/phase")
     project, phase = target.split("/", 1)
     registry = _registry()
-    row = registry.set_phase_owner(
+    row = Scheduler(_store()).set_phase_owner(
         _actor(registry, credential_env), project, phase,
         None if owner_id == "-" else owner_id, expected_generation=generation,
     )

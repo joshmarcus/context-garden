@@ -635,6 +635,47 @@ class GitStateStore:
 
         return self.transact(operation_id, inputs, mutate)
 
+    def reconcile_inherited_task_owners(
+        self, operation_id: str, *, actor: str, installation: str,
+        project: str, phase: str, owner: str, tasks: list[str],
+    ) -> AcceptedTransaction:
+        """Create or safely transfer task authority implied by one phase owner change."""
+        inputs = {
+            "actor": actor, "installation": installation, "project": project,
+            "phase": phase, "owner": owner, "tasks": sorted(tasks),
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            member = self._require_active_installation(state, actor, installation)
+            if member.get("role") not in {"owner", "admin", "administrator"}:
+                raise PermissionError("phase ownership changes require an administrator")
+            affected: list[str] = []
+            pending: list[str] = []
+            for task_id in sorted(set(tasks)):
+                key = f"task:{task_id}"
+                entity = state["entities"].get(key)
+                if entity is None:
+                    state["entities"][key] = {
+                        "kind": "task", "scope": task_id, "project": project,
+                        "owner": owner, "authority_generation": 1, "version": 0,
+                    }
+                    affected.append(task_id)
+                    continue
+                if str(entity.get("owner", "")) == owner:
+                    continue
+                if key in state["handoffs"]:
+                    if state["handoffs"][key].get("pending_owner") != owner:
+                        raise GitCoordinationError(f"authority already has a pending handoff: {key}")
+                    pending.append(task_id)
+                    continue
+                self._require_authorized_owner(state, entity, owner)
+                self._stage_lifecycle_handoff(state, key, pending_owner=owner)
+                affected.append(task_id)
+                pending.append(task_id)
+            return {"affected": affected, "pending": pending}
+
+        return self.transact(operation_id, inputs, mutate)
+
     @staticmethod
     def _stage_lifecycle_handoff(
         state: dict[str, Any], entity_key: str, *, pending_owner: str = ""
@@ -1143,6 +1184,17 @@ class GitMultiplayerClient:
             member.get("visibility", "assigned"),
             frozenset(member.get("projects", [])),
         )
+
+    def reconcile_inherited_task_owners(
+        self, *, project: str, phase: str, owner: str, tasks: list[str], generation: int,
+    ) -> dict[str, Any]:
+        task_set = hashlib.sha256("\0".join(sorted(tasks)).encode()).hexdigest()[:12]
+        accepted = self.store.reconcile_inherited_task_owners(
+            f"phase-owner:{project}:{phase}:{generation}:{task_set}", actor=self.member_id,
+            installation=self.installation_id, project=project, phase=phase,
+            owner=owner, tasks=tasks,
+        )
+        return accepted.result
 
     def claim(
         self,

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from garden.coordination_api import create_coordination_app
 from garden.events import DECISION_KINDS, EventLog
-from garden.git_coordination import GitMultiplayerClient, GitStateStore
+from garden.git_coordination import GitStateStore
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
 from garden.runs import Run, RunStore
@@ -57,7 +57,9 @@ def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
     subprocess.run(["git", "init", "--bare", str(remote)], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     config = yaml.safe_load((garden / "garden.yaml").read_text())
-    installation, member_id = next(iter(registry_state["installations"].items()))
+    installation, installation_row = next(iter(registry_state["installations"].items()))
+    member_id = (installation_row.get("member_id")
+                 if isinstance(installation_row, dict) else installation_row)
     multiplayer = config.setdefault("multiplayer", {})
     multiplayer.update({
         "enabled": True, "garden_id": registry_state["garden_id"],
@@ -783,19 +785,21 @@ def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner
     bob_token = registry.issue_installation(alice, "bob", "bob-worker")
     app = _git_enrolled_app(garden)
 
-    # Local intent moves to Bob while accepted Git task authority remains Alice.
-    registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
+    running_scheduler = Scheduler(Store(garden))
+    with running_scheduler.task_effect(
+        running_scheduler.store.task("DM-001"), "test-active-phase-owner-change",
+    ):
+        pass
+    # The supported assignment path stages accepted task authority without test-only claims.
+    Scheduler(Store(garden)).set_phase_owner(
+        alice, "demo", "p1", "bob", expected_generation=1,
+    )
     authority = GitStateStore(
         garden, garden_id="garden-1", remote=str(garden / ".garden/test-state.git"),
     )
-    GitMultiplayerClient(authority, "alice", alice.installation_id).claim(
-        kind="task", scope="DM-001", owner_id="alice", authority_generation=1,
-        expected_version=0,
-    )
-    authority.begin_handoff(
-        "pending-phase-owner", actor="alice", installation=alice.installation_id,
-        entity_key="task:DM-001", expected_version=0, pending_owner="bob",
-    )
+    accepted = authority.read()[1]
+    assert accepted["entities"]["task:DM-001"]["owner"] == "alice"
+    assert accepted["handoffs"]["task:DM-001"]["pending_owner"] == "bob"
     client = TestClient(app)
     alice_headers = {"Authorization": f"Bearer {alice_token}"}
     bob_headers = {"Authorization": f"Bearer {bob_token}"}
@@ -848,6 +852,16 @@ def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner
         "/api/runs/claim", headers=bob_headers,
         json={"host": "bob-worker", "claim_request_id": "bob-after-handoff"},
     ).status_code == 200
+
+    created = client.post(
+        "/phases/demo/p1/new-task", headers=bob_headers,
+        data={"title": "Inherited later", "goal": "Later"}, follow_redirects=False,
+    )
+    assert created.status_code == 303
+    created_id = created.headers["location"].split("/tasks/", 1)[1].split("?", 1)[0]
+    accepted = authority.read()[1]
+    assert accepted["entities"][f"task:{created_id}"]["owner"] == "bob"
+    assert f"task:{created_id}" not in accepted["handoffs"]
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
