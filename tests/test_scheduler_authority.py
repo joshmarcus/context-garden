@@ -110,7 +110,6 @@ def test_direct_task_action_denial_happens_before_its_first_side_effect():
 
         def require_execution_authority(self):
             return self.scheduler.require_execution_authority()
-
         def task_effect(self, item, key):
             return self.scheduler.task_effect(item, key)
 
@@ -134,7 +133,6 @@ def test_return_to_automation_denial_happens_before_manual_state_mutation():
         sched.return_to_automation(task("A-1"), reservation_id="reservation", expected={})
 
     assert sched.coordinator.effects == []
-
 
 def test_unassigned_member_has_no_executable_tick_scope(garden, monkeypatch):
     config_path = garden / "garden.yaml"
