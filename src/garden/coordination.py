@@ -356,10 +356,21 @@ class Coordinator:
         with self._transaction() as db:
             row = db.execute("SELECT * FROM effects WHERE garden=? AND operation_id=?",
                              (garden_id, operation_id)).fetchone()
-            if not row or row["actor"] != principal.member_id:
+            if (not row or row["actor"] != principal.member_id
+                    or row["installation"] != principal.installation_id):
                 raise PermissionError("provider operation does not belong to actor")
+            encoded_result = json.dumps(result or {}, sort_keys=True)
+            current = row["status"]
+            if current in {"succeeded", "failed"}:
+                if current == outcome and row["result_json"] == encoded_result:
+                    return
+                raise Conflict("provider effect already has a different terminal outcome")
+            if current == "unknown" and outcome == "unknown":
+                if row["result_json"] == encoded_result:
+                    return
+                raise Conflict("provider effect already has a different unknown outcome")
             db.execute("UPDATE effects SET status=?,result_json=?,updated_at=? WHERE garden=? AND operation_id=?",
-                       (outcome, json.dumps(result or {}, sort_keys=True), _iso(self.clock()),
+                       (outcome, encoded_result, _iso(self.clock()),
                         garden_id, operation_id))
 
     def reserve(self, principal: Principal, *, garden_id: str, pool: str, operation_id: str,

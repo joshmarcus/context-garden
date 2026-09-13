@@ -184,6 +184,62 @@ def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     ).read_bytes().decode(errors="ignore")
 
 
+def test_provider_reconciliation_is_installation_bound_and_terminal_after_restart(tmp_path):
+    admin, alice, alice_other_installation, bob = principals()
+    path = tmp_path / "coordination.db"
+    coordinator = Coordinator(path)
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+    coordinator.begin_effect(
+        alice, claim, provider="github", effect_key="publish:CG-1", operation_id="publish-1",
+        credential_scope="pull_requests:write", precondition="head=abc", request={"head": "abc"},
+    )
+    coordinator.finish_effect(
+        alice, "garden", "publish-1", outcome="unknown", result={"receipt": "lost"},
+    )
+
+    restarted = Coordinator(path)
+    with pytest.raises(PermissionError, match="does not belong"):
+        restarted.finish_effect(
+            alice_other_installation, "garden", "publish-1", outcome="succeeded",
+            result={"pull_request": 7},
+        )
+    restarted.finish_effect(
+        alice, "garden", "publish-1", outcome="succeeded", result={"pull_request": 7},
+    )
+    # An identical lost reply is idempotent, while delayed or contradictory reports cannot
+    # reverse the reconciled outcome or recreate an admission conflict.
+    restarted.finish_effect(
+        alice, "garden", "publish-1", outcome="succeeded", result={"pull_request": 7},
+    )
+    with pytest.raises(Conflict, match="different terminal outcome"):
+        restarted.finish_effect(
+            alice, "garden", "publish-1", outcome="unknown", result={"receipt": "lost"},
+        )
+    with pytest.raises(Conflict, match="different terminal outcome"):
+        restarted.finish_effect(
+            alice, "garden", "publish-1", outcome="failed", result={"reason": "late"},
+        )
+    with restarted._connect() as db:
+        effect = db.execute(
+            "SELECT status,result_json,installation FROM effects WHERE garden=? AND operation_id=?",
+            ("garden", "publish-1"),
+        ).fetchone()
+    assert dict(effect) == {
+        "status": "succeeded", "result_json": '{"pull_request": 7}', "installation": "alice-a",
+    }
+
+    changed = restarted.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+        authority_generation=5, expected_version=1, operation_id="reassign-after-reconcile",
+    )
+    assert changed["version"] == 2
+    admitted = restarted.claim(
+        bob, garden_id="garden", kind="task", scope="CG-1", expected_version=2,
+        accepted_owner="bob", authority_generation=5, operation_id="bob-claim",
+    )
+    assert admitted.owner_id == "bob"
+
+
 def test_unresolved_effect_blocks_reassignment_and_new_admission(tmp_path):
     admin, alice, alice_b, bob = principals()
     clock = Clock()
