@@ -70,10 +70,13 @@ authorized, never policy or credentials. Requested dataset access may only
 narrow these host-owned grants; task text, execution requirements, and worker labels cannot add
 authority. Raw and private-derived artifacts have no export class. Export helpers reject
 synthetic restricted markers and can report an honest `insufficient` validation state without
-exporting private payloads. Before a remote host pushes or posts a result, it rejects changed
-files under the private artifact boundary and synthetic markers in changed text files or the
-finish payload. That small export policy is retained in its protected active-claim handoff so
-recovery cannot bypass it.
+exporting private payloads. Finish publication treats `transcript`, `result`, and
+`validation-state` as separate content classes; unapproved final/error text and validation
+receipts are omitted, while an unapproved structured result is replaced by an explicit
+`insufficient_evidence` state. Before a remote host pushes or posts a result, it rejects changed
+files under the private artifact boundary and synthetic markers in changed text files or every
+permitted finish field. That small export policy is retained in its protected active-claim
+handoff so recovery cannot bypass it.
 While the subprocess runs, its owner validates the authority and renews it when the provider
 allows. Because a process environment cannot be changed after launch, a renewal that rotates an
 environment-delivered value terminates the process and reports an actionable workload-identity

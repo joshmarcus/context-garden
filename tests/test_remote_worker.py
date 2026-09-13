@@ -108,6 +108,8 @@ def _publish_restricted(repo, root, base):
         "push_ref": "refs/heads/export", "publication_base_head": base,
         "restricted_artifact_boundary": "private",
         "restricted_export_markers": ["RESTRICTED-ROW-42"],
+        "restricted_data_authorized": True,
+        "restricted_evidence_exports": ["result", "transcript", "validation-state"],
     }
     _publish_claim_result(
         run, root, repo, _PublicationHeartbeat(), final="done", parsed={}, usage={},
@@ -166,6 +168,57 @@ def test_restricted_publication_pushes_clean_committed_and_uncommitted_changes(t
     assert exported == subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
     ).stdout.strip()
+
+
+def test_restricted_finish_without_content_exports_persists_and_posts_only_insufficient_state(
+    tmp_path,
+):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    root = tmp_path / "host"
+    run = {
+        "id": "run-1", "task_id": "T-1", "lease_token": "lease",
+        "push_ref": "refs/heads/export", "publication_base_head": base,
+        "restricted_data_authorized": True,
+        "restricted_artifact_boundary": "private",
+        "restricted_export_markers": [],
+        "restricted_evidence_exports": [],
+    }
+
+    class InspectingHeartbeat:
+        def ensure_current(self):
+            pass
+
+        def finish(self, payload):
+            pending = json.loads((root / "pending-results" / "run-1.json").read_text())
+            assert pending == {"run_id": "run-1", "payload": payload}
+            assert payload["final_text"] == ""
+            assert payload["error"] == ""
+            assert "validation_receipts" not in payload
+            assert payload["result"] == {
+                "status": "insufficient_evidence",
+                "evidence": {
+                    "kind": "validation-state",
+                    "state": "insufficient",
+                    "summary": "Restricted result evidence was not exported.",
+                },
+            }
+            assert "PRIVATE-FINAL" not in json.dumps(payload)
+
+    execution_dir = root / "runs" / "run-1"
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "execution.json").write_text(json.dumps({"private": "PRIVATE-FINAL"}))
+    (execution_dir / "exit_code").write_text("0")
+    (execution_dir / "stderr.log").write_text("PRIVATE-FINAL")
+    _publish_claim_result(
+        run, root, repo, InspectingHeartbeat(), final="PRIVATE-FINAL",
+        parsed={"status": "done", "secret": "PRIVATE-FINAL"}, usage={"tokens": 1},
+        cost=0.01, error="PRIVATE-FINAL", rc=0, execution_dir=execution_dir,
+    )
+
+    assert not (root / "pending-results" / "run-1.json").exists()
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/export"], cwd=remote,
+    ).returncode == 0
 
 
 def test_recovered_restricted_publication_revalidates_committed_history(tmp_path, monkeypatch):
@@ -2892,7 +2945,7 @@ run.save()
         "models": [payload["model"]],
         "tools": [payload["harness"]],
         "artifact_boundary": "private",
-        "evidence_exports": ["transcript", "validation-state"],
+        "evidence_exports": ["transcript", "result", "validation-state"],
         "synthetic_markers": ["RESTRICTED-ROW-42"],
     }}}
     execute_claim(
