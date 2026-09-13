@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from garden.coordination import Conflict, Coordinator
 from garden.members import MemberRegistry, Principal
 from garden.model import Phase, Status, Task
 from garden.runner.manual import ManualRunner
@@ -91,6 +92,39 @@ def test_assignment_is_single_versioned_cursor_and_new_members_have_none(tmp_pat
     recreated = registry.set_assignment(admin, "alice", "demo", "p3",
                                          expected_generation=3)
     assert recreated.generation == 4
+
+
+def test_assignment_change_fences_existing_member_claim_before_it_is_saved(tmp_path):
+    garden_dir = tmp_path / ".garden"
+    coordinator = Coordinator(garden_dir / "coordination.db")
+    registry = MemberRegistry(garden_dir, coordinator)
+    token = registry.enroll_administrator("garden", "admin", "admin-machine")
+    admin = registry.authenticate(token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member")
+    alice_token = registry.issue_installation(admin, "alice", "alice-machine")
+    alice = registry.authenticate(alice_token)
+    assert alice is not None
+    authority = coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="DM-1", owner_id="alice",
+        authority_generation=1, expected_version=0, operation_id="authority",
+    )
+    coordinator.claim(
+        alice, garden_id="garden", kind="task", scope="DM-1",
+        expected_version=authority["version"], accepted_owner="alice",
+        authority_generation=1, operation_id="claim",
+    )
+
+    registry.set_assignment(admin, "alice", "demo", "p2")
+
+    snapshot = coordinator.snapshot(admin, "garden")
+    assert snapshot["cancellation_requests"][0]["installation"] == "alice-machine"
+    assert snapshot["handoffs"][0]["status"] == "reconciling"
+    with pytest.raises(Conflict, match="handoff reconciliation"):
+        coordinator.claim(
+            alice, garden_id="garden", kind="task", scope="DM-1", expected_version=2,
+            accepted_owner="alice", authority_generation=2, operation_id="too-early",
+        )
 
 
 def test_phase_owner_is_explicit_distinct_versioned_and_attributed(tmp_path):
