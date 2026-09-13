@@ -389,7 +389,9 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    assert accepted.status_code == 303
+    # The authenticated browser cannot replace this installation's execution
+    # principal, which has no assignment in this fixture.
+    assert accepted.status_code == 409
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -542,7 +544,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 409
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -562,7 +564,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_action
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
@@ -577,7 +578,8 @@ def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_action
     for path in ("/", "/board", "/inbox", "/now"):
         assert client.get(path, headers=bob).status_code == 200
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    # Bob may inspect his task, but this Alice-bound server cannot execute it.
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
@@ -858,6 +860,7 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
     other_token = registry.issue_installation(admin, "bob", "bob-desktop")
     headers = {"Authorization": f"Bearer {token}"}
@@ -963,7 +966,7 @@ def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(gard
     queued = runs.new_run("DM-002", "remote", mode="check", run_id="legacy-queued-run")
     queued.env_snapshot = {"product": "demo"}
     queued.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     response = client.post(
         "/api/runs/claim",
@@ -1026,7 +1029,7 @@ def test_member_worker_claim_requires_current_matching_assignment(garden, assign
     run.save()
     registry.set_assignment(admin, "bob", assignment["project"], assignment["phase"],
                             enabled=assignment["enabled"], expected_generation=1)
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     response = client.post(
         "/api/runs/claim", headers={"Authorization": f"Bearer {token}"},
@@ -1163,7 +1166,7 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.get("/api/tasks", headers=eve).json() == []
     assert client.get("/config", headers=bob).status_code == 403
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 

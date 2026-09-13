@@ -396,6 +396,8 @@ def register(app: FastAPI, site: Site) -> None:
                     "expected": sched.manual_return_guard(current)}
         except KeyError:
             raise HTTPException(404) from None
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
 
