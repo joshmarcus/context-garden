@@ -14,6 +14,7 @@ from ..brief import brief_gaps
 from ..events import phase_summary
 from ..github import GitHubError
 from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal, slugify
+from ..multiplayer_client import MultiplayerUnavailable
 from ..operator_spend import attributed_summary as operator_attributed_summary
 from ..operator_spend import default_path as operator_spend_path
 from ..operator_spend import read_records as read_operator_records
@@ -149,20 +150,27 @@ class RetroMixin:
         """Persist one idempotent request per newly eligible phase; admission happens later."""
         for product in self.store.products():
             for phase in product.phases:
+                if not self.phase_is_authorized(phase.product, phase.name):
+                    continue
                 status = self.closing_review_status(phase)
                 if not status["eligible"]:
                     continue
-                entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
+                effect_key = f"retro-queue:{phase.key}:{status['evidence']}"
+                with self.phase_effect(phase.product, phase.name, effect_key):
+                    status = self.closing_review_status(phase)
+                    if not status["eligible"]:
+                        continue
+                    entry = {"phase": phase.key, "product": phase.product, "phase_name": phase.name,
                          "personas": status["personas"], "skip_personas": False,
                          "next_phase": next_phase_name(phase.name), "self_product": self._self_product() or "",
                          "stage": "queued", "persona_runs": {}, "automatic": True,
                          "requested_at": now_iso(), "request_id": uuid.uuid4().hex, "source": "",
                          "evidence": status["evidence"], "no_file": False}
-                self._retro_list().append(entry)
-                self.events.emit("retro_queued", "", phase=phase.key, source=entry["source"],
-                                 evidence=entry["evidence"])
-                rep.transitions.append(f"retro {phase.key} queued")
-                self.state.save()
+                    self._retro_list().append(entry)
+                    self.events.emit("retro_queued", "", phase=phase.key, source=entry["source"],
+                                     evidence=entry["evidence"])
+                    rep.transitions.append(f"retro {phase.key} queued")
+                    self.state.save()
 
     def _current_phase_source(self, phase: Phase) -> str:
         probe = Task(path=self.store.root, id=f"_{phase.product}-{phase.name}", title="",
@@ -179,6 +187,9 @@ class RetroMixin:
         for entry in self._retro_list():
             if entry.get("stage") not in {"queued", "preparing", "dispatching"}:
                 continue
+            if not self.phase_is_authorized(str(entry.get("product")), str(entry.get("phase_name"))):
+                continue
+            product, phase_name = str(entry["product"]), str(entry["phase_name"])
             owner_pid = int(entry.get("preparation_pid") or 0)
             if entry.get("stage") != "queued" and owner_pid:
                 try:
@@ -190,20 +201,26 @@ class RetroMixin:
                 else:
                     continue
             try:
-                if len(self.review_runs_active()) >= self.review_parallel_limit():
-                    raise RuntimeError(
-                        f"waiting for review capacity ({len(self.review_runs_active())}/"
-                        f"{self.review_parallel_limit()} running)"
-                    )
-                claim = uuid.uuid4().hex
-                entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
-                entry.pop("waiting_reason", None)
-                entry["preparation_action"] = "start"
-                self._closing_review_claims.append((str(entry["request_id"]), claim, "start"))
+                effect_key = f"retro-claim:{entry.get('request_id', entry['phase'])}:{entry.get('stage')}"
+                with self.phase_effect(product, phase_name, effect_key):
+                    self._claim_queued_closing_review(entry)
             except RuntimeError as exc:
                 entry["waiting_reason"] = str(exc)
-            self.state.save()
+                self.state.save()
             break
+
+    def _claim_queued_closing_review(self, entry: dict[str, Any]) -> None:
+        if len(self.review_runs_active()) >= self.review_parallel_limit():
+            raise RuntimeError(
+                f"waiting for review capacity ({len(self.review_runs_active())}/"
+                f"{self.review_parallel_limit()} running)"
+            )
+        claim = uuid.uuid4().hex
+        entry.update(stage="preparing", preparation_claim=claim, preparation_pid=os.getpid())
+        entry.pop("waiting_reason", None)
+        entry["preparation_action"] = "start"
+        self._closing_review_claims.append((str(entry["request_id"]), claim, "start"))
+        self.state.save()
 
     def prepare_claimed_closing_reviews(self, rep: TickReport) -> None:
         """Prepare requests claimed by this tick without holding the scheduler mutation lock.
@@ -214,13 +231,29 @@ class RetroMixin:
         """
         for request_id, claim, action in self._closing_review_claims:
             try:
+                entry = next((item for item in self._retro_list()
+                              if item.get("request_id") == request_id), None)
+                if entry is None:
+                    continue
+                with self.phase_effect(
+                    str(entry["product"]), str(entry["phase_name"]),
+                    f"retro-prepare:{request_id}:{action}:{claim}",
+                ):
+                    self._prepare_claimed_closing_review(request_id, claim, action, rep)
+            except RuntimeError as exc:
+                self._defer_closing_review_preparation(request_id, claim, action, exc)
+        self._closing_review_claims.clear()
+
+    def _prepare_claimed_closing_review(self, request_id: str, claim: str, action: str,
+                                        rep: TickReport) -> None:
+            try:
                 expected_stage = "preparing" if action == "start" else f"preparing_{action}"
                 with self._controller_lock():
                     entry = next((item for item in self._retro_list()
                                   if item.get("request_id") == request_id), None)
                     if (entry is None or entry.get("stage") != expected_stage
                             or entry.get("preparation_claim") != claim):
-                        continue
+                        return
                     phase = self.store.phase(entry["product"], entry["phase_name"])
                     if action == "start" and entry.get("automatic"):
                         policy = self._closing_review_policy(phase)
@@ -232,7 +265,7 @@ class RetroMixin:
                                          waiting_reason=reason)
                             self._clear_retro_preparation(entry)
                             self.state.save()
-                            continue
+                            return
                 if action != "start" and entry.get("automatic"):
                     current_source = self._current_phase_source(phase)
                     with self._controller_lock():
@@ -240,7 +273,7 @@ class RetroMixin:
                                       if item.get("request_id") == request_id), None)
                         if (entry is None or entry.get("stage") != expected_stage
                                 or entry.get("preparation_claim") != claim):
-                            continue
+                            return
                         phase = self.store.phase(entry["product"], entry["phase_name"])
                         policy = self._closing_review_policy(phase)
                         identity_changed = (
@@ -253,7 +286,7 @@ class RetroMixin:
                                          waiting_reason=reason)
                             self._clear_retro_preparation(entry)
                             self.state.save()
-                            continue
+                            return
                 if action == "personas":
                     names = list(entry.get("preparation_names") or [])
                     source = str(entry.get("source") or "")
@@ -269,7 +302,7 @@ class RetroMixin:
                             self._discard_prepared_retro_personas(
                                 prepared, "persona preparation claim was superseded"
                             )
-                            continue
+                            return
                         phase = self.store.phase(entry["product"], entry["phase_name"])
                         if entry.get("automatic"):
                             policy = self._closing_review_policy(phase)
@@ -291,13 +324,13 @@ class RetroMixin:
                                 self._clear_retro_preparation(entry)
                                 self.state.save()
                                 self._discard_prepared_retro_personas(prepared, reason)
-                                continue
+                                return
                         admitted = self._commit_prepared_retro_personas(entry, prepared)
                         entry["stage"] = "personas"
                         self._clear_retro_preparation(entry)
                         self.state.save()
                     self._launch_prepared_retro_personas(admitted)
-                    continue
+                    return
                 if action == "reconcile":
                     prepared = self._prepare_reconcile(
                         entry, run_id=str(entry["reconcile_launch_run_id"])
@@ -314,7 +347,7 @@ class RetroMixin:
                             self._discard_prepared_reconcile(
                                 prepared, "reconciliation preparation claim was superseded"
                             )
-                            continue
+                            return
                         phase = self.store.phase(entry["product"], entry["phase_name"])
                         if entry.get("automatic"):
                             policy = self._closing_review_policy(phase)
@@ -335,7 +368,7 @@ class RetroMixin:
                                 self._clear_retro_preparation(entry)
                                 self.state.save()
                                 self._discard_prepared_reconcile(prepared, reason)
-                                continue
+                                return
                         self._commit_prepared_reconcile(entry, prepared)
                         self._clear_retro_preparation(entry)
                         self.state.save()
@@ -347,7 +380,7 @@ class RetroMixin:
                         if entry and entry.get("recon_run_id") == prepared["run"].run_id:
                             entry["stage"] = "reconciling"
                             self.state.save()
-                    continue
+                    return
                 source = self._current_phase_source(phase) if entry.get("automatic") else ""
                 if entry.get("automatic") and not source:
                     raise RuntimeError("waiting for the accepted phase source identity")
@@ -364,7 +397,7 @@ class RetroMixin:
                         self._discard_prepared_retro_start(
                             prepared, "closing-review preparation claim was superseded"
                         )
-                        continue
+                        return
                     phase = self.store.phase(entry["product"], entry["phase_name"])
                     if entry.get("automatic"):
                         policy = self._closing_review_policy(phase)
@@ -373,7 +406,7 @@ class RetroMixin:
                             self._clear_retro_preparation(entry)
                             self.state.save()
                             self._discard_prepared_retro_start(prepared, policy["reason"])
-                            continue
+                            return
                         current_evidence = str(policy.get("evidence") or "")
                         if str(entry.get("evidence") or "") != current_evidence:
                             entry.update(stage="queued", evidence=current_evidence, source="",
@@ -383,14 +416,14 @@ class RetroMixin:
                             self._discard_prepared_retro_start(
                                 prepared, "accepted stabilization evidence changed"
                             )
-                            continue
+                            return
                     if entry.get("automatic") and self._current_phase_source(phase) != source:
                         reason = "accepted phase source changed during preparation"
                         entry.update(stage="queued", source="", waiting_reason=reason)
                         self._clear_retro_preparation(entry)
                         self.state.save()
                         self._discard_prepared_retro_start(prepared, reason)
-                        continue
+                        return
                     entry["source"] = source
                     self._commit_prepared_retro_start(entry, prepared)
                     self._clear_retro_preparation(entry)
@@ -404,7 +437,15 @@ class RetroMixin:
                         self.state.save()
                         raise
                 rep.transitions.append(f"retro {phase.key} started")
-            except RuntimeError as exc:
+            except RuntimeError:
+                raise
+
+    def _defer_closing_review_preparation(self, request_id: str, claim: str, action: str,
+                                           exc: RuntimeError) -> None:
+                entry = next((item for item in self._retro_list()
+                              if item.get("request_id") == request_id), None)
+                if entry is None:
+                    return
                 self.log(f"retro preparation {request_id} deferred: {exc}")
                 if action == "reconcile":
                     probe_id = f"_retro-{entry['product']}-{entry['phase_name']}"
@@ -427,7 +468,6 @@ class RetroMixin:
                         entry.update(stage=retry_stage, waiting_reason=str(exc))
                         self._clear_retro_preparation(entry)
                         self.state.save()
-        self._closing_review_claims.clear()
 
     def _persona_revs(self, phase: Phase, reports: dict[str, Path]) -> dict[str, dict[str, Any]]:
         """The parsed marker verdict behind each persona's on-disk report: the rendered markdown
@@ -550,6 +590,12 @@ class RetroMixin:
         self.require_execution_authority()
         self.require_phase_authority(phase)
         self.require_maintenance_running()
+        with self.phase_effect(phase.product, phase.name, f"retro-start:{phase.key}"):
+            return self._start_retro(phase, personas, skip_personas, next_phase, no_file)
+
+    def _start_retro(self, phase: Phase, personas: list[str] | None = None,
+                     skip_personas: bool = False, next_phase: str = "",
+                     no_file: bool = False) -> dict[str, Any]:
         # A queued automatic request already contains the configuration identity needed to
         # finish it.  Load that durable identity before consulting current configuration:
         # the self product may have been removed after queueing, and manual invocation is
@@ -969,6 +1015,21 @@ class RetroMixin:
 
     def reap_retro(self, rep: TickReport) -> None:
         for entry in list(self._retro_list()):
+            if not self.phase_is_authorized(str(entry.get("product")), str(entry.get("phase_name"))):
+                continue
+            try:
+                effect_key = (f"retro-reap:{entry.get('request_id', entry['phase'])}:"
+                              f"{entry.get('stage')}")
+                with self.phase_effect(str(entry["product"]), str(entry["phase_name"]), effect_key):
+                    self._reap_retro_entry(entry, rep)
+            except (PermissionError, MultiplayerUnavailable):
+                continue
+            except Exception as e:  # noqa: BLE001 - one bad retro must not sink the tick
+                rep.errors.append(f"retro {entry.get('phase')}: {e}")
+                self._retro_remove(entry)
+        self.state.save()
+
+    def _reap_retro_entry(self, entry: dict[str, Any], rep: TickReport) -> None:
             try:
                 if entry.get("stage") == "launching_reconcile":
                     run_id = str(entry.get("recon_run_id") or "")
@@ -982,9 +1043,9 @@ class RetroMixin:
                         except ProcessLookupError:
                             pass
                         except PermissionError:
-                            continue
+                            return
                         else:
-                            continue
+                            return
                     if run is not None and run.pid is not None and not run.finished_at:
                         entry["stage"] = "reconciling"
                     else:
@@ -1008,9 +1069,9 @@ class RetroMixin:
                         except ProcessLookupError:
                             pass
                         except PermissionError:
-                            continue
+                            return
                         else:
-                            continue
+                            return
                     action = str(entry.get("preparation_action") or "")
                     self._clear_retro_preparation(entry)
                     entry["stage"] = "personas"
@@ -1020,7 +1081,7 @@ class RetroMixin:
                         run = next((r for r in self.runs.runs_for(probe_id) if r.run_id == run_id), None)
                         if run is not None:
                             entry.update(stage="reconciling", recon_run_id=run_id, recon_task=probe_id)
-                            continue
+                            return
                 if entry.get("stage") == "personas":
                     # Gated on reports actually on disk, not on whether a run is still active:
                     # a concurrent tick reading state mid-dispatch (start_retro saves after each
@@ -1031,7 +1092,7 @@ class RetroMixin:
                     if len(have) < len(entry["personas"]):
                         missing = [name for name in entry["personas"] if name not in have]
                         self._claim_retro_preparation(entry, "personas", missing)
-                        continue
+                        return
                     admission_probe = Task(
                         path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                         product=phase.product, phase=phase.name,
@@ -1042,7 +1103,7 @@ class RetroMixin:
                             rep.transitions.append(
                                 f"retro {entry['phase']} reconcile deferred ({refusal})"
                             )
-                        continue
+                        return
                     entry.pop("reconcile_phase_wait", None)
                     entry.pop("waiting_reason", None)
                     probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
@@ -1055,21 +1116,21 @@ class RetroMixin:
                         if not entry.get("reconcile_paused"):
                             entry["reconcile_paused"] = True
                             rep.transitions.append(f"retro {entry['phase']} reconcile deferred ({harness_name} paused)")
-                        continue
+                        return
                     entry.pop("reconcile_paused", None)
                     self._claim_retro_preparation(entry, "reconcile")
-                    continue
+                    return
                 if entry.get("stage") != "reconciling":
-                    continue
+                    return
                 run = next((r for r in self.runs.runs_for(entry["recon_task"]) if r.run_id == entry.get("recon_run_id")), None)
                 if run is None:
                     rep.errors.append(f"retro {entry['phase']}: reconcile run vanished")
                     self._retro_remove(entry)
-                    continue
+                    return
                 probe = Task(path=self.store.root, id=entry["recon_task"], title="", product=entry["self_product"], phase="")
                 runner = self.runner_for(probe, run.runner, run.harness)
                 if not self._finished_or_timed_out(run, runner):
-                    continue
+                    return
                 final = ""
                 collected: dict[str, Any] = {}
                 if run.status != "timeout":
@@ -1097,13 +1158,11 @@ class RetroMixin:
                     entry.pop("reconcile_launch_run_id", None)
                     entry["reconcile_paused"] = True
                     rep.transitions.append(f"retro {entry['phase']} reconcile paused (env_error)")
-                    continue
+                    return
                 self._finish_retro(entry, run, final, rep)
                 self._retro_remove(entry)
-            except Exception as e:  # noqa: BLE001 - one bad retro must not sink the tick
-                rep.errors.append(f"retro {entry.get('phase')}: {e}")
-                self._retro_remove(entry)
-        self.state.save()
+            except Exception:
+                raise
 
     def _retro_failed(self, phase: Phase, step: str, error: gitops.GitError, rep: TickReport) -> None:
         """Record a failed commit or push inside a retro reconciliation (CG-147): logged (so a
@@ -1501,10 +1560,14 @@ class RetroMixin:
                 phase = self.store.phase(*key.split("/", 1))
             except (KeyError, ValueError):
                 continue
+            if not self.phase_is_authorized(phase.product, phase.name):
+                continue
             if phase.closed or self.retro_blocking_open(phase):
                 continue
             try:
-                self.close_phase(phase)
+                with self.phase_effect(phase.product, phase.name,
+                                       f"retro-reopen-close:{phase.key}"):
+                    self.close_phase(phase)
             except RuntimeError as e:
                 rep.errors.append(f"retro {phase.key}: accepted reopen could not close: {e}")
             else:
@@ -1516,6 +1579,10 @@ class RetroMixin:
         """Accept or change a phase's retro verdict. `reopen` (re)opens the phase and approves
         its blocking tasks; `close`/`close_with_followups` close the phase (refusing on open
         tasks the way `close-phase` does). Records who decided and when."""
+        with self.phase_effect(phase.product, phase.name, f"retro-decision:{phase.key}"):
+            return self._retro_decide(phase, choice, note, by)
+
+    def _retro_decide(self, phase: Phase, choice: str, note: str, by: str) -> dict[str, Any]:
         self.require_phase_authority(phase)
         choice = normalize_verdict(choice)
         if not choice:

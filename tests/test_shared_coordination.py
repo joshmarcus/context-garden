@@ -100,6 +100,33 @@ def test_concurrent_installations_admit_only_one_claim(tmp_path):
     assert sum(isinstance(result, Conflict) for result in results) == 1
 
 
+def test_same_installation_can_renew_lease_without_admitting_another_installation(tmp_path):
+    admin, alice_a, alice_b, _bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    authority, old = authority_and_claim(coordinator, admin, alice_a)
+
+    renewed = coordinator.claim(
+        alice_a, garden_id="garden", kind="task", scope="CG-1",
+        expected_version=authority["version"], accepted_owner="alice",
+        authority_generation=4, operation_id="renewed-claim",
+        replaces_operation_id=old.operation_id,
+    )
+
+    assert renewed.fence == old.fence + 1
+    with pytest.raises(Conflict, match="waiting"):
+        coordinator.claim(
+            alice_b, garden_id="garden", kind="task", scope="CG-1",
+            expected_version=authority["version"], accepted_owner="alice",
+            authority_generation=4, operation_id="other-installation",
+        )
+    with pytest.raises(Conflict, match="stale or expired"):
+        coordinator.begin_effect(
+            alice_a, old, provider="scheduler", effect_key="reap:CG-1",
+            operation_id="stale-effect", credential_scope="scheduler:write",
+            precondition="authority=1", request={"kind": "task", "scope": "CG-1"},
+        )
+
+
 def test_server_clock_expiry_restart_and_stale_fences(tmp_path):
     admin, alice, _alice_b, _bob = principals()
     clock = Clock()

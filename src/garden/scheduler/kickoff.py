@@ -34,6 +34,10 @@ class KickoffMixin:
 
     def start_kickoff(self, phase: Phase) -> Any:
         self.require_execution_authority()
+        with self.phase_effect(phase.product, phase.name, f"kickoff:{phase.key}"):
+            return self._start_kickoff(phase)
+
+    def _start_kickoff(self, phase: Phase) -> Any:
         self.require_phase_authority(phase)
         self.require_maintenance_running()
         if self.kickoff_pending(phase.key):
@@ -178,6 +182,14 @@ class KickoffMixin:
         history.append({**decision, "status": status, "answer": answer})
 
     def answer_question(self, decision_id: str, answer: str, by: str = "cli") -> dict[str, Any]:
+        d = self._pending_question(decision_id)
+        phase = self._phase_of_decision(d)
+        if phase is not None:
+            with self.phase_effect(phase.product, phase.name, f"question:{decision_id}:answer"):
+                return self._answer_question(decision_id, answer, by)
+        return self._answer_question(decision_id, answer, by)
+
+    def _answer_question(self, decision_id: str, answer: str, by: str) -> dict[str, Any]:
         d = self._pop_question(decision_id)
         self._remember_question(d, "answered", answer.strip())
         phase = self._phase_of_decision(d)
@@ -195,6 +207,14 @@ class KickoffMixin:
         return d
 
     def dismiss_question(self, decision_id: str, by: str = "cli") -> dict[str, Any]:
+        d = self._pending_question(decision_id)
+        phase = self._phase_of_decision(d)
+        if phase is not None:
+            with self.phase_effect(phase.product, phase.name, f"question:{decision_id}:dismiss"):
+                return self._dismiss_question(decision_id, by)
+        return self._dismiss_question(decision_id, by)
+
+    def _dismiss_question(self, decision_id: str, by: str) -> dict[str, Any]:
         d = self._pop_question(decision_id)
         self._remember_question(d, "dismissed")
         phase = self._phase_of_decision(d)
@@ -212,11 +232,15 @@ class KickoffMixin:
         return d
 
     def _pop_question(self, decision_id: str) -> dict[str, Any]:
+        d = self._pending_question(decision_id)
+        self.state.get("_decisions").pop(decision_id, None)
+        return d
+
+    def _pending_question(self, decision_id: str) -> dict[str, Any]:
         decisions = self.state.get("_decisions")
         d = decisions.get(decision_id)
         if not isinstance(d, dict) or d.get("kind") != "question" or d.get("status", "pending") != "pending":
             raise KeyError(decision_id)
-        decisions.pop(decision_id, None)
         return d
 
     # Compatibility for callers introduced with CG-224. New callers use the source-neutral API.
@@ -241,6 +265,11 @@ class KickoffMixin:
         report. Shared by the async dispatch (`_finish_kickoff`) and `run_kickoff_now`'s
         synchronous call, so `garden kickoff`/the phase-page button and `garden plan`'s
         run-it-first default land the same result."""
+        with self.phase_effect(phase.product, phase.name, f"kickoff-result:{run_id}"):
+            return self._file_kickoff(phase, data, run_id, difficulty, model)
+
+    def _file_kickoff(self, phase: Phase, data: dict[str, Any], run_id: str,
+                      difficulty: str = "", model: str = "") -> Path:
         filed_design = [f for f in (self._file_kickoff_design(phase, it)
                                     for it in data.get("design_needed") or [] if isinstance(it, dict)) if f]
         filed_docs = [f for f in (self._file_kickoff_doc(phase, it)
@@ -265,6 +294,10 @@ class KickoffMixin:
         the person run `garden tick` twice for no reason."""
         self.require_phase_authority(phase)
         self.require_execution_authority()
+        with self.phase_effect(phase.product, phase.name, f"kickoff-sync:{phase.key}"):
+            return self._run_kickoff_now(phase)
+
+    def _run_kickoff_now(self, phase: Phase) -> Path:
         from ..planner import run_planner
 
         text = kickoff_brief(self.store, phase)

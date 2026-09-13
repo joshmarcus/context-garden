@@ -26,6 +26,8 @@ from ..common import Site
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+    member_registry = (MemberRegistry(hub.store.config.garden_dir)
+                       if hub.store.config.get("multiplayer.enabled", False) else None)
     controller_worker_log = WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl")
 
     def record_worker_event(event: str, body: dict[str, Any], operation: str,
@@ -264,11 +266,19 @@ def register(app: FastAPI, site: Site) -> None:
         member_id = str(host.get("member_id") or "")
         if not member_id:
             return
+        installation_id = str(host.get("name") or "")
+        if (run.execution_member_id and run.execution_member_id != member_id
+                or run.execution_installation_id and run.execution_installation_id != installation_id):
+            raise HTTPException(403, "run lease belongs to another member installation")
         fresh = hub.fresh()
         task = fresh.tasks().get(run.task_id)
         principal = host.get("member_principal")
         if task is None or principal is None:
             raise HTTPException(403, "scheduler is not authorized for this task")
+        assignment = member_registry.assignment(member_id) if member_registry else None
+        if (assignment is None or not assignment.enabled
+                or assignment.project != task.product or assignment.phase != task.phase):
+            raise HTTPException(403, "task is outside the member's current assignment")
         try:
             MemberRegistry(fresh.config.garden_dir).authorize_task_execution(
                 principal, task, fresh.phase(task.product, task.phase),
@@ -494,6 +504,7 @@ def register(app: FastAPI, site: Site) -> None:
                 if replay.claim_request_id != request_id or replay.host != body["host"] \
                         or not response_token:
                     raise HTTPException(409, "claim request identity cannot be replayed")
+                authorize_member_run(replay, host_cfg)
                 claimed_run(replay.run_id, host_cfg, response_token)
                 response = dict(replay.claim_response)
                 from ...reference_snapshot import read_reference_files
@@ -540,6 +551,12 @@ def register(app: FastAPI, site: Site) -> None:
                             or not authorize(principal, "mutate_work", owner_id=owner,
                                              project=task.product)):
                         continue
+                    assignment = (member_registry.assignment(str(host_cfg["member_id"]))
+                                  if member_registry else None)
+                    if (assignment is None or not assignment.enabled
+                            or assignment.project != task.product
+                            or assignment.phase != task.phase):
+                        continue
                 weight = int((run.env_snapshot or {}).get("resource_weight") or 1)
                 if not in_place and used + weight > capacity:
                     # First-fit admission lets a cheap product use remaining capacity while
@@ -570,6 +587,10 @@ def register(app: FastAPI, site: Site) -> None:
                     return Response(status_code=204)
                 harness = hub.store.config.harness(run.harness) if run.harness else None
                 run.host = str(body["host"])
+                run.execution_member_id = str(host_cfg.get("member_id") or "")
+                run.execution_installation_id = (
+                    str(host_cfg.get("name") or "") if run.execution_member_id else ""
+                )
                 claim_time = now.isoformat()
                 if not run.claimed_at:
                     run.claimed_at = claim_time
@@ -588,6 +609,8 @@ def register(app: FastAPI, site: Site) -> None:
                 # to its abandoned ref, never overwrite work from its replacement.
                 run.pushed_ref = f"refs/heads/garden-worker/{run.run_id}/{secrets.token_urlsafe(12)}"
                 run.claim_history.append({"claimed_at": claim_time, "host": run.host,
+                                          "member_id": run.execution_member_id,
+                                          "installation_id": run.execution_installation_id,
                                           "claim_request_id": request_id,
                                           "lease_token_sha256": hashlib.sha256(run.lease_token.encode()).hexdigest(),
                                           "pushed_ref": run.pushed_ref})
