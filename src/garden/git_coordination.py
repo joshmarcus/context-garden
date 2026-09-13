@@ -1210,6 +1210,20 @@ class GitMultiplayerClient:
         )
         return accepted.result
 
+    def begin_handoff(self, *, kind: str, scope: str, pending_owner: str,
+                      expected_version: int) -> dict[str, Any]:
+        """Record one assignment intent; draining and acknowledgement remain automatic."""
+        operation = (
+            f"handoff:{self.installation_id}:{kind}:{scope}:"
+            f"{expected_version}:{pending_owner or 'unassigned'}"
+        )
+        accepted = self.store.begin_handoff(
+            operation, actor=self.member_id, installation=self.installation_id,
+            entity_key=f"{kind}:{scope}", expected_version=expected_version,
+            pending_owner=pending_owner,
+        )
+        return accepted.result
+
     def claim(
         self,
         *,

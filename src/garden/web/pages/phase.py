@@ -5,13 +5,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, metrics, phase_summary
 from ...inbox import split_log
+from ...members import current_principal
+from ...model import effective_owner
 from ...plants import plant_info
 from ...runs import RunStore
 from ...scheduler import State
@@ -21,6 +24,51 @@ from ..common import Site, render_md, tier_rows
 
 def register(app: FastAPI, site: Site) -> None:
     hub, templates, ctx = site.hub, site.templates, site.ctx
+
+    @app.post("/phases/{product}/{phase}/owner")
+    def assign_phase_owner(product: str, phase: str, member_id: str = Form(...),
+                           generation: int = Form(0)):
+        """Turn one administrator assignment into the safe authority action."""
+        actor = current_principal()
+        if actor is None or site.registry is None:
+            raise HTTPException(403, "administrator role required")
+        owner_id = "" if member_id == "-" else member_id
+        coordinator = hub.coordinator
+        if coordinator is not None:
+            try:
+                view = coordinator.prepare(mutation=True)
+                scope = f"{product}/{phase}"
+                entity = next((row for row in view.snapshot.get("authority", [])
+                               if row.get("kind") == "phase" and row.get("scope") == scope), None)
+                if entity and str(entity.get("owner", "")) != owner_id:
+                    result = coordinator.begin_handoff(
+                        kind="phase", scope=scope, pending_owner=owner_id,
+                        expected_version=int(entity["version"]),
+                    )
+                    prior = result.get("effective_owner") or "unassigned"
+                    target = result.get("pending_owner") or "unassigned"
+                    message = f"Transferring {prior} → {target}; waiting for the current worker to stop."
+                    return RedirectResponse(
+                        f"/phases/{product}/{phase}?flash={quote(message)}", status_code=303,
+                    )
+            except (PermissionError, RuntimeError, ValueError) as exc:
+                raise HTTPException(409, str(exc)) from None
+        try:
+            row = site.registry.set_phase_owner(
+                actor, product, phase, owner_id or None, expected_generation=generation,
+            )
+            if owner_id:
+                assignment = site.registry.assignment(owner_id)
+                site.registry.set_assignment(
+                    actor, owner_id, product, phase,
+                    expected_generation=assignment.generation if assignment else 0,
+                )
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from None
+        message = "Assigned phase to " + (row.owner_id or "nobody")
+        return RedirectResponse(
+            f"/phases/{product}/{phase}?flash={quote(message)}", status_code=303,
+        )
 
     @app.get("/phases/{product}/{phase}", response_class=HTMLResponse)
     def phase_page(request: Request, product: str, phase: str, hide: str | None = None):
@@ -121,6 +169,9 @@ def register(app: FastAPI, site: Site) -> None:
             retro_verdict=verdict_view,
             dependency_labels=lambda task: site.dependency_labels(task, tasks),
             phase_operation_owner=phase_owner,
+            phase_inherited_count=sum(1 for task in ph.tasks
+                                      if not task.owner and not task.owner_unassigned),
+            authority=site.authority_context(request, s, phase=ph),
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)
