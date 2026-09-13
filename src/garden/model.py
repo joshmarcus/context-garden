@@ -445,7 +445,12 @@ class Phase:
         ``default_owner`` is accepted as a descriptive alias for early documents.  A task's
         own ``owner`` always takes precedence; see :func:`effective_owner`.
         """
-        return _owner_id(self.meta.get("owner") or self.meta.get("default_owner"), self.path)
+        return self.default_owner
+
+    @property
+    def default_owner(self) -> str:
+        """Default task owner; deliberately unrelated to phase-operation ownership."""
+        return _owner_id(self.meta.get("default_owner") or self.meta.get("owner"), self.path)
 
 
 _OWNER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -475,8 +480,8 @@ def effective_owner(task: Task, phase: Phase | None = None) -> tuple[str, str]:
         return "", "unassigned"
     if task.owner:
         return task.owner, "task"
-    if phase and phase.owner:
-        return phase.owner, "phase"
+    if phase and phase.default_owner:
+        return phase.default_owner, "phase"
     return "", "unassigned"
 
 

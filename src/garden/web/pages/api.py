@@ -15,7 +15,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from ...events import DECISION_KINDS, EventLog, decision_notifications
-from ...members import Principal, authorize
+from ...members import MemberRegistry, Principal, authorize
 from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
@@ -266,12 +266,15 @@ def register(app: FastAPI, site: Site) -> None:
             return
         fresh = hub.fresh()
         task = fresh.tasks().get(run.task_id)
-        owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
         principal = host.get("member_principal")
-        if (task is None or principal is None
-                or not authorize(principal, "mutate_work", owner_id=owner,
-                                 project=task.product)):
+        if task is None or principal is None:
             raise HTTPException(403, "scheduler is not authorized for this task")
+        try:
+            MemberRegistry(fresh.config.garden_dir).authorize_task_execution(
+                principal, task, fresh.phase(task.product, task.phase),
+            )
+        except (PermissionError, RuntimeError, ValueError):
+            raise HTTPException(403, "scheduler is not authorized for this task") from None
 
     def execution_timeout_minutes(run: Any) -> float:
         """Return the snapshotted execution budget, keeping checks independently bounded."""
@@ -376,20 +379,26 @@ def register(app: FastAPI, site: Site) -> None:
         scheduler = hub.reader()
         tasks = scheduler.store.tasks()
         principal = getattr(request.state, "principal", None)
-        return JSONResponse([
-            {
+        rows = []
+        for task in tasks.values():
+            if principal is not None and not authorize(principal, "read", project=task.product):
+                continue
+            phase = scheduler.store.phase(task.product, task.phase)
+            owner = (scheduler.members.effective_task_owner(task, phase)
+                     if scheduler.cfg.get("multiplayer.enabled", False)
+                     else effective_owner(task, phase))
+            row = {
                 **task.to_frontmatter(),
                 "effective_status": scheduler.task_effective_status(task, tasks),
-                "effective_owner": effective_owner(
-                    task, scheduler.store.phase(task.product, task.phase),
-                )[0],
-                "owner_source": effective_owner(
-                    task, scheduler.store.phase(task.product, task.phase),
-                )[1],
+                "effective_owner": owner[0],
+                "owner_source": owner[1],
             }
-            for task in tasks.values()
-            if principal is None or authorize(principal, "read", project=task.product)
-        ])
+            if isinstance(principal, Principal) and principal.project_visibility == "assigned":
+                info = scheduler.members.dependency_information(task, tasks, principal.projects)
+                row["depends_on"] = list(info["blockers"])
+                row["inaccessible_blocker_count"] = info["inaccessible_blocker_count"]
+            rows.append(row)
+        return JSONResponse(rows)
 
     @app.get("/api/workers")
     def api_workers():

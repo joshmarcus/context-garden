@@ -1241,8 +1241,16 @@ class HumanMixin:
         self.events.emit("ssh_recovery_resumed", task.id, run=run.run_id)
         self.state.save()
 
-    def retry(self, task: Task, *, actor: str = "human_owner") -> None:
+    def retry(self, task: Task, *, actor: str = "human_owner",
+              assignment_generation: int | None = None) -> None:
         ensure_open(task)
+        if self.cfg.get("multiplayer.enabled", False):
+            self.require_execution_authority()
+            assert self.principal is not None
+            self.members.authorize_task_execution(
+                self.principal, task, self.store.phase(task.product, task.phase),
+                expected_generation=assignment_generation,
+            )
         for active in self.runs.runs_for(task.id):
             if active.runner == "ssh" and active.status == "running" and not active.process_finished():
                 raise RuntimeError(
@@ -1411,12 +1419,14 @@ class HumanMixin:
         self.state.save()
 
     # ---- closing a phase ---------------------------------------------------
-    def close_phase(self, phase: Phase, force: bool = False, date: str = "") -> str:
+    def close_phase(self, phase: Phase, force: bool = False, date: str = "",
+                    owner_generation: int | None = None) -> str:
         """Close a phase: it leaves the rail and joins the herbarium. Refuses while it has open
         tasks unless `force`. Returns the closing date written to goals.md ('' if it was
         already closed)."""
         import datetime as _dt
 
+        self.require_phase_authority(phase, expected_generation=owner_generation)
         if phase.closed:
             return ""
         from ..stabilization import gate
@@ -1440,7 +1450,8 @@ class HumanMixin:
         self.log(f"{phase.key} closed ({date})")
         return date
 
-    def reopen_phase(self, phase: Phase) -> None:
+    def reopen_phase(self, phase: Phase, owner_generation: int | None = None) -> None:
+        self.require_phase_authority(phase, expected_generation=owner_generation)
         if not phase.closed:
             raise RuntimeError(f"{phase.key} is not closed")
         self.store.set_phase_closed(phase, "")

@@ -16,9 +16,13 @@ import os
 import re
 import secrets
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
+
+from .graph import blockers
+from .model import Phase, Status, Task, effective_owner, phase_refusal
 
 Role = Literal["administrator", "member", "viewer"]
 Visibility = Literal["all", "assigned"]
@@ -28,8 +32,6 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 _Result = TypeVar("_Result")
-
-
 def _locked_mutation(method: Callable[..., _Result]) -> Callable[..., _Result]:
     """Serialize registry read/modify/write operations across local processes."""
     @functools.wraps(method)
@@ -51,6 +53,55 @@ class Principal:
     role: Role
     project_visibility: Visibility
     projects: frozenset[str] = frozenset()
+
+
+_CURRENT_PRINCIPAL: ContextVar[Principal | None] = ContextVar("garden_member_principal", default=None)
+
+
+def current_principal() -> Principal | None:
+    """Authenticated principal for the current HTTP request, when there is one."""
+    return _CURRENT_PRINCIPAL.get()
+
+
+def bind_principal(principal: Principal | None):
+    return _CURRENT_PRINCIPAL.set(principal)
+
+
+def reset_principal(token: object) -> None:
+    _CURRENT_PRINCIPAL.reset(token)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class WorkAssignment:
+    """One member's explicit execution cursor; absence means no executable scope."""
+
+    member_id: str
+    project: str
+    phase: str
+    generation: int
+    enabled: bool
+    advance: bool
+
+
+@dataclass(frozen=True)
+class PhaseOwner:
+    """Versioned authority for phase-wide operations, including explicit vacancy."""
+
+    project: str
+    phase: str
+    owner_id: str
+    generation: int
+    changed_by: str
+
+
+@dataclass(frozen=True)
+class OwnerChangePreview:
+    """A reviewable ownership mutation plan; applying it is intentionally separate."""
+
+    change: str
+    before: str
+    after: str
+    affected_issues: tuple[str, ...]
 
 
 def authorize(principal: Principal, operation: str, *, owner_id: str = "",
@@ -91,6 +142,239 @@ class MemberRegistry:
         if not isinstance(value, dict) or value.get("version") != 1:
             raise ValueError("unsupported multiplayer member registry")
         return value
+
+    def active_member_ids(self, project: str = "") -> frozenset[str]:
+        """Return active members allowed to see ``project`` (viewers included for reads)."""
+        state = self._read()
+        return frozenset(member_id for member_id, member in state["members"].items()
+                         if member.get("active") and (not project
+                         or member.get("project_visibility") == "all"
+                         or project in (member.get("projects") or ())))
+
+    def active_execution_member_ids(self, project: str) -> frozenset[str]:
+        """Active non-viewers with access to a project may own executable work."""
+        state = self._read()
+        return frozenset(member_id for member_id, member in state["members"].items()
+                         if member.get("active") and member.get("role") != "viewer"
+                         and (member.get("project_visibility") == "all"
+                         or project in (member.get("projects") or ())))
+
+    def effective_task_owner(self, task: Task, phase: Phase) -> tuple[str, str]:
+        """Resolve metadata precedence, but confer authority only on active project members."""
+        owner_id, source = effective_owner(task, phase)
+        if not owner_id:
+            return "", source
+        if owner_id not in self.active_execution_member_ids(task.product):
+            return "", "invalid"
+        return owner_id, source
+
+    def preview_default_owner_change(self, phase: Phase, tasks: list[Task],
+                                     owner_id: str | None) -> OwnerChangePreview:
+        """Show only inherited issues affected by a proposed default-owner bulk change."""
+        after = owner_id or ""
+        if after and after not in self.active_execution_member_ids(phase.product):
+            raise ValueError("default owner must be an active project member")
+        affected = tuple(sorted(task.id for task in tasks
+                                if task.product == phase.product and task.phase == phase.name
+                                and not task.owner and not task.owner_unassigned
+                                and phase.default_owner != after))
+        return OwnerChangePreview("default_owner", phase.default_owner, after, affected)
+
+    def preview_task_owner_change(self, task: Task, phase: Phase,
+                                  owner_id: str | None) -> OwnerChangePreview:
+        """Show an explicit issue override separately from changing a phase default."""
+        after = owner_id or ""
+        if after and after not in self.active_execution_member_ids(task.product):
+            raise ValueError("task owner must be an active project member")
+        before = self.effective_task_owner(task, phase)[0]
+        affected = (task.id,) if before != after else ()
+        return OwnerChangePreview("task_owner", before, after, affected)
+
+    @staticmethod
+    def dependency_information(task: Task, tasks: dict[str, Task],
+                               permitted_projects: frozenset[str]) -> dict[str, object]:
+        """Expose permitted blocker ids while retaining an opaque count across boundaries."""
+        visible: list[str] = []
+        hidden = 0
+        for dependency_id in blockers(task, tasks, stack=True):
+            dependency = tasks.get(dependency_id)
+            if dependency is not None and dependency.product in permitted_projects:
+                visible.append(dependency_id)
+            else:
+                hidden += 1
+        return {"blockers": tuple(sorted(visible)), "inaccessible_blocker_count": hidden}
+
+    def assignment(self, member_id: str) -> WorkAssignment | None:
+        row = (self._read().get("assignments") or {}).get(member_id)
+        if not row:
+            return None
+        return WorkAssignment(member_id, str(row["project"]), str(row["phase"]),
+                              int(row["generation"]), bool(row["enabled"]),
+                              bool(row.get("advance", False)))
+
+    @_locked_mutation
+    def set_assignment(self, actor: Principal, member_id: str, project: str, phase: str, *,
+                       enabled: bool = True, advance: bool = False,
+                       expected_generation: int = 0) -> WorkAssignment:
+        """Create or replace a cursor using optimistic concurrency and administrator authority."""
+        state = self._authorized_state(actor)
+        if not authorize(actor, "administer"):
+            raise PermissionError("administrator role required")
+        if member_id not in self.active_execution_member_ids(project):
+            raise ValueError("assignment owner must be an active garden member")
+        self._valid_id(project, "project")
+        self._valid_id(phase, "phase")
+        rows = state.setdefault("assignments", {})
+        current = rows.get(member_id)
+        generations = state.setdefault("assignment_generations", {})
+        generation = (int(current.get("generation", 0)) if current
+                      else int(generations.get(member_id, 0)))
+        if generation != expected_generation:
+            raise RuntimeError("stale assignment generation")
+        row = {"project": project, "phase": phase, "generation": generation + 1,
+               "enabled": bool(enabled), "advance": bool(advance),
+               "changed_by": actor.member_id}
+        rows[member_id] = row
+        generations[member_id] = generation + 1
+        self._write(state)
+        return WorkAssignment(member_id, project, phase, generation + 1,
+                              bool(enabled), bool(advance))
+
+    @_locked_mutation
+    def clear_assignment(self, actor: Principal, member_id: str, *,
+                         expected_generation: int) -> None:
+        state = self._authorized_state(actor)
+        if not authorize(actor, "administer"):
+            raise PermissionError("administrator role required")
+        rows = state.setdefault("assignments", {})
+        current = rows.get(member_id)
+        if not current or int(current.get("generation", 0)) != expected_generation:
+            raise RuntimeError("stale assignment generation")
+        generation = int(current["generation"]) + 1
+        del rows[member_id]
+        state.setdefault("assignment_generations", {})[member_id] = generation
+        self._write(state)
+
+    def phase_owner(self, project: str, phase: str) -> PhaseOwner | None:
+        row = (self._read().get("phase_owners") or {}).get(f"{project}/{phase}")
+        if row is None:
+            return None
+        return PhaseOwner(project, phase, str(row.get("owner_id") or ""),
+                          int(row["generation"]), str(row["changed_by"]))
+
+    @_locked_mutation
+    def set_phase_owner(self, actor: Principal, project: str, phase: str,
+                        owner_id: str | None, *, expected_generation: int = 0) -> PhaseOwner:
+        """Assign/transfer/vacate phase-operation authority without inferring a replacement."""
+        state = self._authorized_state(actor)
+        if not authorize(actor, "administer"):
+            raise PermissionError("administrator role required")
+        self._valid_id(project, "project")
+        self._valid_id(phase, "phase")
+        if owner_id is not None and owner_id not in self.active_execution_member_ids(project):
+            raise ValueError("phase owner must be an active garden member")
+        rows = state.setdefault("phase_owners", {})
+        key = f"{project}/{phase}"
+        current = rows.get(key)
+        generation = int(current.get("generation", 0)) if current else 0
+        if generation != expected_generation:
+            raise RuntimeError("stale phase owner generation")
+        row = {"owner_id": owner_id or "", "generation": generation + 1,
+               "changed_by": actor.member_id}
+        rows[key] = row
+        self._write(state)
+        return PhaseOwner(project, phase, row["owner_id"], generation + 1, actor.member_id)
+
+    def authorize_phase_operation(self, principal: Principal, project: str, phase: str) -> bool:
+        """Only the current, active, project-visible explicit owner may operate a phase."""
+        try:
+            self._authorized_state(principal)
+        except PermissionError:
+            return False
+        owner = self.phase_owner(project, phase)
+        return bool(owner and owner.owner_id == principal.member_id
+                    and principal.member_id in self.active_execution_member_ids(project)
+                    and authorize(principal, "read", project=project))
+
+    def executable_tasks(self, member_id: str, tasks: dict[str, Task],
+                         phases: dict[str, Phase]) -> list[Task]:
+        """Apply cursor, ownership, status, holds and dependency gates to executable work."""
+        cursor = self.assignment(member_id)
+        if (not cursor or not cursor.enabled
+                or member_id not in self.active_execution_member_ids(cursor.project)):
+            return []
+        return [task for task in tasks.values()
+                if task.product == cursor.project and task.phase == cursor.phase
+                and task.status == Status.READY and not blockers(task, tasks, stack=True)
+                and not phase_refusal(phases[task.key], task)
+                and self.effective_task_owner(task, phases[task.key])[0] == member_id]
+
+    def authorize_task_execution(self, principal: Principal, task: Task, phase: Phase, *,
+                                 expected_generation: int | None = None) -> WorkAssignment:
+        """Bind a lifecycle action to the caller's current membership and cursor."""
+        self._authorized_state(principal)
+        cursor = self.assignment(principal.member_id)
+        if cursor is None:
+            raise PermissionError("member has no execution assignment")
+        if expected_generation is not None and cursor.generation != expected_generation:
+            raise RuntimeError("stale assignment generation")
+        if not cursor.enabled:
+            raise PermissionError("member execution assignment is paused")
+        if (cursor.project, cursor.phase) != (task.product, task.phase):
+            raise PermissionError("task is outside the member's execution assignment")
+        owner, _source = self.effective_task_owner(task, phase)
+        if owner != principal.member_id:
+            raise PermissionError("member is not the effective active owner of this task")
+        return cursor
+
+    def require_phase_operation(self, principal: Principal, project: str, phase: str, *,
+                                expected_generation: int | None = None) -> PhaseOwner:
+        """Return the current explicit owner or reject vacant, stale and non-owner calls."""
+        owner = self.phase_owner(project, phase)
+        if owner is None or not owner.owner_id:
+            raise PermissionError("phase operations require an explicit active phase owner")
+        if expected_generation is not None and owner.generation != expected_generation:
+            raise RuntimeError("stale phase owner generation")
+        if not self.authorize_phase_operation(principal, project, phase):
+            raise PermissionError("current phase owner authorization required")
+        return owner
+
+    def can_advance_assignment(self, member_id: str, tasks: dict[str, Task],
+                               phases: dict[str, Phase]) -> bool:
+        """Configured advance remains blocked until everybody's current phase work is done."""
+        cursor = self.assignment(member_id)
+        if not cursor or not cursor.enabled or not cursor.advance:
+            return False
+        for task in tasks.values():
+            if task.product != cursor.project or task.phase != cursor.phase or task.status.terminal:
+                continue
+            return False
+        return True
+
+    @_locked_mutation
+    def advance_assignment(self, actor: Principal, member_id: str, next_phase: str,
+                           tasks: dict[str, Task], *, expected_generation: int) -> WorkAssignment:
+        """Explicitly advance a configured cursor after every member's phase work is terminal."""
+        state = self._authorized_state(actor)
+        if not authorize(actor, "administer"):
+            raise PermissionError("administrator role required")
+        current = (state.get("assignments") or {}).get(member_id)
+        if current is None or int(current.get("generation", 0)) != expected_generation:
+            raise RuntimeError("stale assignment generation")
+        if not current.get("enabled") or not current.get("advance"):
+            raise RuntimeError("assignment is not configured for phase advancement")
+        project, phase = str(current["project"]), str(current["phase"])
+        if any(task.product == project and task.phase == phase and not task.status.terminal
+               for task in tasks.values()):
+            raise RuntimeError("unfinished member work prevents phase advancement")
+        self._valid_id(next_phase, "phase")
+        generation = expected_generation + 1
+        row = {"project": project, "phase": next_phase, "generation": generation,
+               "enabled": True, "advance": True, "changed_by": actor.member_id}
+        state.setdefault("assignments", {})[member_id] = row
+        state.setdefault("assignment_generations", {})[member_id] = generation
+        self._write(state)
+        return WorkAssignment(member_id, project, next_phase, generation, True, True)
 
     def _write(self, value: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

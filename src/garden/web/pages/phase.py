@@ -96,7 +96,9 @@ def register(app: FastAPI, site: Site) -> None:
 
         phase_events = [e for e in all_events if e.get("task") in phase_tasks]
         hide_done = hide == "done"
-        all_rows = [(t, effective_owner(t, ph)[0], sched.task_effective_status(t, tasks), state.get(t.id),
+        owner_for = (lambda task: sched.members.effective_task_owner(task, ph)[0]) \
+            if s.config.get("multiplayer.enabled", False) else (lambda task: effective_owner(task, ph)[0])
+        all_rows = [(t, owner_for(t), sched.task_effective_status(t, tasks), state.get(t.id),
                      usage.get(t.id) or no_usage, fixed_tokens + estimate_brief_tokens(s, t)[1])
                     for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
         hidden_count = sum(1 for row in all_rows if row[2] in ("done", "cancelled"))
@@ -115,6 +117,8 @@ def register(app: FastAPI, site: Site) -> None:
             new_task=_new_task_prefill(request),
             kickoff=_kickoff_panel(s, sched, ph),
             retro_verdict=verdict_view,
+            phase_operation_owner=(sched.members.phase_owner(ph.product, ph.name)
+                                   if s.config.get("multiplayer.enabled", False) else None),
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)
