@@ -450,8 +450,12 @@ def test_legacy_recovery_probes_absence_without_replaying_start(sched, tmp_path)
 
 
 def test_legacy_recovery_retains_a_surviving_worktree_without_start(sched, tmp_path):
-    """A surviving exact artifact keeps ownership and its diagnostic; it is neither treated as
-    terminal loss nor used as a reason to run the implementation again."""
+    """A surviving exact artifact remains evidence, then retires when its task is terminal.
+
+    The probe proves the collector and identity-matched remote process are gone, but the
+    surviving worktree must remain available for recovery rather than being deleted with the
+    stale run record.
+    """
     actions = tmp_path / "legacy-present-actions"
     ready = tmp_path / "legacy-present-ready"
     wrapper = recording_wrapper(tmp_path, "recording-legacy-present-ssh", actions)
@@ -487,8 +491,19 @@ def test_legacy_recovery_retains_a_surviving_worktree_without_start(sched, tmp_p
     assert "start" not in actions.read_text().splitlines()
     assert not Run.load(run.path).process_finished()
     current = Run.load(run.path)
+    recovery_state = (run.path / "ssh-state.json").read_text()
     wait_for(lambda: not pid_alive(current.pid))
     reap_collector(current)
+    task.status = Status.DONE
+    sched.store.save(task)
+    rep = TickReport()
+    sched.reap_dead_runs(rep)
+    retired = Run.load(run.path)
+    assert retired.status == "superseded"
+    assert retired.finished_at
+    assert (run.path / "ssh-state.json").read_text() == recovery_state
+    assert (tmp_path / "remote-clone" / ".garden-worktrees" / run.task_id).exists()
+    assert any(f"{run.run_id} retired (terminal task)" in row for row in rep.transitions)
 
 
 def test_transient_absence_blip_below_the_confirmation_threshold_is_tolerated(sched, tmp_path):
