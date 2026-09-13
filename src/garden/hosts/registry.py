@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import stat
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,31 @@ def enrolled_hosts(workers: dict[str, Any]) -> list[dict[str, Any]]:
             raise ValueError("invalid or duplicate worker enrollment")
         names.add(row["name"])
     return rows
+
+
+def revoke_enrolled_hosts(workers: dict[str, Any], expected_names: set[str]) -> None:
+    """Atomically revoke the exact legacy enrollment set selected for cutover."""
+    current = enrolled_hosts(workers)
+    names = {str(row["name"]) for row in current}
+    if names not in (expected_names, set()):
+        raise ValueError("worker enrollments changed since migration preview")
+    if not current:
+        return
+    path = Path(str(workers["enrollment_registry"]))
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump({"hosts": []}, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def authenticate_worker(workers: dict[str, Any], token: str) -> dict[str, Any] | None:

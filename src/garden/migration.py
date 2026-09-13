@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 
 from .coordination import PROTOCOL_VERSION, Conflict, Coordinator
+from .hosts.registry import enrolled_hosts, revoke_enrolled_hosts, worker_configuration
 from .members import MemberRegistry, Principal
 from .model import effective_owner, now_iso
 from .runs import RunStore
@@ -75,8 +76,12 @@ class GardenMigration:
         owner_map = choices.get("owner_map") or {}
         phase_choices = choices.get("phase_owners") or {}
         installation_map = choices.get("installations") or {}
-        if not all(isinstance(value, dict) for value in (owner_map, phase_choices, installation_map)):
-            raise MigrationRefused("owner_map, phase_owners and installations must be mappings")
+        worker_map = choices.get("worker_enrollments") or {}
+        if not all(isinstance(value, dict)
+                   for value in (owner_map, phase_choices, installation_map, worker_map)):
+            raise MigrationRefused(
+                "owner_map, phase_owners, installations and worker_enrollments must be mappings"
+            )
 
         active_members = registry.active_execution_member_ids("")
         tasks: list[dict[str, Any]] = []
@@ -142,6 +147,26 @@ class GardenMigration:
         if missing_installations:
             blockers.append("all active operator installations must be assigned: "
                             + ", ".join(missing_installations))
+        try:
+            legacy_workers = {str(row["name"]): row
+                              for row in enrolled_hosts(worker_configuration(self.store.config))}
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise MigrationRefused(f"cannot inventory legacy worker enrollments: {exc}") from exc
+        worker_bindings: list[dict[str, str]] = []
+        worker_members: set[str] = set()
+        for worker_name, member in sorted(worker_map.items()):
+            worker_name, member = str(worker_name), str(member)
+            if (worker_name not in legacy_workers or member not in active_members
+                    or member in worker_members):
+                raise MigrationRefused(
+                    "each legacy worker enrollment must bind to one distinct active member"
+                )
+            worker_members.add(member)
+            worker_bindings.append({"worker_name": worker_name, "member_id": member})
+        missing_workers = sorted(set(legacy_workers) - set(worker_map))
+        if missing_workers:
+            blockers.append("all legacy worker enrollments must be assigned: "
+                            + ", ".join(missing_workers))
         connection = self.store.config.get("multiplayer", {}) or {}
         if (not connection.get("enabled") or connection.get("garden_id") != self._garden_id(registry)
                 or not connection.get("coordinator_url") or not connection.get("credential_env")):
@@ -149,6 +174,7 @@ class GardenMigration:
         plan = {"version": MIGRATION_VERSION, "protocol_version": PROTOCOL_VERSION,
                 "garden_id": self._garden_id(registry), "tasks": tasks, "phases": phases,
                 "installations": bindings, "unknown_owners": sorted(unknown),
+                "worker_enrollments": worker_bindings,
                 "active_attempts": active, "pending_effects": pending["blocking_effects"],
                 "active_claims": pending["active_claims"],
                 "pending_projections": pending["pending_outbox"], "local_edits": dirty,
@@ -167,17 +193,23 @@ class GardenMigration:
             raise MigrationRefused("chosen migration preview does not exist") from exc
         if plan.get("preview_id") != preview_id or _plan_id(plan) != preview_id:
             raise MigrationRefused("migration preview is corrupt or was edited")
+        journal_path = self.directory / "cutover.json"
+        journal = self._read(journal_path)
+        resuming_revocation = bool(journal and journal.get("worker_revocation_pending"))
         choices = {"owner_map": {row["legacy_owner"]: row["member_id"] for row in plan["tasks"]
                                  if row["legacy_owner"]},
                    "phase_owners": {row["scope"]: row["member_id"] for row in plan["phases"]},
                    "installations": {row["installation_id"]: row["member_id"]
-                                     for row in plan["installations"]}}
-        current = self.preview(choices)
-        if current["preview_id"] != preview_id or not current["ready"]:
-            raise MigrationRefused("garden changed since preview; inspect and choose a new preview")
-        journal_path = self.directory / "cutover.json"
-        journal = self._read(journal_path) or {"version": MIGRATION_VERSION, "preview_id": preview_id,
-            "garden_id": plan["garden_id"], "status": "prepared", "created_at": now_iso()}
+                                     for row in plan["installations"]},
+                   "worker_enrollments": {row["worker_name"]: row["member_id"]
+                                          for row in plan.get("worker_enrollments", [])}}
+        if not resuming_revocation:
+            current = self.preview(choices)
+            if current["preview_id"] != preview_id or not current["ready"]:
+                raise MigrationRefused("garden changed since preview; inspect and choose a new preview")
+        journal = journal or {"version": MIGRATION_VERSION, "preview_id": preview_id,
+                              "garden_id": plan["garden_id"], "status": "prepared",
+                              "created_at": now_iso()}
         if journal.get("preview_id") != preview_id:
             raise MigrationRefused("another migration is already in progress")
         if "snapshot" not in journal:
@@ -193,6 +225,15 @@ class GardenMigration:
         except Conflict as exc:
             raise MigrationRefused(str(exc)) from exc
         journal["authority"] = sorted(f"{kind}:{scope}" for kind, scope, _owner in rows)
+        journal["worker_revocation_pending"] = True
+        _write_json(journal_path, journal)
+        worker_names = {row["worker_name"] for row in plan.get("worker_enrollments", [])}
+        try:
+            revoke_enrolled_hosts(worker_configuration(self.store.config), worker_names)
+        except (OSError, ValueError) as exc:
+            raise MigrationRefused(str(exc)) from exc
+        journal["revoked_worker_enrollments"] = sorted(worker_names)
+        journal.pop("worker_revocation_pending", None)
         _write_json(journal_path, journal)
         fence = {"version": MIGRATION_VERSION, "mode": "multiplayer", "garden_id": plan["garden_id"],
                  "preview_id": preview_id, "protocol_version": plan["protocol_version"],

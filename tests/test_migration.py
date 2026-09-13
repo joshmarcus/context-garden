@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tarfile
 
 import pytest
 import yaml
 
+import garden.migration as migration_module
 from garden.coordination import Coordinator
 from garden.members import MemberRegistry
 from garden.migration import GardenMigration, MigrationRefused, standalone_fence
@@ -31,6 +33,16 @@ def _prepared(garden):
                "phase_owners": {"demo/p1": "alice"},
                "installations": {"alice-laptop": "alice"}}
     return admin, choices
+
+
+def _enroll_legacy_worker(garden, name="legacy-worker"):
+    path = garden / ".garden/hosts/enrollment/controller-hosts.json"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(json.dumps({"hosts": [{
+        "name": name, "token_sha256": hashlib.sha256(b"legacy-secret").hexdigest()
+    }]}))
+    path.chmod(0o600)
+    return path
 
 
 def test_preview_preserves_unassignment_and_separates_phase_owner(garden):
@@ -137,6 +149,78 @@ def test_preview_accepts_two_unique_installations_for_one_member(garden):
         {"installation_id": "alice-desktop", "member_id": "alice"},
         {"installation_id": "alice-laptop", "member_id": "alice"},
     ]
+
+
+def test_preview_requires_distinct_member_binding_for_every_legacy_worker(garden):
+    admin, choices = _prepared(garden)
+    registry = MemberRegistry(garden / ".garden")
+    registry.add_member(admin, "bob", "member", "all", ())
+    _enroll_legacy_worker(garden)
+
+    plan = GardenMigration(Store(garden)).preview(choices)
+    assert plan["ready"] is False
+    assert "all legacy worker enrollments must be assigned: legacy-worker" in plan["required_setup"]
+
+    choices["worker_enrollments"] = {"legacy-worker": "bob"}
+    plan = GardenMigration(Store(garden)).preview(choices)
+    assert plan["ready"] is True
+    assert plan["worker_enrollments"] == [{"worker_name": "legacy-worker", "member_id": "bob"}]
+
+
+def test_commit_revokes_selected_legacy_worker_enrollments(garden):
+    admin, choices = _prepared(garden)
+    _enroll_legacy_worker(garden)
+    choices["worker_enrollments"] = {"legacy-worker": "alice"}
+    migration = GardenMigration(Store(garden))
+
+    result = migration.commit(migration.preview(choices)["preview_id"], admin)
+
+    assert result["revoked_worker_enrollments"] == ["legacy-worker"]
+    registry = json.loads((garden / ".garden/hosts/enrollment/controller-hosts.json").read_text())
+    assert registry == {"hosts": []}
+
+
+def test_preview_rejects_shared_member_worker_bindings(garden):
+    _admin, choices = _prepared(garden)
+    path = _enroll_legacy_worker(garden)
+    value = json.loads(path.read_text())
+    value["hosts"].append({
+        "name": "legacy-worker-2",
+        "token_sha256": hashlib.sha256(b"legacy-secret-2").hexdigest(),
+    })
+    path.write_text(json.dumps(value))
+    choices["worker_enrollments"] = {
+        "legacy-worker": "alice",
+        "legacy-worker-2": "alice",
+    }
+
+    with pytest.raises(MigrationRefused, match="distinct active member"):
+        GardenMigration(Store(garden)).preview(choices)
+
+
+def test_commit_resumes_after_worker_registry_was_revoked(garden, monkeypatch):
+    admin, choices = _prepared(garden)
+    _enroll_legacy_worker(garden)
+    choices["worker_enrollments"] = {"legacy-worker": "alice"}
+    migration = GardenMigration(Store(garden))
+    plan = migration.preview(choices)
+    original = migration_module.revoke_enrolled_hosts
+    calls = 0
+
+    def interrupted(workers, expected_names):
+        nonlocal calls
+        calls += 1
+        original(workers, expected_names)
+        if calls == 1:
+            raise RuntimeError("interrupted after revocation")
+
+    monkeypatch.setattr(migration_module, "revoke_enrolled_hosts", interrupted)
+    with pytest.raises(RuntimeError, match="interrupted after revocation"):
+        migration.commit(plan["preview_id"], admin)
+
+    result = migration.commit(plan["preview_id"], admin)
+    assert result["status"] == "committed"
+    assert result["revoked_worker_enrollments"] == ["legacy-worker"]
 
 
 def test_active_coordinator_claim_blocks_preview_and_atomic_cutover(garden, monkeypatch):
