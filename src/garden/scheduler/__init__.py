@@ -156,10 +156,6 @@ class Scheduler(
                 self.coordinator.prepare(mutation=True)
             except MultiplayerUnavailable as exc:
                 raise MultiplayerExecutionUnavailable(str(exc)) from exc
-        try:
-            self.coordinator.prepare(mutation=True)
-        except MultiplayerUnavailable as exc:
-            raise MultiplayerExecutionUnavailable(str(exc)) from exc
 
     def execution_status(self) -> dict[str, str]:
         """Describe this installation's execution boundary without starting work."""
