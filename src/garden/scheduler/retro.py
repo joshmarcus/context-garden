@@ -547,6 +547,7 @@ class RetroMixin:
         """Start a phase retro. Runs the missing persona reviews (unless `skip_personas`), then
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
+        self.require_execution_authority()
         self.require_maintenance_running()
         # A queued automatic request already contains the configuration identity needed to
         # finish it.  Load that durable identity before consulting current configuration:
@@ -912,6 +913,7 @@ class RetroMixin:
 
     def _launch_prepared_reconcile(self, prepared: dict[str, Any]) -> None:
         """Launch exactly the payload whose identity was durably committed under the lock."""
+        self.require_execution_authority()
         run = prepared["run"]
         runner = prepared["runner"]
         phase = prepared["phase"]

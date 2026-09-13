@@ -26,10 +26,11 @@ from ..events import EventLog, metrics, parse_since
 from ..github import PRInfo, RepositorySlug, is_safe_pr_url, pull_request_number
 from ..graph import validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
+from ..members import Principal
 from ..model import Status, dispatch_sort_key, now_iso
 from ..profiles import describe as describe_stop
-from ..runs import RunStore
-from ..scheduler import Scheduler, State
+from ..runs import RunStore, _rollup
+from ..scheduler import REVIEW_MODES, WORKER_MODES, Scheduler, State
 from ..scheduler_health import scheduler_health
 from ..store import Store
 from .trust import sanitize_html
@@ -179,7 +180,8 @@ class Hub:
     a log of recent tick results. `github` is an optional stand-in for GitHub handed to
     every scheduler the hub builds (`garden qa` serves a throwaway garden against one)."""
 
-    def __init__(self, store: Store, watch: bool, github: Any | None = None):
+    def __init__(self, store: Store, watch: bool, github: Any | None = None,
+                 scheduler_blocked_reason: str = ""):
         self.store = store
         # A Store has mutable discovery caches.  A web request gets its own instance so its
         # first read observes files written by another process, while its page body and base
@@ -205,13 +207,14 @@ class Hub:
         self.tick_seq = 0
         self.tick_record: dict[str, Any] = {}
         self.watch = watch
-        self._embedded_state = "starting" if watch else "off"
+        self.scheduler_blocked_reason = scheduler_blocked_reason
+        self._embedded_state = "waiting" if scheduler_blocked_reason else ("starting" if watch else "off")
         self._embedded_heartbeat = ""
         self._embedded_error = ""
         self._watch_thread: threading.Thread | None = None
         self.planning: dict[str, str] = {}  # "product/phase" -> status text
         self._stop = threading.Event()
-        if watch:
+        if watch and not scheduler_blocked_reason:
             self._watch_thread = threading.Thread(target=self._loop, daemon=True, name="garden-watch")
             self._watch_thread.start()
 
@@ -318,6 +321,8 @@ class Hub:
         """Derive embedded health from bounded pass evidence and thread liveness."""
         if not self.watch:
             return {"kind": "off", "label": "embedded watcher off", "state": "off"}
+        if self.scheduler_blocked_reason:
+            return {"kind": "waiting", "label": self.scheduler_blocked_reason, "state": "waiting"}
         thread = self._watch_thread
         if thread is not None and not thread.is_alive():
             return {"kind": "failed", "label": "embedded watcher stopped", "state": "failed",
@@ -335,6 +340,7 @@ class Hub:
             "healthy": "embedded watcher healthy",
             "failed": "embedded watcher failed",
             "stale": "embedded watcher stale",
+            "waiting": self.scheduler_blocked_reason,
         }
         return {"kind": kind, "label": labels[kind], "state": self._embedded_state,
                 "heartbeat_at": self._embedded_heartbeat, "error": self._embedded_error}
@@ -432,6 +438,35 @@ class Site:
         self.templates = templates
         self.plates = plates
 
+    @staticmethod
+    def allowed_projects(request: Request) -> frozenset[str] | None:
+        """Projects visible to this request, or ``None`` for legacy/all-project access."""
+        principal = getattr(request.state, "principal", None)
+        if not isinstance(principal, Principal) or principal.project_visibility == "all":
+            return None
+        return principal.projects
+
+    def visible_tasks(self, request: Request, store: Store | None = None) -> dict[str, Any]:
+        s = store or self.hub.fresh()
+        allowed = self.allowed_projects(request)
+        return {task_id: task for task_id, task in s.tasks().items()
+                if allowed is None or task.product in allowed}
+
+    def visible_events(self, request: Request, events: list[dict[str, Any]],
+                       tasks: dict[str, Any]) -> list[dict[str, Any]]:
+        """Drop history that cannot be attributed to a visible project.
+
+        Garden-wide events and operator ledger entries may contain private configuration,
+        cost, or run facts, so restricted members only receive task/project-attributed rows.
+        """
+        if self.allowed_projects(request) is None:
+            return events
+        task_ids = set(tasks)
+        projects = self.allowed_projects(request) or frozenset()
+        return [event for event in events
+                if (event.get("task") in task_ids
+                    or (event.get("product") in projects and event.get("product")))]
+
     def ctx(
         self,
         request: Request,
@@ -442,7 +477,9 @@ class Site:
         hub = self.hub
         s = hub.fresh()
         sched = hub.reader()
-        items = build_inbox(s, sched)
+        visible_tasks = self.visible_tasks(request, s)
+        items = [item for item in build_inbox(s, sched)
+                 if self.allowed_projects(request) is None or item.get("task") in visible_tasks]
         ctrl = sched.control()
         stops = sched.operating_profile_stops()
         active = sched.operating_profile_name()
@@ -451,11 +488,17 @@ class Site:
                           "retro.difficulty", "observe.profile")
         overridden_facets = [key for key in profile_facets if key in profile_overrides]
         run_store = sched.runs
-        totals = run_store.totals()
+        visible_runs = [run for run in run_store.all_runs() if run.task_id in visible_tasks]
+        visible_active_runs = [run for run in run_store.active() if run.task_id in visible_tasks]
+        totals = run_store.totals() if self.allowed_projects(request) is None else _rollup(visible_runs)
         resources = sched.resource_status()
         rail_events = history if history is not None else EventLog(s.config.garden_dir / "events.jsonl").read()
-        rail_events += ops.to_cost_events(ops.read_records(ops.default_path(s.root)))
-        rail_metrics = metrics(rail_events, s.tasks())
+        if self.allowed_projects(request) is None:
+            rail_events += ops.to_cost_events(ops.read_records(ops.default_path(s.root)))
+        rail_events = self.visible_events(request, rail_events, visible_tasks)
+        rail_metrics = metrics(rail_events, visible_tasks)
+        visible_products = [p for p in s.products()
+                            if self.allowed_projects(request) is None or p.name in self.allowed_projects(request)]
         profile_tradeoffs = {
             "economy": (
                 "Economy favors fewer concurrent runs and lower-cost models; "
@@ -519,22 +562,25 @@ class Site:
             "last_tick": hub.last_tick,
             "scheduler_status": hub.scheduler_health(),
             "server_now": now_iso(),  # the clock every live elapsed counter is offset against
-            "products": s.products(),
-            "has_design": any(product_design_root(s, p.name).is_dir() for p in s.products()),
-            "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in s.products()},
+            "products": visible_products,
+            "has_design": any(product_design_root(s, p.name).is_dir() for p in visible_products),
+            "phases_by_product": {p.name: [ph.name for ph in p.phases] for p in visible_products},
             "inbox_count": len(decisions(items)),
             "env": s.config.env,
-            "running": running_now(s),
-            "worker_busy": len(sched.worker_runs_active()),
-            "workers_running": len(sched.worker_runs_active()),
-            "reviews_running": len(sched.review_runs_active()),
+            "running": [run for run in running_now(s) if run.get("task") in visible_tasks],
+            "worker_busy": sum(run.runner != "manual" and run.mode in WORKER_MODES
+                               for run in visible_active_runs),
+            "workers_running": sum(run.runner != "manual" and run.mode in WORKER_MODES
+                                   for run in visible_active_runs),
+            "reviews_running": sum(run.runner != "manual" and run.mode in REVIEW_MODES
+                                   for run in visible_active_runs),
             "max_parallel": sched.effective_max_parallel(),
             "review_parallel": sched.review_parallel_limit(),
             "resource_status": resources,
             "totals": totals,
             "dispatch_paused": ctrl.get("dispatch") == "paused",
             "pause_ctrl": ctrl,
-            "closed_count": sum(1 for p in s.products() for ph in p.phases if ph.closed),
+            "closed_count": sum(1 for p in visible_products for ph in p.phases if ph.closed),
             "flash": request.query_params.get("flash", ""),
             "flash_note": request.query_params.get("flash_note", ""),
             "operating_profile_names": list(stops),
@@ -552,7 +598,8 @@ class Site:
             "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
             "operating_profile_tradeoff": profile_tradeoff_for(active),
             "operating_profile_overrides": overridden_facets,
-            "operating_profile_spend_rate": run_store.spend_since(parse_since("1h")),
+            "operating_profile_spend_rate": (run_store.spend_since(parse_since("1h"))
+                                               if self.allowed_projects(request) is None else 0.0),
             "rail_metrics": rail_metrics,
             # The installed revision is useful when diagnosing a served garden, but it is
             # secondary to the operational controls and warnings in the rail and Inbox.
@@ -560,14 +607,18 @@ class Site:
             **kw,
         }
 
-    def board_data(self, product: str | None, phase: str | None, include_closed: bool = False) -> dict[str, Any]:
+    def board_data(self, product: str | None, phase: str | None, include_closed: bool = False,
+                   allowed_projects: frozenset[str] | None = None) -> dict[str, Any]:
         s = self.hub.fresh()
-        tasks = s.tasks()
+        tasks = {task_id: task for task_id, task in s.tasks().items()
+                 if allowed_projects is None or task.product in allowed_projects}
         sched = self.hub.reader(s)
         state = State(s.config.garden_dir / "state.json")
         closed_keys = closed_phase_keys(s)
         cols: dict[str, list] = {c: [] for c in COLUMNS}
         for t in sorted(tasks.values(), key=lambda t: (t.priority, t.id)):
+            if allowed_projects is not None and t.product not in allowed_projects:
+                continue
             if product and t.product != product:
                 continue
             if phase and t.phase != phase:
@@ -600,26 +651,34 @@ class Site:
                               "review": review if eff in ("awaiting_triage", "in_review", "changes_requested") else "",
                               "reason": _last_log_line(t) if eff == "failed" else ""})
         runs = RunStore(s.config.garden_dir)
-        active = {r.task_id: r for r in runs.active()}
-        return {"cols": cols, "active": active, "product": product, "phase": phase, "totals": runs.totals(),
-                "closed": include_closed, "problems": validate(tasks)}
+        visible_tasks = {task_id: task for task_id, task in tasks.items()
+                         if allowed_projects is None or task.product in allowed_projects}
+        active = {r.task_id: r for r in runs.active() if r.task_id in visible_tasks}
+        visible_runs = [r for r in runs.all_runs() if r.task_id in visible_tasks]
+        return {"cols": cols, "active": active, "product": product, "phase": phase,
+                "totals": runs.totals() if allowed_projects is None else _rollup(visible_runs),
+                "closed": include_closed, "problems": validate(visible_tasks)}
 
-    def backlog_data(self, product: str | None, include_closed: bool = False) -> dict[str, Any]:
+    def backlog_data(self, product: str | None, include_closed: bool = False,
+                     allowed_projects: frozenset[str] | None = None) -> dict[str, Any]:
         """The backlog view: each open phase of a product (all products when none is picked) as a
         section of its non-terminal tasks in dispatch order, plus what each row's controls need
         (the phases it can move to, whether a cross-phase move is allowed). Closed phases stay in
         the Herbarium unless `include_closed`."""
         s = self.hub.fresh()
-        tasks = s.tasks()
+        tasks = {task_id: task for task_id, task in s.tasks().items()
+                 if allowed_projects is None or task.product in allowed_projects}
         sched = self.hub.reader(s)
         state = State(s.config.garden_dir / "state.json")
         runs = RunStore(s.config.garden_dir)
-        active = {r.task_id: r for r in runs.active()}
+        active = {r.task_id: r for r in runs.active() if r.task_id in tasks}
         # Phases a row can move to: its product's phases, closed ones dropped (the row's own is
         # always kept so the pulldown shows where it is).
         move_phases: dict[str, list[str]] = {}
         sections: list[dict[str, Any]] = []
         for p in s.products():
+            if allowed_projects is not None and p.name not in allowed_projects:
+                continue
             if product and p.name != product:
                 continue
             move_phases[p.name] = [ph.name for ph in p.phases if include_closed or not ph.closed]
@@ -643,12 +702,17 @@ class Site:
         return {"sections": sections, "move_phases": move_phases, "active": active,
                 "product": product, "phase": None, "closed": include_closed, "problems": validate(tasks)}
 
-    def pr_data(self, product: str | None) -> dict[str, Any]:
+    def pr_data(self, product: str | None,
+                allowed_projects: frozenset[str] | None = None) -> dict[str, Any]:
         """Build one repository's open-PR rows from the scheduler-owned observation."""
         s = self.hub.fresh()
-        configured = [p.name for p in s.products() if s.config.product_github(p.name)]
+        configured = [p.name for p in s.products() if s.config.product_github(p.name)
+                      and (allowed_projects is None or p.name in allowed_projects)]
         selected = product or (configured[0] if configured else "")
-        base = {"product": selected or None, "phase": None, "closed": False, "problems": validate(s.tasks())}
+        visible_tasks = {task_id: task for task_id, task in s.tasks().items()
+                         if allowed_projects is None or task.product in allowed_projects}
+        base = {"product": selected or None, "phase": None, "closed": False,
+                "problems": validate(visible_tasks)}
         if selected not in configured:
             return {**base, "pr_product": selected, "pr_rows": [], "pr_error": "No GitHub repository is configured for this product."}
 
@@ -659,7 +723,7 @@ class Site:
                for row in observation.get("prs", [])]
 
         tasks_by_number: dict[int, Any] = {}
-        for task in s.tasks().values():
+        for task in visible_tasks.values():
             if task.product != selected or not task.pr:
                 continue
             number = pull_request_number(task.pr, str(slug), slug.host)

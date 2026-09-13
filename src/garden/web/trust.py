@@ -179,8 +179,8 @@ def _origin_of(url: str) -> str:
 _LOOPBACK_BINDS = frozenset({"", "0.0.0.0", "::", "[::]", "*", "localhost", "127.0.0.1", "::1", "[::1]"})
 
 
-def server_origins(host: str, port: int | None = None) -> list[str]:
-    """The http origins that address `garden serve` itself, for the origin allowlist.
+def server_origins(host: str, port: int | None = None, scheme: str = "http") -> list[str]:
+    """The origins that address `garden serve` itself, for the origin allowlist.
 
     A loopback or wildcard bind is reached as localhost, 127.0.0.1 or [::1]; a specific host
     is reached as itself. The request's own `Host` header is deliberately not used to derive
@@ -189,7 +189,7 @@ def server_origins(host: str, port: int | None = None) -> list[str]:
     h = (host or "").strip().lower()
     hosts = ["localhost", "127.0.0.1", "[::1]"] if h in _LOOPBACK_BINDS else [h]
     suffix = f":{port}" if port else ""
-    return [f"http://{name}{suffix}" for name in hosts]
+    return [f"{scheme}://{name}{suffix}" for name in hosts]
 
 
 def origin_problem(headers: Headers, allowed: Iterable[str] = ()) -> str:
@@ -217,14 +217,18 @@ class OriginCheck:
     """ASGI middleware: refuse a POST (or any unsafe method) whose Origin/Referer is not an allowed origin."""
 
     def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = (), worker_tokens: Iterable[str] = (),
-                 worker_authenticator: Callable[[str], bool] | None = None, operator_token: str = "",
-                 require_operator_auth: bool = False):
+                 worker_authenticator: Callable[[str], Any | None] | None = None, operator_token: str = "",
+                 require_operator_auth: bool = False,
+                 member_authenticator: Callable[[str], Any | None] | None = None,
+                 member_authorizer: Callable[[Any, str, str], bool] | None = None):
         self.app = app
         self.allowed = [str(o) for o in allowed_origins]
         self.worker_tokens = {str(t) for t in worker_tokens if t}
         self.worker_authenticator = worker_authenticator
         self.operator_token = operator_token
         self.require_operator_auth = require_operator_auth
+        self.member_authenticator = member_authenticator
+        self.member_authorizer = member_authorizer
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
@@ -233,12 +237,14 @@ class OriginCheck:
             headers = Headers(scope=scope)
             auth = headers.get("authorization") or ""
             supplied = auth[7:] if auth.startswith("Bearer ") else ""
+            worker_identity: Any | None = None
             worker_ok = bool(supplied) and any(
                 secrets.compare_digest(supplied, token) for token in self.worker_tokens
             )
             if (not worker_ok and supplied and self.worker_authenticator and path.startswith("/api/runs/")):
                 try:
-                    worker_ok = self.worker_authenticator(supplied)
+                    worker_identity = self.worker_authenticator(supplied)
+                    worker_ok = bool(worker_identity)
                 except (OSError, TypeError, ValueError):
                     worker_ok = False
             operator_ok = bool(supplied and self.operator_token) and secrets.compare_digest(
@@ -259,7 +265,16 @@ class OriginCheck:
                     "worker authentication required", status_code=status, headers=response_headers
                 )(scope, receive, send)
                 return
-            if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth and not operator_ok:
+            principal = self.member_authenticator(supplied) if supplied and self.member_authenticator else None
+            if worker_identity is not None:
+                scope.setdefault("state", {})["worker_identity"] = worker_identity
+            if principal is not None:
+                scope.setdefault("state", {})["principal"] = principal
+            member_ok = bool(principal) and (
+                self.member_authorizer(principal, method, path) if self.member_authorizer else True
+            )
+            if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth \
+                    and not operator_ok and not member_ok:
                 status = 401 if not auth else 403
                 response_headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
                 await PlainTextResponse(

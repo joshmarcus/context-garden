@@ -33,6 +33,7 @@ class KickoffMixin:
                    for e in self._aux_list())
 
     def start_kickoff(self, phase: Phase) -> Any:
+        self.require_execution_authority()
         self.require_maintenance_running()
         if self.kickoff_pending(phase.key):
             raise RuntimeError(f"{phase.key} already has a kickoff run in flight")
@@ -261,6 +262,7 @@ class KickoffMixin:
         `run_planner`. Used by `garden plan`'s "run the kickoff first" default, where the CLI
         is already waiting on one model call and a second tick-bound dispatch would just make
         the person run `garden tick` twice for no reason."""
+        self.require_execution_authority()
         from ..planner import run_planner
 
         text = kickoff_brief(self.store, phase)
