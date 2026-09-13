@@ -495,7 +495,7 @@ class MultiplayerClient:
         operation = uuid.uuid4().hex
         active = next((item for item in view.snapshot.get("active_claims", [])
                        if item.get("kind") == kind and item.get("scope") == scope
-                       and item.get("owner") == self.member_id
+                       and item.get("owner_id") == self.member_id
                        and item.get("installation_id") == self.installation_id
                        and int(item.get("authority_generation", -1))
                        == int(row["authority_generation"])), None)
