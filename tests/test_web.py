@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from garden import gitops
 from garden.config import Config
+from garden.events import EventLog
 from garden.github import GitHubError, PRInfo
 from garden.gitops import head_sha
 from garden.model import Status
@@ -1467,6 +1468,58 @@ def test_review_requires_current_automated_approval_before_it_needs_a_person(gar
     assert "automated review not recorded yet" in inbox
     assert "Mark done without merging" not in inbox
     assert 'action="/tasks/DM-001/done"' not in inbox
+
+
+def test_ready_task_can_be_marked_done_with_external_reason_and_attribution(garden):
+    store = Store(garden)
+    original = store.task("DM-001")
+    original_body = original.body
+    original_dependencies = list(original.depends_on)
+    page = client(garden).get("/tasks/DM-001").text
+
+    assert 'action="/tasks/DM-001/done"' in page
+    assert 'name="note" required' in page
+    assert "Mark done" in page
+    assert "confirm('Mark this task done?" not in page
+
+    response = client(garden).post(
+        "/tasks/DM-001/done", data={"note": "Tested elsewhere by the release team"},
+        headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+    saved = Store(garden).task("DM-001")
+    assert saved.status == Status.DONE
+    assert saved.body.startswith(original_body)
+    assert saved.depends_on == original_dependencies
+    event = EventLog(garden / ".garden/events.jsonl").read(
+        task_id="DM-001", kinds=("mark_done",),
+    )[-1]
+    assert event["performed_by"] == "local operator"
+    assert event["reason"] == "Tested elsewhere by the release team"
+    completed = client(garden).get("/tasks/DM-001").text
+    assert "Tested elsewhere by the release team" in completed
+    assert "Forced completion by local operator" in completed
+    assert 'action="/tasks/DM-001/done"' not in completed
+
+    repeated = client(garden).post("/tasks/DM-001/done", follow_redirects=False)
+    assert repeated.status_code == 303
+    assert "is done" in client(garden).get(repeated.headers["location"]).text
+
+
+def test_draft_and_open_pr_task_pages_offer_context_appropriate_mark_done(garden):
+    store = Store(garden)
+    draft = store.task("DM-001")
+    draft.status = Status.DRAFT
+    store.save(draft)
+    assert 'action="/tasks/DM-001/done"' in client(garden).get("/tasks/DM-001").text
+
+    with_pr = store.task("DM-002")
+    with_pr.status = Status.IN_REVIEW
+    with_pr.pr = "https://github.com/test/demo/pull/71"
+    store.save(with_pr)
+    page = client(garden).get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/done"' in page
+    assert "leave any external PR and active worker unchanged" in page
 
 
 def test_task_page_lists_stashed_changes(garden):

@@ -72,6 +72,7 @@ def register(app: FastAPI, site: Site) -> None:
         rs = RunStore(s.config.garden_dir)
         runs = rs.runs_for(t.id)
         latest_run = rs.latest(t.id)
+        active_work = latest_run is not None and latest_run.status in {"requested", "preparing", "running"}
         attachable_runs = [run for run in reversed(runs) if attachment_problem(run) is None]
         attachable_run = attachable_runs[0] if attachable_runs else None
         st = State(s.config.garden_dir / "state.json").historical(t.id)
@@ -193,6 +194,13 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             manual_runner=manual_runner, manual_take_reason=manual_take_reason,
+            can_mark_done=(
+                not t.status.terminal
+                and not (manual_runner and active_work)
+                and hub.execution_status()["state"] != "viewer"
+                and sched.task_is_authorized(t)
+            ),
+            mark_done_warning=bool(t.pr or active_work),
             phase_hold=phase_hold, phase_hold_kind=phase_hold_kind,
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
             prior_trials=prior_trials,
@@ -333,12 +341,12 @@ def _completion_view(task: Any, events: list[dict[str, Any]]) -> dict[str, str] 
                     if event.get("kind") == "automerged"}
     if base_acceptance(transition, merged_tasks):
         if source_event.get("kind") == "mark_done":
-            actor = str(source_event.get("actor") or "owner").replace("_", " ")
+            actor = str(source_event.get("performed_by") or source_event.get("actor") or "owner").replace("_", " ")
             return {"kind": "Accepted completion", "source": f"Owner acceptance by {actor}",
                     "reason": reason, "at": at}
         return {"kind": "Accepted completion", "source": "Merged into the base branch",
                 "reason": reason, "at": at}
-    actor = str(source_event.get("actor") or "owner").replace("_", " ")
+    actor = str(source_event.get("performed_by") or source_event.get("actor") or "owner").replace("_", " ")
     source = (f"Status override by {actor}" if source_event.get("kind") == "set_status"
               else f"Forced completion by {actor}")
     return {"kind": "Forced status completion", "source": source,

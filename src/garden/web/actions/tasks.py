@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from ...brief import brief_gaps
 from ...github import GitHubError
 from ...gitops import GitError
+from ...members import current_principal
 from ...model import Status, Task, _owner_id, ensure_open
 from ...runs import RecoveryLaunchConflict, Run, RunStore
 from ...scheduler import Scheduler
@@ -218,7 +219,12 @@ def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor:
     run = sched.runs.latest(t.id)
     if not sched.runner_for(t).detached and run is not None and run.status == "running":
         raise RuntimeError("finish the claimed manual session instead of marking this task done")
-    sched.mark_done(t, note or "marked done without merging (web)", force=True, actor=actor)
+    principal = current_principal() or sched.principal
+    performed_by = principal.member_id if principal is not None else "local operator"
+    sched.mark_done(
+        t, note.strip() or "completed outside Garden", force=True,
+        actor="human_owner", performed_by=performed_by,
+    )
 
 
 @action("review")

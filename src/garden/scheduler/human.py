@@ -1101,7 +1101,10 @@ class HumanMixin:
         self.state.save()
 
     @task_action("mark-done")
-    def mark_done(self, task: Task, note: str = "", force: bool = False, *, actor: str = "human_owner") -> None:
+    def mark_done(
+        self, task: Task, note: str = "", force: bool = False, *,
+        actor: str = "human_owner", performed_by: str = "",
+    ) -> None:
         """Mark a task done only after its PR's commits reach the final base, unless forced.
 
         The forced path is the explicit human escape hatch for abandoning an in-review PR.
@@ -1112,7 +1115,10 @@ class HumanMixin:
             raise RuntimeError(
                 f"{task.id}'s PR commits are not on its base branch; merge it first or use --force"
             )
-        self.events.emit("mark_done", task.id, actor=self._validate_action_actor(actor), reason=note or "marked done")
+        self.events.emit(
+            "mark_done", task.id, actor=self._validate_action_actor(actor),
+            performed_by=performed_by.strip(), reason=note or "marked done",
+        )
         self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
 
     @task_action("set-status")
