@@ -185,6 +185,19 @@ def test_transition_outbox_is_recoverable_and_stale_projection_is_blocked(tmp_pa
         )
 
 
+def test_provider_effect_rejects_a_stale_authority_version(tmp_path):
+    admin, alice, _alice_b, _bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+
+    with pytest.raises(Conflict, match="stale authority version"):
+        coordinator.begin_effect(
+            alice, claim, provider="github", effect_key="publish:CG-1",
+            operation_id="stale-publish", credential_scope="pull_requests:write",
+            precondition="head=abc", request={"head": "abc"}, expected_version=0,
+        )
+
+
 def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     admin, alice, _alice_b, _bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
