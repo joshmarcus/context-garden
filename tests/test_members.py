@@ -825,6 +825,7 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
+ 
 def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
@@ -836,6 +837,19 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
                        json={"host": "alice-laptop"}).status_code == 204
     assert client.post("/api/runs/claim", headers=auth,
                        json={"host": "spoofed"}).status_code == 403
+ 
+
+
+
+
+
+
+
+
+
+
+
+ 
 
 
  
