@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -157,6 +158,26 @@ def test_transition_outbox_is_recoverable_and_stale_projection_is_blocked(tmp_pa
         )
 
 
+@pytest.mark.parametrize("field,value", [
+    ("owner_id", "bob"),
+    ("authority_generation", 5),
+    ("installation_id", "alice-b"),
+    ("lease_expires_at", "2099-01-01T00:00:00+00:00"),
+])
+def test_transition_rejects_claim_material_not_issued_by_server(tmp_path, field, value):
+    admin, alice, _alice_b, _bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+
+    with pytest.raises(Conflict, match="stale or expired fencing lease"):
+        coordinator.transition(
+            alice, replace(claim, **{field: value}), expected_version=1,
+            new_state="doing", markdown="forged", operation_id=f"forged-{field}",
+        )
+
+    assert coordinator.pending_outbox("garden") == []
+
+
 def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     admin, alice, _alice_b, _bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
@@ -235,6 +256,9 @@ def test_provider_reconciliation_is_installation_bound_and_terminal_after_restar
         authority_generation=5, expected_version=1, operation_id="reassign-after-reconcile",
     )
     assert changed["version"] == 2
+    restarted.acknowledge_cancellation(
+        alice, garden_id="garden", kind="task", scope="CG-1", fence=claim.fence,
+    )
     admitted = restarted.claim(
         bob, garden_id="garden", kind="task", scope="CG-1", expected_version=2,
         accepted_owner="bob", authority_generation=5, operation_id="bob-claim",
@@ -268,6 +292,9 @@ def test_unresolved_effect_blocks_reassignment_and_new_admission(tmp_path):
     changed = coordinator.set_authority(
         admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
         authority_generation=5, expected_version=1, operation_id="reassign-after-reconciliation",
+    )
+    coordinator.acknowledge_cancellation(
+        alice, garden_id="garden", kind="task", scope="CG-1", fence=claim.fence,
     )
     admitted = coordinator.claim(
         bob, garden_id="garden", kind="task", scope="CG-1",
@@ -352,13 +379,21 @@ def test_phase_claim_is_exclusive_and_reassignment_invalidates_children(tmp_path
         )
 
 
-def test_handoff_waits_for_worker_and_original_provider_operation(tmp_path):
+def test_handoff_waits_for_reconciled_provider_operation_and_old_worker(tmp_path):
     admin, alice, _alice_b, bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
     _authority, old = authority_and_claim(coordinator, admin, alice)
     coordinator.begin_effect(
         alice, old, provider="github", effect_key="publish:CG-1", operation_id="publish-old",
         credential_scope="pull_requests:write", precondition="head=old", request={"head": "old"},
+    )
+    with pytest.raises(Conflict, match="pending provider effect"):
+        coordinator.set_authority(
+            admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+            authority_generation=5, expected_version=1, operation_id="handoff-blocked",
+        )
+    coordinator.finish_effect(
+        alice, "garden", "publish-old", outcome="succeeded", result={"pr": 17},
     )
     changed = coordinator.set_authority(
         admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
@@ -367,7 +402,7 @@ def test_handoff_waits_for_worker_and_original_provider_operation(tmp_path):
     view = coordinator.snapshot(bob, "garden")
     assert view["handoffs"][0]["status"] == "reconciling"
     assert view["cancellation_requests"][0]["installation"] == "alice-a"
-    with pytest.raises(Conflict, match="old workers.*provider outcomes"):
+    with pytest.raises(Conflict, match="old workers"):
         coordinator.claim(
             bob, garden_id="garden", kind="task", scope="CG-1",
             expected_version=changed["version"], accepted_owner="bob",
@@ -376,15 +411,6 @@ def test_handoff_waits_for_worker_and_original_provider_operation(tmp_path):
 
     coordinator.acknowledge_cancellation(
         alice, garden_id="garden", kind="task", scope="CG-1", fence=old.fence,
-    )
-    with pytest.raises(Conflict, match="provider outcomes"):
-        coordinator.claim(
-            bob, garden_id="garden", kind="task", scope="CG-1",
-            expected_version=changed["version"], accepted_owner="bob",
-            authority_generation=5, operation_id="bob-still-too-soon",
-        )
-    coordinator.finish_effect(
-        admin, "garden", "publish-old", outcome="succeeded", result={"pr": 17},
     )
     resumed = coordinator.claim(
         bob, garden_id="garden", kind="task", scope="CG-1",
