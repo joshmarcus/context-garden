@@ -154,12 +154,25 @@ class Scheduler(
                 owner = str(row.get("owner") or "")
                 if owner == "-":
                     owner = ""
-                _local_owner, source = self.members.effective_task_owner(task, phase)
+                if hasattr(self.members, "effective_task_owner"):
+                    _local_owner, source = self.members.effective_task_owner(task, phase)
+                else:
+                    _local_owner, source = effective_owner(task, phase)
                 return owner, source
         if (self.cfg.get("multiplayer.enabled", False)
                 and hasattr(self.members, "effective_task_owner")):
             return self.members.effective_task_owner(task, phase)
         return effective_owner(task, phase)
+
+    def task_owner_handoff_pending(self, task: Task) -> bool:
+        """Whether accepted authority is draining this task before an owner transfer."""
+        if self.coordinator is None:
+            return False
+        snapshot = getattr(self, "_authority_snapshot", None)
+        if snapshot is None:
+            snapshot = self.coordinator.refresh().snapshot
+        handoff = (snapshot.get("handoffs") or {}).get(f"task:{task.id}")
+        return isinstance(handoff, dict) and handoff.get("status") != "completed"
 
     def require_execution_authority(self) -> None:
         """Require an authenticated coordinator client in explicit multiplayer mode."""

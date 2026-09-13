@@ -670,6 +670,7 @@ class Site:
 
         projected: list[dict[str, Any]] = []
         assignment = self.registry.assignment(principal.member_id)
+        owner_resolver = self.hub.reader().effective_task_owner
         for item in items:
             recipient = self._inbox_recipient(store, visible_tasks, item)
             is_global = not item.get("task") and not item.get("phase")
@@ -686,9 +687,7 @@ class Site:
                 actionable = bool(task and assignment and assignment.enabled
                                   and assignment.project == task.product
                                   and assignment.phase == task.phase
-                                  and self.registry.effective_task_owner(
-                                      task, store.phase(task.product, task.phase),
-                                  )[0] == principal.member_id)
+                                  and owner_resolver(task)[0] == principal.member_id)
             elif item.get("phase"):
                 product, separator, phase = str(item["phase"]).partition("/")
                 actionable = bool(separator and self.registry.authorize_phase_operation(
@@ -709,9 +708,8 @@ class Site:
             task = tasks.get(str(item["task"]))
             if task is None:
                 return ""
-            return self.registry.effective_task_owner(
-                task, store.phase(task.product, task.phase),
-            )[0] if self.registry else str(item.get("owner") or "")
+            return self.hub.reader().effective_task_owner(task)[0] \
+                if self.registry else str(item.get("owner") or "")
         recipient = str(item.get("recipient") or "")
         if recipient:
             return recipient

@@ -208,8 +208,6 @@ def create_app(
         parts = path.split("/")
         if len(parts) > 4 and parts[1] == "phases":
             return registry.authorize_phase_operation(principal, parts[2], parts[3])
-        if len(parts) > 4 and parts[1] == "phases":
-            return registry.authorize_phase_operation(principal, parts[2], parts[3])
         if path.startswith("/tasks/") and len(parts) > 2:
             task_id = parts[2]
         elif path.startswith("/api/control/tasks/") and len(parts) > 4:
@@ -227,10 +225,7 @@ def create_app(
                     return False
                 target = current_store.tasks().get(str(decision.get("target") or ""))
                 if target is not None:
-                    owner = registry.effective_task_owner(
-                        target,
-                        current_store.phase(target.product, target.phase),
-                    )[0]
+                    owner = hub.reader().effective_task_owner(target)[0]
                     assignment = registry.assignment(principal.member_id)
                     return bool(
                         assignment
@@ -251,9 +246,7 @@ def create_app(
         task = current_store.tasks().get(task_id)
         if task is None:
             return False
-        owner = registry.effective_task_owner(task, current_store.phase(task.product, task.phase))[
-            0
-        ]
+        owner = hub.reader().effective_task_owner(task)[0]
         assignment = registry.assignment(principal.member_id)
         return bool(
             assignment
