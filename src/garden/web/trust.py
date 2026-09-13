@@ -35,7 +35,17 @@ from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .access import OPERATOR_MUTATION, OPERATOR_READ, WORKER_PROTOCOL, request_access
+from .access import (
+    OPERATOR_MUTATION,
+    OPERATOR_READ,
+    WORKER_PROTOCOL,
+    request_access,
+)
+
+VIEWER_DISABLED_READ_PATHS = frozenset({
+    "/api/control/status", "/api/maintenance", "/api/worker-diagnostics", "/api/workers",
+    "/now/workers",
+})
 
 
 def safe_relative_path(value: str) -> str:
@@ -220,7 +230,8 @@ class OriginCheck:
                  worker_authenticator: Callable[[str], Any | None] | None = None, operator_token: str = "",
                  require_operator_auth: bool = False,
                  member_authenticator: Callable[[str], Any | None] | None = None,
-                 member_authorizer: Callable[[Any, str, str], bool] | None = None):
+                 member_authorizer: Callable[[Any, str, str], bool] | None = None,
+                 viewer_only: bool = False):
         self.app = app
         self.allowed = [str(o) for o in allowed_origins]
         self.worker_tokens = {str(t) for t in worker_tokens if t}
@@ -229,11 +240,18 @@ class OriginCheck:
         self.require_operator_auth = require_operator_auth
         self.member_authenticator = member_authenticator
         self.member_authorizer = member_authorizer
+        self.viewer_only = viewer_only
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
             method = str(scope.get("method", "GET")).upper()
             path = str(scope.get("path", ""))
+            access = request_access(method, path)
+            if self.viewer_only and (
+                access in {WORKER_PROTOCOL, OPERATOR_MUTATION} or path in VIEWER_DISABLED_READ_PATHS
+            ):
+                await PlainTextResponse("Not Found", status_code=404)(scope, receive, send)
+                return
             headers = Headers(scope=scope)
             auth = headers.get("authorization") or ""
             supplied = auth[7:] if auth.startswith("Bearer ") else ""
@@ -250,7 +268,6 @@ class OriginCheck:
             operator_ok = bool(supplied and self.operator_token) and secrets.compare_digest(
                 supplied, self.operator_token
             )
-            access = request_access(method, path)
             if access == WORKER_PROTOCOL and not worker_ok:
                 # Preserve browser CSRF diagnostics at worker ingress too. A real worker
                 # has no Origin and must still authenticate; an untrusted browser origin

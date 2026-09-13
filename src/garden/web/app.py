@@ -181,6 +181,14 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         owner = effective_owner(task, store.phase(task.product, task.phase))[0]
         return authorize(principal, "mutate_work", owner_id=owner, project=task.product)
 
+    hub = Hub(
+        store,
+        watch,
+        github=github,
+    )
+    app.state.hub = hub
+    viewer_only = hub.execution_status()["state"] == "viewer"
+
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
         worker_authenticator=authenticate_run_credential,
@@ -188,13 +196,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         require_operator_auth=require_operator_auth,
         member_authenticator=registry.authenticate if registry else None,
         member_authorizer=member_authorizer if registry else None,
+        viewer_only=viewer_only,
     )
-    hub = Hub(
-        store,
-        watch,
-        github=github,
-    )
-    app.state.hub = hub
 
     @app.middleware("http")
     async def request_store_snapshot(request: Request, call_next: Any) -> Response:

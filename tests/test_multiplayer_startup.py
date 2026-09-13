@@ -84,3 +84,29 @@ def test_viewer_serve_never_starts_embedded_scheduler(garden, monkeypatch):
     assert app.state.hub._watch_thread is None
     assert app.state.hub.scheduler_health()["embedded"] == "waiting"
     assert "Viewer session" in app.state.hub.scheduler_health()["effective"]["label"]
+
+
+def test_viewer_serve_rejects_worker_ingress_and_controller_helpers(garden, monkeypatch):
+    store = _multiplayer_store(garden)
+    coordinator = _Coordinator("viewer")
+    monkeypatch.setattr("garden.scheduler.MultiplayerClient.from_config", lambda _config: coordinator)
+    monkeypatch.setattr("garden.web.common.MultiplayerClient.from_config", lambda _config: coordinator)
+    monkeypatch.setattr(
+        "garden.hosts.registry.authenticate_worker",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("viewer authenticated a worker")),
+    )
+    client = TestClient(create_app(store, watch=True))
+
+    for method, path in (
+        ("post", "/api/runs/claim"),
+        ("post", "/maintenance/pause"),
+        ("post", "/tick"),
+        ("get", "/api/maintenance"),
+        ("get", "/api/control/status"),
+        ("get", "/api/workers"),
+    ):
+        assert getattr(client, method)(
+            path, headers={"Authorization": "Bearer worker-credential"},
+        ).status_code == 404
+
+    assert client.get("/healthz").status_code == 200
