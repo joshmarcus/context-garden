@@ -316,11 +316,6 @@ class Scheduler(
                 self.principal, product, phase_name,
                 expected_generation=expected_generation,
             )
-<<<<<<< HEAD
-        if self.coordinator is not None:
-            self._phase_authority(product, phase_name)
-=======
->>>>>>> a1efb9a3 (Restore member-bound scheduler wiring)
 
     @contextmanager
     def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
@@ -349,6 +344,7 @@ class Scheduler(
             expected_version=int(row["version"]), effect_key=effect_key,
         ):
             yield
+
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
         operational = {task.id for task in self.store.tasks().values() if not task.status.terminal}
