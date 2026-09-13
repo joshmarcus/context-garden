@@ -3,10 +3,12 @@ from garden.hosts import (
     MatchReason,
     ResourceCeilings,
     WorkerConfiguration,
+    WorkerIdentityBinding,
     WorkerInstance,
+    WorkerObservation,
     match_worker,
 )
-from garden.model import ExecutionRequirements, ResourceReservation
+from garden.model import ExecutionRequirements, GpuReservation, ResourceReservation
 
 
 def profile(name="general"):
@@ -96,3 +98,116 @@ def test_routing_explanation_does_not_export_private_match_detail():
 
     assert "capabil" not in SAFE_REASON_TEXT[MatchReason.NO_COMPATIBLE_PROFILE].lower()
     assert "identity" not in SAFE_REASON_TEXT[MatchReason.DENIED_ACCESS].lower()
+
+
+def test_heterogeneous_worker_matrix_fences_capabilities_and_user_ownership():
+    """Synthetic GPU/data labels prove routing policy, not access to either resource."""
+    now = 200
+    configurations = {
+        "general": profile(),
+        "restricted": WorkerConfiguration(
+            "restricted", "1", 4, activities=("work",), projects=("demo",),
+            resource_ceilings=ResourceCeilings(memory_mib=8192, vcpu=4),
+            identity_references=("identity.analytics",),
+            grants=(CapabilityGrant("data.analytics", "security", 1, 4),),
+        ),
+        "gpu": WorkerConfiguration(
+            "gpu", "1", 2, activities=("work",), projects=("demo",),
+            resource_ceilings=ResourceCeilings(
+                memory_mib=32768, vcpu=8, gpu_count=1, gpu_device_memory_mib=24576,
+            ),
+            grants=(CapabilityGrant("tool.cuda", "operator", 1, 2),),
+        ),
+    }
+    restricted_binding = WorkerIdentityBinding(
+        "identity.analytics", "credential.alice", "alice", "install-restricted", 1,
+    )
+    workers = (
+        instance("general-a"),
+        WorkerInstance(
+            "restricted-a", "restricted", "1", 4, "alice", "install-restricted",
+            1, 100, 300, identity_bindings=(restricted_binding,),
+        ),
+        WorkerInstance("gpu-a", "gpu", "1", 2, "alice", "install-gpu", 1, 100, 300),
+        WorkerInstance(
+            "restricted-b", "restricted", "1", 4, "bob", "install-restricted-b",
+            1, 100, 300,
+            identity_bindings=(WorkerIdentityBinding(
+                "identity.analytics", "credential.bob", "bob", "install-restricted-b", 1,
+            ),),
+        ),
+    )
+    requirements = {
+        "general": REQ,
+        "restricted": ExecutionRequirements(capabilities=("data.analytics",)),
+        "gpu": ExecutionRequirements(
+            capabilities=("tool.cuda",),
+            resources=ResourceReservation(
+                memory_mib=16000, vcpu=4,
+                gpu=GpuReservation(count=1, min_device_memory_mib=16000),
+            ),
+        ),
+    }
+
+    for workload, expected in (
+        ("general", "general-a"),
+        ("restricted", "restricted-a"),
+        ("gpu", "gpu-a"),
+    ):
+        match = match_worker(
+            requirements[workload], activity="work", project="demo", owner="alice",
+            configurations=configurations, instances=workers, now=now,
+        )
+        assert match.reason is MatchReason.MATCHED
+        assert match.instance and match.instance.instance_id == expected
+
+    busy = match_worker(
+        requirements["gpu"], activity="work", project="demo", owner="alice",
+        configurations=configurations, instances=workers, busy_instance_ids=("gpu-a",), now=now,
+    )
+    assert busy.reason is MatchReason.BUSY
+    no_match = match_worker(
+        ExecutionRequirements(capabilities=("tool.cuda", "data.analytics")),
+        activity="work", project="demo", owner="alice", configurations=configurations,
+        instances=workers, now=now,
+    )
+    assert no_match.reason is MatchReason.NO_COMPATIBLE_PROFILE
+    cross_user = match_worker(
+        requirements["restricted"], activity="work", project="demo", owner="carol",
+        configurations=configurations, instances=workers, now=now,
+    )
+    assert cross_user.reason is MatchReason.DENIED_ACCESS
+
+
+def test_self_asserted_stale_revoked_and_drifted_authority_never_routes_restricted_work():
+    required = ExecutionRequirements(capabilities=("data.analytics",))
+    base = WorkerConfiguration(
+        "restricted", "1", 3, activities=("work",), projects=("demo",),
+        resource_ceilings=ResourceCeilings(memory_mib=4096),
+        grants=(CapabilityGrant("data.analytics", "security", 1, 3),),
+    )
+    observed_only = WorkerConfiguration(
+        "observed", "1", 1, activities=("work",), projects=("demo",),
+        resource_ceilings=ResourceCeilings(memory_mib=4096),
+    )
+    cases = (
+        (base, WorkerInstance("stale", "restricted", "1", 3, "alice", "i-1", 1, 10, 100)),
+        (base, WorkerInstance("drift", "restricted", "1", 2, "alice", "i-2", 1, 10, 300)),
+        (WorkerConfiguration(
+            "revoked", "1", 3, activities=("work",), projects=("demo",),
+            resource_ceilings=ResourceCeilings(memory_mib=4096),
+            grants=(CapabilityGrant("data.analytics", "security", 1, 3, revoked_at=150),),
+        ), WorkerInstance("revoked", "revoked", "1", 3, "alice", "i-3", 1, 10, 300)),
+        (observed_only, WorkerInstance(
+            "asserted", "observed", "1", 1, "alice", "i-4", 1, 10, 300,
+            observations=(WorkerObservation("data.analytics", 10, 300),),
+        )),
+    )
+
+    for configuration, worker in cases:
+        match = match_worker(
+            required, activity="work", project="demo", owner="alice",
+            configurations={configuration.name: configuration}, instances=(worker,), now=200,
+        )
+        assert match.instance is None
+        assert match.reason in {MatchReason.NO_COMPATIBLE_PROFILE, MatchReason.OFFLINE_OR_STALE}

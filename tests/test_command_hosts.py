@@ -608,7 +608,13 @@ def test_slow_readiness_uses_a_fresh_clock_for_admission_and_reservation(tmp_pat
         ({"memory_available_mib": 1000}, {}, "host memory 1000 MiB"),
         ({"disk_free_gib": 1}, {}, "host disk 1 GiB"),
         ({"resources_enforced": False}, {}, "cannot enforce constrained"),
+        ({"effective_requirement_digest": "forged"}, {}, "requirement digest does not match"),
+        ({"profile_revision": "forged"}, {}, "profile revision does not match"),
+        ({"worker_id": "forged"}, {}, "worker identity does not match"),
         ({"run_id": "other-run"}, {}, "run identity does not match"),
+        ({"activity": "review"}, {}, "activity identity does not match"),
+        ({"operating_user": "bob"}, {}, "operating user does not match"),
+        ({"installation_id": "other-install"}, {}, "installation identity does not match"),
         ({"memory_limit_mib": 2048}, {}, "memory ceiling does not match"),
         ({"lease_id": "", "lease_expires_at": 0}, {}, "lease is missing or expired"),
     ],
@@ -646,7 +652,9 @@ def test_ineligible_host_admission_fails_closed_with_alias(
     assert not wrapper.admissions
 
 
-@pytest.mark.parametrize("activity", ["work", "setup", "base_probe", "check", "review"])
+@pytest.mark.parametrize(
+    "activity", ["work", "setup", "base_probe", "check", "review", "persona"]
+)
 def test_all_activities_share_host_owned_heavy_lease_across_controllers(tmp_path, activity):
     wrapper = Wrapper()
     first = HostLifecycle(
