@@ -142,6 +142,18 @@ class MemberRegistry:
     def __init__(self, garden_dir: Path):
         self.path = garden_dir / "members.json"
 
+    def _require_catalog_phase(self, project: str, phase: str) -> None:
+        """Reject durable scopes that are absent from the garden's discovered catalog."""
+        self._valid_id(project, "project")
+        self._valid_id(phase, "phase")
+        # Import locally to keep the offline registry/model dependency direction simple.
+        from .store import Store
+
+        try:
+            Store(self.path.parent.parent).phase(project, phase)
+        except KeyError:
+            raise ValueError(f"unknown project/phase target: {project}/{phase}") from None
+
     @staticmethod
     def _valid_id(value: str, label: str) -> str:
         if not _ID.fullmatch(value):
@@ -236,10 +248,9 @@ class MemberRegistry:
         state = self._authorized_state(actor)
         if not authorize(actor, "administer"):
             raise PermissionError("administrator role required")
+        self._require_catalog_phase(project, phase)
         if member_id not in self.active_execution_member_ids(project):
             raise ValueError("assignment owner must be an active garden member")
-        self._valid_id(project, "project")
-        self._valid_id(phase, "phase")
         rows = state.setdefault("assignments", {})
         current = rows.get(member_id)
         generations = state.setdefault("assignment_generations", {})
@@ -285,8 +296,7 @@ class MemberRegistry:
         state = self._authorized_state(actor)
         if not authorize(actor, "administer"):
             raise PermissionError("administrator role required")
-        self._valid_id(project, "project")
-        self._valid_id(phase, "phase")
+        self._require_catalog_phase(project, phase)
         if owner_id is not None and owner_id not in self.active_execution_member_ids(project):
             raise ValueError("phase owner must be an active garden member")
         rows = state.setdefault("phase_owners", {})
@@ -383,7 +393,7 @@ class MemberRegistry:
         if any(task.product == project and task.phase == phase and not task.status.terminal
                for task in tasks.values()):
             raise RuntimeError("unfinished member work prevents phase advancement")
-        self._valid_id(next_phase, "phase")
+        self._require_catalog_phase(project, next_phase)
         generation = expected_generation + 1
         row = {"project": project, "phase": next_phase, "generation": generation,
                "enabled": True, "advance": True, "changed_by": actor.member_id}
