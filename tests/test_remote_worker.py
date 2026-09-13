@@ -1594,6 +1594,7 @@ def test_parallel_remote_claim_reserves_aggregate_worker_resources(garden, monke
     assert second.status_code == 204
     pending = next(run for run in RunStore(store.config.garden_dir).active() if not run.host)
     assert pending.env_snapshot["worker_match"]["reason"] == "busy"
+
 def test_remote_claim_enforces_owner_for_explicit_empty_envelope(garden, monkeypatch):
     path = garden / "garden.yaml"
     config = yaml.safe_load(path.read_text())
