@@ -777,6 +777,146 @@ def test_existing_version_one_ref_without_handoff_table_upgrades_additively(clon
     assert upgraded["handoffs"] == {}
 
 
+def test_member_disablement_drains_task_and_phase_before_atomic_disable(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    store.apply(
+        "claim-task-before-disable", actor="alice", installation="one",
+        expected_versions={"task:CG-1": 0},
+        changes={"claims": {"task:CG-1": {
+            "operation_id": "task-claim", "kind": "task", "scope": "CG-1",
+            "owner_id": "alice", "authority_generation": 1,
+        }}},
+    )
+    store.apply(
+        "claim-phase-before-disable", actor="alice", installation="one",
+        expected_versions={"phase:demo/p1": 0},
+        changes={"claims": {"phase:demo/p1": {
+            "operation_id": "phase-claim", "kind": "phase", "scope": "demo/p1",
+            "owner_id": "alice", "authority_generation": 1,
+        }}},
+    )
+
+    started = store.begin_member_authority_change(
+        "disable-alice", actor="admin", installation="admin",
+        member_id="alice", active=False,
+    )
+    assert started.result == {
+        "status": "draining", "entities": ["phase:demo/p1", "task:CG-1"]
+    }
+    _, draining = store.read()
+    assert draining["members"]["alice"]["active"] is True
+    assert all(draining["entities"][key]["draining"] for key in started.result["entities"])
+    with pytest.raises(PermissionError, match="authority is draining"):
+        store.apply(
+            "new-work-while-disabling", actor="alice", installation="one",
+            expected_versions={}, changes={},
+        )
+    with pytest.raises(GitCoordinationError, match="acknowledgement or external fence"):
+        store.complete_authority_change(
+            "premature-disable", actor="admin", installation="admin",
+            change_key="member:alice",
+        )
+
+    for entity_key in started.result["entities"]:
+        store.acknowledge_stop(
+            f"ack-disable:{entity_key}", actor="alice", installation="one",
+            entity_key=entity_key,
+        )
+    store.complete_authority_change(
+        "complete-disable", actor="admin", installation="admin",
+        change_key="member:alice",
+    )
+    _, completed = store.read()
+    assert completed["members"]["alice"]["active"] is False
+    assert all(completed["entities"][key]["owner"] == "" for key in started.result["entities"])
+    assert all(completed["entities"][key]["authority_generation"] == 2
+               for key in started.result["entities"])
+
+
+def test_installation_revocation_blocks_immediately_and_requires_external_fence(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    store.apply(
+        "claim-before-revoke", actor="alice", installation="two",
+        expected_versions={"task:CG-1": 0},
+        changes={"claims": {"task:CG-1": {
+            "operation_id": "revoked-installation-claim", "kind": "task", "scope": "CG-1",
+            "owner_id": "alice", "authority_generation": 1,
+        }}},
+    )
+    store.begin_installation_revocation(
+        "revoke-two", actor="admin", installation="admin", installation_id="two",
+    )
+    with pytest.raises(PermissionError, match="authority is draining"):
+        store.apply(
+            "revoked-installation-new-work", actor="alice", installation="two",
+            expected_versions={}, changes={},
+        )
+    with pytest.raises(GitCoordinationError, match="acknowledgement or external fence"):
+        store.complete_authority_change(
+            "premature-revoke", actor="admin", installation="admin",
+            change_key="installation:two",
+        )
+
+    store.record_external_fence(
+        "fence-two", actor="admin", installation="admin", entity_key="task:CG-1",
+        proof={"execution": "worker grant revoked", "publication": "push key revoked"},
+    )
+    store.complete_authority_change(
+        "complete-revoke", actor="admin", installation="admin",
+        change_key="installation:two",
+    )
+    _, completed = store.read()
+    assert "two" not in completed["installations"]
+    assert completed["revoked_installations"]["two"] == "alice"
+    assert completed["entities"]["task:CG-1"]["owner"] == ""
+    store.retain_late_evidence(
+        "late-revoked-result", actor="alice", installation="two",
+        entity_key="task:CG-1", prior_generation=1, evidence_id="late-worker-result",
+        payload={"commit": "deadbeef"},
+    )
+    store.enroll_installation(
+        "reenroll-two", actor="admin", installation="admin",
+        installation_id="two", member_id="bob",
+    )
+    _, reenrolled = store.read()
+    assert reenrolled["installations"]["two"] == "bob"
+    assert "two" not in reenrolled["revoked_installations"]
+    assert any(row.get("evidence_id") == "late-worker-result"
+               for row in reenrolled["recovery"])
+
+
+def test_live_installation_cannot_be_relabelled_to_another_member(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    with pytest.raises(GitCoordinationError, match="ownership is immutable"):
+        store.enroll_installation(
+            "relabel-one", actor="admin", installation="admin",
+            installation_id="one", member_id="bob",
+        )
+    _, state = store.read()
+    assert state["installations"]["one"] == "alice"
+
+
+def test_project_scope_narrowing_drains_only_authority_outside_retained_scope(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    started = store.begin_member_authority_change(
+        "narrow-alice", actor="admin", installation="admin",
+        member_id="alice", projects=["other"],
+    )
+    assert started.result["entities"] == ["phase:demo/p1", "task:CG-1"]
+    store.complete_authority_change(
+        "complete-narrow", actor="admin", installation="admin",
+        change_key="member:alice",
+    )
+    _, completed = store.read()
+    assert completed["members"]["alice"]["active"] is True
+    assert completed["members"]["alice"]["project_visibility"] == "assigned"
+    assert completed["members"]["alice"]["projects"] == ["other"]
+
+
 @pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
 def test_acknowledged_handoff_blocks_new_work_then_advances_generation(clones, entity_key):
     _, one, two = clones
