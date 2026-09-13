@@ -304,12 +304,19 @@ class MultiplayerClient:
         """Acquire (or reuse) this installation's fenced lifecycle lease."""
         key = (kind, scope)
         current = self._claims.get(key)
-        if (
-            current
-            and current.get("owner_id") == owner_id
-            and int(current.get("authority_generation", -1)) == authority_generation
-        ):
-            return current
+        if (current and current.get("owner_id") == owner_id
+                and int(current.get("authority_generation", -1)) == authority_generation):
+            snapshot = self.refresh(allow_stale=False).snapshot
+            active = next((claim for claim in snapshot.get("active_claims", [])
+                           if claim.get("kind") == kind and claim.get("scope") == scope), None)
+            identity = (
+                "garden_id", "kind", "scope", "owner_id", "authority_generation",
+                "installation_id", "operation_id", "fence", "lease_expires_at",
+            )
+            if active is not None and all(active.get(field) == current.get(field)
+                                          for field in identity):
+                return current
+            self._claims.pop(key, None)
         operation_id = f"claim:{self.installation_id}:{kind}:{scope}:{uuid.uuid4().hex}"
         claim = self.command(
             "/claims",
