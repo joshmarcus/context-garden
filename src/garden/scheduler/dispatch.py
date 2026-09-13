@@ -13,6 +13,7 @@ from ..canonical import configured_root
 from ..criteria import parse_criteria
 from ..github import is_git_remote_url
 from ..graph import blockers, ready, stack_parents
+from ..migration import standalone_fence
 from ..model import (
     Phase,
     Status,
@@ -23,7 +24,6 @@ from ..model import (
     parse_execution_requirements,
     phase_refusal,
 )
-from ..migration import standalone_fence
 from ..notify import notify
 from ..review import validation_plan
 from ..runner.base import Runner

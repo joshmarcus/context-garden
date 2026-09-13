@@ -838,6 +838,10 @@ class HumanMixin:
         st["question"] = ""
         st["question_recipient"] = ""
         st["session_id"] = ""
+        # Persist the resolution before dispatching the resumed run.  Web requests use
+        # a separate Scheduler/State instance, so leaving this only in memory keeps the
+        # answered question visible in the next Inbox projection.
+        self.state.save()
         if sid and runner.harness is not None and runner.harness.can_resume:
             run = self.dispatch(task, mode="resume", runner=runner, session_id=sid, prompt_override=resume_prompt(question, text))
         else:
