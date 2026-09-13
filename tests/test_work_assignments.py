@@ -245,6 +245,7 @@ def test_real_dispatch_enforces_authenticated_owner_cursor_and_generation(sched)
     assert run.task_id == task.id
 
 
+ 
 def test_scheduler_transition_commits_authority_before_local_projection(sched, monkeypatch):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
@@ -280,6 +281,8 @@ def test_scheduler_transition_commits_authority_before_local_projection(sched, m
     assert bound.store.task(task.id).status == Status.RUNNING
 
 
+ 
+ 
 def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutation(sched):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
