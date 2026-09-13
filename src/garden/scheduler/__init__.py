@@ -15,7 +15,6 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import os
 import re
 import threading
