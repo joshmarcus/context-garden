@@ -1102,12 +1102,14 @@ class HostLifecycle:
         lease = leases.get(provider_id)
         raw = lease.get("admission") if isinstance(lease, dict) else None
         lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
-        try:
-            released = self.stop(pool, provider_id)
-        except ProviderError as exc:
-            detail = f"host stop failed before admission lease release: {exc}"
-            self._record_environment_stop(pool, detail, data=data)
-            raise EnvironmentStop(detail) from exc
+        released = self._owned(pool, provider_id)
+        if released.state not in {HostState.STOPPED, HostState.TERMINATED}:
+            try:
+                released = self.stop(pool, provider_id)
+            except ProviderError as exc:
+                detail = f"host stop failed before admission lease release: {exc}"
+                self._record_environment_stop(pool, detail, data=data)
+                raise EnvironmentStop(detail) from exc
         if released.state not in {HostState.STOPPED, HostState.TERMINATED}:
             detail = (
                 "host stop did not prove termination before admission lease release: "

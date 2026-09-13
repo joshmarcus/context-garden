@@ -838,6 +838,12 @@ def test_admission_release_failure_keeps_recoverable_lease_state(tmp_path):
     assert saved["leases"][host.provider_id]["admission"]["lease_id"] == lease_id
     assert wrapper.hosts[0]["state"] == "stopped"
 
+    wrapper.release_error = False
+    lifecycle.release(command_pool(), host.provider_id)
+    saved = json.loads(path.read_text())
+    assert saved["leases"][host.provider_id]["released"] is True
+    assert lease_id not in wrapper.admissions
+
 
 def test_renewal_rejects_capacity_drift_and_requirement_change(tmp_path):
     wrapper = Wrapper()
