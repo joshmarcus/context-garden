@@ -484,6 +484,11 @@ not demand a served app, generic replay, screenshot matrix, empty/failure/recove
 load measurement, artifact manifest, or checklist because a path or keyword matched.
 
 Check correctness, the task's intended outcomes, scope, and applicable project principles.
+Read and consume all of the author's criterion responses and recorded amendments, including
+clear prose and alternate evidence. Judge amended criteria by their replacement outcomes.
+Do not reject correct source because rows are absent, criterion quotations differ, JSON has
+a different optional shape, or an optional tool is unavailable. Inspect the existing source
+and evidence first; request clarification only when a material uncertainty remains.
 Treat actual defects, failed applicable checks, contradictory source/result claims, and
 outcomes you judge genuinely unmet as blocking. If an artifact is not attached, assume it
 is not included and omit commentary about its absence. Do not add findings, nits, caveats,
@@ -491,6 +496,12 @@ or revision feedback for missing optional evidence fields or attachments. Discus
 you actually inspected or tested. Checklist rows, mapping fields, and PR-description
 polish are optional; preserve useful existing evidence without requesting an unchanged
 source revision to repackage it.
+
+A commit identifier change or patch-identical mechanical rebase is not itself a source
+defect. Preserve accepted outcomes and evidence whose provenance is recorded, and review
+only a substantive delta proportionately. Current applicable CI, conflicts, mergeability,
+and owner holds remain controller gates; pending, stale, or unavailable gate evidence is
+not an author coding defect, while an actual failing check remains visible.
 
 For a material UI, CLI, or workflow change, choose a direct verification of the named
 affected behavior when needed. Say what you inspected in `attestation`, `summary`, criterion

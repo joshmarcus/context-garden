@@ -2008,9 +2008,17 @@ def test_review_brief_marks_an_amended_criterion(garden):
     task = store.task("DM-001")
     task.body += "\n## Acceptance criteria\n\n- [ ] The revised outcome works.\n"
     task.extra["criteria_amended"] = [{"index": 0, "text": "The revised outcome works.", "reason": "The original was false."}]
-    text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+a", max_diff_chars=1000)
+    text = review_brief(
+        store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+a",
+        max_diff_chars=1000,
+        verified=[{"criterion": "The revised outcome works.", "evidence": "focused test passed"}],
+    )
     assert "## Amended acceptance criteria" in text
     assert "amended — The original was false." in text
+    assert "focused test passed" in text
+    assert "Read and consume all of the author's criterion responses" in text
+    assert "commit identifier change" in text
+    assert "pending, stale, or unavailable gate evidence" in text
 
 
 def test_revise_with_code_finding_escalates_task_tier(sched, fake_github, monkeypatch):
@@ -2396,6 +2404,10 @@ def test_deferred_review_recovers_exact_external_author_result(sched, monkeypatc
     st = sched.state.get(task.id)
     st["head_sha"] = head
     st["review_rounds"] = 0
+    st["ci_status"] = {
+        "provider": "github", "state": "pending", "queried_sha": head,
+        "evidence_url": "https://example.com/check/1",
+    }
     source = sched.runs.new_run(task.id, "manual", mode="revise")
     source.harness = "human"
     source.status = "done"
@@ -2432,6 +2444,8 @@ def test_deferred_review_recovers_exact_external_author_result(sched, monkeypatc
     assert "External operator context retained" in brief
     assert "external result evidence" in brief
     assert "external preflight" in brief
+    assert "a different identifier or pending/stale/unavailable CI alone is not a source defect" in brief
+    assert "leave current-head CI readiness to the controller" in brief
     assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "check"]
 
 
@@ -2471,6 +2485,56 @@ def test_deferred_review_refuses_stale_author_result(sched, monkeypatch):
     assert review.env_snapshot["author_source_run"] == ""
     assert review.env_snapshot["author_source_head"] == ""
     assert "0" * 40 not in started[0][1]
+
+
+def test_review_reuses_author_evidence_after_patch_identical_rebase(sched):
+    task = sched.store.task("DM-001")
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot = {"review_source_head": "author-head"}
+    source.result = {"verified": [{"criterion": "outcome", "evidence": "focused pass"}]}
+    source.save()
+    rebase = sched.runs.new_run(task.id, "local", mode="rebase")
+    rebase.status = "done"
+    rebase.patch_id_before = rebase.patch_id_after = "stable-patch"
+    rebase.env_snapshot = {
+        "rebase_head_before": "author-head",
+        "rebase_local_head_before": "author-head",
+        "rebase_head_after": "rebased-head",
+    }
+    rebase.save()
+
+    assert sched._review_source_for_head(task, "rebased-head").run_id == source.run_id
+
+    rebase.patch_id_after = "materially-changed-patch"
+    rebase.save()
+    assert sched._review_source_for_head(task, "rebased-head") is None
+
+
+def test_completed_review_remains_current_after_patch_identical_rebase(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    review = sched.runs.new_run(task.id, "local", mode="review")
+    review.status = "done"
+    review.worktree = str(sched.worktree_for(task))
+    review.env_snapshot = {"review_head": "reviewed-head"}
+    review.save()
+    rebase = sched.runs.new_run(task.id, "local", mode="rebase")
+    rebase.status = "done"
+    rebase.patch_id_before = rebase.patch_id_after = "stable-patch"
+    rebase.env_snapshot = {
+        "rebase_head_before": "reviewed-head",
+        "rebase_local_head_before": "reviewed-head",
+        "rebase_head_after": "rebased-head",
+    }
+    rebase.save()
+    sched.state.get(task.id)["head_sha"] = "rebased-head"
+    monkeypatch.setattr("garden.scheduler.review.gitops.head_sha", lambda *_: "reviewed-head")
+
+    assert sched._review_evidence_is_current(task, review) is True
+
+    rebase.patch_id_after = "materially-changed-patch"
+    rebase.save()
+    assert sched._review_evidence_is_current(task, review) is False
 
 
 def test_declared_affected_replay_module_does_not_force_local_check(sched, monkeypatch):
