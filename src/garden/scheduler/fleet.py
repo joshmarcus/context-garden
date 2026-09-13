@@ -29,7 +29,7 @@ class FleetMixin:
         Nothing happens in a garden with no `workers.pool` block, and the controller's own
         cadence, backoff and breaker decide whether this pass acts at all.
         """
-        controller = FleetController(self.cfg)
+        controller = FleetController(self.cfg, plugins=self.plugins)
         if controller.settings is None:
             return
         before = controller.state.read()

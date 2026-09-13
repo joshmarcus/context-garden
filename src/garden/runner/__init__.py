@@ -25,6 +25,12 @@ REGISTRY: dict[str, type[Runner]] = {
 # Keep this separate from REGISTRY: tests may replace a built-in implementation, but an
 # operator registration must never silently take over a public runner name or its alias.
 BUILTIN_NAMES = frozenset(REGISTRY)
+BUILTIN_TRANSPORTS = {
+    "garden/local": LocalRunner,
+    "garden/manual": ManualRunner,
+    "garden/ssh": SSHRunner,
+    "garden/remote": RemoteRunner,
+}
 ADAPTER_VERSION = 1
 ADAPTER_CAPABILITIES = frozenset({"detached", "remote"})
 
@@ -84,7 +90,8 @@ def _adapter_class(name: str, registration: dict[str, Any]) -> type[Runner]:
     return candidate
 
 
-def get_runner(name: str, config: dict[str, Any], harness: Harness | None = None) -> Runner:
+def get_runner(name: str, config: dict[str, Any], harness: Harness | None = None,
+               *, plugins: Any = None) -> Runner:
     adapters = config.get("_runner_adapters") or {}
     if not isinstance(adapters, dict):
         raise RunnerError("runner adapters must be configured as a mapping")
@@ -94,6 +101,15 @@ def get_runner(name: str, config: dict[str, Any], harness: Harness | None = None
             raise RunnerError(problem)
     if name in REGISTRY:
         return REGISTRY[name](config, harness)
+    if name in BUILTIN_TRANSPORTS:
+        return BUILTIN_TRANSPORTS[name](config, harness)
+    if "/" in name and plugins is not None:
+        from ..plugins import PluginRunner, resolve_runner_transport
+
+        transport, provenance = resolve_runner_transport(plugins, name)
+        runner = PluginRunner(transport, provenance, config, harness)
+        runner.name = name
+        return runner
     registration = adapters.get(name)
     if not isinstance(registration, dict):
         known = sorted(set(REGISTRY) | set(adapters))
@@ -105,4 +121,4 @@ def get_runner(name: str, config: dict[str, Any], harness: Harness | None = None
     return runner
 
 
-__all__ = ["Runner", "RunnerError", "get_runner", "REGISTRY", "Harness"]
+__all__ = ["Runner", "RunnerError", "get_runner", "REGISTRY", "BUILTIN_TRANSPORTS", "Harness"]

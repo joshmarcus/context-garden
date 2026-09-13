@@ -559,7 +559,7 @@ class Scheduler(
         # A private class may be selected only from operator configuration.  Preserve the
         # entire registration map so its configured alias continues to resolve at reap.
         cfg["_runner_adapters"] = dict(self.cfg.get("runner_adapters") or {})
-        return get_runner(name, cfg, harness)
+        return get_runner(name, cfg, harness, plugins=self.plugins)
 
     def resolved_harness_name(self, task: Task, harness_name: str = "") -> str:
         """The harness `runner_for(task, ..., harness_name)` would resolve to, without

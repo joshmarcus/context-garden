@@ -33,7 +33,7 @@ def fleet(
     from ..fleet import FleetController, fleet_projection
 
     store = _store(root)
-    controller = FleetController(store.config)
+    controller = FleetController(store.config, plugins=store.config.load_plugins())
     if controller.settings is None:
         err.print("[yellow]no workers.pool block configured; this garden uses static "
                   "workers.hosts[/yellow]")
