@@ -237,6 +237,57 @@ def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_pa
     assert (tmp_path / path).read_text() == original
 
 
+def test_effect_reacquires_claim_absent_from_fresh_authoritative_snapshot(tmp_path):
+    state = snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden", "projections": [],
+        "authority": [{"kind": "task", "scope": "CG-1", "version": 3}],
+        "active_claims": [],
+    })
+
+    class ExpiringClaimService(Service):
+        def __init__(self, snapshot):
+            super().__init__(snapshot)
+            self.fence = 0
+
+        def __call__(self, method, url, **kwargs):
+            if method == "GET":
+                return response(200, self.snapshot)
+            if url.endswith("/claims"):
+                self.fence += 1
+                body = kwargs["json"]
+                claim = {
+                    "garden_id": "garden", "kind": body["kind"], "scope": body["scope"],
+                    "owner_id": body["accepted_owner"],
+                    "authority_generation": body["authority_generation"],
+                    "installation_id": "alice-a", "operation_id": body["operation_id"],
+                    "fence": self.fence,
+                    "lease_expires_at": f"2099-01-0{self.fence}T00:00:00+00:00",
+                }
+                self.snapshot["active_claims"] = [claim]
+                self.posts.append(body)
+                return response(200, claim)
+            self.posts.append(kwargs["json"])
+            return response(200, {"status": "ok"})
+
+    service = ExpiringClaimService(state)
+    local = client(tmp_path, service)
+    effect = dict(kind="task", scope="CG-1", owner_id="alice",
+                  authority_generation=7, expected_version=3)
+
+    with local.effect(**effect, effect_key="first"):
+        pass
+    assert service.fence == 1
+
+    # The server clock has expired and omitted the old claim from its next snapshot.
+    service.snapshot["active_claims"] = []
+    with local.effect(**effect, effect_key="after-expiry") as replacement:
+        assert replacement["fence"] == 2
+
+    assert service.fence == 2
+    submitted_effects = [post for post in service.posts if "claim" in post]
+    assert [post["claim"]["fence"] for post in submitted_effects] == [1, 2]
+
+
 def test_cancellation_is_acknowledged_only_after_local_worker_stops(tmp_path):
     state = snapshot_identity({
         "protocol_version": 1, "garden_id": "garden", "authority": [], "projections": [],
