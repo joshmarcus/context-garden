@@ -350,6 +350,7 @@ class Coordinator:
         """Return an authenticated versioned authority snapshot with useful wait states."""
         self._protocol(protocol_version)
         self._garden(principal, garden_id)
+        now = self.clock()
         with self._connect() as db:
             authority = [dict(row) for row in db.execute(
                 "SELECT * FROM authority WHERE garden=? ORDER BY kind,scope", (garden_id,))]
