@@ -15,7 +15,6 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from ...events import DECISION_KINDS, EventLog, decision_notifications
-from ...github import is_git_remote_url
 from ...model import effective_owner, parse_execution_requirements
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
