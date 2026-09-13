@@ -126,7 +126,7 @@ class CheckRunMixin:
         self.require_maintenance_running()
         source_run = self._run_by_id(task, str(cont.get("worker_run_id") or ""))
         execution_requirements, worker_match = self._execution_match(
-            task, "check", source_run=source_run
+            task, "check", source_run=source_run, checkpoint_run=prepared_run
         )
         # Reaping a worker or polling a PR can start checks before dispatch_ready.
         # Let an eligible earlier review use this just-freed shared slot first too.
