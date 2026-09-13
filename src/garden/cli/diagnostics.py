@@ -664,6 +664,9 @@ def serve(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8765),
     watch_: bool = typer.Option(True, "--watch/--no-watch", help="Run the scheduler loop inside the server"),
+    public_projection: Path | None = typer.Option(
+        None, "--public-projection", help="Serve only an exported public projection directory.",
+    ),
 ):
     """Local web UI (and, by default, the scheduler loop)."""
     import copy
@@ -671,6 +674,15 @@ def serve(
     import uvicorn
 
     from ..web.app import create_app, multiplayer_tls_files
+
+    if public_projection is not None:
+        from ..web.public import create_public_app
+
+        if watch_:
+            err.print("[red]public projection serving requires --no-watch[/red]")
+            raise typer.Exit(2)
+        uvicorn.run(create_public_app(public_projection), host=host, port=port, log_level="warning")
+        return
 
     store = _store()
     # `log_level="warning"` used to also silence uvicorn.access (it logs at INFO), so a 500
@@ -688,6 +700,17 @@ def serve(
         ssl_certfile=tls[0] if tls else None,
         ssl_keyfile=tls[1] if tls else None,
     )
+
+
+@app.command("publish", rich_help_panel=PANEL_DIAG)
+def publish_public_projection(
+    output: Path = typer.Option(..., "--output", help="Isolated directory to replace with public data."),
+):
+    """Export the explicitly allowlisted anonymous garden projection."""
+    from ..publication import write_public_projection
+
+    path = write_public_projection(_store(), output.resolve())
+    console.print(f"public projection written to {path}")
 
 
 @app.command(rich_help_panel=PANEL_DIAG)
