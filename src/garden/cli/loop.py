@@ -98,7 +98,7 @@ def profile(
     if not name:
         active = sched.operating_profile_name()
         console.print(f"active: {active or 'default'}")
-        console.print(f"choices: {', '.join(sorted(sched.operating_profile_stops()))}")
+        console.print(f"choices: {', '.join(sched.operating_profile_stops())}")
         return
     try:
         sched.set_operating_profile(name, by="cli")
