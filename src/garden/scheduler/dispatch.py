@@ -23,7 +23,6 @@ from ..model import (
     parse_execution_requirements,
     phase_refusal,
 )
-from ..migration import standalone_fence
 from ..notify import notify
 from ..review import validation_plan
 from ..runner.base import Runner
