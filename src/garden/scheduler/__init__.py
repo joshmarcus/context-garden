@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import fcntl
 import hashlib
-import os
 import re
 import threading
 import time
@@ -36,7 +35,7 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..members import MemberRegistry, Principal, current_principal
+from ..members import MemberRegistry, Principal
 from ..model import Phase, Status, Task, effective_owner, now_iso
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from ..notify import notify, retry_pending, should_notify
@@ -376,10 +375,6 @@ class Scheduler(
         self.store = store
         self.cfg = store.config
         self.members = MemberRegistry(self.cfg.garden_dir)
-        credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
-        self.principal = principal or current_principal() or (
-            self.members.authenticate(credential) if credential else None
-        )
         self.coordinator_error = ""
         try:
             self.coordinator = MultiplayerClient.from_config(self.cfg)
@@ -388,6 +383,11 @@ class Scheduler(
             # diagnostic even when enrollment is incomplete.
             self.coordinator = None
             self.coordinator_error = str(exc)
+        # Execution identity belongs to this configured installation. A browser
+        # principal authorizes its request but must not select scheduler authority.
+        self.principal = principal or (
+            self.coordinator.authenticate_local_session() if self.coordinator else None
+        )
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)

@@ -19,19 +19,23 @@ from typer.testing import CliRunner
 
 from garden.cli import app as cli_app
 from garden.members import operating_system_username
-from garden.multiplayer_client import AuthoritativeView
+from garden.multiplayer_client import AuthoritativeView, MultiplayerClient
 from garden.scheduler import Scheduler
 from garden.store import Store
 from garden.web.app import create_app
 
 
 class _Coordinator:
+    authenticate_local_session = MultiplayerClient.authenticate_local_session
+
     def __init__(self, role: str, assignment: dict | None = None):
+        self.garden_id = "garden-1"
         self.member_id = "alex"
         self.installation_id = "alex-laptop"
         self.snapshot = {
             "garden_id": "garden-1", "protocol_version": 1, "member_id": self.member_id,
             "installation_id": self.installation_id, "role": role, "assignment": assignment,
+            "project_visibility": "all", "projects": [],
             "authority": [], "projections": [], "cancellation_requests": [],
         }
         self.preparations = []

@@ -128,6 +128,7 @@ def test_multiplayer_permissions_and_project_projection_apply(garden):
     admin_token = registry.enroll_administrator("garden-1", "alice", "alice-browser")
     admin = registry.authenticate(admin_token)
     assert admin
+    registry.set_assignment(admin, "alice", task.product, task.phase)
     registry.add_member(admin, "eve", "viewer", "all")
     viewer_token = registry.issue_installation(admin, "eve", "eve-browser")
     registry.add_member(admin, "bob", "member", "assigned", ("other",))
