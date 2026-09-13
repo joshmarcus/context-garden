@@ -212,7 +212,11 @@ class GitStateStore:
             names = _run(self.repo, "ls-tree", "--name-only", commit).splitlines()
             if names != ["state.json"]:
                 raise GitCoordinationError("coordination commit must contain only state.json")
-            return json.loads(_run(self.repo, "show", f"{commit}:state.json"))
+            state = json.loads(_run(self.repo, "show", f"{commit}:state.json"))
+            # Version-1 refs created before acknowledged handoffs remain readable. The
+            # first accepted handoff transaction materializes the additive table.
+            state.setdefault("handoffs", {})
+            return state
         except (ValueError, TypeError) as exc:
             raise GitCoordinationError("coordination state is not valid JSON") from exc
 
@@ -697,12 +701,7 @@ class GitStateStore:
             if not handoff.get("stop_acknowledged") and not handoff.get("external_fence"):
                 raise GitCoordinationError("handoff requires bound stop acknowledgement or external fence")
             entity = state["entities"][entity_key]
-            for key, claim in list(state["claims"].items()):
-                if key == entity_key or claim.get("operation_id") in {
-                    p.get("claim") for p in state["permits"].values()
-                }:
-                    if key == entity_key:
-                        state["claims"].pop(key, None)
+            state["claims"].pop(entity_key, None)
             entity.update({
                 "owner": handoff["pending_owner"],
                 "authority_generation": int(handoff["from_generation"]) + 1,
