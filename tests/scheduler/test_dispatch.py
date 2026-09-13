@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.model import Status, parse_execution_requirements
+from garden.routing import task_routing_view
 from garden.scheduler import StateCorruptionError
 from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
 from garden.scheduler.report import TickReport
@@ -131,6 +132,26 @@ def test_execution_envelope_records_activity_owner_requirements_and_claim_fence(
     assert run.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
     assert run.env_snapshot["worker_configuration"] == "builder"
     assert run.env_snapshot["worker_configuration_version"] == "1"
+    assert run.env_snapshot["worker_readiness"] == {
+        "status": "verified", "checked_at": 1, "expires_at": 4_102_444_800,
+    }
+
+
+def test_run_provenance_preserves_admission_readiness_after_worker_update(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["review"])
+    requirements, match = sched._execution_match(task, "review")
+    run = sched.runs.new_run(task.id, "remote", mode="review")
+    sched._record_execution_envelope(task, run, "review", requirements, match)
+    run.save()
+
+    sched.cfg.data["worker_instances"][0]["readiness_checked_at"] = 200
+    sched.cfg.data["worker_instances"][0]["readiness_expires_at"] = 300
+
+    provenance = task_routing_view(sched.store, task, now=250)["runs"][0]
+    assert provenance["readiness"] == {
+        "status": "verified", "checked_at": 1, "expires_at": 4_102_444_800,
+    }
 
 
 def test_continuation_fences_a_changed_hard_requirement(sched):

@@ -77,7 +77,7 @@
     {% for layer in routing.layers %}<p class="metadata"><strong>{{ layer.source }}</strong> · {{ layer.requirements|tojson }}</p>{% endfor %}
   </details>
   {% if routing.selected_worker %}<p><strong>Selected profile:</strong> {{ routing.selected_worker.profile }} {{ routing.selected_worker.version }} · generation {{ routing.selected_worker.generation }} · readiness {{ routing.selected_worker.readiness }}</p>{% endif %}
-  {% if routing.runs %}<details><summary>Recorded run provenance ({{ routing.runs|length }})</summary>{% for run in routing.runs %}<p class="metadata"><a href="/runs/{{ task.id }}/{{ run.run_id }}">{{ run.run_id }}</a> · {{ run.mode }} · {{ run.profile or 'legacy profile not recorded' }}{% if run.profile_version %} {{ run.profile_version }}{% endif %}</p>{% endfor %}</details>{% endif %}
+  {% if routing.runs %}<details><summary>Recorded run provenance ({{ routing.runs|length }})</summary>{% for run in routing.runs %}<p class="metadata"><a href="/runs/{{ task.id }}/{{ run.run_id }}">{{ run.run_id }}</a> · {{ run.mode }} · {{ run.profile or 'legacy profile not recorded' }}{% if run.profile_version %} {{ run.profile_version }}{% endif %} · readiness {{ run.readiness.status }}{% if run.readiness.checked_at is defined %} (checked {{ run.readiness.checked_at }}, expires {{ run.readiness.expires_at }}){% endif %}</p>{% endfor %}</details>{% endif %}
 </div>
 
 {% if state.harness_hold and task.status.value == 'ready' %}

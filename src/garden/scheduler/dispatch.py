@@ -111,6 +111,11 @@ class DispatchMixin:
             "worker_instance": instance.instance_id if instance is not None else "",
             "worker_configuration": configuration.name if configuration is not None else "",
             "worker_configuration_version": configuration.version if configuration is not None else "",
+            "worker_readiness": ({
+                "status": "verified",
+                "checked_at": instance.readiness_checked_at,
+                "expires_at": instance.readiness_expires_at,
+            } if instance is not None else {}),
         })
 
     def _execution_source_run(self, task: Task, current: Run | None = None) -> Run | None:
