@@ -117,6 +117,16 @@ def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
             changes={"reservations": {"workers:1": None}},
         )
     first.apply(
+        "record-terminal-effect",
+        actor="alice",
+        installation="one",
+        expected_versions={},
+        changes={"effects": {"run:1": {
+            "claim": "claim-one", "provider": "scheduler", "scope": "task:CG-1",
+            "effect_key": "run:1", "outcome": "succeeded",
+        }}},
+    )
+    first.apply(
         "release",
         actor="alice",
         installation="one",
@@ -411,6 +421,77 @@ def test_pending_execution_permit_survives_claim_release_handoff_attempts(clones
     state = store.read()[1]
     assert "task:CG-1" not in state["claims"]
     assert state["entities"]["task:CG-1"]["owner"] == "bob"
+
+
+@pytest.mark.parametrize("outcome", ["pending", "unknown"])
+def test_unresolved_permit_cannot_be_deleted_before_handoff(clones, outcome):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    changes = {"permits": {"run:unresolved": {"claim": claim["operation_id"]}}}
+    if outcome == "unknown":
+        changes["effects"] = {"run:unresolved": {
+            "claim": claim["operation_id"], "provider": "scheduler",
+            "scope": "task:CG-1", "effect_key": "run:unresolved", "outcome": "unknown",
+        }}
+    store.apply(
+        "admit-unresolved", actor="alice", installation="one", expected_versions={},
+        changes=changes,
+    )
+
+    with pytest.raises(GitCoordinationError, match="unresolved permit cannot be released"):
+        store.apply(
+            "delete-unresolved", actor="alice", installation="one", expected_versions={},
+            changes={"permits": {"run:unresolved": None}},
+        )
+    with pytest.raises(GitCoordinationError, match="unresolved permit cannot be released"):
+        store.apply(
+            "atomic-delete-and-handoff", actor="alice", installation="one",
+            expected_versions={"task:CG-1": 0},
+            changes={
+                "permits": {"run:unresolved": None},
+                "claims": {"task:CG-1": None},
+                "entities": {"task:CG-1": {"owner": "bob", "authority_generation": 2}},
+            },
+        )
+
+    state = store.read()[1]
+    assert state["permits"]["run:unresolved"]["claim"] == claim["operation_id"]
+    assert state["claims"]["task:CG-1"]["operation_id"] == claim["operation_id"]
+    assert state["entities"]["task:CG-1"]["owner"] == "alice"
+
+
+def test_admitted_records_keep_identity_and_recovery_evidence(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    store.apply(
+        "admit-record", actor="alice", installation="one", expected_versions={},
+        changes={
+            "permits": {"run:record": {"claim": claim["operation_id"]}},
+            "effects": {"run:record": {
+                "claim": claim["operation_id"], "provider": "scheduler",
+                "scope": "task:CG-1", "effect_key": "run:record", "outcome": "unknown",
+            }},
+        },
+    )
+
+    with pytest.raises(GitCoordinationError, match="permit claim is immutable"):
+        store.apply(
+            "retarget-permit", actor="alice", installation="one", expected_versions={},
+            changes={"permits": {"run:record": {"claim": "different-claim"}}},
+        )
+    with pytest.raises(GitCoordinationError, match="recovery evidence cannot be deleted"):
+        store.apply(
+            "delete-effect", actor="alice", installation="one", expected_versions={},
+            changes={"effects": {"run:record": None}},
+        )
 
 
 @pytest.mark.parametrize("enabled", ["false", 1, []])

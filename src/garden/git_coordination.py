@@ -315,6 +315,26 @@ class GitStateStore:
             for entity, version in expected_versions.items():
                 if int(state["entities"].get(entity, {}).get("version", 0)) != version:
                     raise GitContention(f"stale entity version for {entity}")
+            effect_changes = changes.get("effects", {})
+            for key, value in changes.get("permits", {}).items():
+                current = state["permits"].get(key)
+                if not current:
+                    continue
+                if value is not None and value.get("claim", current.get("claim")) != current.get(
+                    "claim"
+                ):
+                    raise GitCoordinationError("permit claim is immutable after admission")
+                if value is None:
+                    effect = effect_changes.get(key, state["effects"].get(key))
+                    if not effect or effect.get("outcome", "pending") in {"pending", "unknown"}:
+                        raise GitCoordinationError(
+                            f"unresolved permit cannot be released without terminal evidence: {key}"
+                        )
+            for key, value in effect_changes.items():
+                if value is None and key in state["effects"]:
+                    raise GitCoordinationError(
+                        f"effect recovery evidence cannot be deleted: {key}"
+                    )
             for entity, patch in changes.get("entities", {}).items():
                 current = state["entities"].setdefault(entity, {"version": 0})
                 current.update(deepcopy(patch))
