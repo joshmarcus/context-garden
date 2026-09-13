@@ -742,6 +742,9 @@ def test_attach_selects_only_the_exact_live_session_and_quotes_it(sched, garden,
     run.status, run.host = "running", "boxA"
     run.env_snapshot = {"ssh_tmux_session": "garden-safe; touch never"}
     run.save()
+    (run.path / "ssh-state.json").write_text(json.dumps({
+        "status": "running", "session": "garden-safe; touch never",
+    }))
     store = sched.store
 
     command = diagnostics._attach_command(store, diagnostics._attach_run(store, "DM-001", ""))
@@ -753,15 +756,44 @@ def test_attach_selects_only_the_exact_live_session_and_quotes_it(sched, garden,
     completed.status, completed.host = "done", "boxA"
     completed.env_snapshot = {"ssh_tmux_session": "garden-finished"}
     completed.save()
-    with pytest.raises(ValueError, match="no longer running"):
+    with pytest.raises(ValueError, match="run is done, not running"):
         diagnostics._attach_run(store, "DM-001", completed.run_id)
 
     second = sched.runs.new_run("DM-001", "ssh", run_id="attach-second")
     second.status, second.host = "running", "boxA"
     second.env_snapshot = {"ssh_tmux_session": "garden-second"}
     second.save()
+    (second.path / "ssh-state.json").write_text(json.dumps({
+        "status": "running", "session": "garden-second",
+    }))
     with pytest.raises(ValueError, match="pass --run RUN_ID"):
         diagnostics._attach_run(store, "DM-001", "")
+
+
+@pytest.mark.parametrize(
+    ("state", "message"),
+    [
+        (None, "has not been confirmed"),
+        ({"status": "held", "session": "garden-unavailable"}, "outcome is uncertain"),
+        ({"status": "running", "session": "garden-other"}, "different session"),
+    ],
+)
+def test_attach_rejects_unconfirmed_held_and_mismatched_transport_state(
+    sched, state, message,
+):
+    from garden.cli import diagnostics
+
+    run = sched.runs.new_run("DM-001", "ssh", run_id="attach-unavailable")
+    run.status, run.host = "running", "boxA"
+    run.env_snapshot = {"ssh_tmux_session": "garden-unavailable"}
+    run.save()
+    if state is not None:
+        (run.path / "ssh-state.json").write_text(json.dumps(state))
+
+    with pytest.raises(ValueError, match=message):
+        diagnostics._attach_run(sched.store, run.task_id, run.run_id)
+    with pytest.raises(ValueError, match="no confirmed live SSH session"):
+        diagnostics._attach_run(sched.store, run.task_id, "")
 
 
 def test_attach_denies_another_member_and_never_launches_ssh(sched, garden, monkeypatch):
@@ -796,6 +828,9 @@ def test_attach_requires_a_terminal_and_runs_only_the_selected_attempt(sched, ga
     live.status, live.host = "running", "boxA"
     live.env_snapshot = {"ssh_tmux_session": "garden-attach-cli"}
     live.save()
+    (live.path / "ssh-state.json").write_text(json.dumps({
+        "status": "running", "session": "garden-attach-cli",
+    }))
     noninteractive = cli(garden, "attach", "DM-001")
     assert noninteractive.exit_code == 2
     assert "interactive local terminal" in noninteractive.output
@@ -819,6 +854,9 @@ def test_attach_transport_joins_a_disposable_real_tmux_session(sched, garden, tm
     run.status, run.host = "running", "boxA"
     run.env_snapshot = {"ssh_tmux_session": "garden-attach-tmux"}
     run.save()
+    (run.path / "ssh-state.json").write_text(json.dumps({
+        "status": "running", "session": "garden-attach-tmux",
+    }))
     socket_dir = Path(tempfile.mkdtemp(prefix="garden-tmux-", dir="/tmp"))
     environment = {"PATH": "/usr/bin:/bin", "TMUX_TMPDIR": str(socket_dir), "TERM": "xterm"}
     transport = tmp_path / "ssh-transport"

@@ -310,6 +310,7 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
 def _attach_run(store, task_id: str, run_id: str):
     """Find one live SSH run without guessing at a retry or completed attempt."""
     from ..runs import RunStore
+    from ..ssh_attach import attachment_problem
 
     runs = RunStore(store.config.garden_dir).runs_for(task_id)
     if run_id:
@@ -317,15 +318,21 @@ def _attach_run(store, task_id: str, run_id: str):
         if not matches:
             raise ValueError(f"run {run_id!r} was not found for {task_id}")
         run = matches[0]
-        if run.status != "running" or run.process_finished():
+        problem = attachment_problem(run)
+        if problem:
+            raise ValueError(f"cannot attach to {run_id!r}: {problem}; use garden log {task_id}")
+        if run.process_finished():
             raise ValueError(f"run {run_id!r} is no longer running; use garden log {task_id}")
         return run
-    active = [run for run in runs if run.status == "running" and not run.process_finished()]
+    active = [
+        run for run in runs
+        if attachment_problem(run) is None and not run.process_finished()
+    ]
     if not active:
-        raise ValueError(f"no running run for {task_id}; use garden log {task_id}")
+        raise ValueError(f"no confirmed live SSH session for {task_id}; use garden log {task_id}")
     if len(active) != 1:
         ids = ", ".join(run.run_id for run in active)
-        raise ValueError(f"multiple running runs for {task_id} ({ids}); pass --run RUN_ID")
+        raise ValueError(f"multiple live SSH sessions for {task_id} ({ids}); pass --run RUN_ID")
     return active[0]
 
 
