@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
@@ -139,6 +140,9 @@ def register(app: FastAPI, site: Site) -> None:
                 manual_take_reason = "This task reached its revision limit and needs an Inbox decision."
 
         decision_card = decision_card_view(t, st, rs)
+        from ...routing import task_routing_view
+
+        routing = task_routing_view(s, t)
         if decision_card is None and request.query_params.get("walkthrough") == "decision":
             decision_card = {
                 "type": "attention",
@@ -175,6 +179,9 @@ def register(app: FastAPI, site: Site) -> None:
             evidence_rows=evidence_rows,
             brief_gaps=gaps,
             acceptance_text=_acceptance_text(t.body),
+            requirements_text=(yaml.safe_dump(t.execution_requirements.to_dict(), sort_keys=False).strip()
+                               if not t.execution_requirements.empty else ""),
+            routing=routing,
             suggestions=suggestions, applies_to=APPLIES_TO, has_pending=has_pending(t.body),
             edit_running=bool(st.get("edit_run")), edit_diff=edit_diff,
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],

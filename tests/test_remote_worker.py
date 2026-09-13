@@ -42,6 +42,7 @@ from garden.remote_worker import (
     recover_active_claims,
     run_worker,
 )
+from garden.routing import task_routing_view
 from garden.runner.remote import RemoteRunner
 from garden.runs import RunStore
 from garden.scheduler import Scheduler
@@ -1594,6 +1595,7 @@ def test_parallel_remote_claim_reserves_aggregate_worker_resources(garden, monke
     assert second.status_code == 204
     pending = next(run for run in RunStore(store.config.garden_dir).active() if not run.host)
     assert pending.env_snapshot["worker_match"]["reason"] == "busy"
+
 def test_remote_claim_enforces_owner_for_explicit_empty_envelope(garden, monkeypatch):
     path = garden / "garden.yaml"
     config = yaml.safe_load(path.read_text())
@@ -1705,6 +1707,56 @@ def test_remote_claim_rejects_empty_envelope_pinned_to_another_instance(garden, 
     saved = RunStore(store.config.garden_dir).latest("DM-001")
     assert not saved.host
     assert saved.env_snapshot["worker_match"]["reason"] == "matched"
+def test_constrained_claim_records_refreshed_readiness_once(garden, monkeypatch):
+    path = garden / "garden.yaml"
+    config = yaml.safe_load(path.read_text())
+    config["capability_definitions"] = {
+        "tool.build": {"type": "tool", "description": "builder",
+                       "issuer": "operator", "privileged": False},
+    }
+    config["worker_configurations"] = {"builder": {
+        "contract_version": "garden.worker-configuration/v1", "version": "1",
+        "generation": 1, "activities": ["work"], "projects": ["demo"],
+        "grants": [{"capability": "tool.build", "approved_by": "operator",
+                    "approved_at": 1, "profile_generation": 1}],
+    }}
+    config["worker_instances"] = [{
+        "instance_id": "build-1", "configuration": "builder",
+        "configuration_version": "1", "profile_generation": 1,
+        "operating_user": "alice", "installation_id": "install-a",
+        "authenticated_at": 1, "readiness_checked_at": 10,
+        "readiness_expires_at": 4_102_444_800,
+    }]
+    path.write_text(yaml.safe_dump(config))
+    _client, store = remote_client(garden, monkeypatch)
+    run = queued_run(store)
+    run.env_snapshot.update({
+        "product": "demo", "execution_owner": "alice", "worker_instance": "build-1",
+        "execution_requirements": {"capabilities": {"all_of": ["tool.build"]}},
+        "execution_envelope": {"version": "garden.execution-envelope/v1",
+                               "worker_instance": "build-1"},
+        "worker_queue_readiness": {"status": "verified", "checked_at": 10,
+                                   "expires_at": 4_102_444_800},
+        "worker_readiness": {"status": "verified", "checked_at": 10,
+                             "expires_at": 4_102_444_800},
+    })
+    run.save()
+
+    config = yaml.safe_load(path.read_text())
+    config["worker_instances"][0]["readiness_checked_at"] = 20
+    path.write_text(yaml.safe_dump(config))
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    auth = {"Authorization": "Bearer secret-token"}
+    assert client.post("/api/runs/claim", json={"host": "build-1", "harnesses": ["claude"]},
+                       headers=auth).status_code == 200
+    claimed = RunStore(store.config.garden_dir).latest("DM-001")
+    assert claimed.env_snapshot["worker_queue_readiness"]["checked_at"] == 10
+    assert claimed.env_snapshot["worker_readiness"]["checked_at"] == 20
+
+    config["worker_instances"][0]["readiness_checked_at"] = 30
+    path.write_text(yaml.safe_dump(config))
+    provenance = task_routing_view(Store(garden), Store(garden).task("DM-001"))["runs"][0]
+    assert provenance["readiness"]["checked_at"] == 20
 
 
 @pytest.mark.parametrize("mode", ["work", "review", "persona"])

@@ -8,6 +8,7 @@ import os
 import re
 from typing import Any
 
+import yaml
 from fastapi import BackgroundTasks, Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -464,7 +465,8 @@ def register(app: FastAPI, site: Site) -> None:
         )
 
     @app.post("/tasks/{task_id}/brief")
-    def save_brief(task_id: str, acceptance: str = Form(""), reading: str = Form("")):
+    def save_brief(task_id: str, acceptance: str = Form(""), reading: str = Form(""),
+                   execution_requirements: str | None = Form(None)):
         """Save a draft's brief repair only when it clears the shared approval gate."""
         s = hub.fresh()
         try:
@@ -480,10 +482,19 @@ def register(app: FastAPI, site: Site) -> None:
                     raise HTTPException(400, "only draft briefs can be edited")
                 t.body = _replace_acceptance_criteria(t.body, acceptance)
                 t.reading = [path.strip() for path in reading.splitlines() if path.strip()]
+                from ...model import ExecutionRequirements, parse_execution_requirements
+
+                if execution_requirements is not None:
+                    value = yaml.safe_load(execution_requirements) if execution_requirements.strip() else {}
+                    t.execution_requirements = (parse_execution_requirements(value, source=f"task:{task_id}")
+                                                if value else ExecutionRequirements())
+                s.config.execution_requirements(t, s.phase(t.product, t.phase))
                 gaps = brief_gaps(s, t)
                 if gaps:
                     return JSONResponse({"detail": "; ".join(gaps), "gaps": gaps}, status_code=422)
                 s.save(t)
+        except (ValueError, yaml.YAMLError) as exc:
+            raise HTTPException(422, str(exc)) from None
         except HTTPException:
             raise
         except Exception:
