@@ -26,7 +26,14 @@ export GARDEN_ALEX_CREDENTIAL='printed-once-value'
 garden members connect garden-1 https://coordinator.example alex alex-laptop \
   --credential-env GARDEN_ALEX_CREDENTIAL
 garden members status
+garden serve
 ```
+
+Open the printed local address in a browser. On a loopback listener, Garden establishes the
+browser's member session from the connected installation credential and revalidates it with the
+coordinator; the credential is not placed in a URL, cookie, or browser storage. Exposed listeners
+still require explicit request authentication. Revoked or expired credentials and a disconnected
+coordinator fail closed until the installation reconnects successfully.
 
 An administrator assigns execution explicitly on the coordinator host (the generation prevents
 silently replacing a newer assignment):

@@ -111,6 +111,13 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     operator_token = os.environ.get(operator_env, "") if operator_env else ""
     multiplayer = bool(store.config.get("multiplayer.enabled", False))
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
+    local_session_authenticator = None
+    if multiplayer and loopback_listener(host) and store.config.get("multiplayer.coordinator_url", ""):
+        from ..multiplayer_client import MultiplayerClient
+
+        connected_client = MultiplayerClient.from_config(store.config)
+        if connected_client is not None:
+            local_session_authenticator = connected_client.authenticate_local_session
     require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
     if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
@@ -195,6 +202,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         operator_token="" if multiplayer else operator_token,
         require_operator_auth=require_operator_auth,
         member_authenticator=registry.authenticate if registry else None,
+        local_session_authenticator=local_session_authenticator,
         member_authorizer=member_authorizer if registry else None,
         viewer_only=viewer_only,
     )
