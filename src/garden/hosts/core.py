@@ -927,7 +927,7 @@ class HostLifecycle:
                 return "host GPU device memory is below the reservation"
             if len(admission.gpu_device_vendors) != requirements.gpu_count:
                 return "host GPU vendor evidence is incomplete"
-            if any(
+            if requirements.gpu_vendor and any(
                 vendor.casefold() != requirements.gpu_vendor.casefold()
                 for vendor in admission.gpu_device_vendors
             ):

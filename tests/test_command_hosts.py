@@ -743,6 +743,46 @@ def test_every_assigned_gpu_must_prove_compatible_shape(
     assert not wrapper.admissions
 
 
+def test_vendor_agnostic_gpu_admission_keeps_honest_vendor_evidence(tmp_path):
+    wrapper = Wrapper()
+    wrapper.admission["gpu_device_vendors"] = ["nvidia"]
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True,
+        requirements=_requirements(gpu_count=1, gpu_device_memory_mib=12_000),
+    )
+
+    admission = lifecycle.activate_admission(command_pool(), host.provider_id)
+
+    assert admission.gpu_device_vendors == ("nvidia",)
+
+
+@pytest.mark.parametrize(
+    ("vendors", "reason"),
+    [
+        ([], "GPU vendor evidence is incomplete"),
+        (["amd"], "GPU vendor does not match"),
+    ],
+)
+def test_gpu_vendor_evidence_is_rechecked_at_activation(tmp_path, vendors, reason):
+    wrapper = Wrapper()
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True,
+        requirements=_requirements(gpu_count=1, gpu_vendor="nvidia"),
+    )
+    wrapper.admissions[next(iter(wrapper.admissions))]["gpu_device_vendors"] = vendors
+
+    with pytest.raises(EnvironmentStop, match=reason):
+        lifecycle.activate_admission(command_pool(), host.provider_id)
+
+
 def test_gpu_shape_is_rechecked_at_activation(tmp_path):
     wrapper = Wrapper()
     lifecycle = HostLifecycle(
