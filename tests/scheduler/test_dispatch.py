@@ -131,28 +131,43 @@ def test_execution_envelope_records_activity_owner_requirements_and_claim_fence(
     assert run.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
 
 
-def test_continuation_fences_a_changed_hard_requirement(sched):
+def test_revision_entrypoint_checkpoints_changed_unsupported_requirement(sched):
     task = sched.store.task("DM-001")
     _configure_capability_worker(sched, task, activities=["work", "review"])
     source = sched.runs.new_run(task.id, "remote", mode="work")
     source.status = "done"
-    source.env_snapshot["execution_requirements"] = task.execution_requirements.to_dict()
+    source.env_snapshot.update({
+        "execution_requirements": task.execution_requirements.to_dict(),
+        "execution_owner": "alice",
+        "worker_instance": "build-1",
+        "execution_envelope": {"owner": "alice", "worker_instance": "build-1"},
+    })
     source.save()
     task.execution_requirements = parse_execution_requirements({
         "capabilities": {"all_of": ["tool.build"]},
-        "resources": {"memory_mib": 2048},
+        "resources": {"memory_mib": 4096},
     })
     sched.store.save(task)
-    requirements, match = sched._execution_match(task, "review")
-    continuation = sched.runs.new_run(task.id, "remote", mode="review")
 
     with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
-        sched._record_execution_envelope(
-            task, continuation, "review", requirements, match, source_run=source
-        )
+        sched.dispatch(task, mode="revise")
+
+    continuation = sched.runs.latest(task.id)
+    assert continuation is not None
+    assert continuation is not source
+    assert continuation.mode == "revise"
     assert continuation.status == "failed"
     assert "continuation fenced before launch" in continuation.error
+    assert continuation.pid is None
+    assert continuation.env_snapshot["execution_envelope"]["source_run_id"] == source.run_id
+    assert continuation.env_snapshot["execution_envelope"]["worker_instance"] == "build-1"
+    assert continuation.env_snapshot["execution_requirements"] == task.execution_requirements.to_dict()
     assert source.status == "done"
+    assert len(sched.runs.runs_for(task.id)) == 2
+
+    with pytest.raises(ResourcePressureError, match="requirements changed.*fenced recovery"):
+        sched.dispatch(task, mode="revise")
+    assert len(sched.runs.runs_for(task.id)) == 2
 
 
 def test_continuation_stays_on_source_worker_when_an_equivalent_worker_is_idle(sched):

@@ -48,7 +48,7 @@ class AuxMixin:
         if task is not None:
             source_run = self._execution_source_run(task, run)
             execution_requirements, worker_match = self._execution_match(
-                task, kind, source_run=source_run
+                task, kind, source_run=source_run, checkpoint_run=run
             )
             self._require_capability_runner(execution_requirements, runner_name)
             self._record_execution_envelope(
