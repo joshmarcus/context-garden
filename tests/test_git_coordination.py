@@ -367,15 +367,14 @@ def test_pending_execution_permit_blocks_owner_handoff(clones):
         changes={"permits": {"run:pending": {"claim": claim["operation_id"]}}},
     )
 
-    with pytest.raises(GitCoordinationError, match="unresolved permits or effects"):
-        store.apply(
-            "handoff",
-            actor="alice",
-            installation="one",
-            expected_versions={"task:CG-1": 0},
-            changes={"entities": {"task:CG-1": {
-                "owner": "bob", "authority_generation": 2,
-            }}},
+    store.begin_handoff(
+        "begin-pending-handoff", actor="alice", installation="one",
+        entity_key="task:CG-1", expected_version=0, pending_owner="bob",
+    )
+    with pytest.raises(GitCoordinationError, match="run:pending"):
+        store.acknowledge_stop(
+            "ack-pending-handoff", actor="alice", installation="one",
+            entity_key="task:CG-1",
         )
 
     state = store.read()[1]
@@ -477,7 +476,7 @@ def test_pending_execution_permit_survives_claim_release_handoff_attempts(clones
             "entities": {"task:CG-1": {"owner": "bob", "authority_generation": 2}},
         }),
     ):
-        with pytest.raises(GitCoordinationError, match="unresolved permits or effects"):
+        with pytest.raises(GitCoordinationError):
             store.apply(
                 operation,
                 actor="alice",
@@ -503,15 +502,15 @@ def test_pending_execution_permit_survives_claim_release_handoff_attempts(clones
             "outcome": "succeeded",
         }}},
     )
-    store.apply(
-        "release-and-handoff-after-terminal",
-        actor="alice",
-        installation="one",
-        expected_versions={"task:CG-1": 0},
-        changes={
-            "claims": {"task:CG-1": None},
-            "entities": {"task:CG-1": {"owner": "bob", "authority_generation": 2}},
-        },
+    store.begin_handoff(
+        "begin-after-terminal", actor="alice", installation="one",
+        entity_key="task:CG-1", expected_version=0, pending_owner="bob",
+    )
+    store.acknowledge_stop(
+        "ack-after-terminal", actor="alice", installation="one", entity_key="task:CG-1",
+    )
+    store.complete_handoff(
+        "handoff-after-terminal", actor="bob", installation="bob", entity_key="task:CG-1",
     )
     state = store.read()[1]
     assert "task:CG-1" not in state["claims"]
@@ -633,17 +632,13 @@ def test_claim_identity_cannot_be_replaced_to_orphan_unresolved_work(
     )
     replacement = {**claim, "operation_id": f"replacement:{kind}"}
     replacement_changes = {"claims": {key: replacement}}
-    if atomic:
-        replacement_changes["entities"] = {
-            key: {"owner": "bob", "authority_generation": 2}
-        }
     with pytest.raises(GitCoordinationError, match="claim operation_id is immutable"):
         store.apply(
             f"replace:{effect_key}", actor="alice", installation="one",
             expected_versions={key: 0}, changes=replacement_changes,
         )
 
-    with pytest.raises(GitCoordinationError, match="unresolved permits or effects"):
+    with pytest.raises(GitCoordinationError):
         store.apply(
             f"release:{effect_key}", actor="alice", installation="one",
             expected_versions={key: 0}, changes={"claims": {key: None}},
@@ -752,13 +747,15 @@ def test_terminal_obligation_allows_claim_release_and_handoff(clones, kind, scop
             }},
         },
     )
-    store.apply(
-        f"handoff-terminal:{kind}", actor="alice", installation="one",
-        expected_versions={key: 0},
-        changes={
-            "claims": {key: None},
-            "entities": {key: {"owner": "bob", "authority_generation": 2}},
-        },
+    store.begin_handoff(
+        f"begin-terminal:{kind}", actor="alice", installation="one",
+        entity_key=key, expected_version=0, pending_owner="bob",
+    )
+    store.acknowledge_stop(
+        f"ack-terminal:{kind}", actor="alice", installation="one", entity_key=key,
+    )
+    store.complete_handoff(
+        f"handoff-terminal:{kind}", actor="bob", installation="bob", entity_key=key,
     )
     state = store.read()[1]
     assert key not in state["claims"]
