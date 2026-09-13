@@ -51,19 +51,34 @@
 <p class="muted">Watch on {{ latest_run.host }}: <code>tmux attach-session -r -t {{ ssh_tmux_session }}</code>. Detach with Ctrl-b d.</p>
 {% endif %}
 
-{% if brief_gaps %}
-<div id="brief-card" class="panel" style="border-color:var(--bad);margin-bottom:14px">
-  <div class="eyebrow" style="color:var(--bad)">Fix the brief before approving</div>
-  <p id="brief-card-status" style="margin:6px 0 10px">{% for gap in brief_gaps %}{{ gap }}{% if not loop.last %}; {% endif %}{% endfor %}</p>
+{% if task.status.value == 'draft' %}
+<div id="{{ 'brief-card' if brief_gaps else 'requirements-card' }}" class="panel" style="border-color:{{ 'var(--bad)' if brief_gaps else 'var(--line)' }};margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--bad)">{{ 'Fix the brief before approving' if brief_gaps else 'Edit draft requirements' }}</div>
+  <p id="brief-card-status" style="margin:6px 0 10px">{% if brief_gaps %}{% for gap in brief_gaps %}{{ gap }}{% if not loop.last %}; {% endif %}{% endfor %}{% else %}Requirements are validated with inherited product and phase policy before they are saved.{% endif %}</p>
   <form id="brief-editor" method="post" action="/tasks/{{ task.id }}/brief" data-brief-editor>
     <label for="acceptance">Acceptance criteria</label>
     <textarea id="acceptance" name="acceptance" rows="5" placeholder="- [ ] A verifiable outcome." required>{{ acceptance_text }}</textarea>
     <label for="reading" style="display:block;margin-top:8px">Reading list <span class="muted">(one path per line)</span></label>
     <textarea id="reading" name="reading" rows="3" placeholder="demo/p1/specs/brief.md">{{ task.reading|join('\n') }}</textarea>
+    <label for="execution-requirements" style="display:block;margin-top:8px">Task execution requirements <span class="muted">(YAML; inherited policy is shown below)</span></label>
+    <textarea id="execution-requirements" name="execution_requirements" rows="7" placeholder="capabilities:\n  all_of: [tool.build]">{{ requirements_text }}</textarea>
     <div class="actions" style="margin-top:8px"><button class="primary">Save brief</button><span id="brief-editor-message" class="muted" aria-live="polite"></span></div>
   </form>
 </div>
 {% endif %}
+
+<div class="panel" id="routing" style="margin-bottom:14px">
+  <div class="eyebrow">Worker routing · read-only dry run</div>
+  <h3>{{ routing.match.reason|replace('_', ' ') }}</h3>
+  <p>{{ routing.match.explanation }}</p>
+  <p class="metadata">Activity: {{ routing.activity }} · owner {{ routing.owner or 'unassigned' }} ({{ routing.owner_source }}) · no claim, credential, or instance is created by this explanation.</p>
+  <details><summary>Effective requirements and inheritance</summary>
+    <pre>{{ routing.effective_requirements|tojson }}</pre>
+    {% for layer in routing.layers %}<p class="metadata"><strong>{{ layer.source }}</strong> · {{ layer.requirements|tojson }}</p>{% endfor %}
+  </details>
+  {% if routing.selected_worker %}<p><strong>Selected profile:</strong> {{ routing.selected_worker.profile }} {{ routing.selected_worker.version }} · generation {{ routing.selected_worker.generation }} · readiness {{ routing.selected_worker.readiness }}</p>{% endif %}
+  {% if routing.runs %}<details><summary>Recorded run provenance ({{ routing.runs|length }})</summary>{% for run in routing.runs %}<p class="metadata"><a href="/runs/{{ task.id }}/{{ run.run_id }}">{{ run.run_id }}</a> · {{ run.mode }} · {{ run.profile or 'legacy profile not recorded' }}{% if run.profile_version %} {{ run.profile_version }}{% endif %} · readiness {{ run.readiness.status }}{% if run.readiness.checked_at is defined %} (checked {{ run.readiness.checked_at }}, expires {{ run.readiness.expires_at }}){% endif %}</p>{% endfor %}</details>{% endif %}
+</div>
 
 {% if state.harness_hold and task.status.value == 'ready' %}
 <div class="panel" style="border-color:var(--warn);margin-bottom:14px">
