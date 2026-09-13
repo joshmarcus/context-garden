@@ -22,6 +22,7 @@ Feature-specific references describe narrower supported workflows:
 - [Publishing releases to PyPI](pypi-release.md)
 - [Local and remote worker lifecycle](worker-protocol.md#variants-of-the-transport)
 - [Host lifecycle](host-lifecycle.md) and [host identity boundary](host-identity-boundary.md)
+- [Plugin manifests and the registry](plugin-contract.md)
 - [GitHub Enterprise configuration](operations.md#github-enterprise)
 - [Focused test selection](test-suites.md) and [worker CI](worker-ci.md)
 - [Reproduce the evolving-node history film](../scripts/history-film/README.md)
