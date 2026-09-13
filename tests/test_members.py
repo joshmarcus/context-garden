@@ -388,16 +388,17 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     viewer_token = registry.issue_installation(admin, "viewer", "viewer-browser")
     client = TestClient(_git_enrolled_app(garden))
 
-    assert client.get("/api/tasks").status_code == 401
+    # Normal local startup binds the configured installation automatically.
+    assert client.get("/api/tasks").status_code == 200
     assert client.get("/api/tasks", headers={"Authorization": f"Bearer {viewer_token}"}).status_code == 200
     direct = client.post("/tick", headers={"Authorization": f"Bearer {viewer_token}"},
                          follow_redirects=False)
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    # The authenticated browser cannot replace this installation's execution
-    # principal, which has no assignment in this fixture.
-    assert accepted.status_code == 409
+    # Browser credentials cannot replace the installation principal; the configured
+    # administrator installation remains the principal used for this successful tick.
+    assert accepted.status_code == 303
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -550,7 +551,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 409
+    assert response.status_code == 303
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -779,13 +780,13 @@ def test_multiplayer_assignment_action_converges_authority_projection_and_cursor
     assert Store(garden).task("DM-001").owner_unassigned
 
 
-def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
+def test_inbox_keeps_owned_out_of_scope_work_without_changing_execution_principal(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, _admin_token, admin = _registry(garden)
+    registry, admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
     token = registry.issue_installation(admin, "bob", "bob-browser")
     state = State(garden / ".garden/state.json")
@@ -805,9 +806,17 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
         follow_redirects=False,
     ).status_code == 403
 
-    registry.set_assignment(admin, "bob", "demo", "p1")
-    assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
-                       follow_redirects=False).status_code == 303
+    assigned = client.post(
+        "/phases/demo/p1/owner",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        data={"member_id": "bob", "generation": 0},
+        follow_redirects=False,
+    )
+    assert assigned.status_code == 303, assigned.text
+    answer = client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
+                         follow_redirects=False)
+    assert answer.status_code == 403
+    assert answer.text == "operator authentication required"
     task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
     stale_inbox = client.get("/inbox", headers=headers).text
     assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
