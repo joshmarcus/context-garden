@@ -255,6 +255,40 @@ def test_scrubbed_env_keeps_the_allowlist_and_drops_the_rest(monkeypatch):
     assert env["HOME"] == os.environ["HOME"]
 
 
+def test_scrubbed_env_never_ambiently_inherits_xdg_runtime_dir(monkeypatch):
+    """unlike the other XDG_* base directories, XDG_RUNTIME_DIR is excluded from the
+    default passthrough — a value merely ambient in the constructing process's environment may
+    name a path that doesn't exist, or means something else, on the machine that runs the
+    worker. It only survives, and only then carries the explicit marker
+    run_supervisor._private_runtime_dir uses to fail closed, when the operator names it."""
+    from garden.runner.base import scrubbed_env
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/home/op/.config")
+
+    env = scrubbed_env({}, worktree="/wt/T-1")
+    assert "XDG_RUNTIME_DIR" not in env
+    assert "GARDEN_XDG_RUNTIME_DIR_EXPLICIT" not in env
+    assert env["XDG_CONFIG_HOME"] == "/home/op/.config"  # other XDG base dirs still pass ambiently
+
+    env = scrubbed_env({"worker_env": {"pass": ["XDG_RUNTIME_DIR"]}}, worktree="/wt/T-1")
+    assert env["XDG_RUNTIME_DIR"] == "/run/user/1000"
+    assert env["GARDEN_XDG_RUNTIME_DIR_EXPLICIT"] == "1"
+
+    env = scrubbed_env({}, {"env": {"XDG_RUNTIME_DIR": "/run/user/9999"}}, worktree="/wt/T-1")
+    assert env["XDG_RUNTIME_DIR"] == "/run/user/9999"
+    assert env["GARDEN_XDG_RUNTIME_DIR_EXPLICIT"] == "1"
+
+
+def test_xdg_runtime_dir_explicit_matches_operator_globs():
+    from garden.runner.base import xdg_runtime_dir_explicit
+
+    assert not xdg_runtime_dir_explicit({})
+    assert not xdg_runtime_dir_explicit({"worker_env": {"pass": ["AWS_*"]}})
+    assert xdg_runtime_dir_explicit({"worker_env": {"pass": ["XDG_RUNTIME_DIR"]}})
+    assert xdg_runtime_dir_explicit({"worker_env": {"pass": ["XDG_*"]}})  # a custom re-added glob
+
+
 def test_scrubbed_env_builds_fresh_writable_harness_state(tmp_path, monkeypatch):
     """A dispatch gets writable state copied from credential-only protected staging."""
     from garden.runner.base import scrubbed_env, worker_credentials_dir

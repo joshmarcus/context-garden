@@ -58,51 +58,87 @@ def _process_cgroup_path(pid: int | str = "self", root: Path = Path("/sys/fs/cgr
     return (root / relative.lstrip("/")).resolve()
 
 
-def _private_runtime_dir() -> Path:
-    """Return the per-user 0700 directory used for shared execution leases.
+def describe_runtime_dir_problem(raw: str, uid: int) -> str | None:
+    """Return why *raw* cannot serve as ``_private_runtime_dir``'s base, or ``None`` if it can."""
+    requested = Path(raw)
+    try:
+        requested_stat = requested.lstat()
+    except OSError as exc:
+        return f"runtime directory is unavailable: {exc}"
+    if not requested.is_dir() or requested.is_symlink():
+        return "runtime directory is not a real directory"
+    if requested_stat.st_uid != uid:
+        return "XDG_RUNTIME_DIR is not a user-owned directory"
+    if requested_stat.st_mode & 0o077:
+        return "XDG_RUNTIME_DIR is not private (requires mode 0700)"
+    return None
+
+
+def _sticky_tmp_base(uid: int) -> Path:
+    """Validate the root-owned sticky ``/tmp`` used when no usable XDG directory applies.
 
     ``/tmp`` itself is deliberately never a lock root: another user can replace a
-    predictable entry there between ordinary path operations.  The fallback is a
-    user-owned private child, while an explicitly supplied XDG directory must itself
-    be private and owned by this uid.
+    predictable entry there between ordinary path operations.  This returns a validated
+    base whose ``garden-{uid}`` child is then created as the private lock root.
     """
-    uid = os.getuid()
-    raw = os.environ.get("XDG_RUNTIME_DIR")
-    requested = Path(raw) if raw else Path("/tmp")
+    requested = Path("/tmp")
     try:
         requested_stat = requested.lstat()
     except OSError as exc:
         raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
-    if raw:
-        base = requested
-        if not base.is_dir() or base.is_symlink():
-            raise RuntimeError("runtime directory is not a real directory")
-        if requested_stat.st_uid != uid:
-            raise RuntimeError("XDG_RUNTIME_DIR is not a user-owned directory")
-        if requested_stat.st_mode & 0o077:
-            raise RuntimeError("XDG_RUNTIME_DIR is not private (requires mode 0700)")
+    # Darwin exposes /tmp as a root-owned system symlink to /private/tmp. Following that
+    # one trusted link preserves the same root-owned sticky-directory boundary Linux uses;
+    # a symlink writable by this user remains forbidden.
+    if requested.is_symlink():
+        if requested_stat.st_uid != 0:
+            raise RuntimeError("/tmp fallback symlink is not root-owned")
+        try:
+            base = requested.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
+        try:
+            base_stat = base.stat()
+        except OSError as exc:
+            raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
     else:
-        # Darwin exposes /tmp as a root-owned system symlink to /private/tmp. Following that
-        # one trusted link preserves the same root-owned sticky-directory boundary Linux uses;
-        # a symlink writable by this user remains forbidden.
-        if requested.is_symlink():
-            if requested_stat.st_uid != 0:
-                raise RuntimeError("/tmp fallback symlink is not root-owned")
-            try:
-                base = requested.resolve(strict=True)
-            except OSError as exc:
-                raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
-            try:
-                base_stat = base.stat()
-            except OSError as exc:
-                raise RuntimeError(f"runtime directory is unavailable: {exc}") from exc
+        base = requested
+        base_stat = requested_stat
+    if not base.is_dir() or base.is_symlink():
+        raise RuntimeError("runtime directory is not a real directory")
+    if base_stat.st_uid != 0 or not base_stat.st_mode & stat.S_ISVTX:
+        raise RuntimeError("/tmp fallback is not a root-owned sticky directory")
+    return base
+
+
+def _private_runtime_dir() -> Path:
+    """Return the per-user 0700 directory used for shared execution leases.
+
+    ``XDG_RUNTIME_DIR`` reaches this process either because it was explicitly configured
+    for this exact worker (``worker_env.pass`` or ``setup.env`` naming it, marked by
+    ``GARDEN_XDG_RUNTIME_DIR_EXPLICIT`` — see ``runner.base.scrubbed_env``) or because it
+    was merely ambient in whatever environment this process inherited, which may describe a
+    different host's filesystem than this one. An invalid *explicit* value fails closed,
+    since it identifies a configuration boundary the operator can fix. An invalid *ambient*
+    value is never trusted either, but falls back to the same validated, user-owned child of
+    the root-owned sticky ``/tmp`` used when no XDG directory is set at all — the fallback
+    is always private and owned by this uid, whichever path produced it.
+    """
+    uid = os.getuid()
+    raw = os.environ.get("XDG_RUNTIME_DIR")
+    explicit = bool(raw) and os.environ.get("GARDEN_XDG_RUNTIME_DIR_EXPLICIT") == "1"
+    if raw:
+        reason = describe_runtime_dir_problem(raw, uid)
+        if reason is None:
+            base = Path(raw)
+        elif explicit:
+            raise RuntimeError(
+                f"XDG_RUNTIME_DIR={raw!r} was explicitly configured for this worker "
+                f"(worker_env.pass or setup.env) but {reason}"
+            )
         else:
-            base = requested
-            base_stat = requested_stat
-        if not base.is_dir() or base.is_symlink():
-            raise RuntimeError("runtime directory is not a real directory")
-        if base_stat.st_uid != 0 or not base_stat.st_mode & stat.S_ISVTX:
-            raise RuntimeError("/tmp fallback is not a root-owned sticky directory")
+            base = _sticky_tmp_base(uid)
+    else:
+        base = _sticky_tmp_base(uid)
     root = base / f"garden-{uid}"
     try:
         root.mkdir(mode=0o700, exist_ok=True)
