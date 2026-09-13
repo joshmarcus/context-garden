@@ -151,7 +151,7 @@ def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
         actor="alice",
         installation="one",
         expected_versions={},
-        changes={"reservations": {"workers:1": None}, "permits": {"run:1": None}},
+        changes={"reservations": {"workers:1": None}},
     )
     assert not first.read()[1]["reservations"]
     first.apply(
@@ -293,14 +293,17 @@ def test_effect_replay_never_grants_execution_twice(clones):
     state = GitStateStore(one, garden_id="garden").read()[1]
     effect = state["effects"]["effect:one:publish:1"]
     assert effect["outcome"] == "succeeded"
-    client.store.apply(
-        "handoff-after-terminal-effect",
-        actor="alice",
-        installation="one",
-        expected_versions={"task:CG-1": 0},
-        changes={"entities": {"task:CG-1": {
-            "owner": "bob", "authority_generation": 2,
-        }}},
+    client.store.begin_handoff(
+        "drain-after-terminal-effect", actor="alice", installation="one",
+        entity_key="task:CG-1", expected_version=0, pending_owner="bob",
+    )
+    client.store.acknowledge_stop(
+        "stop-after-terminal-effect", actor="alice", installation="one",
+        entity_key="task:CG-1",
+    )
+    client.store.complete_handoff(
+        "handoff-after-terminal-effect", actor="bob", installation="bob",
+        entity_key="task:CG-1",
     )
     assert client.store.read()[1]["entities"]["task:CG-1"]["owner"] == "bob"
 
@@ -379,7 +382,77 @@ def test_pending_execution_permit_blocks_owner_handoff(clones):
     assert "run:pending" in state["permits"]
 
 
-<<<<<<< HEAD
+@pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"owner": "bob"},
+        {"authority_generation": 2},
+        {"scope": "other"},
+        {"kind": "invalid"},
+        {"draining": True},
+        {"pending_owner": "bob"},
+    ],
+)
+def test_generic_apply_cannot_change_handoff_owned_entity_fields(clones, entity_key, patch):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+
+    with pytest.raises(GitCoordinationError, match="acknowledged handoff"):
+        store.apply(
+            f"direct:{entity_key}:{next(iter(patch))}", actor="alice", installation="one",
+            expected_versions={entity_key: 0}, changes={"entities": {entity_key: patch}},
+        )
+
+    entity = store.read()[1]["entities"][entity_key]
+    assert entity["owner"] == "alice"
+    assert entity["authority_generation"] == 1
+    assert not entity.get("draining", False)
+
+
+def test_generic_apply_cannot_erase_or_forge_handoff_blockers(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    other_claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind="phase", scope="demo/p1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    store.apply(
+        "admit-pending", actor="alice", installation="one", expected_versions={},
+        changes={"permits": {"run:pending": {"claim": claim["operation_id"]}}},
+    )
+
+    for operation, changes in (
+        ("erase-claim", {"claims": {"task:CG-1": None}}),
+        ("erase-permit", {"permits": {"run:pending": None}}),
+        ("retarget-claim", {"claims": {"task:CG-1": {
+            **claim, "operation_id": "claim:forged",
+        }}}),
+        ("retarget-permit", {"permits": {
+            "run:pending": {"claim": other_claim["operation_id"]}
+        }}),
+        ("forge-existing-fence", {"permits": {
+            "run:pending": {"claim": claim["operation_id"], "status": "fenced"}
+        }}),
+        ("forge-new-fence", {"permits": {
+            "run:forged": {"claim": claim["operation_id"], "status": "fenced"}
+        }}),
+    ):
+        with pytest.raises(GitCoordinationError):
+            store.apply(
+                operation, actor="alice", installation="one",
+                expected_versions={}, changes=changes,
+            )
+
+    state = store.read()[1]
+    assert state["claims"]["task:CG-1"] == claim | {"actor": "alice", "installation": "one"}
+    assert state["permits"]["run:pending"].get("status", "pending") == "pending"
+
+
 def test_pending_execution_permit_survives_claim_release_handoff_attempts(clones):
     _, one, _ = clones
     store = GitStateStore(one, garden_id="garden")

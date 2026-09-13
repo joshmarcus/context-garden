@@ -15,6 +15,9 @@ from typing import Any
 
 PROTOCOL = "context-garden/git-coordination"
 VERSION = 1
+HANDOFF_ENTITY_FIELDS = frozenset(
+    {"owner", "authority_generation", "kind", "scope", "draining", "pending_owner"}
+)
 CLAIM_IDENTITY_FIELDS = (
     "operation_id",
     "kind",
@@ -352,10 +355,22 @@ class GitStateStore:
                         f"effect recovery evidence cannot be deleted: {key}"
                     )
             for entity, patch in changes.get("entities", {}).items():
-                current = state["entities"].setdefault(entity, {"version": 0})
+                current = state["entities"].get(entity)
+                if current is None:
+                    current = state["entities"].setdefault(entity, {"version": 0})
+                else:
+                    changed_authority = sorted(
+                        field
+                        for field in HANDOFF_ENTITY_FIELDS.intersection(patch)
+                        if patch[field] != current.get(field)
+                    )
+                    if changed_authority:
+                        raise GitCoordinationError(
+                            "authority changes require an acknowledged handoff: "
+                            + ", ".join(changed_authority)
+                        )
                 current.update(deepcopy(patch))
                 current["version"] += 1
-            released_claims: dict[str, str] = {}
             for table in ("claims", "permits", "effects", "reservations"):
                 for key, value in changes.get(table, {}).items():
                     current = state[table].get(key)
@@ -364,8 +379,10 @@ class GitStateStore:
                             current.get("actor"), current.get("installation")
                         ) != (actor, installation):
                             raise PermissionError(f"cannot release another member's {table[:-1]}")
-                        if table == "claims" and current:
-                            released_claims[key] = current.get("operation_id")
+                        if current and table in {"claims", "permits"}:
+                            raise GitCoordinationError(
+                                f"{table[:-1]} release requires a validated lifecycle transition"
+                            )
                         state[table].pop(key, None)
                     else:
                         row = deepcopy(value)
@@ -439,19 +456,6 @@ class GitStateStore:
                         ):
                             raise GitContention(f"conflicting {table[:-1]} {key}")
                         state[table][key] = row
-            for claim_key, claim_operation in released_claims.items():
-                blocked = [
-                    key
-                    for key, permit in state["permits"].items()
-                    if permit.get("claim") == claim_operation
-                    and (state["effects"].get(key) or {}).get("outcome", "pending")
-                    in {"pending", "unknown"}
-                ]
-                if blocked:
-                    raise GitCoordinationError(
-                        f"claim release blocked by unresolved permits or effects for "
-                        f"{claim_key}: {', '.join(sorted(blocked))}"
-                    )
             for pool, limit in state["policy"]["pools"].items():
                 reservations = [
                     row for row in state["reservations"].values() if row.get("pool") == pool
