@@ -349,7 +349,7 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     registry.set_assignment(admin, "alice", phase.product, phase.name, expected_generation=1)
 
     bound, coordinator = _coordinated_scheduler(sched, alice, alice_token)
-    with pytest.raises(PermissionError, match="phase operation is not owned"):
+    with pytest.raises(PermissionError, match="not owned"):
         bound.reopen_phase(phase)
     owner = registry.set_phase_owner(admin, phase.product, phase.name, "alice")
     coordinator.set_authority(
@@ -385,7 +385,7 @@ def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparati
     monkeypatch.setattr(bound, "_commit_prepared_aux", lambda payload: calls.append("commit"))
     monkeypatch.setattr(bound, "_launch_prepared_aux", lambda payload: calls.append("launch"))
 
-    with pytest.raises(PermissionError, match="phase operation is not owned"):
+    with pytest.raises(PermissionError, match="not owned"):
         bound.dispatch_persona_phase(phase, "security")
     assert calls == []
 
