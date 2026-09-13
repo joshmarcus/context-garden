@@ -114,17 +114,25 @@ class MultiplayerClient:
 
     def __init__(self, *, root: Path, garden_id: str, endpoint: str, credential: str,
                  member_id: str, installation_id: str,
+                 authentication: str = "credential",
                  request: Callable[..., httpx.Response] | None = None):
-        if not all((garden_id, endpoint, credential, member_id, installation_id)):
+        if authentication not in {"credential", "temporary-username"}:
+            raise MultiplayerUnavailable("unsupported multiplayer authentication mode")
+        if not all((garden_id, endpoint, member_id, installation_id)) or (
+                authentication == "credential" and not credential):
             raise MultiplayerUnavailable(
-                "multiplayer enrollment requires garden, endpoint, member, installation, and credential"
+                "multiplayer enrollment is incomplete or its selected credential is missing"
             )
         self.root = root.resolve()
         self.garden_id = garden_id
         self.endpoint = endpoint.rstrip("/")
         self.member_id = member_id
         self.installation_id = installation_id
-        self._headers = {"Authorization": f"Bearer {credential}"}
+        self.authentication = authentication
+        self._headers = {"Authorization": (
+            f"Bearer {credential}" if authentication == "credential"
+            else f"Garden-Temporary-Username {installation_id}"
+        )}
         self._request = request or httpx.request
         self._cache_path = self.root / ".garden" / "authoritative-snapshot.json"
         self._projection_path = self.root / ".garden" / "authoritative-projections.json"
@@ -136,12 +144,13 @@ class MultiplayerClient:
             return None
         credential_env = str(config.get("multiplayer.credential_env", ""))
         credential = os.environ.get(credential_env, "") if credential_env else ""
+        authentication = str(config.get("multiplayer.authentication", "credential"))
         return cls(
             root=config.root, garden_id=str(config.get("multiplayer.garden_id", "")),
             endpoint=str(config.get("multiplayer.coordinator_url", "")),
             member_id=str(config.get("multiplayer.member_id", "")),
             installation_id=str(config.get("multiplayer.installation_id", "")),
-            credential=credential, **kwargs,
+            credential=credential, authentication=authentication, **kwargs,
         )
 
     def _url(self, suffix: str) -> str:

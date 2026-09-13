@@ -1,11 +1,13 @@
-"""Explicit, credential-authenticated multiplayer enrollment operations."""
+"""Explicit multiplayer enrollment and coordinator startup operations."""
 
 from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 from pathlib import Path
 
+import httpx
 import typer
 import yaml
 
@@ -26,6 +28,7 @@ def coordinator(
     garden: Path = typer.Option(..., exists=True, file_okay=False, resolve_path=True),
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8766, min=1, max=65535),
+    authentication: str = typer.Option("credential", help="credential or temporary-username"),
 ) -> None:
     """Serve this garden's authenticated multiplayer coordination endpoint."""
     import uvicorn
@@ -37,7 +40,7 @@ def coordinator(
     store = Store(garden)
     tls = multiplayer_tls_files(store, host, require_multiplayer=True)
     uvicorn.run(
-        create_coordination_app(store.config.garden_dir),
+        create_coordination_app(store.config.garden_dir, authentication=authentication),
         host=host,
         port=port,
         ssl_certfile=tls[0] if tls else None,
@@ -108,6 +111,39 @@ def connect(garden_id: str, coordinator_url: str, member_id: str, installation_i
         "garden_id": garden_id, "coordinator_url": coordinator_url,
         "member_id": member_id, "installation_id": installation_id,
         "credential_env": credential_env,
+    })
+    console.print(f"connected {view.snapshot['member_id']} ({view.snapshot['role']}) to {garden_id}")
+
+
+@members_app.command("connect-username")
+def connect_username(garden_id: str, coordinator_url: str) -> None:
+    """Enroll this local OS account without a per-user bearer credential."""
+    store = _store()
+    existing = ""
+    if (store.config.get("multiplayer.authentication", "") == "temporary-username"
+            and store.config.get("multiplayer.garden_id", "") == garden_id):
+        existing = store.config.get("multiplayer.installation_id", "")
+    installation_id = str(existing) or f"local-{uuid.uuid4().hex}"
+    try:
+        response = httpx.post(
+            f"{coordinator_url.rstrip('/')}/v1/gardens/{garden_id}/username-installations",
+            json={"installation_id": installation_id}, timeout=10,
+        )
+        response.raise_for_status()
+        identity = response.json()
+        client = MultiplayerClient(
+            root=store.root, garden_id=garden_id, endpoint=coordinator_url,
+            member_id=str(identity["member_id"]), installation_id=installation_id,
+            authentication="temporary-username", credential="",
+        )
+        view = client.refresh(allow_stale=False)
+    except (httpx.HTTPError, KeyError, ValueError, MultiplayerUnavailable) as exc:
+        err.print(f"[red]could not connect this username installation: {exc}[/red]")
+        raise typer.Exit(2) from None
+    _save_local_enrollment(store.root, {
+        "garden_id": garden_id, "coordinator_url": coordinator_url,
+        "member_id": str(identity["member_id"]), "installation_id": installation_id,
+        "authentication": "temporary-username", "credential_env": "",
     })
     console.print(f"connected {view.snapshot['member_id']} ({view.snapshot['role']}) to {garden_id}")
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import functools
+import getpass
 import hashlib
 import json
 import os
@@ -31,6 +32,16 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 _Result = TypeVar("_Result")
+
+
+def operating_system_username() -> str:
+    """Return the effective account name, with a portable non-POSIX fallback."""
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except (ImportError, KeyError, OSError, AttributeError):
+        return getpass.getuser()
 
 
 def _locked_mutation(method: Callable[..., _Result]) -> Callable[..., _Result]:
@@ -135,6 +146,9 @@ class MemberRegistry:
                          if member.get("active") and (not project
                          or member.get("project_visibility") == "all"
                          or project in (member.get("projects") or ())))
+
+    def garden_id(self) -> str:
+        return str(self._read()["garden_id"])
 
     def active_execution_member_ids(self, project: str) -> frozenset[str]:
         """Active non-viewers with access to a project may own executable work."""
@@ -360,6 +374,27 @@ class MemberRegistry:
         return token
 
     @_locked_mutation
+    def enroll_username_installation(self, username: str, installation_id: str) -> Principal:
+        """Register or reuse a secretless installation for an admitted OS account."""
+        state = self._read()
+        self._valid_id(username, "operating-system username")
+        installation_id = self._valid_id(installation_id, "installation_id")
+        member = state["members"].get(username)
+        if not member or not member.get("active"):
+            raise PermissionError("operating-system username is not an active garden member")
+        installation = state["installations"].get(installation_id)
+        if installation is None:
+            installation = {"member_id": username, "revoked": False,
+                            "authentication": "temporary-username"}
+            state["installations"][installation_id] = installation
+            self._write(state)
+        if (installation.get("member_id") != username
+                or installation.get("authentication") != "temporary-username"
+                or installation.get("revoked")):
+            raise PermissionError("installation is unavailable for this operating-system user")
+        return self._principal(state, username, installation_id)
+
+    @_locked_mutation
     def rotate_installation(self, actor: Principal, installation_id: str) -> str:
         state = self._authorized_state(actor)
         row = state["installations"].get(installation_id)
@@ -412,6 +447,27 @@ class MemberRegistry:
             return None
         return Principal(garden_id, installation["member_id"], installation_id,
                          member["role"], member["project_visibility"],
+                         frozenset(member.get("projects") or ()))
+
+    def authenticate_username(self, username: str, installation_id: str) -> Principal | None:
+        """Authenticate an already-enrolled secretless installation for ``username``."""
+        try:
+            state = self._read()
+            installation = state["installations"][installation_id]
+            member_id = installation["member_id"]
+            member = state["members"][member_id]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError):
+            return None
+        if (member_id != username or installation.get("authentication") != "temporary-username"
+                or installation.get("revoked") or not member.get("active")):
+            return None
+        return self._principal(state, member_id, installation_id)
+
+    @staticmethod
+    def _principal(state: dict, member_id: str, installation_id: str) -> Principal:
+        member = state["members"][member_id]
+        return Principal(state["garden_id"], member_id, installation_id, member["role"],
+                         member["project_visibility"],
                          frozenset(member.get("projects") or ()))
 
     @staticmethod

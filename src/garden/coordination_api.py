@@ -9,10 +9,10 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 from .coordination import Claim, CoordinationError, Coordinator, ProtocolMismatch
-from .members import MemberRegistry, Principal
+from .members import MemberRegistry, Principal, operating_system_username
 
 
-def create_coordination_app(garden_dir: Path) -> FastAPI:
+def create_coordination_app(garden_dir: Path, *, authentication: str = "credential") -> FastAPI:
     """Create the separately deployable coordinator service for one garden.
 
     TLS is an operator deployment concern, as with the existing web listener. Bearer secrets
@@ -22,11 +22,37 @@ def create_coordination_app(garden_dir: Path) -> FastAPI:
     coordinator = Coordinator(garden_dir / "coordination.db")
     registry = MemberRegistry(garden_dir)
 
+    if authentication not in {"credential", "temporary-username"}:
+        raise ValueError("authentication must be credential or temporary-username")
+
     def principal(authorization: str = Header(default="")) -> Principal:
-        actor = registry.authenticate(authorization.removeprefix("Bearer "))
-        if not authorization.startswith("Bearer ") or actor is None:
-            raise HTTPException(401, "valid member bearer credential required")
+        if authentication == "credential":
+            actor = registry.authenticate(authorization.removeprefix("Bearer "))
+            detail = "valid member bearer credential required"
+            valid_scheme = authorization.startswith("Bearer ")
+        else:
+            prefix = "Garden-Temporary-Username "
+            actor = registry.authenticate_username(
+                operating_system_username(), authorization.removeprefix(prefix),
+            )
+            detail = "enrolled local username installation required"
+            valid_scheme = authorization.startswith(prefix)
+        if not valid_scheme or actor is None:
+            raise HTTPException(401, detail)
         return actor
+
+    @app.post("/v1/gardens/{garden_id}/username-installations")
+    def enroll_username_installation(garden_id: str, body: dict[str, Any]):
+        if authentication != "temporary-username":
+            raise HTTPException(404, "temporary username authentication is not enabled")
+        if garden_id != registry.garden_id():
+            raise HTTPException(403, "garden does not match")
+        try:
+            return asdict(registry.enroll_username_installation(
+                operating_system_username(), str(body.get("installation_id", "")),
+            ))
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
 
     @app.exception_handler(CoordinationError)
     async def coordination_error(_request: Any, exc: CoordinationError):
