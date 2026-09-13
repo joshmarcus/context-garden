@@ -94,6 +94,22 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
     return remote, paths[0], paths[1]
 
 
+def test_client_starts_phase_handoff_from_one_assignment_intent(clones):
+    _, one, _ = clones
+    client = GitMultiplayerClient(GitStateStore(one, garden_id="garden"), "admin", "admin")
+
+    result = client.begin_handoff(
+        kind="phase", scope="demo/p1", pending_owner="bob", expected_version=0,
+    )
+
+    assert result == {
+        "status": "blocked", "effective_owner": "alice", "pending_owner": "bob",
+        "blockers": [],
+    }
+    snapshot = client.refresh(allow_stale=False).snapshot
+    assert snapshot["handoffs"]["phase:demo/p1"]["status"] == "blocked"
+
+
 def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
     _, one, two = clones
     first = GitStateStore(one, garden_id="garden")
