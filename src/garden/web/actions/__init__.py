@@ -35,7 +35,8 @@ def action(name: str) -> Callable[[TaskAction], TaskAction]:
 
 
 def register(app: FastAPI, site: Site) -> None:
-    from . import configuration, control, decisions, friction, phases, tasks
+    from . import configuration, control, decisions, defects, friction, phases, tasks
 
-    for module in (control, configuration, tasks, decisions, phases, friction):
+    # Defect forms must precede the generic ``/tasks/{id}/{action}`` route.
+    for module in (control, configuration, defects, tasks, decisions, phases, friction):
         module.register(app, site)
