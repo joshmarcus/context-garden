@@ -4,8 +4,10 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from garden.scheduler import Scheduler
+from garden.store import Store
 
 
 class CoordinatorStub:
@@ -17,6 +19,10 @@ class CoordinatorStub:
 
     def refresh(self, *, allow_stale):
         assert not allow_stale
+        return SimpleNamespace(snapshot=self.snapshot)
+
+    def prepare(self, *, mutation):
+        assert mutation
         return SimpleNamespace(snapshot=self.snapshot)
 
     @contextmanager
@@ -82,11 +88,31 @@ def test_task_effect_carries_current_generation_and_revision():
     }]
 
 
-def test_unassigned_member_has_no_executable_tick_scope():
-    sched = scheduler(snapshot(assignment=False))
+def test_unassigned_member_has_no_executable_tick_scope(garden, monkeypatch):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["multiplayer"] = {"enabled": True}
+    config_path.write_text(yaml.safe_dump(config))
+    coordinator = CoordinatorStub(snapshot(assignment=False))
+    monkeypatch.setattr(
+        "garden.scheduler.MultiplayerClient.from_config",
+        lambda _config: coordinator,
+    )
+    before = {
+        path.relative_to(garden): path.read_bytes()
+        for path in garden.rglob("*") if path.is_file()
+    }
+
+    sched = Scheduler(Store(garden), github=object())
 
     assert not sched._refresh_execution_authority()
     assert not sched.task_is_authorized(task("A-1"))
+    assert sched.tick().summary() == "nothing to do"
+    after = {
+        path.relative_to(garden): path.read_bytes()
+        for path in garden.rglob("*") if path.is_file()
+    }
+    assert after == before
 
 
 def test_phase_authority_is_distinct_from_task_and_admin_visibility():
