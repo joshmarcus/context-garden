@@ -434,6 +434,17 @@ class GitStateStore:
                                 raise GitCoordinationError(
                                     "authority is draining; new permits and effects are blocked"
                                 )
+                        if table == "permits":
+                            if current is None and row.get("status", "pending") != "pending":
+                                raise GitCoordinationError(
+                                    "new execution permits must start pending"
+                                )
+                            if current and row.get(
+                                "status", current.get("status", "pending")
+                            ) != current.get("status", "pending"):
+                                raise GitCoordinationError(
+                                    "permit status requires validated terminal or fencing evidence"
+                                )
                         if table == "effects" and current:
                             prior_outcome = current.get("outcome", "pending")
                             next_outcome = row.get("outcome", "pending")
