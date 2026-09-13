@@ -423,6 +423,8 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
         json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
     )
     assert claim.status_code == 200
+    assert claim.json()["repo"] == "https://example.test/team/demo.git"
+    assert claim.json()["source_head"] == source_head
     lease_token = claim.json()["lease_token"]
 
     state = json.loads(registry.path.read_text())
