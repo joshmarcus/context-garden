@@ -217,6 +217,26 @@ def test_provider_effect_rejects_a_stale_authority_version(tmp_path):
         )
 
 
+@pytest.mark.parametrize("field,value", [
+    ("owner_id", "bob"),
+    ("authority_generation", 5),
+    ("installation_id", "alice-b"),
+    ("lease_expires_at", "2099-01-01T00:00:00+00:00"),
+])
+def test_transition_rejects_claim_material_not_issued_by_server(tmp_path, field, value):
+    admin, alice, _alice_b, _bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+
+    with pytest.raises(Conflict, match="stale or expired fencing lease"):
+        coordinator.transition(
+            alice, replace(claim, **{field: value}), expected_version=1,
+            new_state="doing", markdown="forged", operation_id=f"forged-{field}",
+        )
+
+    assert coordinator.pending_outbox("garden") == []
+
+
 def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     admin, alice, _alice_b, _bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
