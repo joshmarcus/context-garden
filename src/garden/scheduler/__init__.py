@@ -141,6 +141,14 @@ class Scheduler(
     `_transition()`; everything else lives in the mixin whose phase it belongs to, so two
     features in different parts of the loop edit different files."""
 
+    def effective_task_owner(self, task: Task) -> tuple[str, str]:
+        """Resolve ownership from the authority source selected for this installation."""
+        phase = self.store.phase(task.product, task.phase)
+        if (self.cfg.get("multiplayer.enabled", False)
+                and hasattr(self.members, "effective_task_owner")):
+            return self.members.effective_task_owner(task, phase)
+        return effective_owner(task, phase)
+
     def require_execution_authority(self) -> None:
         """Require an authenticated coordinator client in explicit multiplayer mode."""
         multiplayer = self.cfg.get("multiplayer.enabled", False) or standalone_fence(
@@ -253,7 +261,7 @@ class Scheduler(
                     if value.get("kind") == "task" and value.get("scope") == task.id), None)
         if row is None or row.get("owner") != self.coordinator.member_id:
             raise PermissionError(f"{task.id} is not owned by the authenticated member")
-        local_owner = effective_owner(task, self.store.phase(task.product, task.phase))[0]
+        local_owner = self.effective_task_owner(task)[0]
         if local_owner != self.coordinator.member_id:
             raise PermissionError(f"{task.id} local effective owner disagrees with authority")
         return row

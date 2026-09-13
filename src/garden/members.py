@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar
 
 from .graph import blockers
-from .model import Phase, Status, Task, effective_owner, phase_refusal
+from .model import Phase, Status, Task, phase_refusal
 
 Role = Literal["administrator", "member", "viewer"]
 Visibility = Literal["all", "assigned"]
@@ -187,10 +187,16 @@ class MemberRegistry:
                          or project in (member.get("projects") or ())))
 
     def effective_task_owner(self, task: Task, phase: Phase) -> tuple[str, str]:
-        """Resolve metadata precedence, but confer authority only on active project members."""
-        owner_id, source = effective_owner(task, phase)
+        """Resolve explicit task intent, then the accepted multiplayer phase owner."""
+        if task.owner_unassigned:
+            return "", "unassigned"
+        if task.owner:
+            owner_id, source = task.owner, "task"
+        else:
+            accepted = self.phase_owner(task.product, task.phase)
+            owner_id, source = (accepted.owner_id if accepted else ""), "phase"
         if not owner_id:
-            return "", source
+            return "", "unassigned"
         if owner_id not in self.active_execution_member_ids(task.product):
             return "", "invalid"
         return owner_id, source
