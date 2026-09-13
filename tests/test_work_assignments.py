@@ -344,6 +344,7 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     bound, coordinator = _coordinated_scheduler(sched, alice, alice_token)
     with pytest.raises(PermissionError, match="explicit active phase owner"):
         bound.reopen_phase(phase)
+    assert bound.store.phase("demo", "p1").closed == "2026-09-12"
     owner = registry.set_phase_owner(admin, phase.product, phase.name, "alice")
     coordinator.set_authority(
         admin, garden_id="garden", kind="phase", scope=phase.key, owner_id="alice",
