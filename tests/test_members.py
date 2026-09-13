@@ -8,7 +8,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden.members import MemberRegistry, Principal, authorize
-from garden.runs import RunStore
+from garden.runs import Run, RunStore
 from garden.scheduler import (
     MULTIPLAYER_EXECUTION_UNAVAILABLE,
     MultiplayerExecutionUnavailable,
@@ -411,6 +411,7 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
     registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
+    other_token = registry.issue_installation(admin, "bob", "bob-desktop")
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
@@ -430,6 +431,17 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     )
     assert claim.status_code == 200
     lease_token = claim.json()["lease_token"]
+    claimed = Run.load(run.path)
+    assert (claimed.execution_member_id, claimed.execution_installation_id) == (
+        "bob", "bob-worker"
+    )
+    wrong_installation = client.post(
+        "/api/runs/member-visible-run/heartbeat",
+        headers={"Authorization": f"Bearer {other_token}"},
+        json={"lease_token": lease_token, "transcript": "must not persist"},
+    )
+    assert wrong_installation.status_code == 403
+    assert not (run.path / "stdout.json").exists()
 
     bob = registry.authenticate(token)
     assert bob is not None
