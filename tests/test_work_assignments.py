@@ -324,8 +324,6 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
         bound.reopen_phase(phase, owner_generation=owner.generation - 1)
     bound.reopen_phase(phase, owner_generation=owner.generation)
     assert not bound.store.phase(phase.product, phase.name).closed
-
-
 def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparation(sched, monkeypatch):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
