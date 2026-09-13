@@ -260,16 +260,6 @@ class Scheduler(
         ):
             yield
 
-    def require_phase_authority(self, phase: Phase, *, expected_generation: int | None = None) -> None:
-        if not self.cfg.get("multiplayer.enabled", False):
-            return
-        self.require_execution_authority()
-        assert self.principal is not None
-        self.members.require_phase_operation(
-            self.principal, phase.product, phase.name,
-            expected_generation=expected_generation,
-        )
-
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
         operational = {task.id for task in self.store.tasks().values() if not task.status.terminal}
