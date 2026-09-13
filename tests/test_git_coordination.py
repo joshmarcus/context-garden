@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from garden.config import Config
-from garden.git_coordination import GitContention, GitCoordinationError, GitStateStore
+from garden.git_coordination import (
+    GitContention,
+    GitCoordinationError,
+    GitMultiplayerClient,
+    GitStateStore,
+)
 
 
 def git(path: Path, *args: str) -> str:
@@ -52,7 +57,15 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
             state["installations"].update({"one": "alice", "two": "alice", "bob": "bob"}),
             state["policy"]["pools"].update({"workers": {"units": 1, "spend_micros": 10}}),
             state["entities"].update(
-                {"task:CG-1": {"kind": "task", "scope": "CG-1", "owner": "alice", "version": 0}}
+                {
+                    "task:CG-1": {
+                        "kind": "task",
+                        "scope": "CG-1",
+                        "owner": "alice",
+                        "authority_generation": 1,
+                        "version": 0,
+                    }
+                }
             ),
             {},
         )[-1],
@@ -69,8 +82,11 @@ def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
         installation="one",
         expected_versions={"task:CG-1": 0},
         changes={
-            "claims": {"task:CG-1": {"generation": 1}},
-            "permits": {"run:1": {"claim": "task:CG-1"}},
+            "claims": {"task:CG-1": {
+                "kind": "task", "scope": "CG-1", "owner_id": "alice",
+                "authority_generation": 1, "operation_id": "claim-one",
+            }},
+            "permits": {"run:1": {"claim": "claim-one"}},
             "reservations": {"workers:1": {"pool": "workers", "units": 1, "spend_micros": 10}},
         },
     )
@@ -81,8 +97,11 @@ def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
         installation="one",
         expected_versions={"task:CG-1": 0},
         changes={
-            "claims": {"task:CG-1": {"generation": 1}},
-            "permits": {"run:1": {"claim": "task:CG-1"}},
+            "claims": {"task:CG-1": {
+                "kind": "task", "scope": "CG-1", "owner_id": "alice",
+                "authority_generation": 1, "operation_id": "claim-one",
+            }},
+            "permits": {"run:1": {"claim": "claim-one"}},
             "reservations": {"workers:1": {"pool": "workers", "units": 1, "spend_micros": 10}},
         },
     )
@@ -127,7 +146,10 @@ def _compete(repo: str, installation: str, output: multiprocessing.Queue) -> Non
             actor="alice",
             installation=installation,
             expected_versions={"task:CG-1": 0},
-            changes={"claims": {"task:CG-1": {"generation": 1}}},
+            changes={"claims": {"task:CG-1": {
+                "kind": "task", "scope": "CG-1", "owner_id": "alice",
+                "authority_generation": 1, "operation_id": f"claim-{installation}",
+            }}},
         )
         output.put((installation, "accepted", result.commit))
     except (GitContention, PermissionError) as exc:
@@ -215,6 +237,116 @@ def test_lost_push_acknowledgement_resolves_operation_from_remote(clones, monkey
     )
     assert accepted.replayed
     assert GitStateStore(one, garden_id="garden").read()[1]["operations"]["lost-ack"]
+
+
+def test_effect_replay_never_grants_execution_twice(clones):
+    _, one, _ = clones
+    client = GitMultiplayerClient(
+        GitStateStore(one, garden_id="garden"), "alice", "one"
+    )
+    executions = 0
+
+    with client.effect(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0, effect_key="publish",
+    ):
+        executions += 1
+
+    with pytest.raises(GitCoordinationError, match="reconcile it instead of executing again"):
+        with client.effect(
+            kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+            expected_version=0, effect_key="publish",
+        ):
+            executions += 1
+
+    assert executions == 1
+    state = GitStateStore(one, garden_id="garden").read()[1]
+    effect = state["effects"]["effect:one:publish:1"]
+    assert effect["outcome"] == "succeeded"
+    client.store.apply(
+        "handoff-after-terminal-effect",
+        actor="alice",
+        installation="one",
+        expected_versions={"task:CG-1": 0},
+        changes={"entities": {"task:CG-1": {
+            "owner": "bob", "authority_generation": 2,
+        }}},
+    )
+    assert client.store.read()[1]["entities"]["task:CG-1"]["owner"] == "bob"
+
+
+@pytest.mark.parametrize(
+    ("owner_id", "generation", "error", "message"),
+    [
+        ("bob", 1, PermissionError, "owner"),
+        ("alice", 99, GitCoordinationError, "generation"),
+    ],
+)
+def test_claim_must_match_authoritative_owner_and_generation(
+    clones, owner_id, generation, error, message
+):
+    _, one, _ = clones
+    client = GitMultiplayerClient(
+        GitStateStore(one, garden_id="garden"), "alice", "one"
+    )
+
+    with pytest.raises(error, match=message):
+        client.claim(
+            kind="task", scope="CG-1", owner_id=owner_id,
+            authority_generation=generation, expected_version=0,
+        )
+
+
+def test_same_member_installation_cannot_release_another_installations_claim(clones):
+    _, one, two = clones
+    owner = GitMultiplayerClient(
+        GitStateStore(one, garden_id="garden"), "alice", "one"
+    )
+    owner.claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+
+    with pytest.raises(PermissionError, match="cannot release"):
+        GitStateStore(two, garden_id="garden").apply(
+            "release-from-other-installation",
+            actor="alice",
+            installation="two",
+            expected_versions={},
+            changes={"claims": {"task:CG-1": None}},
+        )
+
+
+def test_pending_execution_permit_blocks_owner_handoff(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    client = GitMultiplayerClient(store, "alice", "one")
+    claim = client.claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    store.apply(
+        "admit-before-launch",
+        actor="alice",
+        installation="one",
+        expected_versions={"task:CG-1": 0},
+        changes={"permits": {"run:pending": {"claim": claim["operation_id"]}}},
+    )
+
+    with pytest.raises(GitCoordinationError, match="unresolved permits or effects"):
+        store.apply(
+            "handoff",
+            actor="alice",
+            installation="one",
+            expected_versions={"task:CG-1": 0},
+            changes={"entities": {"task:CG-1": {
+                "owner": "bob", "authority_generation": 2,
+            }}},
+        )
+
+    state = store.read()[1]
+    assert state["entities"]["task:CG-1"]["owner"] == "alice"
+    assert "run:pending" in state["permits"]
 
 
 @pytest.mark.parametrize("enabled", ["false", 1, []])

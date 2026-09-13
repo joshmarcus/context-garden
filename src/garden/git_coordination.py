@@ -323,13 +323,39 @@ class GitStateStore:
                 for key, value in changes.get(table, {}).items():
                     current = state[table].get(key)
                     if value is None:
-                        if current and current.get("actor") != actor:
+                        if current and (
+                            current.get("actor"), current.get("installation")
+                        ) != (actor, installation):
                             raise PermissionError(f"cannot release another member's {table[:-1]}")
                         state[table].pop(key, None)
                     else:
                         row = deepcopy(value)
                         row.setdefault("actor", actor)
                         row.setdefault("installation", installation)
+                        if table == "claims":
+                            entity = state["entities"].get(key)
+                            if not entity:
+                                raise GitCoordinationError(f"claim has no authoritative entity: {key}")
+                            if row.get("kind") != entity.get("kind") or row.get(
+                                "scope"
+                            ) != entity.get("scope"):
+                                raise GitCoordinationError("claim scope does not match authority")
+                            if row.get("owner_id") != entity.get("owner"):
+                                raise PermissionError("claim owner does not match authority")
+                            if row.get("owner_id") != actor:
+                                raise PermissionError("only the authoritative owner may claim")
+                            if int(row.get("authority_generation", -1)) != int(
+                                entity.get("authority_generation", -1)
+                            ):
+                                raise GitContention("claim generation does not match authority")
+                        if table in {"permits", "effects"}:
+                            claim_ids = {
+                                claim.get("operation_id") for claim in state["claims"].values()
+                            }
+                            if row.get("claim") not in claim_ids:
+                                raise GitCoordinationError(
+                                    f"{table[:-1]} does not reference an active claim"
+                                )
                         if table == "effects" and current:
                             prior_outcome = current.get("outcome", "pending")
                             next_outcome = row.get("outcome", "pending")
@@ -338,6 +364,12 @@ class GitStateStore:
                                 and next_outcome != prior_outcome
                             ):
                                 raise GitCoordinationError("terminal effect outcome is immutable")
+                            for field in ("claim", "provider", "scope", "effect_key"):
+                                if row.get(field, current.get(field)) != current.get(field):
+                                    raise GitCoordinationError(
+                                        f"effect {field} is immutable after admission"
+                                    )
+                            row = {**current, **row}
                         if current and (current.get("actor"), current.get("installation")) != (
                             actor,
                             installation,
@@ -363,9 +395,22 @@ class GitStateStore:
                     if effect.get("scope") == entity
                     and effect.get("outcome", "pending") in {"pending", "unknown"}
                 ]
+                claim_operations = {
+                    claim.get("operation_id")
+                    for claim in state["claims"].values()
+                    if f"{claim.get('kind')}:{claim.get('scope')}" == entity
+                }
+                blocked.extend(
+                    key
+                    for key, permit in state["permits"].items()
+                    if permit.get("claim") in claim_operations
+                    and (state["effects"].get(key) or {}).get("outcome", "pending")
+                    in {"pending", "unknown"}
+                )
                 if blocked:
                     raise GitCoordinationError(
-                        f"ownership handoff blocked by unresolved effects: {', '.join(blocked)}"
+                        f"ownership handoff blocked by unresolved permits or effects: "
+                        f"{', '.join(sorted(set(blocked)))}"
                     )
             unresolved = {
                 key
@@ -490,7 +535,7 @@ class GitMultiplayerClient:
             "effect_key": effect_key,
             "outcome": "pending",
         }
-        self.store.apply(
+        accepted = self.store.apply(
             operation,
             actor=self.member_id,
             installation=self.installation_id,
@@ -500,6 +545,13 @@ class GitMultiplayerClient:
                 "effects": {operation: effect},
             },
         )
+        if accepted.replayed:
+            _, state = self.store.read()
+            outcome = (state["effects"].get(operation) or {}).get("outcome", "pending")
+            raise GitCoordinationError(
+                f"effect {effect_key} was already admitted with outcome {outcome}; "
+                "reconcile it instead of executing again"
+            )
         try:
             yield claim
         except BaseException:
