@@ -553,6 +553,9 @@ def register(app: FastAPI, site: Site) -> None:
                             or match.instance.instance_id != str(body["host"])):
                         run.save()
                         continue
+                    matched_instance = match.instance
+                else:
+                    matched_instance = None
                 # Checks execute the portable check payload and need no model harness.
                 # Every other remote mode is harness-backed: an empty offer means the
                 # host cannot execute it, rather than acting as a wildcard.
@@ -575,6 +578,7 @@ def register(app: FastAPI, site: Site) -> None:
                     continue
                 run.host = str(body["host"])
                 claim_time = now.isoformat()
+                first_execution_claim = not run.execution_started_at
                 if not run.claimed_at:
                     run.claimed_at = claim_time
                 if not run.execution_started_at:
@@ -582,6 +586,12 @@ def register(app: FastAPI, site: Site) -> None:
                     # Preserve that first execution boundary across reclaim instead of
                     # resetting its execution deadline to the newest generation.
                     run.execution_started_at = run.claimed_at
+                if first_execution_claim and matched_instance is not None:
+                    run.env_snapshot["worker_readiness"] = {
+                        "status": "verified",
+                        "checked_at": matched_instance.readiness_checked_at,
+                        "expires_at": matched_instance.readiness_expires_at,
+                    }
                 renew(run, now)
                 run.lease_updated_at = claim_time
                 run.lease_token = secrets.token_urlsafe(32)

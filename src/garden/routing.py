@@ -20,6 +20,17 @@ SAFE_REASON_TEXT = {
 }
 
 
+def active_worker_reservations(runs: list[Any]) -> set[str]:
+    """Return worker instances reserved by active queued or claimed runs."""
+    return {
+        instance_id
+        for run in runs
+        if (instance_id := str(
+            run.host or (run.env_snapshot or {}).get("worker_instance") or ""
+        ))
+    }
+
+
 def task_routing_view(store: Any, task: Task, *, activity: str = "work", now: float | None = None) -> dict[str, Any]:
     """Explain current routing without claiming or contacting a worker."""
     checked_at = time.time() if now is None else now
@@ -45,7 +56,7 @@ def task_routing_view(store: Any, task: Task, *, activity: str = "work", now: fl
     instances = store.config.worker_instances()
     runs = RunStore(store.config.garden_dir)
     active = runs.active()
-    busy = {run.host for run in active if run.host}
+    busy = active_worker_reservations(active)
     match = match_worker(
         requirements, activity=activity, project=task.product, owner=owner,
         configurations=configurations, instances=instances, busy_instance_ids=busy,
@@ -83,10 +94,11 @@ def worker_configuration_views(store: Any, *, now: float | None = None) -> list[
     configs = store.config.worker_configurations()
     instances = store.config.worker_instances()
     active = RunStore(store.config.garden_dir).active()
+    reserved_instances = active_worker_reservations(active)
     rows = []
     for name, profile in sorted(configs.items()):
         profile_instances = [item for item in instances if item.configuration == name]
-        reservations = [run for run in active if any(run.host == item.instance_id for item in profile_instances)]
+        reservations = [item for item in profile_instances if item.instance_id in reserved_instances]
         ready_instances = [item for item in profile_instances
                            if item.readiness_checked_at <= checked_at < item.readiness_expires_at
                            and not (item.revoked_at and item.revoked_at <= checked_at)]

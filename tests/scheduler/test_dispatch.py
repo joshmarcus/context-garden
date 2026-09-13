@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from garden.cli import app
 from garden.model import Status, parse_execution_requirements
-from garden.routing import task_routing_view
+from garden.routing import task_routing_view, worker_configuration_views
 from garden.scheduler import StateCorruptionError
 from garden.scheduler.dispatch import MAX_SERIALIZED_PROMPT_BYTES
 from garden.scheduler.report import TickReport
@@ -152,6 +152,29 @@ def test_run_provenance_preserves_admission_readiness_after_worker_update(sched)
     assert provenance["readiness"] == {
         "status": "verified", "checked_at": 1, "expires_at": 4_102_444_800,
     }
+
+
+def test_queued_worker_pin_reserves_capacity_without_double_counting_claim(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work"])
+    requirements, match = sched._execution_match(task, "work")
+    run = sched.runs.new_run(task.id, "remote", mode="work")
+    sched._record_execution_envelope(task, run, "work", requirements, match)
+    run.save()
+
+    with pytest.raises(ResourcePressureError, match="busy"):
+        sched._execution_match(task, "work")
+    assert worker_configuration_views(sched.store, now=2)[0]["capacity"] == {
+        "instances": 1, "verified": 1, "reserved": 1, "available": 0,
+    }
+
+    run.host = "build-1"
+    run.save()
+    assert worker_configuration_views(sched.store, now=2)[0]["capacity"]["reserved"] == 1
+
+    run.status = "done"
+    run.save()
+    assert worker_configuration_views(sched.store, now=2)[0]["capacity"]["reserved"] == 0
 
 
 def test_continuation_fences_a_changed_hard_requirement(sched):
