@@ -1,5 +1,6 @@
 """Dispatch: the queue, slots and the live max_parallel override, the pause, and the stuck-task audit."""
 
+import json
 import os
 import subprocess
 import textwrap
@@ -585,6 +586,34 @@ def test_maintenance_readiness_keeps_uncollected_result_separate_from_live_block
     status = sched.maintenance_readiness()
     assert not status["ready"]
     assert "installed runtime" in status["live"][0]["blocker"]
+
+
+def test_maintenance_readiness_allows_a_probed_dormant_legacy_ssh_run(sched):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "ssh", mode="work")
+    run.status = "running"
+    run.pid = 987654321
+    run.env_snapshot["ssh_tmux_session"] = "garden-DM-001-legacy"
+    run.save()
+    (run.path / "ssh-state.json").write_text(json.dumps({
+        "status": "held",
+        "held_kind": "legacy_artifacts_present",
+        "process_exists": False,
+        "artifacts": {
+            "directory_exists": True,
+            "worktree_exists": True,
+            "session_exists": False,
+        },
+    }))
+    sched.request_maintenance_pause(by="test")
+    sched._quiesce_for_maintenance()
+
+    status = sched.maintenance_readiness()
+    assert status["ready"]
+    assert status["live"] == []
+    assert status["dormant"] == [f"{task.id}/{run.run_id}"]
 
 
 def test_pause_overrides_auto_dispatch_true(sched, fake_github):

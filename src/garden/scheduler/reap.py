@@ -203,7 +203,7 @@ class ReapMixin:
 
     def _finished_or_timed_out(self, run: Run, runner: Runner) -> bool:
         if run.runner == "ssh":
-            hold = runner.reconcile(run)
+            hold = runner.reconcile(run, active=self.runs.active())
             if hold:
                 task = self.store.tasks().get(run.task_id)
                 st = self.state.get(run.task_id)
@@ -212,19 +212,38 @@ class ReapMixin:
                     self._set_needs_human(task, "ssh_recovery", hold)
                     run.error = hold
                     run.save()
-                    task.log(f"SSH recovery held: {hold}; remote work and checkout ownership retained")
+                    # An identity-verified snapshot proving the remote run directory, checkout
+                    # worktree and tmux session are all gone leaves nothing remote to protect;
+                    # unlike an authoritative refusal or an uncertain live owner, holding the
+                    # checkout lease open here would only occupy a worker slot forever.
+                    lost = (hasattr(runner, "held_kind")
+                            and runner.held_kind(run) == "remote_artifacts_absent")
+                    task.log(f"SSH recovery held: {hold}; "
+                             + ("remote artifacts are confirmed gone, releasing the worker slot"
+                                if lost else "remote work and checkout ownership retained"))
                     self.store.save(task)
                     self.events.emit("ssh_recovery_held", task.id, run=run.run_id, reason=hold)
-                    if (run.path / "ssh-rejected.json").exists():
-                        # The remote launcher authoritatively refused this new run before
-                        # starting a worker. An explicit retry after repair is safe; an
-                        # uncertain or live owner never takes this path.
+                    if lost or (run.path / "ssh-rejected.json").exists():
+                        # Either the remote launcher authoritatively refused this new run before
+                        # starting a worker, or its remote artifacts are proven gone. Both leave
+                        # no live or uncertain owner behind, so an explicit retry after repair is
+                        # safe and the slot can be released now instead of held indefinitely.
                         run.status = "failed"
                         run.finished_at = now_iso()
                         run.save()
                         self._transition(task, Status.FAILED, hold, needs_human=True)
                     self.state.save()
                 return False
+            # No hold: either healthy or automatically reconnecting. This is an operational
+            # notice, never a decision — it must not route through _set_needs_human.
+            notice = runner.reconnect_notice(run) if hasattr(runner, "reconnect_notice") else None
+            st = self.state.get(run.task_id)
+            if notice != st.get("ssh_reconnect"):
+                if notice:
+                    st["ssh_reconnect"] = notice
+                else:
+                    st.pop("ssh_reconnect", None)
+                self.state.save()
             if run.env_snapshot.get("ssh_tmux_session"):
                 # Remote supervision enforces timeout and descendant cleanup. A local
                 # timeout must never invent completion while the host is unreachable.

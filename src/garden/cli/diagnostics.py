@@ -278,10 +278,13 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
     session = r.env_snapshot.get("ssh_tmux_session")
     if session:
         console.print(f"On remote host {r.host}: tmux attach-session -r -t {session}")
-        state_path = r.path / "ssh-state.json"
-        if state_path.exists():
-            state = json.loads(state_path.read_text())
-            console.print(f"SSH: {state.get('status', 'unknown')} {state.get('reason', '')}")
+    state_path = r.path / "ssh-state.json"
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        console.print(f"SSH: {state.get('status', 'unknown')} {state.get('reason', '')}")
+        if state.get("status") == "recovering":
+            console.print(f"  attempt {state.get('attempt', 0)}, last error: {state.get('last_error', '')}, "
+                          f"next retry at {state.get('next_retry_at', '')}")
     final = r.read_text("final.md")
     if final:
         console.print("[bold]final message:[/bold]")

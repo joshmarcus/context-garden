@@ -1212,11 +1212,26 @@ class HumanMixin:
         state = json.loads(path.read_text()) if path.exists() else {}
         if state.get("status") != "held":
             raise RuntimeError("SSH collection is not held")
-        spec_path = run.path / "ssh-request.json"
-        spec = json.loads(spec_path.read_text())
-        spec["deadline"] = time.time() + spec["recovery_timeout_seconds"]
-        write_json(spec_path, spec)
-        write_json(path, {**state, "status": "recovering", "lost_since": time.time()})
+        if state.get("held_kind") == "identity_mismatch":
+            raise RuntimeError(
+                "SSH collection is held for an identity mismatch: another run now owns this "
+                "remote checkout and tmux session, so resuming here would race that run "
+                "instead of recovering it; investigate the remote host's actual owner"
+            )
+        spec = json.loads((run.path / "ssh-request.json").read_text())
+        protocol = int(spec.get("request", {}).get("protocol_version") or 0)
+        write_json(path, {
+            **state,
+            "status": "recovering",
+            "lost_since": time.time(),
+            "attempt": 0,
+            "last_error": None,
+            "next_retry_at": None,
+            # Old requests freeze probe code that cannot report artifact presence.  An
+            # explicit recovery of one of those runs must be inspection-only: the current
+            # controller may prove terminal loss, but it must never replay implementation.
+            "legacy_probe_only": protocol < 2,
+        })
         st = self.state.get(task.id)
         st.pop("ssh_recovery_hold", None)
         if isinstance(st.get("needs_human"), dict) and st["needs_human"].get("kind") == "ssh_recovery":
@@ -1229,7 +1244,10 @@ class HumanMixin:
         ensure_open(task)
         for active in self.runs.runs_for(task.id):
             if active.runner == "ssh" and active.status == "running" and not active.process_finished():
-                raise RuntimeError("remote worker outcome is not terminal; use garden ssh-recover before retry")
+                raise RuntimeError(
+                    "remote worker outcome is not terminal; it is reconnecting automatically, or, "
+                    "if held, use garden ssh-recover before retry"
+                )
         self.events.emit("retry", task.id, actor=self._validate_action_actor(actor), reason="continued loop")
         st = self.state.get(task.id)
         st.pop("ssh_recovery_hold", None)

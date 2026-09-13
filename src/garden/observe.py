@@ -9,6 +9,7 @@ never the network.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -260,6 +261,35 @@ def stuck_line(s: dict[str, Any]) -> str:
     return f"{s['task']:<10} {s['mode']:<8} {why}  {s['title'][:60]}".rstrip()
 
 
+def reconnecting_runs(store: Any) -> list[dict[str, Any]]:
+    """SSH runs automatically retrying a lost transport. An operational notice, not a decision:
+    the run keeps its checkout and remote identity while this stays non-empty."""
+    rs = RunStore(store.config.garden_dir)
+    tasks = store.tasks()
+    out = []
+    for r in rs.active():
+        if r.runner != "ssh":
+            continue
+        state_path = r.path / "ssh-state.json"
+        if not state_path.exists():
+            continue
+        state = json.loads(state_path.read_text())
+        if state.get("status") != "recovering":
+            continue
+        t = tasks.get(r.task_id)
+        out.append({
+            "task": r.task_id, "title": t.title if t else "", "attempt": state.get("attempt", 0),
+            "last_error": state.get("last_error"), "next_retry_at": state.get("next_retry_at"),
+            "lost_since": state.get("lost_since"),
+        })
+    return out
+
+
+def reconnecting_line(r: dict[str, Any]) -> str:
+    return (f"{r['task']:<10} attempt {r['attempt']:<4} {(r['last_error'] or '')[:60]:<60} "
+            f"{r['title'][:40]}").rstrip()
+
+
 def tracebacks(store: Any, since_iso: str) -> list[dict[str, Any]]:
     """Runs since `since_iso` whose stderr shows an unhandled Python exception — a bug in the
     harness wrapper or the scheduler itself, not an ordinary task failure the worker reported.
@@ -322,6 +352,7 @@ class ObservePass:
     status_line: str
     cards: list[dict[str, Any]] = field(default_factory=list)
     stuck: list[dict[str, Any]] = field(default_factory=list)
+    reconnecting: list[dict[str, Any]] = field(default_factory=list)
     tracebacks: list[dict[str, Any]] = field(default_factory=list)
     digest: dict[str, Any] = field(default_factory=dict)
     digest_lines: list[str] = field(default_factory=list)
@@ -330,7 +361,8 @@ class ObservePass:
     def to_dict(self) -> dict[str, Any]:
         return {
             "at": self.at, "profile": self.profile, "status_line": self.status_line,
-            "cards": self.cards, "stuck": self.stuck, "tracebacks": self.tracebacks,
+            "cards": self.cards, "stuck": self.stuck, "reconnecting": self.reconnecting,
+            "tracebacks": self.tracebacks,
             "digest": {k: v for k, v in self.digest.items() if k != "tasks"}, "digest_lines": self.digest_lines,
         }
 
@@ -345,6 +377,10 @@ class ObservePass:
             out.append("")
             out.append(f"stuck runs ({len(self.stuck)})")
             out += [_clip(f"  {stuck_line(s)}", w) for s in self.stuck]
+        if self.reconnecting:
+            out.append("")
+            out.append(f"reconnecting ({len(self.reconnecting)})")
+            out += [_clip(f"  {reconnecting_line(r)}", w) for r in self.reconnecting]
         if self.tracebacks:
             out.append("")
             out.append(f"tracebacks ({len(self.tracebacks)})")
@@ -368,6 +404,7 @@ def make_pass(store: Any, sched: Any, settings: ObserveSettings) -> ObservePass:
     return ObservePass(
         at=now_iso(), profile=settings.profile, status_line=status_line(store, sched, settings),
         cards=cards(store, sched), stuck=stuck_runs(store, settings.stuck_after_s),
+        reconnecting=reconnecting_runs(store),
         tracebacks=tracebacks(store, since_iso), digest=d, digest_lines=digest_lines(d),
         line_width=settings.line_width,
     )

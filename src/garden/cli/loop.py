@@ -148,6 +148,8 @@ def maintenance_status():
     console.print(f"maintenance: {state}")
     for run in status["live"]:
         console.print(f"blocker {run['task']}/{run['run']} ({run['mode']}, {run['state']}): {run['blocker']}")
+    if status["dormant"]:
+        console.print("preserved but not running (safe to reinstall): " + ", ".join(status["dormant"]))
     if status["finished_uncollected"]:
         console.print("finished but uncollected (safe to reinstall): " + ", ".join(status["finished_uncollected"]))
     console.print("reinstall ready" if status["ready"] else "reinstall not ready")

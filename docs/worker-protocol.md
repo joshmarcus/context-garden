@@ -759,15 +759,58 @@ older ones when Garden acknowledges a completion, so a long-lived host does not 
 logs and reference snapshots forever. A run that is live, uncertain or never collected is
 never pruned.
 
-Recovery is bounded by `ssh.recovery_timeout_seconds` (default 300), with each SSH call
-bounded by `ssh.connect_timeout_seconds` (30) and polls spaced by
-`ssh.poll_interval_seconds` (2). A product's positive `timeout_minutes` is enforced on
-the host; a zero setting uses the SSH runner's 90-minute safety bound. When liveness or
-completion remains uncertain, Garden keeps checkout ownership and presents an operator
-hold. `garden ssh-recover TASK-ID` grants another bounded collection attempt against the
-same identity; it never starts another implementation. A definitive launch refusal can
-be explicitly retried after its prerequisite or conflicting owner is resolved. Legacy
-SSH runs without durable records require manual liveness verification after transport loss.
+Each SSH call is bounded by `ssh.connect_timeout_seconds` (30) and, once connected,
+polls are spaced by `ssh.poll_interval_seconds` (2). A product's positive
+`timeout_minutes` is enforced on the host; a zero setting uses the SSH runner's
+90-minute safety bound.
+
+Ordinary transport loss — a dropped connection, a collector crash, a controller
+restart — never asks a person to resume it. The collector retries the same durable
+identity forever, with bounded exponential backoff and jitter between attempts
+(`ssh.backoff_initial_seconds`, default `poll_interval_seconds`; `ssh.backoff_multiplier`,
+default 2.0; capped by `ssh.recovery_timeout_seconds`, default 300, which now bounds the
+backoff interval rather than an overall give-up deadline). `ssh-state.json` persists the
+attempt count, last error, last known success and next retry time across restarts, so a
+crashed and respawned collector resumes its schedule instead of retrying in a tight loop.
+`ssh.max_concurrent_reconnects` and `ssh.max_concurrent_reconnects_per_host` bound how many
+runs may be simultaneously retrying transport; beyond that bound, restarting a dead
+collector is deferred to a later scheduler tick. Prolonged unreachability stays visible —
+task, run, worker, status and observe views all surface the attempt count, last error and
+next retry time — as an operational notice, never a decision. Checkout ownership and the
+remote identity are retained throughout: Garden never starts another implementation run,
+adopts an unverified result, or resets the worktree while the original outcome is uncertain.
+An explicit task cancellation still records durable intent and is delivered to the same
+remote worker once transport returns.
+
+Only a deterministic terminal condition ends automatic collection and presents an operator
+hold: an authoritative remote refusal (a launch was explicitly blocked or rejected before a
+worker started), an identity mismatch (the remote answered for a different run — another
+run now owns that checkout and tmux session), a transport failure ssh(1) itself reports
+as permanent (an unresolvable name, a revoked credential, a host key that no longer
+matches), or every recorded remote artifact being confirmed absent (below). `garden
+ssh-recover TASK-ID` resumes bounded collection against the same identity for an
+authoritative refusal or a permanent transport failure; it refuses to resume an identity
+mismatch, since retrying there would race the run that now owns the identity. It never
+starts another implementation. A definitive
+launch refusal can be explicitly retried after its prerequisite or conflicting owner is
+resolved. Legacy SSH runs without durable records require manual liveness verification
+after transport loss.
+
+Every remote reply also reports `artifacts`: whether the run's checkout worktree, its
+private run directory, and its tmux session each still exist, computed independently of
+the receipt lookup above so it stays trustworthy even when the run's own state file (and
+thus the rest of the reply) is itself gone — a repository that no longer exists on the
+remote host answers this way rather than failing the call outright. Once an identity has
+been confirmed present at least once (a live session, a receipt, or any artifact at all),
+several consecutive replies that authoritatively report all three artifacts absent are a
+distinct terminal condition, `remote_artifacts_absent`, rather than ordinary transport
+loss: the host was replaced or the run's remote state was removed outright, and there is
+nothing left to reconnect to. Requiring several consecutive confirmations — each a
+successful, structured round trip — rules out one transient false report before treating
+this as terminal. Unlike the other holds above, nothing remote remains to protect, so this
+one also releases the scheduler slot (the task fails) instead of holding it open pending
+`garden ssh-recover`; a fresh dispatch is not automatic and requires the usual explicit
+retry after the underlying host or checkout is repaired.
 
 On reap the scheduler fetches the branch, requires commits ahead of base, and materialises
 a local worktree for checks and review. The least-loaded host with a product clone and a
