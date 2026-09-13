@@ -519,6 +519,14 @@ class Site:
         explicit scopes fail closed; stale preferences and assignments fall back to the
         neutral authorized overview.
         """
+        cached = getattr(request.state, "garden_view_scope", None)
+        if isinstance(cached, self.ViewScope):
+            return cached
+
+        def remember(scope: Site.ViewScope) -> Site.ViewScope:
+            request.state.garden_view_scope = scope
+            return scope
+
         s = store or self.hub.fresh()
         known = frozenset(product.name for product in s.products())
         principal = getattr(request.state, "principal", None)
@@ -541,28 +549,52 @@ class Site:
             explicit = request.query_params.get("project", "")
         if explicit:
             if explicit == "__all__":
-                return self.ViewScope(None if legacy else authorized, "", "url", tuple(sorted(authorized)))
+                return remember(self.ViewScope(
+                    None if legacy else authorized, "", "url", tuple(sorted(authorized)),
+                ))
             if explicit not in authorized:
                 from fastapi import HTTPException
                 raise HTTPException(403, "project is not visible to this member")
-            return self.ViewScope(frozenset({explicit}), explicit, "url", tuple(sorted(authorized)))
+            return remember(self.ViewScope(
+                frozenset({explicit}), explicit, "url", tuple(sorted(authorized)),
+            ))
 
         preferred = request.cookies.get("garden_project", "")
         if preferred == "__all__":
-            return self.ViewScope(None if legacy else authorized, "", "browser", tuple(sorted(authorized)))
+            return remember(self.ViewScope(
+                None if legacy else authorized, "", "browser", tuple(sorted(authorized)),
+            ))
         if preferred in authorized:
-            return self.ViewScope(frozenset({preferred}), preferred, "browser", tuple(sorted(authorized)))
+            return remember(self.ViewScope(
+                frozenset({preferred}), preferred, "browser", tuple(sorted(authorized)),
+            ))
 
         assignment = None
         if isinstance(principal, Principal) and self.registry is not None:
             assignment = self.registry.assignment(principal.member_id)
         assigned = assignment.project if assignment is not None else ""
         if assigned in authorized:
-            return self.ViewScope(frozenset({assigned}), assigned, "assignment", tuple(sorted(authorized)))
-        return self.ViewScope(None if legacy else authorized, "", "overview", tuple(sorted(authorized)))
+            scope = self.ViewScope(
+                frozenset({assigned}), assigned, "assignment", tuple(sorted(authorized)),
+            )
+        else:
+            scope = self.ViewScope(
+                None if legacy else authorized, "", "overview", tuple(sorted(authorized)),
+            )
+        return remember(scope)
 
     def allowed_projects(self, request: Request) -> frozenset[str] | None:
         """Projects in this request's resolved presentation scope."""
+        principal = getattr(request.state, "principal", None)
+        parts = request.url.path.strip("/").split("/")
+        detail_scope = len(parts) > 1 and parts[0] in {
+            "projects", "phases", "tasks", "runs", "investigations",
+        }
+        if (not isinstance(principal, Principal)
+                and "project" not in request.query_params and not detail_scope):
+            # Legacy requests have unrestricted scope. Avoid a discovery pass here; ctx()
+            # resolves the complete selector options from its existing page snapshot.
+            return None
         return self.view_scope(request).projects
 
     def visible_tasks(self, request: Request, store: Store | None = None) -> dict[str, Any]:
