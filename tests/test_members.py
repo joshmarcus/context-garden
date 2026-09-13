@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from garden.coordination_api import create_coordination_app
 from garden.events import DECISION_KINDS, EventLog
-from garden.git_coordination import GitStateStore
+from garden.git_coordination import GitMultiplayerClient, GitStateStore
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
 from garden.runs import Run, RunStore
@@ -92,6 +92,7 @@ def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
         assignment = (registry_state.get("assignments") or {}).get(owner, {})
         entities[f"task:{task.id}"] = {
             "kind": "task", "scope": task.id, "owner": owner,
+            "project": task.product,
             "authority_generation": int(assignment.get("generation", 0)), "version": 0,
         }
     def enroll(state):
@@ -746,9 +747,90 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
                        follow_redirects=False).status_code == 303
     task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
     stale_inbox = client.get("/inbox", headers=headers).text
-    assert "OUTSIDE_ASSIGNMENT_QUESTION" not in stale_inbox
+    assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
+    # Authorization still reaches the accepted owner; the action itself conflicts with the
+    # task's waiting state instead of being rejected at the ownership boundary.
     assert client.post("/tasks/DM-001/retry", headers=headers,
-                       follow_redirects=False).status_code == 403
+                       follow_redirects=False).status_code == 409
+
+
+def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, alice_token, alice = _registry(garden)
+    registry.set_assignment(alice, "alice", "demo", "p1")
+    registry.set_phase_owner(alice, "demo", "p1", "alice")
+    registry.add_member(alice, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(alice, "bob", "demo", "p1")
+    bob_token = registry.issue_installation(alice, "bob", "bob-worker")
+    app = _git_enrolled_app(garden)
+
+    # Local intent moves to Bob while accepted Git task authority remains Alice.
+    registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
+    authority = GitStateStore(
+        garden, garden_id="garden-1", remote=str(garden / ".garden/test-state.git"),
+    )
+    GitMultiplayerClient(authority, "alice", alice.installation_id).claim(
+        kind="task", scope="DM-001", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    authority.begin_handoff(
+        "pending-phase-owner", actor="alice", installation=alice.installation_id,
+        entity_key="task:DM-001", expected_version=0, pending_owner="bob",
+    )
+    client = TestClient(app)
+    alice_headers = {"Authorization": f"Bearer {alice_token}"}
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+
+    task_row = next(row for row in client.get("/api/tasks", headers=bob_headers).json()
+                    if row["id"] == "DM-001")
+    assert task_row["effective_owner"] == "alice"
+    pending_owner = client.post(
+        "/tasks/DM-001/retry", headers=bob_headers,
+    )
+    accepted_owner = client.post(
+        "/tasks/DM-001/retry", headers=alice_headers,
+        follow_redirects=False,
+    )
+    assert pending_owner.status_code == 403
+    assert accepted_owner.status_code != 403
+
+    run = RunStore(garden / ".garden").new_run(
+        "DM-001", "remote", mode="check", run_id="pending-owner-claim",
+    )
+    run.source_head = "a" * 40
+    run.env_snapshot = {
+        "product": "demo", "remote_repo": "https://example.test/team/demo.git",
+        "prepared_source_head": run.source_head,
+    }
+    run.save()
+    bob_pending_claim = client.post(
+        "/api/runs/claim", headers=bob_headers,
+        json={"host": "bob-worker", "claim_request_id": "bob-pending-owner"},
+    )
+    assert bob_pending_claim.status_code == 204, bob_pending_claim.text
+    assert client.post(
+        "/api/runs/claim", headers=alice_headers,
+        json={"host": "alice-laptop", "claim_request_id": "alice-accepted-owner"},
+    ).status_code == 204
+
+    authority.acknowledge_stop(
+        "accepted-owner-stopped", actor="alice", installation=alice.installation_id,
+        entity_key="task:DM-001",
+    )
+    authority.complete_handoff(
+        "pending-owner-accepted", actor="bob", installation="bob-worker",
+        entity_key="task:DM-001",
+    )
+    assert client.post(
+        "/api/runs/claim", headers=alice_headers,
+        json={"host": "alice-laptop", "claim_request_id": "alice-after-handoff"},
+    ).status_code == 204
+    assert client.post(
+        "/api/runs/claim", headers=bob_headers,
+        json={"host": "bob-worker", "claim_request_id": "bob-after-handoff"},
+    ).status_code == 200
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):

@@ -343,7 +343,12 @@ class GitStateStore:
             ):
                 raise PermissionError("member or installation authority is draining")
             binding = state["installations"].get(installation)
-            if binding != actor or actor not in state["members"]:
+            binding_owner = (
+                binding.get("member_id")
+                if isinstance(binding, dict) and not binding.get("revoked")
+                else binding
+            )
+            if binding_owner != actor or actor not in state["members"]:
                 raise PermissionError("installation is not bound to an active member")
             if not state["members"][actor].get("active", False):
                 raise PermissionError("member is disabled")
@@ -557,7 +562,13 @@ class GitStateStore:
         state: dict[str, Any], actor: str, installation: str
     ) -> dict[str, Any]:
         member = state["members"].get(actor) or {}
-        if state["installations"].get(installation) != actor or not member.get("active"):
+        installation_row = state["installations"].get(installation)
+        installation_owner = (
+            installation_row.get("member_id")
+            if isinstance(installation_row, dict) and not installation_row.get("revoked")
+            else installation_row
+        )
+        if installation_owner != actor or not member.get("active"):
             raise PermissionError("handoff installation is not bound to an active member")
         return member
 
