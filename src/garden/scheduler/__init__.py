@@ -323,43 +323,6 @@ class Scheduler(
             yield
             return
         row = self._phase_authority(product, phase)
-        with self.coordinator.effect(
-            kind="phase", scope=f"{product}/{phase}", owner_id=self.coordinator.member_id,
-            authority_generation=int(row["authority_generation"]),
-            expected_version=int(row["version"]), effect_key=effect_key,
-        ):
-            yield
-
-    @contextmanager
-    def task_effect(self, task: Task, effect_key: str) -> Iterator[None]:
-        """Validate current ownership/generation and fence a scheduler mutation."""
-        row = self._task_authority(task)
-        if self.coordinator is None or row is None:
-            yield
-            return
-        with self.coordinator.effect(
-            kind="task", scope=task.id, owner_id=self.coordinator.member_id,
-            authority_generation=int(row["authority_generation"]),
-            expected_version=int(row["version"]), effect_key=effect_key,
-        ):
-            yield
-
-    def require_phase_authority(self, phase: Phase, *, expected_generation: int | None = None) -> None:
-        if not self.cfg.get("multiplayer.enabled", False):
-            return
-        self.require_execution_authority()
-        assert self.principal is not None
-        self.members.require_phase_operation(
-            self.principal, phase.product, phase.name,
-            expected_generation=expected_generation,
-        )
-
-    @contextmanager
-    def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
-        row = self._phase_authority(product, phase)
-        if self.coordinator is None:
-            yield
-            return
         previous = getattr(self, "_phase_claim_parent", None)
         with self.coordinator.effect(
             kind="phase", scope=f"{product}/{phase}", owner_id=self.coordinator.member_id,
@@ -389,16 +352,6 @@ class Scheduler(
             expected_version=int(row["version"]), effect_key=effect_key,
         ):
             yield
-
-    def require_phase_authority(self, phase: Phase, *, expected_generation: int | None = None) -> None:
-        if not self.cfg.get("multiplayer.enabled", False):
-            return
-        self.require_execution_authority()
-        assert self.principal is not None
-        self.members.require_phase_operation(
-            self.principal, phase.product, phase.name,
-            expected_generation=expected_generation,
-        )
 
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
