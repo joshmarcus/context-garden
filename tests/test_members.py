@@ -257,7 +257,9 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
     assert accepted.status_code == 409
+ 
     assert MULTIPLAYER_EXECUTION_UNAVAILABLE in accepted.text
+ 
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -423,7 +425,7 @@ def test_multiplayer_https_applies_origin_check_before_execution_authority(garde
         assert response.status_code == 403
 
 
-def test_multiplayer_allows_owned_project_pages_and_api_actions(garden):
+def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -892,7 +894,9 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
             follow_redirects=False,
         )
         assert response.status_code == 409
+ 
         assert MULTIPLAYER_EXECUTION_UNAVAILABLE in response.text
+ 
 
     scheduler = Scheduler(Store(garden))
     with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
@@ -930,6 +934,7 @@ def test_multiplayer_project_reads_and_owned_actions_regression(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
+ 
 def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
@@ -969,6 +974,7 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
                        json={"host": "spoofed"}).status_code == 403
 
 
+ 
  
 def test_legacy_loopback_behavior_is_unchanged(garden):
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
