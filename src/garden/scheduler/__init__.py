@@ -15,6 +15,7 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 from __future__ import annotations
 
 import fcntl
+import os
 import re
 import threading
 import time
@@ -33,7 +34,8 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..model import Status, Task, effective_owner, now_iso
+from ..members import MemberRegistry, Principal, current_principal
+from ..model import Phase, Status, Task, effective_owner, now_iso
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
@@ -139,7 +141,8 @@ class Scheduler(
 
     def require_execution_authority(self) -> None:
         """Require an authenticated coordinator client in explicit multiplayer mode."""
-        if self.cfg.get("multiplayer.enabled", False) and self.coordinator is None:
+        if (self.cfg.get("multiplayer.enabled", False)
+                and self.coordinator is None and self.principal is None):
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
 
     def execution_status(self) -> dict[str, str]:
@@ -147,7 +150,16 @@ class Scheduler(
         if not self.cfg.get("multiplayer.enabled", False):
             return {"state": "legacy", "label": "Single-user execution"}
         if self.coordinator is None:
-            return {"state": "unavailable", "label": MULTIPLAYER_EXECUTION_UNAVAILABLE}
+            if self.principal is None:
+                return {"state": "unavailable", "label": MULTIPLAYER_EXECUTION_UNAVAILABLE}
+            assignment = self.members.assignment(self.principal.member_id)
+            if assignment is None:
+                return {"state": "unassigned", "label": NO_WORK_ASSIGNMENT}
+            if not assignment.enabled:
+                return {"state": "paused", "label": "Work assignment is paused"}
+            return {"state": "assigned", "label": (
+                f"Executing {assignment.project}/{assignment.phase}"
+            )}
         try:
             view = self.coordinator.refresh()
         except MultiplayerUnavailable as exc:
@@ -169,7 +181,11 @@ class Scheduler(
         self.require_execution_authority()
         if self.coordinator is None:
             self._authority_snapshot = None
-            return True
+            if not self.cfg.get("multiplayer.enabled", False):
+                return True
+            assert self.principal is not None
+            assignment = self.members.assignment(self.principal.member_id)
+            return bool(assignment and assignment.enabled)
         view = self.coordinator.refresh(allow_stale=False)
         snapshot = view.snapshot
         assignment = snapshot.get("assignment")
@@ -227,6 +243,16 @@ class Scheduler(
 
     def task_is_authorized(self, task: Task) -> bool:
         if self.coordinator is None:
+            if not self.cfg.get("multiplayer.enabled", False):
+                return True
+            if self.principal is None:
+                return False
+            try:
+                self.members.authorize_task_execution(
+                    self.principal, task, self.store.phase(task.product, task.phase),
+                )
+            except (PermissionError, RuntimeError):
+                return False
             return True
         try:
             self._task_authority(task)
@@ -259,15 +285,34 @@ class Scheduler(
             raise PermissionError(f"{scope} phase operation is not owned by the authenticated member")
         return row
 
-    def require_phase_authority(self, product: str, phase: str) -> None:
-        self._phase_authority(product, phase)
+    def require_phase_authority(
+        self, phase_or_product: Phase | str, phase: str | None = None,
+        *, expected_generation: int | None = None,
+    ) -> None:
+        if isinstance(phase_or_product, Phase):
+            product, phase_name = phase_or_product.product, phase_or_product.name
+        else:
+            product, phase_name = phase_or_product, phase
+        if phase_name is None:
+            raise TypeError("phase name is required")
+        if self.coordinator is not None:
+            self._phase_authority(product, phase_name)
+            return
+        if self.cfg.get("multiplayer.enabled", False):
+            self.require_execution_authority()
+            assert self.principal is not None
+            self.members.require_phase_operation(
+                self.principal, product, phase_name,
+                expected_generation=expected_generation,
+            )
 
     @contextmanager
     def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
-        row = self._phase_authority(product, phase)
         if self.coordinator is None:
+            self.require_phase_authority(product, phase)
             yield
             return
+        row = self._phase_authority(product, phase)
         with self.coordinator.effect(
             kind="phase", scope=f"{product}/{phase}", owner_id=self.coordinator.member_id,
             authority_generation=int(row["authority_generation"]),
@@ -305,6 +350,7 @@ class Scheduler(
         restarter: Callable[[], None] | None = None,
         read_only: bool = False,
         source_control_factories: Mapping[str, SourceControlFactory] | None = None,
+        principal: Principal | None = None,
     ):
         self.store = store
         self.cfg = store.config
@@ -314,6 +360,11 @@ class Scheduler(
             # Existing multiplayer startup remains fail-closed and can render its setup
             # diagnostic even when enrollment is incomplete.
             self.coordinator = None
+        self.members = MemberRegistry(self.cfg.garden_dir)
+        credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
+        self.principal = principal or current_principal() or (
+            self.members.authenticate(credential) if credential else None
+        )
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)

@@ -726,9 +726,16 @@ class DispatchMixin:
                  worktree_override: Path | None = None, model_override: str | None = None,
                  reserved_run: Run | None = None, completion_mode: str = "managed",
                  external_pr: str = "", external_pr_number: int | None = None,
-                 pool_member: str = "") -> Run:
+                 pool_member: str = "", assignment_generation: int | None = None) -> Run:
         self.require_execution_authority()
-        self._task_authority(task)
+        if self.coordinator is not None:
+            self._task_authority(task)
+        elif self.cfg.get("multiplayer.enabled", False):
+            assert self.principal is not None
+            self.members.authorize_task_execution(
+                self.principal, task, self.store.phase(task.product, task.phase),
+                expected_generation=assignment_generation,
+            )
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
