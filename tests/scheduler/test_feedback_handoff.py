@@ -307,7 +307,7 @@ def test_persisted_nonimplementation_review_blockers_do_not_escalate_or_consume_
 
 
 @pytest.mark.parametrize("category", ["infrastructure", "admission", "unavailable_evidence"])
-def test_repeated_nonimplementation_review_blocker_stalls_without_escalating(
+def test_nonimplementation_review_blocker_stays_with_operator_without_escalating(
     sched, fake_github, category,
 ):
     task, pr = _open_task(sched, fake_github)
@@ -327,7 +327,9 @@ def test_repeated_nonimplementation_review_blocker_stalls_without_escalating(
         sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
 
     state = sched.state.get(task.id)
-    assert state["needs_human"]["kind"] == "stall"
+    assert state["needs_human"]["kind"] == "review_evidence"
+    assert not state.get("pending_feedback")
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "revise"]
     assert not state.get("implementation_failure_escalations")
 
 
@@ -364,6 +366,14 @@ def test_review_classification_survives_dispatch_and_unchanged_revision(
     reviewed = _review_run(sched, task, pr.head_sha, review)
 
     sched._apply_review(task, reviewed, review, TickReport(), emitted=False)
+    if category == "infrastructure":
+        # Recovery belongs to the operator immediately, without an unchanged author run.
+        sched.tick()
+        state = sched.state.get(task.id)
+        assert state["needs_human"]["kind"] == "review_evidence"
+        assert not state.get("implementation_failure_escalations")
+        assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "revise"]
+        return
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "nochange")
     revise = sched.dispatch(task, mode="revise", runner=sched.runner_for(task))
 

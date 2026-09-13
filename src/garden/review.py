@@ -54,7 +54,7 @@ def is_pending_external_gate(item: object) -> bool:
     """Whether a typed review item records a merge gate that is still waiting."""
     return (isinstance(item, dict)
             and item.get("failure_category") == PENDING_EXTERNAL_GATE
-            and item.get("gate_state") == "pending")
+            and item.get("gate_state") in {"pending", "stale", "unavailable"})
 
 # The walkthrough deliberately has a larger inventory than a normal PR needs.  Keep this
 # mapping here, beside the review policy, so the check runner and reviewer consume one plan.
@@ -484,6 +484,11 @@ not demand a served app, generic replay, screenshot matrix, empty/failure/recove
 load measurement, artifact manifest, or checklist because a path or keyword matched.
 
 Check correctness, the task's intended outcomes, scope, and applicable project principles.
+Read and consume all of the author's criterion responses and recorded amendments, including
+clear prose and alternate evidence. Judge amended criteria by their replacement outcomes.
+Do not reject correct source because rows are absent, criterion quotations differ, JSON has
+a different optional shape, or an optional tool is unavailable. Inspect the existing source
+and evidence first; request clarification only when a material uncertainty remains.
 Treat actual defects, failed applicable checks, contradictory source/result claims, and
 outcomes you judge genuinely unmet as blocking. If an artifact is not attached, assume it
 is not included and omit commentary about its absence. Do not add findings, nits, caveats,
@@ -492,6 +497,12 @@ you actually inspected or tested. Checklist rows, mapping fields, and PR-descrip
 polish are optional; preserve useful existing evidence without requesting an unchanged
 source revision to repackage it.
 
+A commit identifier change or patch-identical mechanical rebase is not itself a source
+defect. Preserve accepted outcomes and evidence whose provenance is recorded, and review
+only a substantive delta proportionately. Current applicable CI, conflicts, mergeability,
+and owner holds remain controller gates; pending, stale, or unavailable gate evidence is
+not an author coding defect, while an actual failing check remains visible.
+
 For a material UI, CLI, or workflow change, choose a direct verification of the named
 affected behavior when needed. Say what you inspected in `attestation`, `summary`, criterion
 reasons, or any optional evidence fields you find useful. An explicitly unmet source
@@ -499,11 +510,14 @@ outcome or failed requirement must remain visible and blocking. For every unmet 
 `failure_category` to exactly one of `implementation`, `external_gate`, `infrastructure`,
 `admission`, `stale_check`, `unavailable_evidence`, or `owner_input`. Use `implementation`
 only when the reviewed source owns a defect or unmet required outcome. Use `external_gate`
-with `gate_state: "pending"` only for a source-bound merge requirement (such as exact-head
-CI) that has not finished yet: preserve that requirement, but approve source that is
-otherwise accepted because the controller independently enforces the gate before merge.
-The other categories identify conditions that can still block review but must not escalate
-the author's model. A failed external check is not pending; report the concrete failure. Use
+with `gate_state: "pending"`, `"stale"`, or `"unavailable"` only for a source-bound merge
+requirement (such as exact-head CI) whose usable evidence is not ready: preserve that
+requirement, but approve source that is otherwise accepted because the controller
+independently enforces the gate before merge. `stale_check` does not identify a pending
+external gate and remains actionable; use it for contradictory source/check identity or
+another stale-check problem that requires correction. Infrastructure,
+admission, unavailable-evidence and owner-input problems go to operator recovery and must
+not launch an unchanged author revision. A failed external check is not pending; report the concrete failure. Use
 `findings` with severity `blocking` for changes needed before merge and `nit` for optional
 improvements. A missing `fix` field does not invalidate an otherwise clear finding.
 Description feedback is always advisory and must not be the sole reason for
@@ -597,7 +611,11 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         )
     if criteria_note:
         parts.append(criteria_note)
-    verification = _verification_brief(task, verified, frozen)
+    effective_criteria = list(frozen)
+    for index, amendment in amendments.items():
+        if 0 <= index < len(effective_criteria):
+            effective_criteria[index] = str(amendment.get("text") or effective_criteria[index])
+    verification = _verification_brief(task, verified, effective_criteria)
     if verification:
         parts.append(verification)
     if isinstance(pre_flight, list):
@@ -607,8 +625,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         ) + "\n")
     current = parse_criteria(task.body)
     if current != frozen:
-        parts.append("## Criteria changed after dispatch\n\nThe worker was judged against the frozen criteria above. "
-                     "The task now has:\n\n" + "\n".join(f"- {item}" for item in current) + "\n")
+        parts.append("## Criteria changed after dispatch\n\nThe original dispatch wording is preserved above for provenance. "
+                     "Explicit owner updates and justified amendments supersede it; judge these current outcomes:\n\n" + "\n".join(f"- {item}" for item in current) + "\n")
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
