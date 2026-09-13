@@ -414,10 +414,12 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
+    source_head = "c" * 40
+    run.source_head = source_head
     run.env_snapshot = {
         "product": "demo",
         "remote_repo": "https://example.test/team/project.git",
-        "prepared_source_head": "c" * 40,
+        "prepared_source_head": source_head,
     }
     run.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
