@@ -307,7 +307,8 @@ class ReviewMixin:
             if not run.is_local_execution and not (run.claimed_at or run.host):
                 return "worker", f"its {run.mode} run is queued for a remote worker to claim"
             if not run.is_local_execution:
-                return "worker", f"waits for its {run.mode} remote run; a claim is recorded but liveness is not known"
+                assigned = f"; assigned worker {run.host}" if run.host else ""
+                return "worker", f"waits for its {run.mode} remote run; a claim is recorded{assigned}"
             return "worker", f"waits for its {run.mode} run to finish"
         if self.state.get(task.id).get("check_run"):
             return "check", "waits for its validation check to finish"

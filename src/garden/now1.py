@@ -32,6 +32,7 @@ from .outcomes import acceptance_cohort, attributed_phase_key, base_acceptance
 from .plants import plant_info
 from .runs import Run, RunStore
 from .store import Store
+from .workers import worker_fragment_href
 
 WORKER_MODES = {"work", "revise", "resume", "trial", "rebase", "investigation"}
 REVIEW_MODES = {"review", "persona", "compare"}
@@ -278,7 +279,12 @@ def strip_for_run(run: Run, tasks: dict[str, Any], store: Store, typical: dict[s
         "started_at": iso_utc(run.started_at), "elapsed_s": int(round(run.elapsed_minutes() * 60)),
         "typical_s": typical_for(run, typical), "said": p["said"], "spend_usd": p["cost_usd"],
         "tokens_so_far": p["tokens"], "no_process": no_process,
-        "lifecycle_detail": run.presentation_lifecycle,
+        # The Board retains its historical liveness caveat.  Now instead links the
+        # concrete assignment to the worker projection, which is the source of
+        # liveness and health evidence.
+        "lifecycle_detail": run.presentation_lifecycle.removesuffix("; worker liveness is not known"),
+        "assigned_worker": ({"id": run.host, "href": f"/now/workers#{worker_fragment_href(run.host)}"}
+                            if run.runner == "remote" and run.claimed_at and run.host else None),
         "glyph": MODE_GLYPH.get(run.mode, "running"), "dot": MODE_DOT.get(run.mode, "running"),
     }
     if finished:
@@ -391,7 +397,12 @@ def merge_queue(store: Store, tasks: dict[str, Any], state: Any, events: list[di
         for item in st.get("pending_reviews") or []:
             name = str(item.get("kind", "review")) + (f":{item['name']}" if item.get("name") else "")
             gate, why = sched.review_wait_reason(t, last_tick=last_tick, last_moved=last_moved.get(t.id, ""))
-            waiting.append({"task": t.id, "title": t.title, "what": name, "gate": gate, "why": why})
+            worker_run = sched._worker_holding_reviews(t)
+            worker = ({"id": worker_run.host, "href": f"/now/workers#{worker_fragment_href(worker_run.host)}"}
+                      if worker_run and worker_run.runner == "remote" and worker_run.claimed_at and worker_run.host
+                      else None)
+            waiting.append({"task": t.id, "title": t.title, "what": name, "gate": gate, "why": why,
+                            "worker": worker})
     return {"head": view["head"], "candidates": view["candidates"], "last_drop": view["last_drop"],
             "in_review": in_review, "waiting": waiting}
 
@@ -769,6 +780,8 @@ def render_text(snap: dict[str, Any]) -> str:
         line = f"  {s['task']:<8} {s['mode']:<8} {who:<28} {clock(s['elapsed_s']):>9}"
         if s["lifecycle_detail"]:
             line += f"  {s['lifecycle_detail']}"
+        if s.get("assigned_worker"):
+            line += f" · assigned worker {s['assigned_worker']['id']}"
         if not s["no_process"]:
             if s["typical_s"]:
                 line += f" · typically {minutes(s['typical_s'])}" + (" · longer than usual" if s["elapsed_s"] > s["typical_s"] else "")

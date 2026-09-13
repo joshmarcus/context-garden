@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import time
+from urllib.parse import unquote
 
 import yaml
 from fastapi.testclient import TestClient
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from garden.runs import RunStore
 from garden.store import Store
 from garden.web.app import create_app
-from garden.workers import WorkerContactStore, snapshot
+from garden.workers import WorkerContactStore, snapshot, worker_fragment_href
 
 
 def configure(garden, *, remote=True, ssh=True):
@@ -69,7 +70,7 @@ def test_never_contacted_enrolled_worker_is_unknown_in_api_and_ui(garden):
         "workers": 1, "capacity": 3, "unknown": 1,
     }
     assert payload["workers"] == [{
-        "id": "enrolled-idle", "placement": "remote", "status": "unknown",
+        "id": "enrolled-idle", "fragment": "worker-enrolled-idle", "placement": "remote", "status": "unknown",
         "last_contact": None, "evidence_at": None, "evidence_stale": True,
         "capacity": 3, "available_capacity": 0, "current_jobs": [],
         "unavailable_reason": "no recent worker-agent contact", "provider_id": None,
@@ -293,6 +294,15 @@ def test_workers_page_has_responsive_layout_and_drill_down_links(garden):
     assert 'href="/tasks/DM-001"' in page
     assert f'href="/runs/DM-001/{run.run_id}"' in page
     assert "job lease: not applicable" in page
+
+
+def test_worker_card_fragment_is_stable_and_url_safe_for_identity_punctuation(garden):
+    store = configure(garden, remote=False)
+    WorkerContactStore(store.config.garden_dir).record(
+        "worker.alpha/2", capacity=1, harnesses=["codex"], tiers=[])
+    page = TestClient(create_app(store, watch=False, host="testserver")).get("/now/workers").text
+    assert 'id="worker-worker.alpha/2"' in page
+    assert unquote(worker_fragment_href("worker.alpha/2")) == "worker-worker.alpha/2"
 
 
 def test_dispatchable_counts_managed_and_configured_capacity_exactly_once(garden):

@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from .fleet import fleet_projection
 from .hosts.registry import enrolled_hosts, worker_configuration
@@ -35,6 +36,16 @@ def _parse(value: str) -> dt.datetime | None:
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.UTC)
     except (TypeError, ValueError):
         return None
+
+
+def worker_fragment(identity: str) -> str:
+    """Return the stable DOM id used by a worker's status card."""
+    return "worker-" + str(identity)
+
+
+def worker_fragment_href(identity: str) -> str:
+    """Return the URL-encoded fragment that navigates to a worker's status card."""
+    return quote(worker_fragment(identity), safe="")
 
 
 class WorkerContactStore:
@@ -232,7 +243,7 @@ def snapshot(config: Any, runs: RunStore, *, now: dt.datetime | None = None) -> 
         evidence_time = _parse(evidence_at or "")
         evidence_stale = not evidence_time or (now - evidence_time).total_seconds() > stale_after
         rows.append({
-            "id": identity, "placement": placement, "status": status,
+            "id": identity, "fragment": worker_fragment(identity), "placement": placement, "status": status,
             "last_contact": last_contact or None, "evidence_at": evidence_at,
             "evidence_stale": evidence_stale,
             "capacity": capacity, "available_capacity": available,

@@ -25,6 +25,6 @@
   {% if mq.waiting %}
   {#- one line per pending review with the gate that holds it, the scheduler's own reason; the
       overdue line, which nothing explains, is set in the ink colour and sends the person to the log -#}
-  <div class="sub"><h3>Reviews waiting</h3><ul>{% for w in mq.waiting %}<li><a class="id" href="/tasks/{{ w.task }}">{{ w.task }}</a><span>{{ w.what }} · {{ w.title }}</span><span class="fact {{ 'held' if w.gate == 'overdue' }}">{{ w.why }}{% if w.gate == 'overdue' %} · <a href="/tasks/{{ w.task }}#log">open the log</a>{% endif %}</span></li>{% endfor %}</ul></div>
+  <div class="sub"><h3>Reviews waiting</h3><ul>{% for w in mq.waiting %}<li><a class="id" href="/tasks/{{ w.task }}">{{ w.task }}</a><span>{{ w.what }} · {{ w.title }}</span><span class="fact {{ 'held' if w.gate == 'overdue' }}">{{ w.why }}{% if w.worker %} · <a href="{{ w.worker.href }}">worker status</a>{% endif %}{% if w.gate == 'overdue' %} · <a href="/tasks/{{ w.task }}#log">open the log</a>{% endif %}</span></li>{% endfor %}</ul></div>
   {% endif %}
 </div>
