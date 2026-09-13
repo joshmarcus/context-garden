@@ -95,19 +95,26 @@ Enroll every person with `garden members add` and issue one operating installati
 `garden members issue-installation`. Write choices as JSON. Legacy labels may map to a member
 ID or to an empty string for explicit unassignment. Phase owners are separate from task
 owners/defaults; an empty phase value leaves review, kickoff, retrospective, and closure
-unavailable. Installation bindings are one-to-one, preventing a shared operating identity.
+unavailable. Each installation ID binds to exactly one member; a member may operate multiple
+installations.
 
 ```json
 {
   "owner_map": {"josh": "josh", "old-bot": ""},
   "phase_owners": {"context-garden/phase-10": "josh"},
-  "installations": {"josh-laptop": "josh", "alex-laptop": "alex"}
+  "installations": {"josh-laptop": "josh", "alex-laptop": "alex"},
+  "worker_enrollments": {"worker-josh": "josh", "worker-alex": "alex"}
 }
 ```
 
+Every configured legacy worker enrollment must map to a distinct active operating member.
+The commit revokes those legacy credentials; workers must then authenticate with an explicitly
+issued member installation credential. Multiplayer servers never accept legacy worker tokens.
+
 `preview` records no authority changes. It reports unknown owners, explicit/unassigned
 mappings, phase defaults, active attempts, pending effects/projections, dirty source, and setup
-work. Commit only the returned content-addressed ID:
+work. Multiple installations may belong to one member, while each legacy worker enrollment
+must identify a distinct operating member. Commit only the returned content-addressed ID:
 
 ```sh
 garden migration preview --choices migration.json

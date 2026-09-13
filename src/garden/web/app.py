@@ -133,9 +133,8 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
 
     def authenticate_run_credential(token: str) -> Any | None:
         """Keep member installations and legacy worker enrollments distinct."""
-        principal = registry.authenticate(token) if registry else None
-        if principal is not None:
-            return principal
+        if registry is not None:
+            return registry.authenticate(token)
         return authenticate_worker(worker_configuration(store.config), token)
 
     def member_authorizer(principal: Any, method: str, path: str) -> bool:

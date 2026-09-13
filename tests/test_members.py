@@ -600,7 +600,7 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     assert not run.process_finished()
 
 
-def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):
+def test_multiplayer_worker_protocol_rejects_legacy_enrollment_credentials(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
@@ -619,7 +619,7 @@ def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden)
         headers={"Authorization": "Bearer legacy-secret"},
         json={"host": "legacy"},
     )
-    assert response.status_code == 204
+    assert response.status_code == 403
 
 
 def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(garden):
