@@ -551,11 +551,11 @@ def _verification_brief(task: Task, verified: Any, criteria: list[str] | None = 
             lines.append(f"- **{row['criterion']}** — author gave no evidence")
     unmatched = unmatched_worker_entries(frozen, verified)
     if unmatched:
-        lines.append("\n### Reconciliation notes\n")
+        lines.append("\n### Evidence with different wording\n")
         lines.append(
-            "The author reported evidence quoting a criterion that does not match any frozen "
-            "criterion above by text; it may cover the row marked 'no evidence given' under "
-            "different wording rather than being truly missing. Judge whether it does:\n"
+            "The author reported evidence using wording that differs from the frozen criteria "
+            "above. Judge whether it provides equivalent evidence for one of those outcomes; "
+            "do not require the author to repeat criterion text verbatim:\n"
         )
         for entry in unmatched:
             evidence = entry.get("evidence") or ("not done: " + str(entry.get("reason") or "no reason given")
