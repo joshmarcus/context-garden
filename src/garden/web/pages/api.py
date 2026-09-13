@@ -244,6 +244,12 @@ def register(app: FastAPI, site: Site) -> None:
         if isinstance(principal, Principal):
             return {"name": principal.installation_id, "member_id": principal.member_id,
                     "max_parallel": 1, "member_principal": principal}
+        if hub.store.config.get("multiplayer.enabled", False):
+            # Legacy host enrollment authenticates a machine, but does not bind it to a
+            # current garden member.  Once multiplayer is enabled that identity cannot
+            # safely select an assignee's work or retain an existing lease.  Keep legacy
+            # enrollment compatibility confined to single-user mode.
+            raise HTTPException(403, "multiplayer workers require a member installation")
         from ...hosts.registry import authenticate_worker, worker_configuration
 
         if not authorization.startswith("Bearer "):
