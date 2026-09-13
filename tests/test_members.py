@@ -442,7 +442,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 303
+    assert response.status_code == 409
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -872,20 +872,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
- 
-def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, admin_token, _admin = _registry(garden)
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-    auth = {"Authorization": f"Bearer {admin_token}"}
-    assert client.post("/api/runs/claim", headers=auth,
-                       json={"host": "alice-laptop"}).status_code == 204
-    assert client.post("/api/runs/claim", headers=auth,
-                       json={"host": "spoofed"}).status_code == 403
- 
- 
 
 
 

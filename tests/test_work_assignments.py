@@ -152,6 +152,10 @@ def test_assignment_mutations_reject_scopes_outside_the_garden_catalog(tmp_path)
 
 
 def test_assignment_change_fences_existing_member_claim_before_it_is_saved(tmp_path):
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "product.md").write_text("# Demo\n")
+    (tmp_path / "demo" / "p2").mkdir()
+    (tmp_path / "demo" / "p2" / "goals.md").write_text("# P2\n")
     garden_dir = tmp_path / ".garden"
     coordinator = Coordinator(garden_dir / "coordination.db")
     registry = MemberRegistry(garden_dir, coordinator)
