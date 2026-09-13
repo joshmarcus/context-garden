@@ -18,7 +18,6 @@ import copy
 import fcntl
 import hashlib
 import os
-import hashlib
 import re
 import threading
 import time
