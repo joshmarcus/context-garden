@@ -58,6 +58,11 @@ class AuxMixin:
                 task, run, kind, execution_requirements, worker_match,
                 source_run=source_run,
             )
+        phase_claim = getattr(self, "_phase_claim_parent", None)
+        if phase_claim is not None:
+            run.phase_claim_scope = str(phase_claim["scope"])
+            run.phase_claim_generation = int(phase_claim["authority_generation"])
+            run.phase_claim_fence = int(phase_claim["fence"])
         run.branch = task.branch or task.default_branch() if task else self.final_base_for(probe)
         run.base = self.base_for(task) if task else self.final_base_for(probe)
         run.env_snapshot.update({"product": probe.product,
