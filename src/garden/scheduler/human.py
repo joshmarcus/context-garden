@@ -44,7 +44,8 @@ def task_action(effect: str):
             # Reject stale/paused assignment cursors before admitting a durable provider
             # effect. A denied action must not leave an unknown effect that blocks the
             # later, correctly authorized retry or ownership handoff.
-            self.require_task_authority(task)
+            authority_owner = self if hasattr(self, "require_task_authority") else self.scheduler
+            authority_owner.require_task_authority(task)
             expected_generation = kwargs.get("assignment_generation")
             if expected_generation is not None and self.coordinator is not None:
                 assignment = self.coordinator.refresh(allow_stale=False).snapshot.get(
