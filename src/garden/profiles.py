@@ -1,78 +1,84 @@
-"""Operating profiles (CG-221): one named stop — economy, balanced, fast, or a garden's own —
-that sets, together, worker and review concurrency, the tier map, the review and retro
-difficulty, and the observation profile from CG-219 (see observe.py), so a person turns the
-whole garden's spend up or down with one control instead of four separate config edits and a
-restart. Offline like observe.py: no network, no state; `Scheduler` (scheduler/budget.py)
-resolves the active stop and threads it through `effective()`.
+"""Operating profiles: concurrency multipliers over a garden's configuration.
+
+The built-ins never replace model, harness, observation, or resource settings. They only
+scale configured worker and review concurrency: Economy is half (rounded down, with a
+positive baseline kept at one), Default is unchanged, and Fast is double. Zero remains zero.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# The facets a stop may set; anything a stop omits leaves the caller's base value (garden.yaml,
-# or the plain default) standing — the same convention as observe profiles (see observe.py's
-# PROFILE_FIELDS).
 PROFILE_FIELDS = ("workers", "reviews", "models", "review_difficulty", "retro_difficulty", "observe")
-
-# Configuration keys supplied by an active operating profile.  This mapping is shared with
-# the configuration policy boundary so a persisted profile selection cannot bypass a plain
-# inherited project lock before a scheduler has started.
 PROFILE_KEYS: dict[str, str] = {
-    "max_parallel": "workers",
-    "review_parallel": "reviews",
-    "models": "models",
-    "review.difficulty": "review_difficulty",
-    "retro.difficulty": "retro_difficulty",
+    "max_parallel": "workers", "review_parallel": "reviews", "models": "models",
+    "review.difficulty": "review_difficulty", "retro.difficulty": "retro_difficulty",
     "observe.profile": "observe",
 }
 
-# Built-ins, named in the task brief, ordered efficient to fast. A garden may add its own
-# stops or override one of these outright under `profiles:` in garden.yaml.
+# Custom definitions with these names deliberately replace the built-in entry.
 BUILTIN_PROFILES: dict[str, dict[str, Any]] = {
-    "economy": {
-        "workers": 3, "reviews": 2,
-        "models": {"easy": "claude-haiku-4-5-20251001", "medium": "claude-haiku-4-5-20251001",
-                   "hard": "claude-haiku-4-5-20251001"},
-        "review_difficulty": "easy", "observe": "quiet",
-    },
-    "balanced": {
-        "workers": 5, "reviews": 3,
-        "models": {"easy": "claude-sonnet-5", "medium": "claude-sonnet-5", "hard": "claude-opus-4-8"},
-        "review_difficulty": "easy", "observe": "quiet",
-    },
-    "fast": {
-        "workers": 7, "reviews": 3,
-        "models": {"easy": "claude-sonnet-5", "medium": "claude-opus-4-8", "hard": "claude-opus-4-8"},
-        "review_difficulty": "medium", "observe": "watch",
-    },
+    "economy": {"multiplier": 0.5},
+    "default": {"multiplier": 1.0},
+    "fast": {"multiplier": 2.0},
 }
+LEGACY_DEFAULT_NAMES = frozenset(("", "plain", "balanced"))
 
 
 def stops(cfg: Any) -> dict[str, dict[str, Any]]:
-    """Every stop, builtins first (in the efficient-to-fast order above) then any a garden
-    defines or overrides under `profiles:` — a garden's own entry with the same name as a
-    built-in replaces it outright, like `observe.profiles` does for observe profiles."""
+    """Built-ins followed by a garden's custom profiles, which may replace a built-in."""
     out = dict(BUILTIN_PROFILES)
     out.update({k: v for k, v in (cfg.get("profiles") or {}).items() if isinstance(v, dict)})
     return out
 
 
+def normalized_name(cfg: Any, name: str | None) -> str:
+    """Map legacy empty/plain/balanced selections to Default unless custom-defined."""
+    raw = (name or "").strip()
+    if raw in LEGACY_DEFAULT_NAMES and raw not in (cfg.get("profiles") or {}):
+        return "default"
+    return raw
+
+
+def scaled_concurrency(value: Any, multiplier: float) -> int:
+    """Scale deterministically: half rounds down, positive one stays one, zero stays zero."""
+    baseline = int(value or 0)
+    if baseline <= 0:
+        return 0
+    return max(1, int(baseline * multiplier))
+
+
+def resolve(cfg: Any, name: str | None) -> dict[str, Any]:
+    """Resolve a profile's effective facets against this configuration."""
+    resolved_name = normalized_name(cfg, name)
+    custom_profiles = cfg.get("profiles") or {}
+    # Built-in Default is the absence of a profile layer.  Keeping it empty preserves
+    # configuration provenance and late-bound fallbacks such as review_parallel=None.
+    # A garden-authored profile named default remains an intentional explicit override.
+    if resolved_name == "default" and resolved_name not in custom_profiles:
+        return {}
+    stop = dict(stops(cfg).get(resolved_name) or {})
+    multiplier = stop.pop("multiplier", None)
+    if multiplier is None:
+        return stop
+    workers = cfg.get("max_parallel", 10)
+    reviews = cfg.get("review_parallel")
+    stop["workers"] = scaled_concurrency(workers, float(multiplier))
+    stop["reviews"] = (scaled_concurrency(reviews, float(multiplier))
+                       if reviews not in (None, "") else stop["workers"])
+    return stop
+
+
 def describe(stop: dict[str, Any]) -> str:
-    """One line of what a stop means, for the rail and the Config page: workers, reviews,
-    the tier map, the review tier, the observe profile — whichever fields the stop sets."""
+    """A short human-readable description for a profile control."""
+    multiplier = stop.get("multiplier")
+    if multiplier is not None:
+        return f"{multiplier:g}× configured worker and review concurrency"
     bits: list[str] = []
-    if "workers" in stop:
-        bits.append(f"{stop['workers']} workers")
-    if "reviews" in stop:
-        bits.append(f"{stop['reviews']} reviews")
-    models = stop.get("models") or {}
-    if models:
-        bits.append(", ".join(f"{tier}={model}" for tier, model in models.items()))
-    if stop.get("review_difficulty"):
-        bits.append(f"review {stop['review_difficulty']}")
-    if stop.get("retro_difficulty"):
-        bits.append(f"retro {stop['retro_difficulty']}")
-    if stop.get("observe"):
-        bits.append(f"feed {stop['observe']}")
+    for key, label in (("workers", "workers"), ("reviews", "reviews")):
+        if key in stop:
+            bits.append(f"{stop[key]} {label}")
+    for key, label in (("review_difficulty", "review"), ("retro_difficulty", "retro"), ("observe", "feed")):
+        if stop.get(key):
+            bits.append(f"{label} {stop[key]}")
     return " · ".join(bits)

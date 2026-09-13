@@ -3685,7 +3685,6 @@ def test_observe_profile_override_from_config_page(garden):
 
 def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     """The rail's discrete slider and Config page use the same live profile override."""
-    from garden.observe import resolve
     from garden.scheduler import Scheduler
     from garden.store import Store
 
@@ -3695,16 +3694,16 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     assert 'data-profile-slider' in home
     assert 'type="range"' in home
     assert 'action="/config/operating-profile"' in home
-    assert '<output for="operating-profile-slider">Plain config</output>' in home
-    assert 'aria-valuetext="No operating profile; plain garden.yaml values"' in home
-    assert "completion time and total cost depend on those settings" in home
+    assert '<output for="operating-profile-slider">Default</output>' in home
+    assert 'aria-valuetext="Default operating profile"' in home
+    assert "Default uses configured concurrency unchanged" in home
     assert "Profile changes do not resume dispatch or raise resource caps." in home
-    for name in ("economy", "balanced", "fast"):
+    for name in ("economy", "default", "fast"):
         assert f">{name.capitalize()}</span>" in home
 
     config_page = c.get("/config").text
     assert "no live override" in config_page
-    assert "economy" in config_page and "balanced" in config_page and "fast" in config_page
+    assert "economy" in config_page and "default" in config_page and "fast" in config_page
 
     r = c.post("/config/operating-profile", data={"value": "fast"}, follow_redirects=False)
     assert r.status_code == 303
@@ -3712,20 +3711,15 @@ def test_operating_profile_switch_from_the_rail_and_config_page(garden):
     assert "live override: <strong>fast</strong>" in config_page
     home = c.get("/").text
     assert '<output for="operating-profile-slider">Fast</output>' in home
-    assert "does not guarantee faster completion" in home
-    assert "live override requests 7 workers" in home
+    assert "Fast requests double configured concurrency" in home
+    assert "live override uses 2× configured worker and review concurrency" in home
 
-    # the Parallelism and observe-profile panels say the *stop*, not garden.yaml, answers
-    # max_parallel and observe.profile now — the "which values come from the stop" criterion
-    assert "no live override" in config_page  # neither knob has its own direct override
-    assert "from the operating profile <span class=\"mono\">fast</span>" in config_page
+    assert "no live override" in config_page
 
     sched = Scheduler(Store(garden), log=print)
-    from garden.profiles import BUILTIN_PROFILES
-
-    assert sched.effective_max_parallel() == BUILTIN_PROFILES["fast"]["workers"]
-    assert sched.effective("review.difficulty") == BUILTIN_PROFILES["fast"]["review_difficulty"]
-    assert resolve(sched.cfg, sched).profile == BUILTIN_PROFILES["fast"]["observe"]
+    assert sched.effective_max_parallel() == 2 * sched.cfg.get("max_parallel")
+    assert sched.review_parallel_limit() == 2 * sched.cfg.get("max_parallel")
+    assert sched.effective("review.difficulty") == sched.cfg.get("review.difficulty")
 
     r = c.post("/config/operating-profile", data={"value": "nonexistent"}, follow_redirects=False)
     assert r.status_code == 303  # flashed error, not a 500
@@ -3742,7 +3736,7 @@ def test_operating_profile_clear_reports_configured_profile(garden):
 
     config_path = garden / "garden.yaml"
     config = yaml.safe_load(config_path.read_text())
-    config["operating_profile"] = "balanced"
+    config["operating_profile"] = "balanced"  # legacy selection maps to Default
     config_path.write_text(yaml.safe_dump(config))
 
     c = client(garden)
@@ -3758,8 +3752,8 @@ def test_operating_profile_clear_reports_configured_profile(garden):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"value": "balanced", "source": "garden.yaml", "status": "saved"}
-    assert '<output for="operating-profile-slider">Balanced</output>' in c.get("/").text
+    assert response.json() == {"value": "default", "source": "garden.yaml", "status": "saved"}
+    assert '<output for="operating-profile-slider">Default</output>' in c.get("/").text
 
 
 def test_operating_profile_slider_supports_extra_stops_and_json_errors(garden):
@@ -3773,7 +3767,7 @@ def test_operating_profile_slider_supports_extra_stops_and_json_errors(garden):
     c = client(garden)
     home = c.get("/").text
     assert ">Turbo</span>" in home
-    assert 'max="4"' in home
+    assert 'max="3"' in home
     assert c.post("/config/operating-profile", data={"value": "invalid"},
                   headers={"Accept": "application/json"}).status_code == 400
 
@@ -3800,7 +3794,7 @@ def test_operating_profile_slider_renders_a_removed_selected_stop(garden):
     assert "Unavailable: turbo" in home.text
     assert '<output for="operating-profile-slider">Unavailable: turbo</output>' in home.text
     assert 'aria-valuetext="Unavailable: turbo operating profile"' in home.text
-    assert "names an unavailable profile; using plain garden.yaml values." in home.text
+    assert "names an unavailable profile; using configured values." in home.text
 
 
 @pytest.mark.browser
@@ -3836,10 +3830,10 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.get_by_text("saved ✓").wait_for()
             assert slider.get_attribute("aria-valuetext") == "Fast operating profile"
             assert "fast" in page.locator(".profile-current").inner_text().lower()
-            assert "does not guarantee faster completion" in page.locator(
+            assert "Fast requests double configured concurrency" in page.locator(
                 "[data-profile-tradeoff]"
             ).inner_text()
-            assert "live override requests 7 workers" in page.locator(
+            assert "live override uses 2× configured worker and review concurrency" in page.locator(
                 "[data-profile-meaning]"
             ).inner_text()
             page.screenshot(path=str(tmp_path / "profile-slider-1280-light.png"), full_page=True)
@@ -3896,7 +3890,7 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.evaluate("""
                 () => {
                   const input = document.querySelector("#operating-profile-slider");
-                  input.value = "1";  // Economy, the value saved before the pending request.
+                  input.value = "0";  // Economy, the value saved before the pending request.
                   input.dispatchEvent(new Event("change", {bubbles: true}));
                   window.resolveProfileSave(new Response(JSON.stringify({value: "fast", source: "live override", status: "saved"}), {
                     status: 200, headers: {"Content-Type": "application/json"},
@@ -3908,18 +3902,16 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.get_by_text("saved ✓").wait_for()
             page.reload(wait_until="networkidle")
             assert "economy" in page.locator(".profile-current").inner_text().lower()
-            # Clearing with no garden.yaml profile returns to plain values and
-            # must not prefix that explanation as though plain config were a profile.
+            # Default remains an explicit, keyboard-selectable baseline.
             slider.press("Home")
+            slider.press("ArrowRight")
             page.wait_for_function("""
                 () => document.querySelector("[data-profile-meaning]").textContent ===
-                  "No profile requested; using plain garden.yaml values."
+                  "live override uses 1× configured worker and review concurrency."
             """)
-            assert slider.get_attribute("aria-valuetext") == (
-                "No operating profile; plain garden.yaml values"
-            )
+            assert slider.get_attribute("aria-valuetext") == "Default operating profile"
             assert page.locator("[data-profile-meaning]").inner_text() == (
-                "No profile requested; using plain garden.yaml values."
+                "live override uses 1× configured worker and review concurrency."
             )
             # Clearing the live override reveals a profile named by garden.yaml.
             # The successful response must immediately reconcile the control and
@@ -3927,20 +3919,20 @@ def test_operating_profile_slider_works_with_keyboard_in_a_live_app(garden, tmp_
             page.evaluate("""
                 () => {
                   window.fetch = () => Promise.resolve(new Response(JSON.stringify({
-                    value: "balanced", source: "garden.yaml", status: "saved",
+                    value: "default", source: "garden.yaml", status: "saved",
                   }), {status: 200, headers: {"Content-Type": "application/json"}}));
                 }
             """)
             slider.press("End")
             page.wait_for_function("""
                 () => document.querySelector("#operating-profile-slider")
-                  .getAttribute("aria-valuetext") === "Balanced operating profile"
+                  .getAttribute("aria-valuetext") === "Default operating profile"
             """)
-            assert slider.get_attribute("aria-valuetext") == "Balanced operating profile"
-            assert "Balanced mixes concurrency" in page.locator(
+            assert slider.get_attribute("aria-valuetext") == "Default operating profile"
+            assert "Default uses configured concurrency" in page.locator(
                 "[data-profile-tradeoff]"
             ).inner_text()
-            assert "garden.yaml requests 5 workers" in page.locator(
+            assert "garden.yaml uses 1× configured worker and review concurrency" in page.locator(
                 "[data-profile-meaning]"
             ).inner_text()
             page.set_viewport_size({"width": 390, "height": 844})

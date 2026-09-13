@@ -15,7 +15,8 @@ from ..configuration import (
 )
 from ..model import Task, now_iso
 from ..notify import notify
-from ..profiles import PROFILE_KEYS
+from ..profiles import PROFILE_KEYS, normalized_name
+from ..profiles import resolve as resolve_profile
 from ..profiles import stops as profile_stops
 
 
@@ -344,30 +345,31 @@ class BudgetMixin:
         return profile_stops(self.cfg)
 
     def operating_profile_name(self) -> str:
-        """The active stop's name, or "" when none is set (plain garden.yaml/live-override
-        values). A live override on `operating_profile` (`garden profile <name>` or the rail)
-        wins; otherwise the garden.yaml `operating_profile` key, if set."""
+        """The active stop name, with absent legacy selections represented as Default."""
         ov = self.overrides()
         if "operating_profile" in ov:
-            return str(ov["operating_profile"] or "")
-        return str(self.cfg.get("operating_profile") or "")
+            return normalized_name(self.cfg, str(ov["operating_profile"] or ""))
+        return normalized_name(self.cfg, str(self.cfg.get("operating_profile") or ""))
 
     def operating_profile(self) -> dict[str, Any]:
         """The resolved fields of the active stop, or {} if none is active or its name is
         unrecognised (a stop removed from `profiles:` after being selected doesn't crash the
         scheduler; effective() just falls through to garden.yaml values)."""
-        return dict(self.operating_profile_stops().get(self.operating_profile_name()) or {})
+        return resolve_profile(self.cfg, self.operating_profile_name())
 
     def set_operating_profile(self, name: str, by: str = "cli") -> None:
         """Switch the active stop live: an empty name clears it, back to plain garden.yaml
         values. Emits `profile_changed` (from/to) so the change is visible on the costs chart
         once it reads the event log, besides the generic `config_override` trail."""
         assert_mutation_allowed(self.cfg.data, "operating_profile")
-        name = (name or "").strip()
+        raw_name = (name or "").strip()
+        # An empty request is the supported way to drop a live override. Persisted empty
+        # selections still resolve to Default through operating_profile_name().
+        name = normalized_name(self.cfg, raw_name) if raw_name else ""
         if name and name not in self.operating_profile_stops():
             raise ValueError(f"unknown operating profile {name!r}")
         old = self.operating_profile_name()
-        prospective = dict(self.operating_profile_stops().get(name) or {})
+        prospective = resolve_profile(self.cfg, name)
         for key, profile_key in PROFILE_KEYS.items():
             if key in self.overrides():
                 continue

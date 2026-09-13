@@ -197,7 +197,7 @@
   <form method="post" action="/config/operating-profile" class="actions" data-autosave>
     <label class="muted" for="operating-profile-override">live override</label>
     <select id="operating-profile-override" name="value" onchange="this.form.requestSubmit()">
-      <option value="" {% if not operating_profile_override %}selected{% endif %}>none — plain garden.yaml values</option>
+      <option value="" {% if not operating_profile_override %}selected{% endif %}>none — use configured Default</option>
       {% for name in operating_profile_stop_names %}
       <option value="{{ name }}" {% if operating_profile_override == name %}selected{% endif %}>{{ name }}</option>
       {% endfor %}
@@ -206,9 +206,9 @@
     <span class="autosave-mark" aria-live="polite"></span>
   </form>
   <p class="muted" style="margin:8px 0 0">
-    Sets workers, reviews, the model tier map, the review and retro tiers and the observation
-    feed together, within one tick, no restart. A more specific live override (e.g.
-    max_parallel above) still wins for that one knob.
+    Economy and Fast scale only configured worker and review concurrency (0.5× and 2×).
+    Default is configured concurrency (1×); models, harnesses, observation and caps stay unchanged.
+    Lowering a profile limits new admissions without stopping running work.
   </p>
   <table style="margin-top:10px; font-size:12.5px">
     <tr><th>stop</th><th>workers</th><th>reviews</th><th>review</th><th>retro</th><th>feed</th></tr>

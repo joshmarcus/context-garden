@@ -767,18 +767,9 @@ class Site:
         visible_products = [p for p in s.products()
                             if self.allowed_projects(request) is None or p.name in self.allowed_projects(request)]
         profile_tradeoffs = {
-            "economy": (
-                "Economy favors fewer concurrent runs and lower-cost models; "
-                "completion time and total cost can still vary."
-            ),
-            "balanced": (
-                "Balanced mixes concurrency, model capability, and cost; "
-                "completion time and total cost can still vary."
-            ),
-            "fast": (
-                "Fast favors more concurrency and higher-capability models; "
-                "it may cost more and does not guarantee faster completion."
-            ),
+            "economy": "Economy requests half the configured concurrency; resource and budget caps still apply.",
+            "default": "Default uses configured concurrency unchanged; resource and budget caps still apply.",
+            "fast": "Fast requests double configured concurrency; resource and budget caps still apply.",
         }
 
         def profile_tradeoff_for(name: str) -> str:
@@ -786,27 +777,19 @@ class Site:
                 return profile_tradeoffs[name]
             if name:
                 return (
-                    "This custom profile changes the requested concurrency and model mix; "
-                    "its completion time and total cost can vary."
+                    "This custom profile may change configured settings; resource and budget caps still apply."
                 )
             return (
-                "Plain config uses individually configured concurrency and models; "
-                "completion time and total cost depend on those settings."
+                "Default uses configured concurrency; resource and budget caps still apply."
             )
 
         profile_options = [{
-            "value": "",
-            "label": "Plain config",
-            "stop_label": "Plain",
-            "tradeoff": profile_tradeoff_for(""),
-            "meaning": "No profile requested; using plain garden.yaml values.",
-        }]
-        profile_options.extend({
             "value": name,
-            "label": name.capitalize(),
+            "label": "Default" if name == "default" else name.capitalize(),
+            "stop_label": "Default" if name == "default" else name.capitalize(),
             "tradeoff": profile_tradeoff_for(name),
             "meaning": describe_stop(stop),
-        } for name, stop in stops.items())
+        } for name, stop in stops.items()]
         # A live override may name a custom stop that was later removed from
         # garden.yaml.  The scheduler deliberately treats that as an empty
         # profile until the operator chooses another stop; keep it visible in
@@ -869,11 +852,8 @@ class Site:
             "operating_profile_options": profile_options,
             "operating_profile": active,
             "operating_profile_label": active_option["label"],
-            "operating_profile_source": (
-                "live override" if "operating_profile" in profile_overrides
-                else ("garden.yaml" if active else "plain garden.yaml values")
-            ),
-            "operating_profile_meaning": describe_stop(stops.get(active) or {}) if active else "",
+            "operating_profile_source": "live override" if "operating_profile" in profile_overrides else "garden.yaml",
+            "operating_profile_meaning": describe_stop(stops.get(active) or {}),
             "operating_profile_tradeoff": profile_tradeoff_for(active),
             "operating_profile_overrides": overridden_facets,
             "operating_profile_spend_rate": (run_store.spend_since(parse_since("1h"))

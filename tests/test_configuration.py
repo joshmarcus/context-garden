@@ -240,7 +240,7 @@ def test_saved_profile_selection_cannot_bypass_plain_lock_after_restart(garden):
     from garden.store import Store
 
     fresh = Scheduler(Store(garden))
-    assert fresh.operating_profile_name() == ""
+    assert fresh.operating_profile_name() == "default"
     assert fresh.effective("max_parallel", product="demo") == 2
 
 
