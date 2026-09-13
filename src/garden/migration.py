@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from .coordination import PROTOCOL_VERSION, Coordinator
+from .coordination import PROTOCOL_VERSION, Conflict, Coordinator
 from .members import MemberRegistry, Principal
 from .model import effective_owner, now_iso
 from .runs import RunStore
@@ -104,7 +104,6 @@ class GardenMigration:
 
         bindings: list[dict[str, str]] = []
         seen_installations: set[str] = set()
-        seen_members: set[str] = set()
         registry_state = registry._read()
         enrolled_installations = {
             key: str(row.get("member_id", ""))
@@ -113,12 +112,11 @@ class GardenMigration:
         }
         for installation, member in sorted(installation_map.items()):
             installation, member = str(installation), str(member)
-            if (installation in seen_installations or member in seen_members
+            if (installation in seen_installations
                     or member not in active_members
                     or enrolled_installations.get(installation) != member):
                 raise MigrationRefused("each installation must bind unambiguously to one active member")
             seen_installations.add(installation)
-            seen_members.add(member)
             bindings.append({"installation_id": installation, "member_id": member})
 
         runs = RunStore(self.store.config.garden_dir)
@@ -136,6 +134,8 @@ class GardenMigration:
             blockers.append("local edits must be committed, stashed, or discarded")
         if pending["pending_outbox"] or pending["blocking_effects"]:
             blockers.append("pending coordinator effects must be reconciled")
+        if pending["active_claims"]:
+            blockers.append("active coordinator claims must drain or be cancelled")
         if not bindings:
             blockers.append("each legacy server/operator installation must be bound to one member")
         missing_installations = sorted(set(enrolled_installations) - seen_installations)
@@ -150,6 +150,7 @@ class GardenMigration:
                 "garden_id": self._garden_id(registry), "tasks": tasks, "phases": phases,
                 "installations": bindings, "unknown_owners": sorted(unknown),
                 "active_attempts": active, "pending_effects": pending["blocking_effects"],
+                "active_claims": pending["active_claims"],
                 "pending_projections": pending["pending_outbox"], "local_edits": dirty,
                 "required_setup": blockers, "ready": not blockers}
         plan["preview_id"] = _plan_id(plan)
@@ -183,19 +184,16 @@ class GardenMigration:
             journal["snapshot"] = str(self._snapshot(preview_id))
             _write_json(journal_path, journal)
         coordinator = Coordinator(self.store.config.garden_dir / "coordination.db")
-        completed = set(journal.get("authority", []))
         rows = [("task", row["id"], row["member_id"]) for row in plan["tasks"]]
         rows += [("phase", row["scope"], row["member_id"]) for row in plan["phases"]]
-        for kind, scope, owner in rows:
-            key = f"{kind}:{scope}"
-            if key in completed:
-                continue
-            coordinator.set_authority(actor, garden_id=plan["garden_id"], kind=kind,
-                scope=scope, owner_id=owner, authority_generation=1, expected_version=0,
-                operation_id=f"migration:{preview_id}:{key}", protocol_version=plan["protocol_version"])
-            completed.add(key)
-            journal["authority"] = sorted(completed)
-            _write_json(journal_path, journal)
+        try:
+            coordinator.initialize_authority(actor, garden_id=plan["garden_id"], rows=rows,
+                operation_id=f"migration:{preview_id}:authority",
+                protocol_version=plan["protocol_version"])
+        except Conflict as exc:
+            raise MigrationRefused(str(exc)) from exc
+        journal["authority"] = sorted(f"{kind}:{scope}" for kind, scope, _owner in rows)
+        _write_json(journal_path, journal)
         fence = {"version": MIGRATION_VERSION, "mode": "multiplayer", "garden_id": plan["garden_id"],
                  "preview_id": preview_id, "protocol_version": plan["protocol_version"],
                  "snapshot": journal["snapshot"], "committed_at": now_iso()}
@@ -247,6 +245,8 @@ class GardenMigration:
                                "authority-mode.json", "authoritative-snapshot.json",
                                "authoritative-projections.json"}
                     if relative.parent == Path(".garden") and relative.name in private:
+                        continue
+                    if relative.parts[:2] == (".garden", "hosts"):
                         continue
                     if relative.name in {"garden.yaml", "garden.local.yaml"}:
                         self._add_standalone_config(archive, source, relative)
