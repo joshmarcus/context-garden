@@ -238,6 +238,8 @@ class Scheduler(
             allow_stale=False
         ).snapshot
         assignment = snapshot.get("assignment") or {}
+        if not assignment:
+            raise PermissionError(f"{task.id} has no execution assignment")
         if (assignment.get("member_id") == self.coordinator.member_id
                 and assignment.get("project") == task.product
                 and assignment.get("phase") == task.phase
