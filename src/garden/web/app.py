@@ -23,6 +23,7 @@ from markupsafe import Markup
 from ..harness import DIFFICULTIES
 from ..members import MemberRegistry, authorize
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
+from ..multiplayer_client import MultiplayerUnavailable
 from ..now1 import board_run_fact_html, live_clock_html
 from ..plants import (
     DEFS,
@@ -129,7 +130,7 @@ def create_app(
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
     local_session_authenticator = None
     if multiplayer and loopback_listener(host):
-        from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
+        from ..multiplayer_client import MultiplayerClient
 
         try:
             connected_client = MultiplayerClient.from_config(store.config)
