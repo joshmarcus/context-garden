@@ -234,6 +234,10 @@ class Scheduler(
             return False
         return True
 
+    def require_task_authority(self, task: Task) -> None:
+        """Refresh and validate the current assignment and version before a direct action."""
+        self._task_authority(task)
+
     def phase_is_authorized(self, product: str, phase: str) -> bool:
         """Phase-wide work belongs only to its explicit owner, never to an administrator."""
         if self.coordinator is None:

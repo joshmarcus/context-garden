@@ -101,6 +101,7 @@ def register(app: FastAPI, site: Site) -> None:
                     for t in sorted(ph.tasks, key=lambda t: (t.priority, t.id))]
         hidden_count = sum(1 for row in all_rows if row[2] in ("done", "cancelled"))
         rows = [row for row in all_rows if not hide_done or row[2] not in ("done", "cancelled")]
+        phase_owner = site.registry.phase_owner(ph.product, ph.name) if site.registry else None
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
             sheet=sheet,
@@ -116,6 +117,7 @@ def register(app: FastAPI, site: Site) -> None:
             kickoff=_kickoff_panel(s, sched, ph),
             retro_verdict=verdict_view,
             dependency_labels=lambda task: site.dependency_labels(task, tasks),
+            phase_operation_owner=phase_owner.owner_id if phase_owner else "",
         ))
 
     @app.get("/herbarium", response_class=HTMLResponse)
