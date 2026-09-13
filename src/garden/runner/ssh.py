@@ -37,6 +37,7 @@ import io
 import json
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import subprocess
@@ -517,6 +518,18 @@ class SSHRunner(Runner):
         receipt = run.path / "ssh-completion.json"
         if receipt.exists():
             saved = json.loads(receipt.read_text())
+            request = json.loads((run.path / "ssh-request.json").read_text()).get("request", {})
+            head = str(saved.get("head") or "")
+            identity_matches = bool(request.get("identity")) and saved.get("identity") == request.get("identity")
+            branch_matches = saved.get("branch") == run.branch
+            run_matches = request.get("run_id") == run.run_id and request.get("task") == run.task_id
+            result["ssh_publication"] = {
+                "head": head,
+                "identity_matches": identity_matches,
+                "branch_matches": branch_matches,
+                "run_matches": run_matches,
+                "head_is_exact": bool(re.fullmatch(r"[0-9a-fA-F]{40,64}", head)),
+            }
             run.recovery_artifacts.append({"kind": "ssh", "head": saved.get("head", ""),
                                            "directory": saved.get("directory", ""),
                                            "session": saved.get("session", ""), "run": run.run_id})

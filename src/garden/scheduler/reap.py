@@ -413,6 +413,13 @@ class ReapMixin:
         run.exit_code = run.read_exit_code()
         run.finished_at = now_iso()
         collected = runner.collect(run)
+        if runner.name == "ssh":
+            publication = collected.get("ssh_publication") or {}
+            run.env_snapshot["ssh_reported_head"] = str(publication.get("head") or "")
+            if all(publication.get(key) for key in (
+                "identity_matches", "branch_matches", "run_matches", "head_is_exact"
+            )):
+                run.pushed_head = str(publication["head"]).lower()
         run.result = collected.get("result") or {}
         run.usage = collected.get("usage") or {}
         run.cost_usd = collected.get("cost_usd")
@@ -661,6 +668,7 @@ class ReapMixin:
         if runner.remote or run.completion_mode == "pushed":
             wt = self.worktree_for(task)
             canonical = None
+            publication_failure = ""
             try:
                 # SSH/pull workers publish their result remotely, but checks may still use
                 # an explicitly provisioned local canonical checkout.  Claim and preflight
@@ -671,7 +679,8 @@ class ReapMixin:
                     canonical = self.prepare_canonical_run(task, run, local_runner, branch, base)
                     if canonical is not None:
                         wt = canonical
-                gitops.fetch(repo)
+                if not gitops.fetch(repo):
+                    raise gitops.GitError("could not query the configured source repository")
             except (gitops.GitError, CanonicalCheckoutError) as e:
                 run.status = "failed"
                 run.error = f"could not prepare local canonical checkout: {e}"
@@ -699,24 +708,56 @@ class ReapMixin:
                 else:
                     # SSH runners push the task branch themselves and predate the pull-based
                     # worker's lease-specific staging transport.
-                    remote_head = gitops.git("rev-parse", "--verify", f"origin/{branch}", cwd=repo).strip()
+                    if runner.name == "ssh" and not run.pushed_head:
+                        reported = str((run.env_snapshot or {}).get("ssh_reported_head") or "")
+                        detail = "absent" if not reported else "unparseable or from a stale run identity"
+                        raise gitops.GitError(f"unsafe remote state: worker-reported commit is {detail}")
+                    remote_head = gitops.remote_head(repo, branch)
+                    if not remote_head:
+                        raise gitops.GitError("remote worker finished without pushing the expected branch")
                     if run.pushed_head and remote_head != run.pushed_head:
                         raise gitops.GitError("the pushed branch head does not match the head reported by the worker")
+                    fence = (run.start_head
+                             or str((run.env_snapshot or {}).get("prepared_source_head") or "")
+                             or gitops.base_ref(repo, base))
+                    if runner.name == "ssh" and (
+                        not fence or not gitops.is_ancestor(repo, fence, f"origin/{branch}")
+                    ):
+                        raise gitops.GitError("unsafe remote state: reported head violates the dispatch history fence")
+                    if runner.name == "ssh" and self.github.available and self.slug_for(task):
+                        existing = self.github.find_pr(self.slug_for(task), branch)
+                        if existing and existing.state == "OPEN" and existing.url != task.pr:
+                            raise gitops.GitError(
+                                "unsafe remote state: expected branch is claimed by a conflicting pull request"
+                            )
                     ahead = int(gitops.git("rev-list", "--count", f"{gitops.base_ref(repo, base)}..origin/{branch}", cwd=repo).strip() or 0)
-            except gitops.GitError as e:
+            except (gitops.GitError, GitHubError) as e:
                 ahead = 0
-                if run.pushed_head:
-                    run.error = str(e)
+                publication_failure = str(e)
             if ahead == 0 and not (run.completion_mode == "pushed" and status == "no_change"):
                 run.status = "failed"
-                run.error = "no commits pushed"
+                run.error = publication_failure or "no commits pushed"
                 run.save()
                 self._record_implementation_failure(
                     task, "missing_expected_changes", run.run_id,
-                    "remote worker finished without pushing commits",
+                    run.error,
                 )
-                self._retry_or_fail(task, run, rep, "remote worker finished without pushing commits")
+                diagnostic = (
+                    "remote worker finished without pushing commits"
+                    if not publication_failure else publication_failure
+                )
+                self._retry_or_fail(task, run, rep, diagnostic)
                 return
+            if runner.name == "ssh" and not (run.env_snapshot or {}).get("remote_branch_recovered"):
+                run.env_snapshot.update({
+                    "remote_branch_recovered": True,
+                    "recovered_ref": f"refs/heads/{branch}",
+                    "recovered_head": run.pushed_head,
+                })
+                run.save()
+                self.events.emit("remote_branch_recovered", task.id, run=run.run_id,
+                                 ref=f"refs/heads/{branch}", head=run.pushed_head)
+                self.log(f"{task.id}: lost SSH push receipt recovered at {branch} ({run.pushed_head[:12]})")
             run.env_snapshot["remote_branch_promoted"] = True
             run.status = "done"
             run.save()
