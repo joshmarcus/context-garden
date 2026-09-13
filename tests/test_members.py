@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -58,6 +59,42 @@ def test_disabled_members_and_revoked_or_rotated_installations_are_rejected(tmp_
     second = registry.issue_installation(alice, "bob", "bob-phone")
     registry.set_member_active(alice, "bob", False)
     assert registry.authenticate(second) is None
+
+
+def test_disable_and_revocation_fence_affected_member_claims(tmp_path):
+    calls = []
+    coordinator = SimpleNamespace(
+        fence_member_claims=lambda actor, **request: calls.append((actor, request))
+    )
+    registry = MemberRegistry(tmp_path / ".garden", coordinator)
+    token = registry.enroll_administrator("garden-1", "alice", "alice-laptop")
+    alice = registry.authenticate(token)
+    assert alice is not None
+    registry.add_member(alice, "bob", "member")
+    bob_token = registry.issue_installation(alice, "bob", "bob-desktop")
+    bob = registry.authenticate(bob_token)
+    assert bob is not None
+
+    rotated = registry.rotate_installation(bob, "bob-desktop")
+    bob = registry.authenticate(rotated)
+    assert bob is not None
+    registry.revoke_installation(bob, "bob-desktop")
+    registry.set_member_active(alice, "bob", False)
+
+    assert calls[0][1] == {
+        "garden_id": "garden-1", "member_id": "bob",
+        "installation_id": "bob-desktop",
+        "operation_id": "membership:credential:bob-desktop:bob:1",
+    }
+    assert calls[1][1] == {
+        "garden_id": "garden-1", "member_id": "bob",
+        "installation_id": "bob-desktop",
+        "operation_id": "membership:credential:bob-desktop:bob:2",
+    }
+    assert calls[2][1] == {
+        "garden_id": "garden-1", "member_id": "bob", "installation_id": "",
+        "operation_id": "membership:disable:bob:1",
+    }
 
 
 def test_assigned_visibility_records_concrete_projects(tmp_path):
