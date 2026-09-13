@@ -243,7 +243,12 @@ class Scheduler(
             allow_stale=False
         ).snapshot
         assignment = snapshot.get("assignment") or {}
-        if (not assignment.get("enabled") or assignment.get("member_id") != self.coordinator.member_id
+        if (assignment.get("member_id") == self.coordinator.member_id
+                and assignment.get("project") == task.product
+                and assignment.get("phase") == task.phase
+                and not assignment.get("enabled")):
+            raise PermissionError(f"{task.id} is paused by the authenticated member's assignment")
+        if (assignment.get("member_id") != self.coordinator.member_id
                 or assignment.get("project") != task.product
                 or assignment.get("phase") != task.phase):
             raise PermissionError(f"{task.id} is outside the authenticated member's assignment")
