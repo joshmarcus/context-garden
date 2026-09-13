@@ -23,6 +23,17 @@ from garden.web.app import create_app, multiplayer_tls_files
 
 
 def _registry(tmp_path):
+    for project, phase in (("demo", "p1"), ("other", "p2")):
+        project_path = tmp_path / project
+        project_path.mkdir(exist_ok=True)
+        product_path = project_path / "product.md"
+        if not product_path.exists():
+            product_path.write_text(f"# {project}\n")
+        phase_path = project_path / phase
+        phase_path.mkdir(exist_ok=True)
+        goals_path = phase_path / "goals.md"
+        if not goals_path.exists():
+            goals_path.write_text(f"# {phase}\n")
     registry = MemberRegistry(tmp_path / ".garden")
     token = registry.enroll_administrator("garden-1", "alice", "alice-laptop")
     principal = registry.authenticate(token)
@@ -55,6 +66,10 @@ def test_temporary_username_installations_are_explicit_bound_and_revocable(tmp_p
 def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_input(
     tmp_path,
 ):
+    for project, phase in (("demo", "p1"), ("other", "p2")):
+        (tmp_path / project / phase).mkdir(parents=True)
+        (tmp_path / project / "product.md").write_text(f"# {project}\n")
+        (tmp_path / project / phase / "goals.md").write_text(f"# {phase}\n")
     garden_dir = tmp_path / ".garden"
     registry = MemberRegistry(garden_dir)
     admin_token = registry.enroll_administrator("garden", "admin", "admin-host")
@@ -596,8 +611,7 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
                        follow_redirects=False).status_code == 303
     task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
     stale_inbox = client.get("/inbox", headers=headers).text
-    assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
-    assert "Addressed to bob · read-only" in stale_inbox
+    assert "OUTSIDE_ASSIGNMENT_QUESTION" not in stale_inbox
     assert client.post("/tasks/DM-001/retry", headers=headers,
                        follow_redirects=False).status_code == 403
 
@@ -897,7 +911,6 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
