@@ -69,18 +69,20 @@ def _coordinated_scheduler(sched, principal, token):
 
 def test_effective_owner_requires_active_membership_and_preserves_precedence(tmp_path):
     registry, admin, _alice = _registry(tmp_path)
-    phase = _phase(tmp_path, default_owner="alice")
+    phase = _phase(tmp_path, default_owner="legacy-team")
     inherited = _task(tmp_path, "DM-1")
     override = _task(tmp_path, "DM-2", owner="bob")
     explicit_none = _task(tmp_path, "DM-3")
     explicit_none.owner_unassigned = True
 
+    assert registry.effective_task_owner(inherited, phase) == ("", "unassigned")
+    registry.set_phase_owner(admin, "demo", "p1", "alice")
     assert registry.effective_task_owner(inherited, phase) == ("alice", "phase")
     assert registry.effective_task_owner(override, phase) == ("bob", "task")
     assert registry.effective_task_owner(explicit_none, phase) == ("", "unassigned")
     registry.set_member_active(admin, "bob", False)
     assert registry.effective_task_owner(override, phase) == ("", "invalid")
-    phase.meta["default_owner"] = "legacy-team"
+    registry.set_member_active(admin, "alice", False)
     assert registry.effective_task_owner(inherited, phase) == ("", "invalid")
 
 
@@ -171,6 +173,8 @@ def test_phase_owner_is_explicit_distinct_versioned_and_attributed(tmp_path):
 def test_execution_scope_keeps_dependencies_holds_and_other_phases_out(tmp_path):
     registry, admin, _alice = _registry(tmp_path)
     registry.set_assignment(admin, "alice", "demo", "p1", advance=True)
+    registry.set_phase_owner(admin, "demo", "p1", "alice")
+    registry.set_phase_owner(admin, "demo", "p2", "alice")
     phase = _phase(tmp_path, default_owner="alice")
     other_phase = Phase("demo", "p2", tmp_path / "demo/p2", None, [], [], [],
                         meta={"default_owner": "alice"})
@@ -306,7 +310,7 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
         alice, "alice", task.product, task.phase, enabled=False,
         expected_generation=assignment.generation,
     )
-    with pytest.raises(PermissionError, match="outside"):
+    with pytest.raises(PermissionError, match="paused"):
         bound.retry(task, assignment_generation=paused.generation)
     assert task.status == Status.FAILED
 
@@ -321,7 +325,7 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
     assert task.status == Status.FAILED
 
     registry.clear_assignment(alice, "alice", expected_generation=wrong_phase.generation)
-    with pytest.raises(PermissionError, match="outside"):
+    with pytest.raises(PermissionError, match="no execution assignment"):
         bound.retry(task)
     assert task.status == Status.FAILED
 
