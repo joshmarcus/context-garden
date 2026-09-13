@@ -475,7 +475,9 @@ class Scheduler(
         # startup fence has replaced any unaccepted worker-written configuration.
         from ..plugins import inspect_lock
 
-        self.plugins, self.plugin_lock = inspect_lock(self.store.root, self.cfg.get("plugins"))
+        self.plugins, self.plugin_lock = inspect_lock(
+            self.store.root, self.cfg.get("plugins"), cancelled=self.maintenance_requested,
+        )
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
@@ -509,11 +511,20 @@ class Scheduler(
                     )
                 if route and route["provider"] != "github":
                     factory = factories.get(route["provider"])
-                    if factory is None:
+                    if factory is not None:
+                        adapter = factory(route)
+                    elif "/" in route["provider"]:
+                        from ..plugins import resolve_source_control_provider
+
+                        adapter, _provenance = resolve_source_control_provider(
+                            self.plugins, route["provider"], route,
+                            audit_path=self.cfg.garden_dir / "plugin-actions.jsonl",
+                        )
+                    else:
                         raise UnsupportedOperation(
                             f"source-control provider {route['provider']!r} has no registered adapter"
                         )
-                    routes[(route["provider"], route["repository"])] = factory(route)
+                    routes[(route["provider"], route["repository"])] = adapter
                 elif route and (isinstance(configured.get("github"), dict) or explicit_source):
                     host = route.get("host") or route.get("web_url", "").removeprefix("https://")
                     api_base = route.get("api_base") or (
@@ -1295,7 +1306,7 @@ class Scheduler(
             from ..plugins import inspect_lock
 
             self.plugins, self.plugin_lock = inspect_lock(
-                self.store.root, self.cfg.get("plugins")
+                self.store.root, self.cfg.get("plugins"), cancelled=self.maintenance_requested,
             )
             if not self.plugin_lock.valid:
                 rep.errors.append(self.plugin_lock.hold_message)

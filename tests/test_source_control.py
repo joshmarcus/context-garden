@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import threading
 
 import httpx
 import pytest
@@ -8,6 +9,18 @@ import pytest
 from garden.branch_cleanup import BranchDisposition
 from garden.config import Config
 from garden.github import Feedback, GitHub, GitHubError, PRInfo
+from garden.plugins import (
+    API_VERSION,
+    LoadedPlugin,
+    LoadedPlugins,
+    PluginInvocationCancelled,
+    PluginInvocationFailed,
+    PluginInvocationTimedOut,
+    PluginRedactor,
+    ProviderCheckResult,
+    manifest_from_dict,
+    resolve_source_control_provider,
+)
 from garden.source_control import (
     AuthenticationFailure,
     CertificateFailure,
@@ -41,6 +54,352 @@ wLRGNszvaR1xuPn9b+0vIYHHTEmKQZlxCLV5Q1VU45Ace3141bX4QWI0L/LJashe
 qc+WexuUU9R9IbU=
 -----END CERTIFICATE-----
 """
+
+
+def test_plugin_source_control_facade_excludes_privileged_actions(monkeypatch):
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [{
+            "name": "example-plugin/source", "kind": "source_control_provider",
+            "entry_point": "example_plugin:source",
+        }],
+    })
+    loaded = LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor(()), "sha256:" + "0" * 64,
+        "sha256:" + "1" * 64,
+    ),))
+
+    class Provider:
+        available = True
+
+        def describe(self):
+            return "fixture"
+
+        me = describe
+
+        def is_authenticated(self):
+            return True
+
+        def operation(self, *args, **kwargs):
+            return None
+
+        repository_from_remote = get_pr = create_pr = update_pr = operation
+        feedback_since = comment = operation
+
+        def merge_pr(self, *args, **kwargs):
+            raise AssertionError("privileged")
+
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object", lambda _reference: lambda **_kwargs: Provider(),
+    )
+    provider, provenance = resolve_source_control_provider(
+        loaded, "example-plugin/source", {"repository": "team/repo"},
+    )
+
+    assert provider.get_pr("team/repo", 1) is None
+    assert provenance.capability_name == "example-plugin/source"
+    assert not hasattr(provider, "merge_pr")
+    assert not hasattr(provider, "approve")
+    assert not hasattr(provider, "deploy")
+
+
+def test_plugin_source_control_operations_are_bounded_and_cancellable(monkeypatch):
+    release = threading.Event()
+    cancelled = False
+
+    class Provider:
+        available = True
+
+        def describe(self):
+            return "fixture"
+
+        me = describe
+
+        def is_authenticated(self):
+            return True
+
+        def operation(self, *_args, **_kwargs):
+            return None
+
+        repository_from_remote = get_pr = create_pr = update_pr = operation
+
+        def blocking_operation(self, *_args, **_kwargs):
+            return release.wait(1)
+
+        feedback_since = comment = blocking_operation
+
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [{
+            "name": "example-plugin/source", "kind": "source_control_provider",
+            "entry_point": "example_plugin:source",
+        }],
+    })
+    loaded = LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor(()), "sha256:" + "0" * 64, "sha256:" + "1" * 64,
+    ),), timeout_seconds=0.01, cancelled=lambda: cancelled)
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object", lambda _reference: lambda **_kwargs: Provider(),
+    )
+    provider, _ = resolve_source_control_provider(loaded, "example-plugin/source", {})
+
+    with pytest.raises(PluginInvocationTimedOut, match="example-plugin/source"):
+        provider.comment("team/repo", 1, "hello")
+    release.set()
+    cancelled = True
+    with pytest.raises(PluginInvocationCancelled, match="example-plugin/source"):
+        provider.get_pr("team/repo", 1)
+
+
+@pytest.mark.parametrize("blocked_stage", ["entry-point load", "capability construction"])
+def test_plugin_source_control_loading_and_construction_are_bounded(monkeypatch, blocked_stage):
+    release = threading.Event()
+
+    class Provider:
+        available = True
+
+        def describe(self):
+            return "fixture"
+
+        me = describe
+
+        def is_authenticated(self):
+            return True
+
+        def operation(self, *_args, **_kwargs):
+            return None
+
+        repository_from_remote = get_pr = create_pr = update_pr = operation
+        feedback_since = comment = operation
+
+    def load(_reference):
+        if blocked_stage == "entry-point load":
+            release.wait(1)
+
+        def construct(**_kwargs):
+            if blocked_stage == "capability construction":
+                release.wait(1)
+            return Provider()
+
+        return construct
+
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [{
+            "name": "example-plugin/source", "kind": "source_control_provider",
+            "entry_point": "example_plugin:source",
+        }],
+    })
+    loaded = LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor(()), "sha256:" + "0" * 64, "sha256:" + "1" * 64,
+    ),), timeout_seconds=0.01)
+    monkeypatch.setattr("garden.plugins.loading._load_object", load)
+
+    try:
+        with pytest.raises(PluginInvocationTimedOut, match="example-plugin/source"):
+            resolve_source_control_provider(loaded, "example-plugin/source", {})
+    finally:
+        release.set()
+
+
+def test_plugin_source_control_cancellation_prevents_entry_point_loading(monkeypatch):
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [{
+            "name": "example-plugin/source", "kind": "source_control_provider",
+            "entry_point": "example_plugin:source",
+        }],
+    })
+    loaded = LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor(()), "sha256:" + "0" * 64, "sha256:" + "1" * 64,
+    ),), cancelled=lambda: True)
+
+    def unexpected_load(_reference):
+        raise AssertionError("cancelled capability imported plugin code")
+
+    monkeypatch.setattr("garden.plugins.loading._load_object", unexpected_load)
+
+    with pytest.raises(PluginInvocationCancelled, match="example-plugin/source"):
+        resolve_source_control_provider(loaded, "example-plugin/source", {})
+
+
+def test_plugin_source_control_contract_lookup_is_bounded(monkeypatch):
+    release = threading.Event()
+
+    class Provider:
+        available = True
+
+        def __getattribute__(self, name):
+            if name == "describe":
+                release.wait(1)
+            return object.__getattribute__(self, name)
+
+        def describe(self):
+            return "fixture"
+
+        me = describe
+
+        def is_authenticated(self):
+            return True
+
+        def operation(self, *_args, **_kwargs):
+            return None
+
+        repository_from_remote = get_pr = create_pr = update_pr = operation
+        feedback_since = comment = operation
+
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [{
+            "name": "example-plugin/source", "kind": "source_control_provider",
+            "entry_point": "example_plugin:source",
+        }],
+    })
+    loaded = LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor(()), "sha256:" + "0" * 64, "sha256:" + "1" * 64,
+    ),), timeout_seconds=0.01)
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object", lambda _reference: lambda **_kwargs: Provider(),
+    )
+
+    try:
+        with pytest.raises(PluginInvocationTimedOut, match="example-plugin/source"):
+            resolve_source_control_provider(loaded, "example-plugin/source", {})
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("operation", ["describe", "comment"])
+def test_plugin_source_control_operation_lookup_failure_is_redacted(monkeypatch, operation):
+    secret = "synthetic-attribute-secret"
+
+    class Provider:
+        available = True
+        fail_lookup = False
+
+        def __getattribute__(self, name):
+            if name == operation and object.__getattribute__(self, "fail_lookup"):
+                raise RuntimeError(f"provider lookup exposed {secret}")
+            return object.__getattribute__(self, name)
+
+        def describe(self):
+            return "fixture"
+
+        me = describe
+
+        def is_authenticated(self):
+            return True
+
+        def method(self, *_args, **_kwargs):
+            return None
+
+        repository_from_remote = get_pr = create_pr = update_pr = method
+        feedback_since = comment = method
+
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [{
+            "name": "example-plugin/source", "kind": "source_control_provider",
+            "entry_point": "example_plugin:source",
+        }],
+    })
+    loaded = LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor((secret,)), "sha256:" + "0" * 64,
+        "sha256:" + "1" * 64,
+    ),))
+    provider_impl = Provider()
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object",
+        lambda _reference: lambda **_kwargs: provider_impl,
+    )
+    provider, _ = resolve_source_control_provider(loaded, "example-plugin/source", {})
+    provider_impl.fail_lookup = True
+
+    with pytest.raises(PluginInvocationFailed) as caught:
+        if operation == "describe":
+            provider.describe()
+        else:
+            provider.comment("team/repo", 1, "hello")
+    assert secret not in str(caught.value)
+    assert "provider lookup exposed <redacted>" in str(caught.value)
+
+
+def test_scheduler_maintenance_cancels_plugins_loaded_in_production(sched):
+    assert not sched.plugins.cancelled()
+
+    sched.request_maintenance_pause(by="test", reason="cancel provider work")
+
+    with pytest.raises(PluginInvocationCancelled, match="example-plugin/source"):
+        sched.plugins.invoke_callable("example-plugin/source", lambda: None)
+
+
+def test_plugin_exception_is_typed_and_redacted_before_leaving_invocation_boundary():
+    secret = "synthetic-provider-secret"
+    manifest = manifest_from_dict({
+        "name": "example-plugin", "distribution": "example-plugin-dist",
+        "distribution_version": "1.0", "api_version": API_VERSION,
+        "core_range": {"minimum": "0"}, "capabilities": [{
+            "name": "example-plugin/source", "kind": "source_control_provider",
+            "entry_point": "example_plugin:source",
+        }],
+    })
+    loaded = LoadedPlugins((LoadedPlugin(
+        manifest, "{}", PluginRedactor((secret,)), "sha256:" + "0" * 64,
+        "sha256:" + "1" * 64,
+    ),))
+
+    def fail():
+        raise RuntimeError(f"provider rejected token {secret}")
+
+    with pytest.raises(PluginInvocationFailed) as caught:
+        loaded.invoke_callable("example-plugin/source", fail)
+
+    assert secret not in str(caught.value)
+    assert "provider rejected token <redacted>" in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    ("provider_status", "failure_reason", "unavailable_reason"),
+    [
+        ("fail", "unit checks failed", ""),
+        ("unavailable", "", "build service unavailable"),
+    ],
+)
+def test_plugin_check_status_preserves_requested_head_and_provider_evidence(
+    sched, monkeypatch, provider_status, failure_reason, unavailable_reason,
+):
+    requested_head = "requested-head"
+    observed_revision = "older-observed-head"
+    sched.cfg.data["products"]["demo"]["validation"] = {"provider": "example-plugin/check"}
+    monkeypatch.setattr(
+        "garden.plugins.run_check_provider",
+        lambda *_args, **_kwargs: ProviderCheckResult(
+            status=provider_status,
+            observed_revision=observed_revision,
+            evidence={"url": "https://forge.test/build/1", "failures": ["unit"]},
+            failure_reason=failure_reason,
+            unavailable_reason=unavailable_reason,
+        ),
+    )
+
+    status = sched._ci_status(
+        sched.store.task("DM-001"),
+        PRInfo(1, "https://forge.test/team/repo/pull/1", "OPEN", head_sha=requested_head),
+    )
+
+    assert status.queried_sha == requested_head
+    assert status.observed_revision == observed_revision
+    assert status.stale and not status.exists_for_sha
+    assert status.failure_reason == failure_reason
+    assert status.unavailable_reason == unavailable_reason
+    assert status.failures == ["unit"]
 
 
 def test_provider_contract_accepts_two_synthetic_providers():

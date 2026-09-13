@@ -997,6 +997,8 @@ class Config:
                 "required": True,
                 "worker_check": {"command": validation["command"]},
             }
+        if "/" in provider:
+            return {"status_provider": provider, "required": True}
         return {"status_provider": "github", "required": provider in ("actions", "status")}
 
     def product_checkout(self, name: str) -> dict[str, Any]:
@@ -1275,9 +1277,11 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
                 timeout = validation.get("timeout_seconds")
             else:
                 raise ValueError(f"products.{name}.validation must be a string or mapping")
-            if provider not in ("actions", "status", "command", "none"):
+            plugin_provider = isinstance(provider, str) and "/" in provider
+            if provider not in ("actions", "status", "command", "none") and not plugin_provider:
                 raise ValueError(
-                    f"products.{name}.validation.provider must be 'actions', 'status', 'command', or 'none'"
+                    f"products.{name}.validation.provider must be 'actions', 'status', 'command', "
+                    "'none', or a namespaced plugin capability"
                 )
             if provider == "command" and (
                 not isinstance(validation_command, str) or not validation_command.strip()

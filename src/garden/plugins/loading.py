@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-from collections.abc import Mapping
+import queue
+import threading
+import time
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib import metadata
@@ -20,6 +23,18 @@ T = TypeVar("T")
 
 class PluginConfigurationError(PluginError):
     """Configured plugin selection or plugin-owned configuration is invalid."""
+
+
+class PluginInvocationTimedOut(PluginError):
+    """A trusted Python capability exceeded the core-owned deadline."""
+
+
+class PluginInvocationCancelled(PluginError):
+    """Core cancelled a trusted Python capability invocation."""
+
+
+class PluginInvocationFailed(PluginError):
+    """Trusted plugin code failed, with plugin-owned secrets removed."""
 
 
 @dataclass(frozen=True)
@@ -85,10 +100,15 @@ class LoadedPlugin:
 class LoadedPlugins:
     """Validated enabled plugins; capability code is imported only by ``invoke``."""
 
-    def __init__(self, plugins: tuple[LoadedPlugin, ...]):
+    def __init__(self, plugins: tuple[LoadedPlugin, ...], *, timeout_seconds: float = 60,
+                 cancelled: Callable[[], bool] | None = None):
+        if not 0 < timeout_seconds <= 3600:
+            raise ValueError("plugin timeout_seconds must be in (0, 3600]")
         self._plugins = {plugin.manifest.name: plugin for plugin in plugins}
         self.registry = PluginRegistry(plugin.manifest for plugin in plugins)
         self._hold_message = ""
+        self.timeout_seconds = timeout_seconds
+        self.cancelled = cancelled or (lambda: False)
 
     def hold(self, message: str) -> None:
         """Fence direct capability invocation when compatibility admission failed."""
@@ -117,9 +137,6 @@ class LoadedPlugins:
             raise PluginError(self._hold_message)
         declaration = self.registry.capability(capability_name)
         plugin = self._plugins[declaration.plugin]
-        target = _load_object(declaration.entry_point)
-        if not callable(target):
-            raise PluginError(f"capability {capability_name!r} entry point is not callable")
         provenance = ActionProvenance(
             plugin_name=plugin.manifest.name,
             distribution_version=plugin.manifest.distribution_version,
@@ -127,8 +144,56 @@ class LoadedPlugins:
             capability_name=declaration.name,
             configuration_digest=plugin.configuration_digest,
         )
-        value = target(*args, plugin_config=plugin.config, **kwargs)
+
+        def load_and_invoke() -> Any:
+            target = _load_object(declaration.entry_point)
+            if not callable(target):
+                raise PluginError(f"capability {capability_name!r} entry point is not callable")
+            return target(*args, plugin_config=plugin.config, **kwargs)
+
+        # Importing the implementation can execute arbitrary module code, just as calling
+        # its factory can. Keep both stages inside the same core-owned execution bound.
+        value = self.invoke_callable(capability_name, load_and_invoke)
         return InvocationResult(value=value, provenance=provenance)
+
+    def invoke_callable(self, capability_name: str, target: Callable[..., T],
+                        *args: Any, **kwargs: Any) -> T:
+        """Invoke trusted Python plugin code without yielding core's execution bound.
+
+        Python cannot safely kill an arbitrary thread. The daemon worker may finish cleanup,
+        but timeout or cancellation always releases the core caller at its deadline.
+        """
+        if self.cancelled():
+            raise PluginInvocationCancelled(f"capability {capability_name!r} was cancelled")
+        answers: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+        def run() -> None:
+            try:
+                answers.put((True, target(*args, **kwargs)))
+            except BaseException as exc:
+                answers.put((False, exc))
+
+        threading.Thread(target=run, name=f"garden-plugin-{capability_name}", daemon=True).start()
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
+            if self.cancelled():
+                raise PluginInvocationCancelled(f"capability {capability_name!r} was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PluginInvocationTimedOut(
+                    f"capability {capability_name!r} timed out after {self.timeout_seconds:g}s"
+                )
+            try:
+                succeeded, value = answers.get(timeout=min(remaining, 0.05))
+            except queue.Empty:
+                continue
+            if succeeded:
+                return value
+            plugin = self._plugins[self.registry.capability(capability_name).plugin]
+            detail = plugin.redactor.text(f"{type(value).__name__}: {value}")
+            raise PluginInvocationFailed(
+                f"capability {capability_name!r} failed: {detail}"
+            ) from None
 
 
 def load_configured_plugins(configured: Any) -> LoadedPlugins:

@@ -1031,7 +1031,9 @@ class FenceMixin:
         # partially reconfigured scheduler behind.
         from ..plugins import inspect_lock
 
-        new_plugins, new_plugin_lock = inspect_lock(self.store.root, new_cfg.get("plugins"))
+        new_plugins, new_plugin_lock = inspect_lock(
+            self.store.root, new_cfg.get("plugins"), cancelled=self.maintenance_requested,
+        )
         changed = self.store.adopt_config(new_cfg)
         self.cfg = self.store.config
         self.plugins = new_plugins
