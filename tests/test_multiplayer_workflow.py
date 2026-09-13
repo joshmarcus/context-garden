@@ -23,8 +23,8 @@ from garden.publication import write_public_projection
 from garden.scheduler import Scheduler
 from garden.stabilization import accept_limitations
 from garden.store import Store
-from garden.web.app import create_app
 from garden.web.public import create_public_app
+from tests.test_members import _git_enrolled_app
 
 
 class Clock:
@@ -341,7 +341,7 @@ def test_view_focus_and_public_revocation_do_not_change_execution_scope(garden, 
     config["publication"] = {"projects": {"demo": {"fields": ["task.summary"]}}}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin, _people, tokens = enroll_two_people(garden)
-    private = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    private = TestClient(_git_enrolled_app(garden))
     headers = {"Authorization": f"Bearer {tokens['alex']}"}
     before = registry.assignment("alex")
     assert private.get("/board?project=demo", headers=headers).status_code == 200

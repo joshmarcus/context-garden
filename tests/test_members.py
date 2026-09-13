@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 
 import pytest
 import yaml
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from garden.coordination_api import create_coordination_app
 from garden.events import DECISION_KINDS, EventLog
+from garden.git_coordination import GitStateStore
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
 from garden.runs import RunStore
@@ -42,6 +44,66 @@ def _registry(tmp_path):
     principal = registry.authenticate(token)
     assert principal is not None
     return registry, token, principal
+
+
+def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
+    """Build an enabled app against accepted Git state matching its member fixture."""
+    registry_state = json.loads((garden / ".garden/members.json").read_text())
+    remote = garden / ".garden/test-state.git"
+    subprocess.run(["git", "init", str(garden)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=garden, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.test"], cwd=garden, check=True)
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    installation, member_id = next(iter(registry_state["installations"].items()))
+    multiplayer = config.setdefault("multiplayer", {})
+    multiplayer.update({
+        "enabled": True, "garden_id": registry_state["garden_id"],
+        "member_id": member_id, "installation_id": installation,
+        "git": {"remote": str(remote), "state_ref": "refs/heads/garden-state"},
+    })
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    GitStateStore.initialize(garden, garden_id=registry_state["garden_id"], remote=str(remote))
+    members = {}
+    for name, row in registry_state["members"].items():
+        member = {
+            "active": row["active"], "role": row["role"],
+            "visibility": row.get("project_visibility", "assigned"),
+            "projects": row.get("projects", []),
+        }
+        assignment = (registry_state.get("assignments") or {}).get(name)
+        if assignment:
+            member["assignment"] = {"member_id": name, **assignment}
+        members[name] = member
+    phases = registry_state.get("phase_owners") or {}
+    entities = {
+        f"phase:{scope}": {
+            "kind": "phase", "scope": scope, "owner": row.get("owner_id", "-"),
+            "authority_generation": row["generation"], "version": 0,
+        }
+        for scope, row in phases.items()
+    }
+    store = Store(garden)
+    registry = MemberRegistry(garden / ".garden")
+    for task in store.tasks().values():
+        owner = registry.effective_task_owner(task, store.phase(task.product, task.phase))[0] or "-"
+        assignment = (registry_state.get("assignments") or {}).get(owner, {})
+        entities[f"task:{task.id}"] = {
+            "kind": "task", "scope": task.id, "owner": owner,
+            "authority_generation": int(assignment.get("generation", 0)), "version": 0,
+        }
+    def enroll(state):
+        state["members"].update(members)
+        state["installations"].update(registry_state["installations"])
+        state["entities"].update(entities)
+        return {}
+
+    GitStateStore(garden, garden_id=registry_state["garden_id"], remote=str(remote)).transact(
+        "fixture-enrollment", {"member": member_id, "installation": installation}, enroll,
+    )
+    return create_app(Store(garden), watch=watch, host=host, port=port)
 
 
 def test_temporary_username_installations_are_explicit_bound_and_revocable(tmp_path):
@@ -315,11 +377,10 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    store = Store(garden)
     registry, admin_token, admin = _registry(garden)
     registry.add_member(admin, "viewer", "viewer")
     viewer_token = registry.issue_installation(admin, "viewer", "viewer-browser")
-    client = TestClient(create_app(store, watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     assert client.get("/api/tasks").status_code == 401
     assert client.get("/api/tasks", headers={"Authorization": f"Bearer {viewer_token}"}).status_code == 200
@@ -328,7 +389,7 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    assert accepted.status_code == 409
+    assert accepted.status_code == 303
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -392,7 +453,7 @@ def test_multiplayer_administrator_reads_do_not_inherit_project_visibility(garde
     member_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "all")
     viewer_token = registry.issue_installation(admin, "eve", "eve-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
     administrator_reads = (
@@ -474,14 +535,14 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     monkeypatch.setattr("ssl.SSLContext.load_cert_chain", lambda *_args: None)
     _registry_obj, admin_token, _admin = _registry(garden)
-    client = TestClient(create_app(Store(garden), watch=False, host="garden.example", port=8765))
+    client = TestClient(_git_enrolled_app(garden, host="garden.example", port=8765))
     auth = {"Authorization": f"Bearer {admin_token}"}
 
     response = client.post(
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 409
+    assert response.status_code == 303
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -505,7 +566,7 @@ def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_action
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     bob = {"Authorization": f"Bearer {bob_token}"}
     eve = {"Authorization": f"Bearer {eve_token}"}
@@ -547,7 +608,7 @@ updated: '2026-01-01T00:00:00+00:00'
     registry.add_member(admin, "bob", "member", "assigned", ("demo", "private"))
     token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.set_assignment(admin, "bob", "demo", "p1")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
     headers = {"Authorization": f"Bearer {token}"}
 
     assigned = client.get("/board", headers=headers)
@@ -609,7 +670,7 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
         "phase": "", "question": "ADMINISTRATION_QUESTION", "source": "operator",
     }
     state.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
     alice_headers = {"Authorization": f"Bearer {alice_token}"}
     bob_headers = {"Authorization": f"Bearer {bob_token}"}
 
@@ -669,7 +730,7 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
     state.get("DM-001")["question"] = "OUTSIDE_ASSIGNMENT_QUESTION"
     state.get("DM-001")["question_recipient"] = "bob"
     state.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
     headers = {"Authorization": f"Bearer {token}"}
 
     inbox = client.get("/inbox", headers=headers).text
@@ -718,7 +779,7 @@ PRIVATE_BODY_MARKER
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
     token = registry.issue_installation(admin, "bob", "bob-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
     headers = {"Authorization": f"Bearer {token}"}
 
     private_run = RunStore(garden / ".garden").new_run(
@@ -779,7 +840,7 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, admin_token, _admin = _registry(garden)
     registry.set_assignment(_admin, "alice", "demo", "p1")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
     auth = {"Authorization": f"Bearer {admin_token}"}
 
     assert client.post("/api/runs/claim", headers=auth,
@@ -809,7 +870,7 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         "prepared_source_head": source_head,
     }
     run.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     claim = client.post(
         "/api/runs/claim", headers=headers,
@@ -880,7 +941,7 @@ def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(gard
     queued = runs.new_run("DM-002", "remote", mode="check", run_id="legacy-queued-run")
     queued.env_snapshot = {"product": "demo"}
     queued.save()
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     response = client.post(
         "/api/runs/claim",
@@ -931,7 +992,7 @@ def test_multiplayer_watch_and_direct_dispatch_without_installation_fail_closed(
             headers={"Authorization": f"Bearer {admin_token}"},
             follow_redirects=False,
         )
-        assert response.status_code == 409
+        assert response.status_code == 503
 
     scheduler = Scheduler(Store(garden))
     with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
@@ -958,7 +1019,7 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     bob = {"Authorization": f"Bearer {bob_token}"}
     eve = {"Authorization": f"Bearer {eve_token}"}
@@ -984,7 +1045,7 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
 
     bob = {"Authorization": f"Bearer {bob_token}"}
     eve = {"Authorization": f"Bearer {eve_token}"}
