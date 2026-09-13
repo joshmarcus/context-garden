@@ -432,7 +432,7 @@ class Coordinator:
 
     def begin_effect(self, principal: Principal, claim: Claim, *, provider: str, effect_key: str,
                      operation_id: str, credential_scope: str, precondition: str,
-                     request: dict[str, Any]) -> dict[str, Any]:
+                     request: dict[str, Any], expected_version: int | None = None) -> dict[str, Any]:
         """Serialize one provider mutation without persisting its delegated credential."""
         payload = {"provider": provider, "effect_key": effect_key, "credential_scope": credential_scope,
                    "precondition": precondition, "request": request}
@@ -440,7 +440,7 @@ class Coordinator:
             repeated = self._repeat(db, principal, claim.garden_id, operation_id, "effect", payload)
             if repeated is not None:
                 return repeated
-            self._validate_claim(db, principal, claim)
+            self._validate_claim(db, principal, claim, expected_version)
             existing = db.execute("SELECT * FROM effects WHERE garden=? AND provider=? AND effect_key=?",
                                   (claim.garden_id, provider, effect_key)).fetchone()
             if existing and existing["status"] in {"pending", "unknown"}:

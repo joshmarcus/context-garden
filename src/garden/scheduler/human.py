@@ -41,6 +41,13 @@ def task_action(effect: str):
     def decorate(method):
         @functools.wraps(method)
         def guarded(self, task: Task, *args, **kwargs):
+            if self.cfg.get("multiplayer.enabled", False):
+                self.require_execution_authority()
+                assert self.principal is not None
+                self.members.authorize_task_execution(
+                    self.principal, task, self.store.phase(task.product, task.phase),
+                    expected_generation=kwargs.get("assignment_generation"),
+                )
             with self.task_effect(task, f"{effect}:{task.id}"):
                 return method(self, task, *args, **kwargs)
         return guarded
@@ -1499,6 +1506,7 @@ class HumanMixin:
         return date
 
     def reopen_phase(self, phase: Phase, owner_generation: int | None = None) -> None:
+        self.require_phase_authority(phase, expected_generation=owner_generation)
         with self.phase_effect(phase.product, phase.name, f"reopen-phase:{phase.key}"):
             self._reopen_phase(phase, owner_generation)
 
