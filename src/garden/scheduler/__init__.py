@@ -176,13 +176,8 @@ class Scheduler(
         if kind == "task":
             runs = [run for run in self.runs.active() if run.task_id == scope]
         elif kind == "phase":
-            product, separator, phase = scope.partition("/")
-            if not separator:
-                return False
-            tasks = self.store.tasks()
             runs = [run for run in self.runs.active()
-                    if (task := tasks.get(run.task_id)) is not None
-                    and task.product == product and task.phase == phase]
+                    if run.phase_claim_scope == scope]
         else:
             return False
         for run in runs:
@@ -267,12 +262,21 @@ class Scheduler(
         if self.coordinator is None:
             yield
             return
+        previous = getattr(self, "_phase_claim_parent", None)
         with self.coordinator.effect(
             kind="phase", scope=f"{product}/{phase}", owner_id=self.coordinator.member_id,
             authority_generation=int(row["authority_generation"]),
             expected_version=int(row["version"]), effect_key=effect_key,
-        ):
-            yield
+        ) as claim:
+            self._phase_claim_parent = {
+                "scope": f"{product}/{phase}",
+                "authority_generation": int(row["authority_generation"]),
+                "fence": int(claim["fence"]),
+            }
+            try:
+                yield
+            finally:
+                self._phase_claim_parent = previous
 
     @contextmanager
     def task_effect(self, task: Task, effect_key: str) -> Iterator[None]:
