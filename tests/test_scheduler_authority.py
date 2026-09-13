@@ -97,9 +97,24 @@ def test_phase_authority_is_distinct_from_task_and_admin_visibility():
     })
     sched = scheduler(value)
 
-    assert sched.phase_is_authorized("demo", "p2")
+    assert not sched.phase_is_authorized("demo", "p2")
     with pytest.raises(PermissionError, match="not owned"):
         sched.require_phase_authority("demo", "p1")
+
+
+def test_phase_owner_must_have_an_enabled_matching_assignment():
+    value = snapshot()
+    value["authority"][-1]["owner"] = "alice"
+    sched = scheduler(value)
+
+    assert sched.phase_is_authorized("demo", "p1")
+    value["assignment"]["enabled"] = False
+    assert not sched.phase_is_authorized("demo", "p1")
+    with pytest.raises(PermissionError, match="outside"):
+        sched.require_phase_authority("demo", "p1")
+
+    value["assignment"] = None
+    assert not sched.phase_is_authorized("demo", "p1")
 
 
 def test_handoff_cancellation_fences_matching_local_run_without_losing_record():
