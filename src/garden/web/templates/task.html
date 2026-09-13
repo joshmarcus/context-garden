@@ -136,9 +136,10 @@
   {% if not phase_hold and ((task.status.value in ('ready','draft','failed') and not task.pr) or trial_again) %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
   {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
-  {% elif authority.is_admin %}
+  {% endif %}
+  {% if authority.multiplayer and authority.is_admin %}
   <form class="inline" method="post" action="/tasks/{{ task.id }}/owner" style="display:inline-flex;gap:6px;align-items:center"><label class="muted" for="owner">Assignment</label><select id="owner" name="note"><option value="inherit"{% if owner_source == 'phase' %} selected{% endif %}>Inherit phase owner</option><option value="-"{% if owner_source == 'unassigned' %} selected{% endif %}>Explicitly unassigned</option>{% for member in authority.members %}<option value="{{ member }}"{% if owner_source == 'task' and owner == member %} selected{% endif %}>{{ member }}</option>{% endfor %}</select><button class="primary">Assign</button></form>
-  {% else %}
+  {% elif not authority.can_mutate_task %}
   <span class="muted">Only {{ owner or 'an administrator' }} can change or run this task.</span>
   {% endif %}
 </div>

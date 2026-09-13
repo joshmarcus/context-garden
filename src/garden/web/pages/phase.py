@@ -44,7 +44,13 @@ def register(app: FastAPI, site: Site) -> None:
                     result = coordinator.begin_handoff(
                         kind="phase", scope=scope, pending_owner=owner_id,
                         expected_version=int(entity["version"]),
+                        assignment={"project": product, "phase": phase, "advance": False},
                     )
+                    if result.get("status") == "complete":
+                        message = "Assigned phase to " + (result.get("owner") or "nobody")
+                        return RedirectResponse(
+                            f"/phases/{product}/{phase}?flash={quote(message)}", status_code=303,
+                        )
                     prior = result.get("effective_owner") or "unassigned"
                     target = result.get("pending_owner") or "unassigned"
                     message = f"Transferring {prior} → {target}; waiting for the current worker to stop."
@@ -153,6 +159,15 @@ def register(app: FastAPI, site: Site) -> None:
         phase_owner = (sched.members.phase_owner(ph.product, ph.name)
                        if s.config.get("multiplayer.enabled", False)
                        else (site.registry.phase_owner(ph.product, ph.name) if site.registry else None))
+        if s.config.get("multiplayer.enabled", False) and hub.coordinator is not None:
+            view = hub.coordinator.refresh()
+            scope = f"{ph.product}/{ph.name}"
+            entity = next((row for row in view.snapshot.get("authority", [])
+                           if row.get("kind") == "phase" and row.get("scope") == scope), None)
+            if entity is not None:
+                from ...members import PhaseOwner
+                phase_owner = PhaseOwner(ph.product, ph.name, str(entity.get("owner", "")),
+                                         int(entity.get("authority_generation", 0)), "")
         return templates.TemplateResponse(request, "phase.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, goals_html=render_md(goals), specs=specs, docs=docs,
             sheet=sheet,
