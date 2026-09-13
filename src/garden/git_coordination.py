@@ -428,6 +428,38 @@ class GitMultiplayerClient:
 
     def __init__(self, store: GitStateStore, member_id: str, installation_id: str):
         self.store, self.member_id, self.installation_id = store, member_id, installation_id
+        self.root = store.repo
+        self._cache_path = self.root / ".garden" / "authoritative-snapshot.json"
+        self._projection_path = self.root / ".garden" / "authoritative-projections.json"
+
+    @classmethod
+    def connect(
+        cls,
+        root: Path,
+        *,
+        garden_id: str,
+        member_id: str,
+        installation_id: str,
+        remote: str = "origin",
+        state_ref: str = "refs/heads/garden-state",
+        authentication: str = "credential",
+    ) -> GitMultiplayerClient:
+        if authentication not in {"credential", "temporary-username"}:
+            raise GitCoordinationError("unsupported multiplayer authentication mode")
+        if authentication == "temporary-username":
+            from .members import operating_system_username
+
+            if member_id != operating_system_username():
+                raise GitCoordinationError(
+                    "temporary username enrollment belongs to a different operating-system account"
+                )
+        if not all((remote, state_ref, garden_id, member_id, installation_id)):
+            raise GitCoordinationError("multiplayer Git enrollment is incomplete")
+        return cls(
+            GitStateStore(root, garden_id=garden_id, remote=remote, state_ref=state_ref),
+            member_id,
+            installation_id,
+        )
 
     @classmethod
     def from_config(cls, config: Any) -> GitMultiplayerClient | None:
@@ -438,30 +470,106 @@ class GitMultiplayerClient:
         garden_id = str(config.get("multiplayer.garden_id", ""))
         member = str(config.get("multiplayer.member_id", ""))
         installation = str(config.get("multiplayer.installation_id", ""))
-        if not all((remote, ref, garden_id, member, installation)):
-            raise GitCoordinationError("multiplayer Git enrollment is incomplete")
-        return cls(
-            GitStateStore(config.root, garden_id=garden_id, remote=remote, state_ref=ref),
-            member,
-            installation,
+        authentication = str(config.get("multiplayer.authentication", "credential"))
+        return cls.connect(
+            config.root,
+            garden_id=garden_id,
+            member_id=member,
+            installation_id=installation,
+            remote=remote,
+            state_ref=ref,
+            authentication=authentication,
         )
 
     def refresh(self, *, allow_stale: bool = True) -> Any:
-        from .multiplayer_client import AuthoritativeView
+        from .multiplayer_client import AuthoritativeView, _atomic_json
 
         try:
-            _, state = self.store.read()
+            revision, state = self.store.read()
             snapshot = deepcopy(state)
             snapshot.update({"member_id": self.member_id, "installation_id": self.installation_id})
+            snapshot["observed_revision"] = revision
             snapshot["role"] = (state["members"].get(self.member_id) or {}).get("role", "member")
             snapshot["projects"] = (state["members"].get(self.member_id) or {}).get("projects", [])
             snapshot["assignment"] = (state["members"].get(self.member_id) or {}).get("assignment")
             snapshot["authority"] = list(state["entities"].values())
+            snapshot["projections"] = state.get("projections", [])
+            _atomic_json(self._cache_path, snapshot)
             return AuthoritativeView(snapshot, False)
         except GitCoordinationError as exc:
             from .multiplayer_client import MultiplayerUnavailable
 
+            if allow_stale:
+                try:
+                    cached = json.loads(self._cache_path.read_text())
+                    if (
+                        cached.get("garden_id") == self.store.garden_id
+                        and cached.get("member_id") == self.member_id
+                        and cached.get("installation_id") == self.installation_id
+                    ):
+                        return AuthoritativeView(cached, True, str(exc))
+                except (OSError, ValueError, AttributeError):
+                    pass
             raise MultiplayerUnavailable(f"authoritative Git state unavailable: {exc}") from exc
+
+    def synchronize(self, snapshot: dict[str, Any] | None = None) -> list[str]:
+        """Update derived Markdown without touching unrelated authored checkout state."""
+        from .multiplayer_client import ProjectionConflict, _atomic_json, _atomic_text, _digest
+
+        snapshot = snapshot or self.refresh(allow_stale=False).snapshot
+        try:
+            ledger = json.loads(self._projection_path.read_text())
+        except (OSError, ValueError):
+            ledger = {}
+        updates: list[tuple[str, Path, str, int]] = []
+        conflicts: list[str] = []
+        for row in snapshot.get("projections", []):
+            relative = str(row.get("path", ""))
+            target = (self.root / relative).resolve()
+            if not relative or self.root not in target.parents:
+                raise ProjectionConflict(f"unsafe authoritative projection path {relative!r}")
+            content = str(row.get("markdown", ""))
+            current = target.read_text() if target.exists() else ""
+            prior = ledger.get(relative, {})
+            allowed = {str(prior.get("content_hash", "")), str(row.get("base_revision", ""))}
+            if current != content and _digest(current) not in allowed:
+                conflicts.append(relative)
+            else:
+                updates.append((relative, target, content, int(row["version"])))
+        if conflicts:
+            raise ProjectionConflict(
+                "local authored content conflicts with authority: " + ", ".join(conflicts)
+            )
+        changed = []
+        for relative, target, content, version in updates:
+            if not target.exists() or target.read_text() != content:
+                _atomic_text(target, content)
+                changed.append(relative)
+            ledger[relative] = {"version": version, "content_hash": _digest(content)}
+        _atomic_json(self._projection_path, ledger)
+        return changed
+
+    def projection_lag(self, snapshot: dict[str, Any]) -> list[str]:
+        try:
+            ledger = json.loads(self._projection_path.read_text())
+        except (OSError, ValueError):
+            ledger = {}
+        return [
+            f"{row['kind']}:{row['scope']}@{row['version']}"
+            for row in snapshot.get("projections", [])
+            if int(ledger.get(str(row.get("path", "")), {}).get("version", 0))
+            < int(row["version"])
+        ]
+
+    def prepare(self, *, mutation: bool = False) -> Any:
+        from .multiplayer_client import MultiplayerUnavailable
+
+        view = self.refresh(allow_stale=not mutation)
+        if not view.stale:
+            self.synchronize(view.snapshot)
+        if mutation and self.projection_lag(view.snapshot):
+            raise MultiplayerUnavailable("local projection has not reached required authority")
+        return view
 
     def authenticate_local_session(self) -> Any:
         from .members import Principal

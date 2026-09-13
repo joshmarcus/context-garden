@@ -161,37 +161,16 @@ class MultiplayerClient:
     def from_config(cls, config: Config, **kwargs: Any) -> MultiplayerClient | None:
         if not config.get("multiplayer.enabled", False):
             return None
-        # Existing enrolled installations retain a read/recovery path while operators
-        # migrate them. New configurations omit coordinator_url and always use Git.
-        if (config.get("multiplayer.git.remote", "")
-                and not config.get("multiplayer.coordinator_url", "")):
-            from .git_coordination import GitCoordinationError, GitMultiplayerClient
+        if config.get("multiplayer.coordinator_url", ""):
+            raise MultiplayerUnavailable(
+                "multiplayer.coordinator_url is obsolete; enabled multiplayer requires Git enrollment"
+            )
+        from .git_coordination import GitCoordinationError, GitMultiplayerClient
 
-            try:
-                return GitMultiplayerClient.from_config(config)  # type: ignore[return-value]
-            except GitCoordinationError as exc:
-                raise MultiplayerUnavailable(str(exc)) from exc
-        enrollment = tuple(str(config.get(f"multiplayer.{key}", "")) for key in (
-            "garden_id", "coordinator_url", "member_id", "installation_id", "credential_env",
-        ))
-        # ``multiplayer.enabled`` predates the shared coordinator and still selects the
-        # member-authenticated local web boundary. Enrollment begins when any coordinator
-        # identity field is supplied; a partial enrollment must then fail closed.
-        if not any(enrollment):
-            return None
-        credential_env = str(config.get("multiplayer.credential_env", ""))
-        credential = os.environ.get(credential_env, "") if credential_env else ""
-        authentication = str(config.get("multiplayer.authentication", "credential"))
-        return cls(
-            root=config.root,
-            garden_id=str(config.get("multiplayer.garden_id", "")),
-            endpoint=str(config.get("multiplayer.coordinator_url", "")),
-            member_id=str(config.get("multiplayer.member_id", "")),
-            installation_id=str(config.get("multiplayer.installation_id", "")),
-            credential=credential,
-            authentication=authentication,
-            **kwargs,
-        )
+        try:
+            return GitMultiplayerClient.from_config(config)  # type: ignore[return-value]
+        except GitCoordinationError as exc:
+            raise MultiplayerUnavailable(str(exc)) from exc
 
     def _url(self, suffix: str) -> str:
         return f"{self.endpoint}/v1/gardens/{self.garden_id}{suffix}"
