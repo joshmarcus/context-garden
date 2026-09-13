@@ -447,7 +447,10 @@ def register(app: FastAPI, site: Site) -> None:
             raise HTTPException(404) from None
         from ...routing import task_routing_view
 
-        return JSONResponse(task_routing_view(fresh, task, activity=activity))
+        sched = hub.reader(fresh)
+        return JSONResponse(task_routing_view(
+            fresh, task, activity=activity, owner_resolver=sched.effective_task_owner,
+        ))
 
     @app.get("/api/operations/{task_id}/{run_id}")
     def api_operation(task_id: str, run_id: str):
