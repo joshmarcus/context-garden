@@ -807,6 +807,16 @@ class Config:
     def product_base_branch(self, name: str) -> str:
         return str(self.product(name).get("base_branch") or "main")
 
+    def product_pull_request_template(self, name: str) -> str | None:
+        """Return the product's explicitly selected pull-request template path.
+
+        This is deliberately a repository-relative path, rather than a provider URL: the
+        same source snapshot that supplies the worker checkout supplies the template.
+        ``None`` leaves template discovery to the conventional repository path.
+        """
+        value = self.product(name).get("pull_request_template")
+        return value if isinstance(value, str) else None
+
     def product_stack_owner(self, name: str) -> str:
         """Who may rewrite stacked branch history for a product.
 
@@ -1142,6 +1152,15 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         paths = product.get("protected_paths", [])
         if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
             raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
+        if "pull_request_template" in product:
+            template = product["pull_request_template"]
+            path = Path(template) if isinstance(template, str) else None
+            if (not isinstance(template, str) or not template.strip() or path.is_absolute()
+                    or ".." in path.parts):
+                raise ValueError(
+                    f"products.{name}.pull_request_template must be a non-empty, "
+                    "repository-relative path without '..'"
+                )
         product_github = product.get("github")
         if isinstance(product_github, dict) and "project_users" in product_github:
             _validate_project_users(

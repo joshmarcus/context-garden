@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
 from garden.brief import (
@@ -182,6 +183,7 @@ def test_brief_pr_revision_requests_improvement_decisions(garden):
     b = build_brief(store, task, review_feedback="- **Fix:** add the test")
     assert "Findings and their fixes are this round's work" in b.text
     assert "improvements_taken" in b.text and "improvements_declined" in b.text
+    assert "Description-only feedback can be addressed by rewriting `pr_body`" in b.text
 
 
 def test_brief_pr_revision(garden):
@@ -353,6 +355,64 @@ def test_brief_reads_product_files_from_the_base_commit(garden):
     brief = build_brief(store, task, base="main")
     assert "`README.md`" in brief.text
     assert "# dirty" not in brief.text
+
+
+def test_brief_snapshots_the_conventional_pr_template_at_the_assigned_revision(garden):
+    from tests.conftest import git
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    repo = store.config.product_repo(task.product)
+    assert isinstance(repo, Path)
+    template = repo / ".github" / "PULL_REQUEST_TEMPLATE.md"
+    template.parent.mkdir()
+    template.write_text("# Summary\n\n## Verification\n")
+    git("add", ".github/PULL_REQUEST_TEMPLATE.md", cwd=repo)
+    git("commit", "-qm", "add pull request template", cwd=repo)
+    template.write_text("# dirty template\n")
+
+    brief = build_brief(store, task, base="main")
+
+    assert "project-level purpose" in brief.text
+    assert "reader unfamiliar with the affected subsystem" in brief.text
+    assert "`.github/PULL_REQUEST_TEMPLATE.md` at the assigned source revision" in brief.text
+    assert "$GARDEN_CONTEXT_DIR/context/pull-request-template.md" in brief.text
+    assert brief.files["context/pull-request-template.md"] == "# Summary\n\n## Verification\n"
+    assert "dirty template" not in brief.files["context/pull-request-template.md"]
+
+
+def test_brief_reports_a_missing_explicit_pr_template_without_inventing_one(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"]["demo"]["pull_request_template"] = "docs/review-format.md"
+    config_path.write_text(yaml.safe_dump(config))
+
+    brief = build_brief(Store(garden), Store(garden).task("DM-001"), base="main")
+
+    assert "explicitly configured repository template `docs/review-format.md` was unavailable" in brief.text
+    assert "Do not invent a replacement" in brief.text
+    assert "context/pull-request-template.md" not in brief.files
+
+
+def test_brief_without_a_template_keeps_the_universal_description_guidance(garden):
+    brief = build_brief(Store(garden), Store(garden).task("DM-001"), base="main")
+
+    assert "project-level purpose" in brief.text
+    assert "domain terms needed to understand it" in brief.text
+    assert "context/pull-request-template.md" not in brief.files
+
+
+@pytest.mark.parametrize("template", ["../outside.md", "/tmp/template.md"])
+def test_config_refuses_an_escaping_pr_template_path(garden, template):
+    from garden.config import Config
+
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"]["demo"]["pull_request_template"] = template
+    config_path.write_text(yaml.safe_dump(config))
+
+    with pytest.raises(ValueError, match="pull_request_template"):
+        Config.load(garden)
 
 
 # ---- resolve_reading refuses absolute and parent-escaping paths (CG-239) ----
