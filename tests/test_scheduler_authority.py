@@ -136,6 +136,103 @@ def test_direct_task_action_denial_happens_before_its_first_side_effect():
     assert action.mutations == []
 
 
+@pytest.mark.parametrize(
+    ("member_id", "task_phase"),
+    [("bob", "p1"), ("alice", "p2")],
+)
+def test_redispatch_denial_cannot_touch_an_existing_run(member_id, task_phase):
+    sched = scheduler(snapshot(), member_id)
+    touched = []
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: touched.append("stop") or True,
+        save=lambda: touched.append("save"),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(emit=lambda *_args, **_kwargs: touched.append("event"))
+    sched.dispatch = lambda *_args, **_kwargs: touched.append("dispatch")
+
+    with pytest.raises(PermissionError):
+        sched.redispatch(task("A-1", phase=task_phase))
+
+    assert touched == []
+
+
+def test_redispatch_acquires_current_effect_before_stopping_and_launches_separately():
+    sched = scheduler(snapshot())
+    order = []
+
+    @contextmanager
+    def effect(**request):
+        order.append(("permit", request["effect_key"]))
+        yield {"fence": 1}
+
+    sched.coordinator.effect = effect
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: order.append(("stop", "run-1")) or True,
+        save=lambda: order.append(("save", "run-1")),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(
+        emit=lambda *_args, **_kwargs: order.append(("event", "run-1"))
+    )
+    replacement = object()
+    sched.dispatch = lambda *_args, **_kwargs: order.append(("dispatch", "A-1")) or replacement
+
+    assert sched.redispatch(task("A-1")) is replacement
+    assert order == [
+        ("permit", "redispatch-stop:A-1:run-1"),
+        ("stop", "run-1"),
+        ("save", "run-1"),
+        ("event", "run-1"),
+        ("dispatch", "A-1"),
+    ]
+
+
+def test_redispatch_stale_generation_is_rejected_before_stopping():
+    sched = scheduler(snapshot())
+    touched = []
+
+    @contextmanager
+    def stale_effect(**_request):
+        raise RuntimeError("stale authority generation")
+        yield
+
+    sched.coordinator.effect = stale_effect
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: touched.append("stop") or True,
+        save=lambda: touched.append("save"),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(emit=lambda *_args, **_kwargs: touched.append("event"))
+    sched.dispatch = lambda *_args, **_kwargs: touched.append("dispatch")
+
+    with pytest.raises(RuntimeError, match="stale authority generation"):
+        sched.redispatch(task("A-1"))
+
+    assert touched == []
+
+
+def test_redispatch_unconfirmed_stop_preserves_record_and_skips_replacement():
+    sched = scheduler(snapshot())
+    touched = []
+    run = SimpleNamespace(
+        task_id="A-1", run_id="run-1", mode="work", status="running",
+        stop=lambda: False, save=lambda: touched.append("save"),
+    )
+    sched.runs = SimpleNamespace(active=lambda: [run])
+    sched.events = SimpleNamespace(emit=lambda *_args, **_kwargs: touched.append("event"))
+    sched.dispatch = lambda *_args, **_kwargs: touched.append("dispatch")
+
+    with pytest.raises(RuntimeError, match="could not confirm"):
+        sched.redispatch(task("A-1"))
+
+    assert run.status == "running"
+    assert touched == []
+
+
 def test_return_to_automation_denial_happens_before_manual_state_mutation():
     sched = scheduler(snapshot(), "bob")
     sched._set_manual_reservation = lambda *_args, **_kwargs: pytest.fail(

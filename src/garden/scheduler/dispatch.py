@@ -792,14 +792,19 @@ class DispatchMixin:
         """
         self.require_execution_authority()
         superseded = [run for run in self.runs.active() if run.task_id == task.id]
-        for run in superseded:
-            if not run.stop():
-                raise RuntimeError(f"could not confirm worker {run.run_id} stopped; refusing redispatch")
-        for run in superseded:
-            run.status = "superseded"
-            run.finished_at = now_iso()
-            run.save()
-            self.events.emit("run_superseded", task.id, run=run.run_id, mode=run.mode)
+        if superseded:
+            run_ids = ",".join(sorted(run.run_id for run in superseded))
+            with self.task_effect(task, f"redispatch-stop:{task.id}:{run_ids}"):
+                for run in superseded:
+                    if not run.stop():
+                        raise RuntimeError(
+                            f"could not confirm worker {run.run_id} stopped; refusing redispatch"
+                        )
+                for run in superseded:
+                    run.status = "superseded"
+                    run.finished_at = now_iso()
+                    run.save()
+                    self.events.emit("run_superseded", task.id, run=run.run_id, mode=run.mode)
         return self.dispatch(task)
 
     def _dispatch(self, task: Task, mode: str = "work", runner: Runner | None = None, worktree: bool = True,
