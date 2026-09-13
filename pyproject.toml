@@ -69,6 +69,7 @@ markers = [
     "stress: explicit opt-in load, scale, resource-pressure, or latency experiments",
     "browser: explicit opt-in test that launches a browser",
     "needs_remote_clone: test executes an SSH worker against the remote-host checkout",
+    "starts_host_probe: test drives the tick's detached static-host probe launch itself",
 ]
 
 [tool.ruff]

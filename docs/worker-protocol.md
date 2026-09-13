@@ -121,6 +121,11 @@ web:
   operator_token_env: GARDEN_OPERATOR_TOKEN
 ```
 
+Hosts may instead come from an admitted managed pool. A `workers.pool` block declares the
+healthy count Garden keeps converging toward, and enrolled hosts reach the claim endpoint
+through the same registry and the same credential class as configured hosts; see
+[host-scale-operation.md](host-scale-operation.md#maintaining-a-declared-healthy-count).
+
 The worker endpoints and operator surface are separate authorization classes. Only
 `POST /api/runs/claim`, `POST /api/runs/<id>/heartbeat`, and
 `POST /api/runs/<id>/finish` accept worker credentials; worker tokens do not authenticate
@@ -817,6 +822,21 @@ retry after the underlying host or checkout is repaired.
 On reap the scheduler fetches the branch, requires commits ahead of base, and materialises
 a local worktree for checks and review. The least-loaded host with a product clone and a
 free `max_parallel` slot is chosen at dispatch; resumed work returns to its original host.
+
+A configured SSH host runs no agent, so nothing reports its presence the way a pull worker
+does. A tick starts one bounded probe pass for those hosts in a detached process and never
+waits for it: the pass asks every host at once over the same transport whether Git, tmux and
+the configured Python are present and whether each declared product clone is a Git checkout.
+It reads and nothing more — no fetch, no `git status`, no formatter, no build — so a probe
+can never change a checkout a run depends on. Each host's reading is cached in
+`.garden/ssh-probes.json` with its latency, the time it was checked, its last successful
+check and, on failure, one truncated reason. `ssh.probe_interval_seconds` (default 300) sets
+the cadence and `ssh.probe_timeout_seconds` (default 15) bounds one host; a reading older
+than two cadences is reported as stale rather than as presence. Status, doctor, observe, the
+workers page and `/api/workers` read that cache only, so an unreachable host delays no page
+and no tick: a fresh successful reading makes the host available in the fleet projection, a
+failed one makes it unreachable with its reason, and a stale or missing one leaves it
+unknown.
 
 **manual runner.** A person is the worker. `garden take WID-003 --worktree` dispatches a
 run with no pid, prints the brief path and creates the worktree; the `garden-take` skill

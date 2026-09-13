@@ -199,3 +199,47 @@ def test_provider_error_does_not_render_secret_bearing_locals(tmp_path, monkeypa
     assert result.exit_code == 1
     assert "ProviderFailure" in result.output
     assert "secret-envelope" not in result.output
+
+
+def test_fleet_cli_reports_the_reading_and_clears_a_tripped_breaker(garden):
+    """The one operator action for a tripped replacement breaker, and nothing wider.
+
+    `--resume` clears the fence an operator was told to clear; it does not extend an
+    admission, raise a limit or provision anything on its own.
+    """
+    import yaml
+
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["workers"] = {**(data.get("workers") or {}),
+                       "pool": {"contract_version": "garden.fleet/v1",
+                                "declaration": "pool.json", "desired": 2}}
+    path.write_text(yaml.safe_dump(data))
+    (garden / ".garden").mkdir(parents=True, exist_ok=True)
+    (garden / ".garden" / "fleet.json").write_text(json.dumps({
+        "attempts": 5, "breaker": True,
+        "action_required": "5 consecutive convergence failures (health probe failed); fix the "
+                           "image, credentials, health probe or provider access, then run "
+                           "`garden hosts fleet --resume`",
+        "observed": {"desired": 2, "healthy": 1, "dispatchable": 1, "pending": 0,
+                     "draining": 0, "failed": 1},
+    }))
+    runner = CliRunner()
+
+    shown = runner.invoke(app, ["hosts", "fleet", "--garden", str(garden)])
+    assert shown.exit_code == 0, shown.output
+    reading = json.loads(shown.output)
+    assert (reading["configured_desired"], reading["healthy"], reading["failed"]) == (2, 1, 1)
+    assert reading["breaker"] is True and "--resume" in reading["action_required"]
+
+    resumed = runner.invoke(app, ["hosts", "fleet", "--garden", str(garden), "--resume"])
+    assert resumed.exit_code == 0, resumed.output
+    cleared = json.loads(resumed.output)
+    assert cleared["breaker"] is False and cleared["action_required"] == ""
+    assert cleared["attempts"] == 0
+
+
+def test_fleet_cli_declines_a_static_garden(garden):
+    result = CliRunner().invoke(app, ["hosts", "fleet", "--garden", str(garden)])
+    assert result.exit_code == 1
+    assert "no workers.pool block configured" in result.output

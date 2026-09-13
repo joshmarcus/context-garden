@@ -55,6 +55,7 @@ from .discovered import DiscoveredMixin
 from .dispatch import DispatchMixin
 from .edits import EditsMixin
 from .fence import FenceMixin
+from .fleet import FleetMixin
 from .human import HumanMixin
 from .kickoff import KickoffMixin
 from .persona import PersonaMixin
@@ -105,6 +106,7 @@ class Scheduler(
     QueueMixin,
     RebaseMixin,
     FenceMixin,
+    FleetMixin,
     DiscoveredMixin,
     ReviewMixin,
     EditsMixin,
@@ -879,6 +881,11 @@ class Scheduler(
         with self._step(rep, "reap"):
             self._reload_config_if_safe()  # CG-192 / CG-242: see tick()
             self._reap_all(rep)
+        # Resume the same durable reconciliation generation the previous controller left,
+        # rather than waiting a whole cadence for the first ordinary pass.
+        with self._step(rep, "fleet"):
+            self._guard(rep, "fleet convergence", lambda: self.converge_fleet(rep))
+            self._guard(rep, "ssh worker probe", self.probe_ssh_workers)
         self.state.save()
         rep.duration_s = time.monotonic() - started
         if rep.reaped or rep.transitions:
@@ -996,6 +1003,13 @@ class Scheduler(
             self._guard(rep, "harness probe", lambda: self.probe_paused_harnesses(rep))
         with self._step(rep, "tool_update"):
             self._guard(rep, "tool update detection", self.detect_tool_upgrade)
+        # Before dispatch, so a host that became healthy this pass can be given work and one
+        # that is draining or failed stops receiving it without waiting for the next tick.
+        with self._step(rep, "fleet"):
+            self._guard(rep, "fleet convergence", lambda: self.converge_fleet(rep))
+            # Started, never awaited: the reading a dispatch reads is the one the last pass
+            # cached, so an unreachable static host costs this tick nothing.
+            self._guard(rep, "ssh worker probe", self.probe_ssh_workers)
         if dispatch is None:
             # Product policy is evaluated for each candidate in dispatch_ready. Enter the
             # dispatcher even when the global value is false so an explicit project override

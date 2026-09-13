@@ -19,6 +19,7 @@ from garden import storage
 from garden.github import Feedback, PRInfo
 from garden.runner.base import _no_fsmonitor_env
 from garden.scheduler import Scheduler
+from garden.scheduler import fleet as scheduler_fleet
 from garden.store import Store
 from tests.inprocess import InProcessRunner
 
@@ -425,6 +426,19 @@ def garden(tmp_path: Path, garden_template: tuple[Path, Path], fake_tmux) -> Pat
         Do the second thing.
         """)
     return root
+
+
+@pytest.fixture(autouse=True)
+def _no_detached_host_probe(request: pytest.FixtureRequest, monkeypatch) -> None:
+    """Keep the tick's detached static-host probe out of tests that only tick incidentally.
+
+    Every tick may start one `garden.ssh_probe` process for the configured `ssh.hosts`, and
+    that process outlives the test that started it. Tests of the probe itself carry the
+    marker and stub the launch, as `in_process_workers` does for worker subprocesses.
+    """
+    if request.node.get_closest_marker("starts_host_probe") is not None:
+        return
+    monkeypatch.setattr(scheduler_fleet.FleetMixin, "probe_ssh_workers", lambda self: None)
 
 
 @pytest.fixture(autouse=True)

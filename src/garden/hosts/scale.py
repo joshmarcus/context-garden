@@ -245,12 +245,100 @@ class ScaleOperation:
         with self._locked():
             return self._continue_locked(pool)
 
+    def converge(self, pool: PoolDeclaration, *, desired: int | None = None) -> ScaleStatus:
+        """Continue this operation toward ``desired`` healthy hosts inside its admission.
+
+        A recurring controller calls this instead of :meth:`continue_` when an operator has
+        declared a count: the admitted maximum, spend limit, deadline, profile and identity
+        envelope is unchanged, so a request above the admitted count is refused here rather
+        than quietly widened.  A reduced count is recorded durably before anything is
+        drained, and excess capacity is retired only after its active work has finished.
+        """
+        with self._locked():
+            operation = self._require(pool)
+            admitted = self._admitted(operation)
+            if asdict(pool) != asdict(admitted):
+                raise ValueError("pool declaration changed; submit a new admitted scale request")
+            if desired is not None:
+                if desired < 0:
+                    raise ValueError("desired host count cannot be negative")
+                if desired > admitted.desired:
+                    raise ValueError(
+                        f"desired {desired} exceeds the {admitted.desired} host(s) this "
+                        "operation admitted; admit a new scale operation for more capacity")
+                if desired != int(operation["desired"]):
+                    # Durable before any drain: a restart continues the reduced target
+                    # rather than reprovisioning what this pass was retiring.
+                    operation["desired"] = desired
+                    self._write(operation)
+            target = int(operation["desired"])
+            if target <= 0:
+                return self._cleanup(replace(admitted, desired=0, enabled=True), operation,
+                                     safe=True)
+            excess = set(range(target, admitted.desired))
+            if excess:
+                pool = replace(admitted, desired=target)
+                hosts = self.lifecycle.drain(
+                    pool, deadline=str(operation["deadline"]),
+                    detail=f"scaling down to {target} host(s)", slots=excess)
+                retiring = {f"{pool.name}-{slot}" for slot in excess}
+                waiting = {host.host_id for host in hosts
+                           if host.state != HostState.TERMINATED and host.host_id in retiring}
+                self._revoke(operation, pool, excess, waiting)
+                if waiting:
+                    # Active work reaches its own completion boundary first; convergence at
+                    # the reduced target waits so reconciliation cannot retire it abruptly.
+                    operation["phase"] = "draining"
+                    self._write(operation)
+                    return self.status(pool, hosts=hosts)
+            return self._converge_locked(operation, admitted)
+
+    def _retire_failed(self, operation: dict, pool: PoolDeclaration) -> None:
+        """Drain and retire a failed host so its stable slot can be replaced.
+
+        A provider-reported failure keeps occupying its slot until the host is gone.  New
+        work is fenced first and retirement waits for the run the host is still finishing,
+        so the replacement is a convergence step rather than a lost task.
+        """
+        failed = {
+            int(host.host_id.rsplit("-", 1)[1])
+            for host in self.lifecycle.inspect(pool)
+            if host.state == HostState.FAILED and host.host_id.startswith(f"{pool.name}-")
+            and host.host_id.rsplit("-", 1)[1].isdigit()
+        }
+        if not failed:
+            return
+        # The slot keeps its enrollment: the replacement is the same logical host, so
+        # revoking here would leave the new host without the identity it needs.
+        self.lifecycle.drain(
+            pool, deadline=str(operation["deadline"]),
+            detail="retiring a failed host before replacing its slot", slots=failed)
+
+    def _revoke(self, operation: dict, pool: PoolDeclaration, slots: set[int],
+                waiting: set[str]) -> None:
+        """Confirm credential cleanup for retired slots, keeping failures visible."""
+        pending = {row for row in operation.get("ephemeral_credentials_pending_revocation", [])
+                   if not any(str(row).startswith(f"{pool.name}-{slot}:") for slot in slots)}
+        for slot in sorted(slots):
+            host_id = f"{pool.name}-{slot}"
+            if host_id in waiting:
+                pending.add(f"{host_id}: waiting for host termination before revocation")
+            else:
+                pending.update(self.enrollments.revoke(host_id))
+        operation["ephemeral_credentials_pending_revocation"] = sorted(pending)
+        self._write(operation)
+
     def _continue_locked(self, pool: PoolDeclaration) -> ScaleStatus:
         operation = self._require(pool)
         admitted = self._admitted(operation)
         if asdict(pool) != asdict(admitted):
             raise ValueError("pool declaration changed; submit a new admitted scale request")
-        pool = admitted
+        return self._converge_locked(operation, admitted)
+
+    def _converge_locked(self, operation: dict, admitted: PoolDeclaration) -> ScaleStatus:
+        # The durable desired count is the target: a reduced count survives restart, and a
+        # cleaned operation never reprovisions the capacity it just retired.
+        pool = replace(admitted, desired=int(operation["desired"]))
         if self.enrollment_config_path and not operation.get("enrollment_config_path"):
             operation["enrollment_config_path"] = self.enrollment_config_path
         if not operation.get("execution_context"):
@@ -262,6 +350,7 @@ class ScaleOperation:
         # and provider both reconcile their own stable step identities on retry.
         operation["phase"] = "converging"
         self._write(operation)
+        self._retire_failed(operation, pool)
         missing = self._missing(pool, ensure=True)
         if missing:
             # Never scale down a healthy sibling because another slot lost enrollment.

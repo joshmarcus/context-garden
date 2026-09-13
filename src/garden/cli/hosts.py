@@ -8,18 +8,9 @@ from pathlib import Path
 
 import typer
 
-from ..hosts import (
-    DirectoryEnrollmentResolver,
-    HostLifecycle,
-    JsonStateStore,
-    ScaleOperation,
-    WorkerDrainStore,
-    durable_worker_readiness,
-    pool_from_dict,
-    status_dict,
-)
-from ..hosts.ec2 import EC2Provider, SQSEC2EventSource
-from .common import PANEL_LOOP, app, console, err
+from ..hosts import ScaleOperation, pool_from_dict, status_dict
+from ..hosts.factory import operation_path_for, scale_operation
+from .common import PANEL_LOOP, _store, app, console, err
 
 hosts_app = typer.Typer(help="Plan, resume, inspect, and clean up managed worker capacity.")
 app.add_typer(hosts_app, name="hosts", rich_help_panel=PANEL_LOOP)
@@ -27,107 +18,40 @@ app.add_typer(hosts_app, name="hosts", rich_help_panel=PANEL_LOOP)
 
 def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
                      enrollment_config: Path | None = None) -> ScaleOperation:
-    if pool.provider != "ec2":
-        raise ValueError("the CLI currently supports the ec2 provider")
-    saved = json.loads(operation_path.read_text()) if operation_path.exists() else {}
-    saved_dir = str(saved.get("enrollment_dir") or "")
-    if saved_dir:
-        if enrollment_dir is not None and enrollment_dir.resolve() != Path(saved_dir):
-            raise ValueError("continue with the operation's original enrollment directory")
-        enrollment_dir = Path(saved_dir)
-    enrollment_dir = enrollment_dir or Path(".garden/hosts/enrollment")
-    saved_config = str(saved.get("enrollment_config_path") or "")
-    if saved_config:
-        if enrollment_config is not None and enrollment_config.resolve() != Path(saved_config):
-            raise ValueError("continue with the operation's original enrollment configuration")
-        enrollment_config = Path(saved_config)
-    declaration = pool_from_dict(saved["admitted_declaration"]) if saved else pool
-    if declaration.purchase_policy == "spot":
-        # Reject an unsafe explicit or implicit AWS request ceiling before credential setup.
-        EC2Provider.validate_purchase_prices(declaration)
+    return scale_operation(pool, operation_path, enrollment_dir, enrollment_config)
+
+
+@hosts_app.command("fleet")
+def fleet(
+    resume: bool = typer.Option(False, "--resume",
+        help="Clear a tripped replacement breaker after fixing what broke."),
+    converge: bool = typer.Option(False, "--converge",
+        help="Take one reconciliation step now instead of waiting for the next pass."),
+    root: Path | None = typer.Option(None, "--garden", help="Garden root (default: cwd)."),
+):
+    """Show the recurring worker-pool reading, or clear its breaker; output has no secrets."""
+    from ..fleet import FleetController, fleet_projection
+
+    store = _store(root)
+    controller = FleetController(store.config)
+    if controller.settings is None:
+        err.print("[yellow]no workers.pool block configured; this garden uses static "
+                  "workers.hosts[/yellow]")
+        raise typer.Exit(1)
     try:
-        import boto3
-    except ImportError as exc:
-        raise ValueError("EC2 scaling requires boto3 in the controller environment") from exc
-    resolver = DirectoryEnrollmentResolver(enrollment_dir)
-    config = {}
-    execution_context = {}
-    enforcer = None
-    if enrollment_config is not None:
-        from ..hosts.deadline import ExternalDeadlineCommand
-        from ..hosts.enrollment import ProductionEnrollmentResolver
-        from ..hosts.enrollment_clients import clients_from_config
-
-        config = json.loads(enrollment_config.read_text())
-        if not isinstance(config, dict):
-            raise ValueError("enrollment configuration must be a JSON object of credential references")
-        execution_context = {key: config.get(key) for key in (
-            "aws_profile", "aws_region", "aws_account_id", "github_repo", "instance_tags",
-            "spot_event_queue_url")}
-        if saved.get("execution_context") and saved["execution_context"] != execution_context:
-            raise ValueError("provider enrollment context changed; use the admitted account, "
-                             "region and repository")
-        clients = clients_from_config(config)
-        resolver = ProductionEnrollmentResolver(
-            enrollment_dir, config, declaration, operation_path,
-            secrets_client=clients[0], tailscale_client=clients[1], github_client=clients[2],
-        )
-        command = config.get("deadline_command")
-        if command:
-            if not isinstance(command, list):
-                raise ValueError("deadline_command must be an argument list, not shell text")
-            enforcer = ExternalDeadlineCommand(command)
-        else:
-            from ..hosts.deadline_scheduler import LocalDeadlineScheduler
-
-            enforcer = LocalDeadlineScheduler(
-                Path(config.get("deadline_state_dir") or enrollment_dir / "deadlines"),
-                config["aws_profile"], config["aws_region"], str(config["aws_account_id"]),
-            )
-    if declaration.purchase_policy == "spot" and not config.get("spot_event_queue_url"):
-        raise ValueError(
-            "Spot pools require --enrollment-config with spot_event_queue_url "
-            "for interruption recovery"
-        )
-    EC2Provider.validate_purchase_prices(declaration)
-    session = boto3.Session(
-        **({"profile_name": config["aws_profile"]} if config.get("aws_profile") else {}),
-        **({"region_name": config["aws_region"]} if config.get("aws_region") else {}),
-    )
-    if config:
-        identity = session.client("sts").get_caller_identity()
-        expected_role = (f"arn:aws:sts::{config['aws_account_id']}:"
-                         "assumed-role/ContextGardenProvisioner/")
-        if (str(identity.get("Account")) != str(config["aws_account_id"])
-                or not str(identity.get("Arn", "")).startswith(expected_role)):
-            raise ValueError("provisioning profile must assume the scoped ContextGardenProvisioner "
-                             "role in the configured account")
-    event_source = None
-    queue_url = str(config.get("spot_event_queue_url") or "")
-    if queue_url:
-        event_source = SQSEC2EventSource(
-            session.client("sqs"), queue_url,
-            operation_path.with_name(operation_path.stem + "-spot-events.json"),
-        )
-    provider = EC2Provider(
-        session.client("ec2"), deadline_enforcer=enforcer,
-        required_tags=dict(config.get("instance_tags") or {}),
-        event_source=event_source,
-    )
-    lifecycle_path = operation_path.with_name(operation_path.stem + "-lifecycle.json")
-    garden_dir = Path(config.get("garden_dir") or operation_path.parent.parent).resolve()
-    lifecycle = HostLifecycle(
-        {"ec2": provider}, JsonStateStore(lifecycle_path),
-        health_check=durable_worker_readiness(garden_dir),
-        # The same durable fence covers provider interruptions and deliberate drains.
-        # It is useful for on-demand pools too, even when they have no Spot event source.
-        interruption_drain=WorkerDrainStore(garden_dir),
-    )
-    return ScaleOperation(
-        lifecycle, operation_path, resolver,
-        enrollment_config_path=str(enrollment_config.resolve()) if enrollment_config else "",
-        execution_context=execution_context,
-    )
+        if resume:
+            controller.resume()
+        if converge:
+            controller.converge(force=True)
+    except (ValueError, OSError, RuntimeError, KeyError) as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        # A provider exception can retain credential-bearing request state; report the type.
+        err.print(f"[red]reconciliation stopped ({type(exc).__name__}); durable progress is "
+                  "retained. Verify the scoped provider access and retry.[/red]")
+        raise typer.Exit(1) from None
+    console.print_json(data=fleet_projection(store.config))
 
 
 @hosts_app.command("scale")
@@ -148,7 +72,9 @@ def scale(
     """Request or resume a bounded pool scale operation; output contains no secrets."""
     try:
         pool = pool_from_dict(json.loads(specification.read_text()))
-        operation_path = state or Path(f".garden/hosts/{pool.name}-scale.json")
+        # One convention, shared with the recurring controller: the operation is named for
+        # the pool, so a declaration file with any name reaches the same admission.
+        operation_path = state or operation_path_for(pool.name, Path(".garden"))
         if sum((bool(deadline), cleanup, continue_operation, emergency_stop)) > 1:
             raise ValueError("choose one of --deadline, --continue, --cleanup or --emergency-stop")
         operation = _build_operation(pool, operation_path, enrollment_dir, enrollment_config)

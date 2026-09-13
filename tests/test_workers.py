@@ -65,7 +65,7 @@ def test_never_contacted_enrolled_worker_is_unknown_in_api_and_ui(garden):
     assert payload["totals"] == {
         **{key: 0 for key in ("jobs", "available_capacity", "available", "executing",
                               "draining", "restarting", "reconnecting", "unreachable",
-                              "terminated", "disabled")},
+                              "terminated", "disabled", "dispatchable")},
         "workers": 1, "capacity": 3, "unknown": 1,
     }
     assert payload["workers"] == [{
@@ -73,7 +73,7 @@ def test_never_contacted_enrolled_worker_is_unknown_in_api_and_ui(garden):
         "last_contact": None, "evidence_at": None, "evidence_stale": True,
         "capacity": 3, "available_capacity": 0, "current_jobs": [],
         "unavailable_reason": "no recent worker-agent contact", "provider_id": None,
-        "prior_provider_ids": [],
+        "prior_provider_ids": [], "probe": None,
     }]
     assert "token_sha256" not in json.dumps(payload)
     page = client.get("/now/workers")
@@ -293,3 +293,78 @@ def test_workers_page_has_responsive_layout_and_drill_down_links(garden):
     assert 'href="/tasks/DM-001"' in page
     assert f'href="/runs/DM-001/{run.run_id}"' in page
     assert "job lease: not applicable" in page
+
+
+def test_dispatchable_counts_managed_and_configured_capacity_exactly_once(garden):
+    """A garden with both a managed pool and configured workers reports all of its capacity.
+
+    The durable scale reading is what speaks for a managed host whose own agent has not
+    reported yet; a managed host that is also polling is one dispatchable worker, not two.
+    """
+    store = configure(garden, remote=True, ssh=False)
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["workers"]["pool"] = {"contract_version": "garden.fleet/v1",
+                               "declaration": "pool.json", "desired": 2}
+    path.write_text(yaml.safe_dump(data))
+    store = Store(garden)
+    store.config.garden_dir.mkdir(parents=True, exist_ok=True)
+    (store.config.garden_dir / "fleet.json").write_text(json.dumps({"observed": {
+        "desired": 2, "healthy": 2, "dispatchable": 2, "pending": 0, "draining": 0, "failed": 0,
+        "hosts": [{"host_id": "workers-0", "state": "ready", "detail": "ready"},
+                  {"host_id": "workers-1", "state": "ready", "detail": "ready"}]}}))
+    contacts = WorkerContactStore(store.config.garden_dir)
+    contacts.record("pull-a", capacity=2, harnesses=["claude"], tiers=[], facts={})
+    contacts.record("workers-0", capacity=1, harnesses=["claude"], tiers=[], facts={})
+
+    fleet = snapshot(store.config, RunStore(store.config.garden_dir))
+
+    assert {row["id"]: row["status"] for row in fleet["workers"]} == {
+        "pull-a": "available", "workers-0": "available", "workers-1": "unknown"}
+    # The polling pull worker, the managed host that has reported, and the managed host the
+    # scale reading vouches for: three, with workers-0 counted once.
+    assert fleet["totals"]["dispatchable"] == 3
+
+
+def test_managed_pool_reading_reaches_the_api_and_the_page(garden):
+    """The recurring pool's durable reading is the same one the worker surfaces show.
+
+    The controller writes `.garden/fleet.json` on its reconciliation pass; a page or API read
+    only joins that file with worker contact and the active-run index, so it stays offline.
+    """
+    configure(garden, remote=False, ssh=False)
+    path = garden / "garden.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["workers"]["pool"] = {"contract_version": "garden.fleet/v1",
+                               "declaration": "pool.json", "desired": 2}
+    path.write_text(yaml.safe_dump(data))
+    store = Store(garden)
+    store.config.garden_dir.mkdir(parents=True, exist_ok=True)
+    (store.config.garden_dir / "fleet.json").write_text(json.dumps({
+        "generation": "op-1",
+        "next_attempt_at": "2026-09-12T00:05:00+00:00",
+        "action_required": "complete the private enrollment for workers-1 (worker token)",
+        "last_outcome": "1 healthy, 0 pending, 1 failed of 2 desired",
+        "observed": {
+            "desired": 2, "healthy": 1, "dispatchable": 1, "pending": 0, "draining": 0,
+            "failed": 1, "exact_version": "worker-3", "deadline": "2026-09-20T00:00:00+00:00",
+            "estimated_accrued_usd": 0.5, "spend_limit_usd": 80.0,
+            "hosts": [{"host_id": "workers-0", "state": "ready", "detail": "ready"},
+                      {"host_id": "workers-1", "state": "failed", "detail": "health probe failed"}],
+        },
+    }))
+    client = TestClient(create_app(store, watch=False, host="testserver"))
+
+    payload = client.get("/api/workers").json()
+    assert payload["scale"]["configured_desired"] == 2
+    assert payload["scale"]["next_retry_at"] == "2026-09-12T00:05:00+00:00"
+    assert payload["totals"]["dispatchable"] == 1
+    assert {row["id"]: row["status"] for row in payload["workers"]} == {
+        "workers-0": "unknown", "workers-1": "unreachable"}
+    page = client.get("/now/workers").text
+    assert "desired 2 · healthy 1 · dispatchable 1" in page
+    assert "worker version worker-3" in page
+    assert "deadline 2026-09-20T00:00:00+00:00" in page
+    assert "estimated cost $0.50 of $80.00" in page
+    assert "next retry 2026-09-12T00:05:00+00:00" in page
+    assert "complete the private enrollment for workers-1 (worker token)" in page

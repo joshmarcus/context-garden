@@ -121,6 +121,69 @@ the seven-day recovery window. Original model-auth inputs are preserved; success
 cleanup removes secret values from the operation's journal. Auth-key deletion does not
 claim deletion of retained Tailscale device records.
 
+## Maintaining a declared healthy count
+
+An operator who does not want to run `--continue` by hand can declare the count Garden
+should keep, inside an admission that already exists. The block is versioned and strict;
+an unknown key, a missing contract version or an out-of-range count is refused rather
+than ignored, so a configuration mistake never becomes a provisioning request.
+
+```yaml
+workers:
+  pool:
+    contract_version: garden.fleet/v1
+    declaration: pool.json        # the admitted pool declaration, relative to the garden
+    desired: 2                    # healthy hosts to maintain, within the admission
+    interval_seconds: 300         # ordinary reconciliation cadence
+    backoff_seconds: 60           # first delay after a failed pass
+    backoff_ceiling_seconds: 1800 # bound on that delay
+    failure_threshold: 5          # consecutive failures that stop replacement
+    # state: operations/scale.json  # optional: an admission kept outside the convention
+```
+
+The operation the controller resumes is the one `garden hosts scale` writes:
+`.garden/hosts/<pool name>-scale.json`, named for the pool in the declaration rather than
+for the file the declaration is kept in. `state` overrides that path and must match the
+`--state` the admission used.
+
+A garden without this block keeps its static `workers.hosts` behavior and reconciles
+nothing. With it, the controller resumes that one durable operation on startup and once
+per tick at the configured cadence: at most one step per pass under the tick lock, so
+there is no concurrent or duplicate provision request. Newly healthy hosts become
+dispatchable through the dynamic worker registry, and draining, retired, expired or
+unhealthy hosts stop receiving new work without restarting Garden. A failed host is
+drained where needed and replaced in its stable slot; an uncertain provider response is
+reconciled through discovery rather than by creating a second host for the slot.
+
+Repeated failure backs off exponentially to the ceiling and then stops replacement
+entirely, leaving healthy siblings serving. `garden hosts fleet` prints the reading;
+`garden hosts fleet --resume` clears that stop once the image, credential, health probe
+or provider access is fixed, and `--converge` takes one step immediately.
+
+Configuration is not admission. A `desired` above the admitted count is clamped to the
+admission, and an edited declaration is not adopted: both keep the admitted pool running
+and report one concrete action — admit the change with `garden hosts scale`. The same
+holds for the spend limit, the exact profile version, the identity envelope, and the
+absolute deadline: when the admission expires the count stays unmet until an operator
+admits a new operation. Reducing `desired` drains the excess, waits for active work to
+reach a safe boundary, retires the capacity and reports any retained resource or pending
+credential revocation. Ordinary reconciliation never interrupts active work.
+
+`garden status`, `garden doctor`, `garden observe`, the workers page and `/api/workers`
+all read one durable projection the controller wrote on its last pass — desired, healthy,
+dispatchable, pending, draining, failed, next retry, exact worker version, deadline,
+estimated cost and any action required. Those reads contact no host and no provider. The
+workers page's own `dispatchable` total spans the whole fleet: managed hosts the scale
+reading vouches for plus configured pull and static workers, each counted once.
+
+Statically configured `ssh.hosts` entries appear in the same projection. A managed host is
+reported by its own agent; a static host is not, so a tick starts a bounded read-only probe
+of every static host at once in a detached process it never waits for, and caches one reading
+per host — latency, last success, failure reason and staleness — on the
+`ssh.probe_interval_seconds` cadence. The probe only asks whether the required tools and the
+declared checkouts are present; it never fetches, formats or writes. See
+[the worker protocol](worker-protocol.md) for the cache and its two settings.
+
 ## Verification scope
 
 Focused tests exercise interrupted requests and API responses, immutable admission,

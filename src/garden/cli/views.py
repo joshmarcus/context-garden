@@ -8,6 +8,7 @@ import typer
 from rich import box
 from rich.table import Table
 
+from ..fleet import fleet_lines
 from ..model import STATUS_ORDER, Status, effective_owner, priority_label
 from .common import PANEL_BOARD, _scheduler, _store, _style, _task, app, console
 
@@ -111,6 +112,8 @@ def status(
     active_profile = sched.operating_profile_name()
     mp_line += f"  operating profile: {active_profile or '(none)'}"
     console.print(mp_line)
+    for line in fleet_lines(store.config):
+        console.print(f"[yellow]{line}[/yellow]" if "action required" in line else line)
     up = sched.upgrade_available()
     build = sched.upgrade_status()
     console.print(f"tool installed: {build.get('installed_version', 'unknown')} · source: {str(build.get('active') or 'unknown')[:12] or 'unknown'}")

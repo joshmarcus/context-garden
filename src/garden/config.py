@@ -324,7 +324,9 @@ DEFAULTS: dict[str, Any] = {
     "prices": {},              # generic per-model price table (input/cached_input/cache_write/output per
                                # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
                                # the codex defaults and docs/codex.md for where the numbers came from
-    "ssh": {"hosts": []},
+    "ssh": {"hosts": [],
+            "probe_interval_seconds": 300,  # cadence of the bounded read-only host probe
+            "probe_timeout_seconds": 15},   # per-host bound on one probe
     "workers": {"lease_seconds": 120, "recovery_seconds": 300, "poll_seconds": 5, "hosts": []},
     "git": {"user_name": "", "user_email": ""},  # identity written into a fresh product clone; see Scheduler.git_identity
     "brief": {
