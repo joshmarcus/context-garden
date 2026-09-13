@@ -46,8 +46,19 @@ class DispatchMixin:
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
         source_envelope = source_snapshot.get("execution_envelope") or {}
         requirement_data = requirements.to_dict()
+        source_has_requirements = "execution_requirements" in source_snapshot
         source_requirements = source_snapshot.get("execution_requirements")
-        if source_requirements and source_requirements != requirement_data:
+        requirements_changed = (
+            source_run is not None
+            and (
+                (source_has_requirements and source_requirements != requirement_data)
+                # Legacy activities have no trustworthy effective-requirements snapshot.
+                # They may continue unconstrained, but cannot authorize newly constrained
+                # work across an unknown execution boundary.
+                or (not source_has_requirements and not requirements.empty)
+            )
+        )
+        if requirements_changed:
             run = checkpoint_run or next((
                 candidate for candidate in reversed(self.runs.runs_for(task.id))
                 if candidate.mode == mode
@@ -141,8 +152,6 @@ class DispatchMixin:
                                    requirements: Any, match: Any,
                                    *, source_run: Run | None = None) -> None:
         """Persist the authorization contract used to admit one activity."""
-        if requirements.empty:
-            return
         owner, owner_source = effective_owner(task, self.store.phase(task.product, task.phase))
         requirement_data = requirements.to_dict()
         encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
