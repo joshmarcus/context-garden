@@ -164,7 +164,10 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # therefore administrative regardless of all-project visibility.
             return authorize(principal, "administer")
         # Configuration, lifecycle and phase-wide actions are administrator operations.
-        current_store = Store(store.root, config=store.config)
+        # The outer request middleware has already installed a fresh read/action
+        # generation.  Reuse it so authorization and the route see the same task
+        # versions without adding another full task-tree scan per request.
+        current_store = hub.fresh()
         task_id = ""
         parts = path.split("/")
         if path.startswith("/tasks/") and len(parts) > 2:
