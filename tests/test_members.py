@@ -625,11 +625,11 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
-    source_head = "a" * 40
+    source_head = "c" * 40
     run.source_head = source_head
     run.env_snapshot = {
         "product": "demo",
-        "remote_repo": "https://example.test/team/demo.git",
+        "remote_repo": "https://example.test/demo.git",
         "prepared_source_head": source_head,
     }
     run.save()
@@ -792,12 +792,6 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
-
-
-
-
-
-
 def test_legacy_loopback_behavior_is_unchanged(garden):
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     assert client.get("/api/tasks").status_code == 200
