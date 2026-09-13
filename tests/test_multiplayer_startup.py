@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 
 import httpx
 import yaml
@@ -47,6 +55,84 @@ def _run(garden, *args):
         return CliRunner().invoke(cli_app, list(args))
     finally:
         os.chdir(previous)
+
+
+def _available_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+def _wait_until_serving(url: str) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=0.2)
+        except urllib.error.HTTPError:
+            return
+        except (OSError, urllib.error.URLError):
+            time.sleep(0.05)
+        else:
+            return
+    raise AssertionError(f"coordinator did not start at {url}")
+
+
+def test_documented_coordinator_command_connects_disposable_installation(
+    garden, tmp_path, monkeypatch,
+):
+    coordinator_garden = tmp_path / "coordinator"
+    local_garden = tmp_path / "alex"
+    shutil.copytree(garden, coordinator_garden)
+    shutil.copytree(garden, local_garden)
+    admin = _run(
+        coordinator_garden, "members", "enroll-administrator",
+        "garden-1", "admin", "coordinator-host",
+    )
+    assert admin.exit_code == 0, admin.output
+    monkeypatch.setenv("GARDEN_ADMIN_CREDENTIAL", admin.output.strip())
+    added = _run(
+        coordinator_garden, "members", "add", "alex", "--role", "member",
+        "--credential-env", "GARDEN_ADMIN_CREDENTIAL",
+    )
+    assert added.exit_code == 0, added.output
+    issued = _run(
+        coordinator_garden, "members", "issue-installation", "alex", "alex-laptop",
+        "--credential-env", "GARDEN_ADMIN_CREDENTIAL",
+    )
+    assert issued.exit_code == 0, issued.output
+
+    port = _available_port()
+    endpoint = f"http://127.0.0.1:{port}"
+    process = subprocess.Popen(
+        [
+            sys.executable, "-m", "garden", "members", "coordinator",
+            "--garden", str(coordinator_garden), "--host", "127.0.0.1", "--port", str(port),
+        ],
+        cwd=coordinator_garden,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        _wait_until_serving(f"{endpoint}/v1/gardens/garden-1/snapshot")
+        monkeypatch.setenv("GARDEN_ALEX_CREDENTIAL", issued.output.strip())
+        connected = _run(
+            local_garden, "members", "connect", "garden-1", endpoint,
+            "alex", "alex-laptop", "--credential-env", "GARDEN_ALEX_CREDENTIAL",
+        )
+        assert connected.exit_code == 0, connected.output
+        status = _run(local_garden, "members", "status")
+        assert status.exit_code == 0, status.output
+        assert "identity: alex (member)" in status.output
+        assert "execution: No work assignment" in status.output
+        page = TestClient(create_app(Store(local_garden), watch=False)).get("/")
+        assert page.status_code == 200
+        assert "No work assignment" in page.text
+    finally:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=5)
+        assert process.returncode is not None
 
 
 def test_unassigned_member_tick_does_not_create_scheduler_state(garden, monkeypatch):

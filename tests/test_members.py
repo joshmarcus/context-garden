@@ -212,6 +212,11 @@ def test_multiplayer_nonlocal_listener_requires_https_transport(garden):
         create_app(Store(garden), watch=False, host="0.0.0.0")
 
 
+def test_coordinator_nonlocal_listener_requires_https_transport(garden):
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        multiplayer_tls_files(Store(garden), "0.0.0.0", require_multiplayer=True)
+
+
 def test_multiplayer_https_validates_configured_certificate_pair(garden, monkeypatch):
     cert = garden / "private/server.crt"
     key = garden / "private/server.key"

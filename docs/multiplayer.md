@@ -18,16 +18,31 @@ garden members add alex --role member --credential-env GARDEN_ADMIN_CREDENTIAL
 garden members issue-installation alex alex-laptop --credential-env GARDEN_ADMIN_CREDENTIAL
 ```
 
+Start the coordinator from its garden checkout. The default address is loopback-only; keep this
+terminal running while local installations connect:
+
+```sh
+garden members coordinator --garden /path/to/coordinator-garden --host 127.0.0.1 --port 8766
+```
+
+Binding to another interface requires `multiplayer.transport: https` and readable
+`multiplayer.tls_certfile` and `multiplayer.tls_keyfile` paths in that garden's configuration.
+The coordinator is the only process that writes its private membership registry and coordination
+ledger.
+
 On Alex's local checkout, save only the connection metadata.  `connect` verifies the credential
 before writing the ignored `garden.local.yaml`; it does not copy the credential into that file.
 
 ```sh
 export GARDEN_ALEX_CREDENTIAL='printed-once-value'
-garden members connect garden-1 https://coordinator.example alex alex-laptop \
+garden members connect garden-1 http://127.0.0.1:8766 alex alex-laptop \
   --credential-env GARDEN_ALEX_CREDENTIAL
 garden members status
 garden serve
 ```
+
+On separate machines, replace the loopback URL with the administrator's authenticated HTTPS
+endpoint.
 
 Open the printed local address in a browser. On a loopback listener, Garden establishes the
 browser's member session from the connected installation credential and revalidates it with the
