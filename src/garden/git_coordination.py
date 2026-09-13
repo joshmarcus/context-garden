@@ -15,6 +15,9 @@ from typing import Any
 
 PROTOCOL = "context-garden/git-coordination"
 VERSION = 1
+HANDOFF_ENTITY_FIELDS = frozenset(
+    {"owner", "authority_generation", "kind", "scope", "draining", "pending_owner"}
+)
 
 
 class GitCoordinationError(RuntimeError):
@@ -322,7 +325,20 @@ class GitStateStore:
                 if int(state["entities"].get(entity, {}).get("version", 0)) != version:
                     raise GitContention(f"stale entity version for {entity}")
             for entity, patch in changes.get("entities", {}).items():
-                current = state["entities"].setdefault(entity, {"version": 0})
+                current = state["entities"].get(entity)
+                if current is None:
+                    current = state["entities"].setdefault(entity, {"version": 0})
+                else:
+                    changed_authority = sorted(
+                        field
+                        for field in HANDOFF_ENTITY_FIELDS.intersection(patch)
+                        if patch[field] != current.get(field)
+                    )
+                    if changed_authority:
+                        raise GitCoordinationError(
+                            "authority changes require an acknowledged handoff: "
+                            + ", ".join(changed_authority)
+                        )
                 current.update(deepcopy(patch))
                 current["version"] += 1
             for table in ("claims", "permits", "effects", "reservations"):
@@ -333,6 +349,10 @@ class GitStateStore:
                             current.get("actor"), current.get("installation")
                         ) != (actor, installation):
                             raise PermissionError(f"cannot release another member's {table[:-1]}")
+                        if current and table in {"claims", "permits"}:
+                            raise GitCoordinationError(
+                                f"{table[:-1]} release requires a validated lifecycle transition"
+                            )
                         state[table].pop(key, None)
                     else:
                         row = deepcopy(value)
@@ -356,6 +376,15 @@ class GitStateStore:
                                 raise GitContention("claim generation does not match authority")
                             if entity.get("draining"):
                                 raise GitCoordinationError("authority is draining; new claims are blocked")
+                            if current:
+                                for field in (
+                                    "kind", "scope", "owner_id", "authority_generation",
+                                    "operation_id",
+                                ):
+                                    if row.get(field) != current.get(field):
+                                        raise GitCoordinationError(
+                                            f"claim {field} is immutable after admission"
+                                        )
                         if table in {"permits", "effects"}:
                             claim_entities = {
                                 claim.get("operation_id"): entity_key
@@ -369,6 +398,21 @@ class GitStateStore:
                             if claim_entity.get("draining") and current is None:
                                 raise GitCoordinationError(
                                     "authority is draining; new permits and effects are blocked"
+                                )
+                        if table == "permits":
+                            if current and row.get("claim") != current.get("claim"):
+                                raise GitCoordinationError(
+                                    "permit claim is immutable after admission"
+                                )
+                            if current is None and row.get("status", "pending") != "pending":
+                                raise GitCoordinationError(
+                                    "new execution permits must start pending"
+                                )
+                            if current and row.get("status", current.get("status", "pending")) != (
+                                current.get("status", "pending")
+                            ):
+                                raise GitCoordinationError(
+                                    "permit status requires validated terminal or fencing evidence"
                                 )
                         if table == "effects" and current:
                             prior_outcome = current.get("outcome", "pending")
@@ -400,32 +444,6 @@ class GitStateStore:
                     limit["spend_micros"]
                 ):
                     raise GitContention(f"shared budget limit reached for {pool}")
-            for entity, patch in changes.get("entities", {}).items():
-                if "owner" not in patch:
-                    continue
-                blocked = [
-                    key
-                    for key, effect in state["effects"].items()
-                    if effect.get("scope") == entity
-                    and effect.get("outcome", "pending") in {"pending", "unknown"}
-                ]
-                claim_operations = {
-                    claim.get("operation_id")
-                    for claim in state["claims"].values()
-                    if f"{claim.get('kind')}:{claim.get('scope')}" == entity
-                }
-                blocked.extend(
-                    key
-                    for key, permit in state["permits"].items()
-                    if permit.get("claim") in claim_operations
-                    and (state["effects"].get(key) or {}).get("outcome", "pending")
-                    in {"pending", "unknown"}
-                )
-                if blocked:
-                    raise GitCoordinationError(
-                        f"ownership handoff blocked by unresolved permits or effects: "
-                        f"{', '.join(sorted(set(blocked)))}"
-                    )
             unresolved = {
                 key
                 for key, value in state["effects"].items()
