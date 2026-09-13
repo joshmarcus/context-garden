@@ -655,7 +655,9 @@ def register(app: FastAPI, site: Site) -> None:
                 task = fresh.tasks().get(run.task_id)
                 if host_cfg.get("member_id"):
                     principal = host_cfg.get("member_principal")
-                    owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
+                    owner = (member_registry.effective_task_owner(
+                        task, fresh.phase(task.product, task.phase),
+                    )[0] if task and member_registry else "")
                     if (task is None or principal is None
                             or not authorize(principal, "mutate_work", owner_id=owner,
                                              project=task.product)):
