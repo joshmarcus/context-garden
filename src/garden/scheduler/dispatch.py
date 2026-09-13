@@ -96,7 +96,9 @@ class DispatchMixin:
         )
         if requirements.empty and not pinned_instance:
             return requirements, None
-        busy = {run.host for run in self.runs.active() if run.host}
+        from ..routing import active_worker_reservations
+
+        busy = active_worker_reservations(self.runs.active())
         routing = self.state.get("_worker_routing")
         selection_counts = dict(routing.get("selection_counts") or {})
         activity = "work" if mode in {"work", "revise", "resume", "rebase"} else mode
@@ -174,6 +176,11 @@ class DispatchMixin:
             )
         configuration = (self.cfg.worker_configurations().get(instance.configuration)
                          if instance is not None else None)
+        readiness = ({
+            "status": "verified",
+            "checked_at": instance.readiness_checked_at,
+            "expires_at": instance.readiness_expires_at,
+        } if instance is not None else {})
         run.env_snapshot.update({
             "execution_requirements": requirement_data,
             "execution_owner": owner,
@@ -190,11 +197,8 @@ class DispatchMixin:
             "worker_instance": instance.instance_id if instance is not None else "",
             "worker_configuration": configuration.name if configuration is not None else "",
             "worker_configuration_version": configuration.version if configuration is not None else "",
-            "worker_readiness": ({
-                "status": "verified",
-                "checked_at": instance.readiness_checked_at,
-                "expires_at": instance.readiness_expires_at,
-            } if instance is not None else {}),
+            "worker_queue_readiness": readiness,
+            "worker_readiness": readiness,
         })
 
     def _execution_source_run(self, task: Task, current: Run | None = None) -> Run | None:
