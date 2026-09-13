@@ -1140,6 +1140,30 @@ class DispatchMixin:
                                 stack=stack, qa=qa, commits_ahead=commits_ahead,
                                 criteria_snapshot=criteria_snapshot, validation_plan=plan,
                                 generated_context=generated_context, checks=pre_pr_specs)
+            selected_resources = self.cfg.get("context_packs", [])
+            if selected_resources:
+                if not isinstance(selected_resources, list) or not all(
+                    isinstance(item, str) for item in selected_resources
+                ):
+                    raise ValueError("context_packs must be a list of plugin/resource references")
+                from ..plugins import PluginResources
+
+                reader = PluginResources(self.plugins)
+                included = [reader.read(reference, audience="worker", product=task.product,
+                                        public_product=bool(self.cfg.get(
+                                            f"products.{task.product}.public", False)))
+                            for reference in selected_resources]
+                context = "\n\n## Plugin context packs\n\n" + "\n\n".join(
+                    f"### {item.plugin_name}/{item.resource_name}@{item.resource_version}\n\n"
+                    f"Provenance: plugin `{item.plugin_name}` version `{item.plugin_version}`; "
+                    f"resource `{item.resource_name}` version `{item.resource_version}`; "
+                    f"digest `{item.digest}`.\n\n"
+                    f"{item.text}" for item in included
+                )
+                context = self.plugins.redact_text(context)
+                brief.text += context
+                brief.sections["plugin_context"] = len(context)
+                run.context_resources = [item.provenance for item in included]
             from ..reference_snapshot import write_reference_files
 
             write_reference_files(run.path, brief.files, self.cfg.data)

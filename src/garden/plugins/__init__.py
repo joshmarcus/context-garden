@@ -39,6 +39,7 @@ from .registry import (
     UndeclaredCapability,
     UnknownPlugin,
 )
+from .resources import IncludedResource, PluginResources, apply_profile, profile_files
 
 __all__ = [
     "API_VERSION",
@@ -53,6 +54,7 @@ __all__ = [
     "DuplicateCapability",
     "DuplicatePlugin",
     "IncompatiblePlugin",
+    "IncludedResource",
     "InvocationResult",
     "LOCK_NAME",
     "LoadedPlugin",
@@ -62,6 +64,7 @@ __all__ = [
     "PluginManifest",
     "PluginLockStatus",
     "PluginRegistry",
+    "PluginResources",
     "PluginRedactor",
     "ResourceDeclaration",
     "UndeclaredCapability",
@@ -74,4 +77,6 @@ __all__ = [
     "release",
     "split_capability_name",
     "write_lock",
+    "apply_profile",
+    "profile_files",
 ]

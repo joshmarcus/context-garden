@@ -200,6 +200,7 @@ class Run:
     recovery_artifacts: list[dict[str, Any]] = field(default_factory=list)
     # Exact compatibility set admitted by the scheduler that created this run.
     plugin_identity: dict[str, Any] = field(default_factory=dict)
+    context_resources: list[dict[str, str]] = field(default_factory=list)
     record_version: int = 0  # optimistic generation for process-safe whole-record writes
 
     @property

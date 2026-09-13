@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 from importlib import metadata
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,12 +25,15 @@ from garden.plugins import (
     PluginError,
     PluginManifest,
     PluginRegistry,
+    PluginResources,
     ResourceDeclaration,
     UndeclaredCapability,
     UnknownPlugin,
+    apply_profile,
     installed_entry_points,
     load_configured_plugins,
     manifest_from_dict,
+    profile_files,
 )
 
 DIGEST = "sha256:" + "0" * 64
@@ -422,6 +428,56 @@ class _InstalledFile:
 
     def read_bytes(self) -> bytes:
         return self._content
+def test_context_resources_are_bounded_verified_and_audience_safe() -> None:
+    content = b"Reviewed context."
+    digest = "sha256:" + hashlib.sha256(content).hexdigest()
+    resource = ResourceDeclaration(
+        name="reviewed-pack", kind="context_pack", version="2.0", digest=digest,
+        products=("example-product",), path="example/packs/reviewed.md",
+        audience=("worker",), media_type="text/markdown", size_limit=len(content),
+        public_safe=True, package_version="1.2.0",
+    )
+    plugin_manifest = manifest(resources=[resource])
+    loaded_plugin = SimpleNamespace(manifest=plugin_manifest)
+    loaded = SimpleNamespace(plugin=lambda name: loaded_plugin)
+    resources = PluginResources(loaded, lambda distribution, path: content)
+
+    included = resources.read(
+        "example-hosting/reviewed-pack", audience="worker", product="example-product",
+        public_product=True,
+    )
+
+    assert included.text == "Reviewed context."
+    assert included.provenance == {
+        "plugin_name": "example-hosting", "plugin_version": "1.2.0",
+        "resource_name": "reviewed-pack", "resource_version": "2.0", "digest": digest,
+    }
+    with pytest.raises(PluginError, match="audience"):
+        resources.read("example-hosting/reviewed-pack", audience="reviewer")
+    changed = PluginResources(loaded, lambda distribution, path: b"changed context")
+    with pytest.raises(PluginError, match="digest changed"):
+        changed.read("example-hosting/reviewed-pack", audience="worker", product="example-product")
+
+
+def test_profiles_reject_executables_and_preview_conflicts(tmp_path) -> None:
+    included = SimpleNamespace(
+        text=json.dumps({"files": {"docs/context.md": "context", "garden.yaml": "name: demo\n"}}),
+        resource_name="starter",
+    )
+    files = profile_files(included)
+    existing = tmp_path / "garden.yaml"
+    existing.write_text("name: existing\n")
+
+    created, conflicts = apply_profile(tmp_path, files)
+
+    assert created == []
+    assert conflicts == [existing]
+    assert existing.read_text() == "name: existing\n"
+    with pytest.raises(PluginError, match="executable"):
+        profile_files(SimpleNamespace(
+            text=json.dumps({"files": {"scripts/setup.py": "print('no')"}}),
+            resource_name="unsafe",
+        ))
 
 
 class _Distribution:
