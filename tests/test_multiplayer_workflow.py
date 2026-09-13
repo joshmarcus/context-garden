@@ -20,7 +20,7 @@ from garden.members import MemberRegistry
 from garden.model import Status
 from garden.multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from garden.publication import write_public_projection
-from garden.scheduler import Scheduler
+from garden.scheduler import MultiplayerExecutionUnavailable, Scheduler
 from garden.stabilization import accept_limitations
 from garden.store import Store
 from garden.web.public import create_public_app
@@ -86,6 +86,7 @@ def local_scheduler(source, root, principal, token, request):
         member_id=principal.member_id, installation_id=principal.installation_id,
         request=request,
     )
+    scheduler.principal = principal
     return scheduler
 
 
@@ -171,7 +172,7 @@ def test_two_local_users_reassign_and_recover_without_duplicate_ownership(garden
         httpx.ConnectError("coordinator disconnected")
     )
     alex = local_scheduler(None, alex.store.root, people["alex"], tokens["alex"], disconnected)
-    with pytest.raises(MultiplayerUnavailable, match="coordinator is disconnected"):
+    with pytest.raises(MultiplayerExecutionUnavailable, match="coordinator is disconnected"):
         alex._refresh_execution_authority()
     assert alex.dispatch_queue() == []
     with pytest.raises(MultiplayerUnavailable, match="coordinator is disconnected"):
@@ -314,8 +315,9 @@ def test_phase_owner_is_exclusive_fenced_and_keeps_separate_child_reviews(
         people["alex"], garden_id="shared", kind="phase", scope="demo/p1",
         fence=phase_work.fence,
     )
-    blair = local_scheduler(None, blair.store.root, people["blair"], tokens["blair"], http.request)
-    blair._refresh_execution_authority()
+    # Refresh authority without applying an unrelated task Markdown projection:
+    # this fixture deliberately keeps Blair's local completed-task copy.
+    blair._authority_snapshot = blair.coordinator.refresh(allow_stale=False).snapshot
     assert blair.phase_is_authorized("demo", "p1")
     recovered_phase = claim(coordinator, people["blair"], "phase", "demo/p1", 2, 2,
                             "blair-phase-resume")
