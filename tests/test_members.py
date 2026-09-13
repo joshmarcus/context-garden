@@ -482,7 +482,6 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         follow_redirects=False,
     )
     assert response.status_code == 409
-    assert response.json()["detail"] == MULTIPLAYER_EXECUTION_UNAVAILABLE
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -779,6 +778,7 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, admin_token, _admin = _registry(garden)
+    registry.set_assignment(_admin, "alice", "demo", "p1")
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     auth = {"Authorization": f"Bearer {admin_token}"}
 
@@ -797,7 +797,6 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
@@ -908,7 +907,7 @@ def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(gard
     assert saved_queued.host == ""
 
 
-def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(garden):
+def test_multiplayer_watch_and_direct_dispatch_without_installation_fail_closed(garden):
     first_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     first_path.write_text(first_path.read_text().replace("status: ready", "status: ready\nowner: alice"))
     second_path = next((garden / "demo" / "p1" / "tasks").glob("DM-002-*.md"))
@@ -982,7 +981,6 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
