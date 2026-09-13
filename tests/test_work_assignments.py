@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
+from fastapi.testclient import TestClient
 
+from garden.coordination_api import create_coordination_app
 from garden.members import MemberRegistry, Principal
 from garden.model import Phase, Status, Task
+from garden.multiplayer_client import MultiplayerClient
 from garden.runner.manual import ManualRunner
 from garden.scheduler import Scheduler
 
@@ -38,6 +42,29 @@ def _task(tmp_path: Path, task_id: str, *, owner: str = "", phase: str = "p1",
           status: Status = Status.READY, dependencies: list[str] | None = None) -> Task:
     return Task(tmp_path / f"{task_id}.md", task_id, task_id, status=status,
                 product="demo", phase=phase, owner=owner, depends_on=dependencies or [])
+
+
+def _coordinated_scheduler(sched, principal, token):
+    """Bind a scheduler to the real coordinator HTTP contract used by installations."""
+    app = create_coordination_app(sched.cfg.garden_dir)
+    transport = TestClient(app)
+
+    def request(method, url, **kwargs):
+        parts = urlsplit(url)
+        kwargs.pop("timeout", None)
+        return transport.request(method, f"{parts.path}?{parts.query}".rstrip("?"), **kwargs)
+
+    bound = Scheduler(sched.store, github=sched.github, principal=principal)
+    bound.coordinator = MultiplayerClient(
+        root=sched.store.root,
+        garden_id=principal.garden_id,
+        endpoint="https://coordinator.test",
+        credential=token,
+        member_id=principal.member_id,
+        installation_id=principal.installation_id,
+        request=request,
+    )
+    return bound, app.state.coordinator
 
 
 def test_effective_owner_requires_active_membership_and_preserves_precedence(tmp_path):
@@ -204,7 +231,12 @@ def test_real_dispatch_enforces_authenticated_owner_cursor_and_generation(sched)
     with pytest.raises(RuntimeError, match="identity-less scheduling"):
         unbound.dispatch(task, runner=ManualRunner({}), worktree=False)
 
-    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    bound, coordinator = _coordinated_scheduler(sched, alice, token)
+    coordinator.set_authority(
+        alice, garden_id="garden", kind="task", scope=task.id, owner_id="alice",
+        authority_generation=assignment.generation, expected_version=0,
+        operation_id="dispatch-authority",
+    )
     with pytest.raises(RuntimeError, match="stale assignment"):
         bound.dispatch(task, runner=ManualRunner({}), worktree=False,
                        assignment_generation=assignment.generation - 1)
@@ -225,7 +257,12 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
     sched.store.save(task)
     assignment = registry.set_assignment(alice, "alice", task.product, task.phase)
 
-    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    bound, coordinator = _coordinated_scheduler(sched, alice, token)
+    coordinator.set_authority(
+        alice, garden_id="garden", kind="task", scope=task.id, owner_id="alice",
+        authority_generation=assignment.generation, expected_version=0,
+        operation_id="retry-authority",
+    )
     with pytest.raises(RuntimeError, match="stale assignment"):
         bound.retry(task, assignment_generation=assignment.generation - 1)
     assert task.status == Status.FAILED
@@ -274,10 +311,15 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     sched.store.invalidate()
     phase = sched.store.phase("demo", "p1")
 
-    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    bound, coordinator = _coordinated_scheduler(sched, alice, alice_token)
     with pytest.raises(PermissionError, match="explicit active phase owner"):
         bound.reopen_phase(phase)
     owner = registry.set_phase_owner(admin, phase.product, phase.name, "alice")
+    coordinator.set_authority(
+        admin, garden_id="garden", kind="phase", scope=phase.key, owner_id="alice",
+        authority_generation=owner.generation, expected_version=0,
+        operation_id="reopen-phase-authority",
+    )
     with pytest.raises(RuntimeError, match="stale phase owner"):
         bound.reopen_phase(phase, owner_generation=owner.generation - 1)
     bound.reopen_phase(phase, owner_generation=owner.generation)
@@ -293,7 +335,7 @@ def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparati
     alice = registry.authenticate(alice_token)
     assert alice is not None
     phase = sched.store.phase("demo", "p1")
-    bound = Scheduler(sched.store, github=sched.github, principal=alice)
+    bound, coordinator = _coordinated_scheduler(sched, alice, alice_token)
     run = object()
     calls = []
 
@@ -308,6 +350,11 @@ def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparati
         bound.dispatch_persona_phase(phase, "security")
     assert calls == []
 
-    registry.set_phase_owner(admin, phase.product, phase.name, "alice")
+    owner = registry.set_phase_owner(admin, phase.product, phase.name, "alice")
+    coordinator.set_authority(
+        admin, garden_id="garden", kind="phase", scope=phase.key, owner_id="alice",
+        authority_generation=owner.generation, expected_version=0,
+        operation_id="persona-phase-authority",
+    )
     assert bound.dispatch_persona_phase(phase, "security") is run
     assert calls == ["prepare", "commit", "launch"]
