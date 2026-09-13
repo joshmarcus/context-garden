@@ -26,6 +26,7 @@ def policy():
         "tools": ["sql"],
         "artifact_boundary": "private-artifacts",
         "evidence_exports": ["aggregate", "validation-state"],
+        "synthetic_markers": ["RESTRICTED-ROW-42"],
     }}}}
 
 
@@ -84,6 +85,8 @@ def test_evidence_export_allows_insufficient_state_but_blocks_private_markers():
         )
     with pytest.raises(RestrictedDataError, match="not permitted"):
         authorization.export_evidence("raw-data", "row contents")
+    with pytest.raises(RestrictedDataError, match="synthetic marker"):
+        authorization.validate_export_payload({"result": {"summary": "RESTRICTED-ROW-42"}})
 
 
 def test_general_worker_receives_no_restricted_policy_or_payload():
