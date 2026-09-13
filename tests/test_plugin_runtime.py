@@ -24,6 +24,9 @@ from garden.plugins import (
     manifest_from_dict,
     resolve_runner_transport,
 )
+from garden.scheduler import Scheduler
+from garden.scheduler.report import TickReport
+from garden.store import Store
 
 
 def _loaded(kind: str = "runner_transport") -> LoadedPlugins:
@@ -41,6 +44,7 @@ def _loaded(kind: str = "runner_transport") -> LoadedPlugins:
     })
     return LoadedPlugins((LoadedPlugin(
         manifest, "{}", PluginRedactor(()), "sha256:" + "0" * 64,
+        "sha256:" + "1" * 64,
     ),))
 
 
@@ -65,6 +69,50 @@ def test_runner_transport_resolves_and_records_provenance(monkeypatch, tmp_path:
 
     assert run.started == (tmp_path, "brief")
     assert run.env_snapshot["plugin_invocation"]["capability_name"] == "example-plugin/transport"
+
+
+def test_scheduler_durably_collects_plugin_result_for_restart_recovery(
+    sched, fake_github, monkeypatch,
+) -> None:
+    collected = []
+
+    class Transport:
+        name = "example"
+        detached = True
+        remote = False
+
+        def start(self, run, worktree, brief_text):
+            raise AssertionError("this test starts from a completed transport operation")
+
+        def collect(self, run):
+            collected.append(run.run_id)
+            return {"result": {"status": "done", "summary": "plugin result"}}
+
+    monkeypatch.setattr(
+        "garden.plugins.loading._load_object", lambda _reference: lambda **_kw: Transport(),
+    )
+    sched.plugins = _loaded()
+    task = sched.store.task("DM-001")
+    task.runner = "example-plugin/transport"
+    task.status = task.status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, task.runner, mode="work")
+    run.worktree = str(sched.worktree_for(task))
+    run.env_snapshot = {}
+    run.save()
+    monkeypatch.setattr(sched, "_git_guard_check", lambda *_args: ["stop after collection"])
+    monkeypatch.setattr(sched, "_git_guard_fail", lambda *_args: None)
+
+    sched.finalize(task, run, sched.runner_for(task, run.runner), TickReport())
+
+    durable = sched.runs.latest(task.id)
+    assert collected == [run.run_id]
+    assert durable.result == {"status": "done", "summary": "plugin result"}
+    assert durable.env_snapshot["plugin_invocation"]["capability_name"] == task.runner
+    restarted = Scheduler(Store(sched.store.root), github=fake_github)
+    recovered = restarted.runs.latest(task.id)
+    assert recovered.finished_at
+    assert restarted._is_unreaped(restarted.store.task(task.id), recovered)
 
 
 def test_plugin_runner_rejects_checkout_widening(monkeypatch, tmp_path: Path) -> None:
