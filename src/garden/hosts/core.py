@@ -916,6 +916,21 @@ class HostLifecycle:
                 for memory in admission.gpu_device_memory_mib
             ):
                 return "host GPU device memory is below the reservation"
+            if len(admission.gpu_device_vendors) != requirements.gpu_count:
+                return "host GPU vendor evidence is incomplete"
+            if any(
+                vendor.casefold() != requirements.gpu_vendor.casefold()
+                for vendor in admission.gpu_device_vendors
+            ):
+                return "host GPU vendor does not match the reservation"
+            if len(admission.gpu_device_features) != requirements.gpu_count:
+                return "host GPU feature evidence is incomplete"
+            required_features = set(requirements.gpu_features)
+            if any(
+                not required_features.issubset(features)
+                for features in map(set, admission.gpu_device_features)
+            ):
+                return "host GPU features do not match the reservation"
         if (
             not admission.lease_id
             or not math.isfinite(admission.lease_expires_at)
@@ -1060,6 +1075,13 @@ class HostLifecycle:
         lease = leases.get(provider_id)
         raw = lease.get("admission") if isinstance(lease, dict) else None
         lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        if lease_id and isinstance(lease, dict) and (
+            lease.get("activated_at") or lease.get("run_id")
+        ):
+            if pool is None:
+                raise ValueError("pool is required to cancel an active host-local admission lease")
+            self.release(pool, provider_id)
+            return
         if lease_id:
             if pool is None:
                 raise ValueError("pool is required to cancel a host-local admission lease")
@@ -1080,6 +1102,19 @@ class HostLifecycle:
         lease = leases.get(provider_id)
         raw = lease.get("admission") if isinstance(lease, dict) else None
         lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        try:
+            released = self.stop(pool, provider_id)
+        except ProviderError as exc:
+            detail = f"host stop failed before admission lease release: {exc}"
+            self._record_environment_stop(pool, detail, data=data)
+            raise EnvironmentStop(detail) from exc
+        if released.state not in {HostState.STOPPED, HostState.TERMINATED}:
+            detail = (
+                "host stop did not prove termination before admission lease release: "
+                f"{released.state.value}"
+            )
+            self._record_environment_stop(pool, detail, data=data)
+            raise EnvironmentStop(detail)
         if lease_id:
             try:
                 self._provider(pool).release_admission(provider_id, lease_id=lease_id)
@@ -1087,7 +1122,6 @@ class HostLifecycle:
                 detail = f"host admission lease release failed: {exc}"
                 self._record_environment_stop(pool, detail, data=data)
                 raise EnvironmentStop(detail) from exc
-        released = self.stop(pool, provider_id)
         if isinstance(lease, dict):
             lease["released"] = True
             lease["last_used_at"] = time.time()

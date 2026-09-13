@@ -379,6 +379,8 @@ class HostAdmission:
     vcpu_limit: int = 0
     gpu_devices: tuple[str, ...] = ()
     gpu_device_memory_mib: tuple[int, ...] = ()
+    gpu_device_vendors: tuple[str, ...] = ()
+    gpu_device_features: tuple[tuple[str, ...], ...] = ()
     resources_enforced: bool = False
     lease_id: str = ""
     lease_expires_at: float = 0
