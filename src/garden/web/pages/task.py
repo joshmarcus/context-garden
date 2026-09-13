@@ -141,7 +141,7 @@ def register(app: FastAPI, site: Site) -> None:
         decision_card = decision_card_view(t, st, rs)
         from ...routing import task_routing_view
 
-        routing = task_routing_view(s, t)
+        routing = task_routing_view(s, t, owner_resolver=sched.effective_task_owner)
         if decision_card is None and request.query_params.get("walkthrough") == "decision":
             decision_card = {
                 "type": "attention",

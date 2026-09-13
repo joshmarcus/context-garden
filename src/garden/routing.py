@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 from .hosts import MatchReason, match_worker, verify_worker_configuration
@@ -28,11 +29,20 @@ def active_worker_reservations(runs: list[Any]) -> set[str]:
         ))
     }
 
-def task_routing_view(store: Any, task: Task, *, activity: str = "work", now: float | None = None) -> dict[str, Any]:
+def task_routing_view(
+    store: Any,
+    task: Task,
+    *,
+    activity: str = "work",
+    now: float | None = None,
+    owner_resolver: Callable[[Task], tuple[str, str]] | None = None,
+) -> dict[str, Any]:
     """Explain current routing without claiming or contacting a worker."""
     checked_at = time.time() if now is None else now
     phase = store.phase(task.product, task.phase)
-    owner, owner_source = effective_owner(task, phase)
+    owner, owner_source = (
+        owner_resolver(task) if owner_resolver is not None else effective_owner(task, phase)
+    )
     product_raw = store.config.product(task.product).get("execution_requirements")
     phase_raw = phase.meta.get("execution_requirements")
     layers = [
