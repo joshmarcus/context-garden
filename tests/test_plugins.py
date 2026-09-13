@@ -18,6 +18,7 @@ from garden.plugins import (
     DuplicateCapability,
     DuplicatePlugin,
     IncompatiblePlugin,
+    PluginConfigurationError,
     PluginError,
     PluginManifest,
     PluginRegistry,
@@ -25,6 +26,7 @@ from garden.plugins import (
     UndeclaredCapability,
     UnknownPlugin,
     installed_entry_points,
+    load_configured_plugins,
     manifest_from_dict,
 )
 
@@ -412,3 +414,117 @@ def test_a_resource_is_declared_safe_only_for_the_products_it_names() -> None:
     with pytest.raises(ValueError, match="product must be a lowercase slug"):
         ResourceDeclaration(name="onboarding-pack", kind="context_pack", version="1.2.0",
                             digest=DIGEST, products=("Example Product",))
+
+
+class _Distribution:
+    name = "example-garden-plugin"
+    version = "1.2.0"
+
+
+class _InstalledPlugin:
+    def __init__(self, name: str, value, calls: list[str]):
+        self.name = name
+        self.dist = _Distribution()
+        self._value = value
+        self._calls = calls
+
+    def load(self):
+        self._calls.append(self.name)
+        if isinstance(self._value, Exception):
+            raise self._value
+        return self._value
+
+
+def _configured(plugin_config=None, **overrides):
+    return {"example-hosting": {
+        "distribution": "example-garden-plugin",
+        "version": "1.2.0",
+        "plugin_config": plugin_config or {
+            "endpoint": "https://api.example.invalid",
+            "credentials": {"token": "synthetic-secret"},
+        },
+        **overrides,
+    }}
+
+
+def test_loading_imports_only_explicitly_configured_installed_plugins(monkeypatch) -> None:
+    calls: list[str] = []
+    entries = [
+        _InstalledPlugin("example-hosting", manifest(), calls),
+        _InstalledPlugin("disabled-plugin", RuntimeError("must stay inert"), calls),
+    ]
+    monkeypatch.setattr(metadata, "entry_points", lambda **_kwargs: entries)
+
+    loaded = load_configured_plugins(_configured())
+
+    assert loaded.plugin_names == ("example-hosting",)
+    assert calls == ["example-hosting"]
+
+
+def test_namespaced_config_is_strict_and_reports_useful_redacted_paths(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        metadata, "entry_points",
+        lambda **_kwargs: [_InstalledPlugin("example-hosting", manifest(), calls)],
+    )
+
+    with pytest.raises(PluginConfigurationError, match=r"plugins\.example-hosting"
+                                                        r"\.plugin_config\.credentials"
+                                                        r" contains unknown keys \['extra'\]"):
+        load_configured_plugins(_configured({
+            "endpoint": "https://api.example.invalid",
+            "credentials": {"token": "secret-in-error", "extra": "secret-in-error"},
+        }))
+
+    with pytest.raises(PluginConfigurationError) as failure:
+        load_configured_plugins(_configured({
+            "endpoint": "https://api.example.invalid",
+            "credentials": {"token": ["secret-in-error"]},
+        }))
+    assert "plugins.example-hosting.plugin_config.credentials.token must be string" in str(failure.value)
+    assert "secret-in-error" not in str(failure.value)
+
+
+def test_missing_and_mismatched_distributions_fail_before_capability_construction(monkeypatch) -> None:
+    monkeypatch.setattr(metadata, "entry_points", lambda **_kwargs: [])
+    with pytest.raises(PluginConfigurationError, match="install example-garden-plugin==1.2.0"):
+        load_configured_plugins(_configured())
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        metadata, "entry_points",
+        lambda **_kwargs: [_InstalledPlugin("example-hosting", manifest(), calls)],
+    )
+    with pytest.raises(PluginConfigurationError, match="requires example-garden-plugin==9.0"):
+        load_configured_plugins(_configured(version="9.0"))
+    assert calls == []
+
+
+def test_shared_redaction_and_capability_invocation_record_exact_provenance(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        metadata, "entry_points",
+        lambda **_kwargs: [_InstalledPlugin("example-hosting", manifest(), calls)],
+    )
+    loaded = load_configured_plugins(_configured())
+    exposed_config = loaded.plugin("example-hosting").config
+    exposed_config["credentials"]["token"] = "mutated-after-digest"
+    received = {}
+
+    def external_action(host: str, *, plugin_config):
+        received.update(plugin_config)
+        return f"created {host}"
+
+    monkeypatch.setattr("garden.plugins.loading._load_object", lambda _reference: external_action)
+    result = loaded.invoke("example-hosting/host-provider", "host-1")
+
+    assert result.value == "created host-1"
+    assert received["credentials"]["token"] == "synthetic-secret"
+    assert loaded.plugin("example-hosting").config["credentials"]["token"] == "synthetic-secret"
+    assert result.provenance.plugin_name == "example-hosting"
+    assert result.provenance.distribution_version == "1.2.0"
+    assert result.provenance.api_version == API_VERSION
+    assert result.provenance.capability_name == "example-hosting/host-provider"
+    assert result.provenance.configuration_digest.startswith("sha256:")
+    assert loaded.redact_text("token=synthetic-secret") == "token=<redacted>"
+    assert loaded.redact_data({"event": "synthetic-secret"}) == {"event": "<redacted>"}

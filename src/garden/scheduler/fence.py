@@ -1026,8 +1026,13 @@ class FenceMixin:
                 self.log(f"config reload held: {', '.join(exec_keys)} disagrees with run(s) {', '.join(run_ids)}'s dispatch config")
             ctrl["config_hold"] = {"keys": exec_keys, "runs": run_ids, "since": existing.get("since") or now_iso()}
             return
+        # Plugin selection is executable configuration. Validate and load it before the
+        # store adopts the document so a missing/mismatched distribution cannot leave a
+        # partially reconfigured scheduler behind.
+        new_plugins = new_cfg.load_plugins()
         changed = self.store.adopt_config(new_cfg)
         self.cfg = self.store.config
+        self.plugins = new_plugins
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         was_held = ctrl.pop("config_hold", None)
         if accepted:

@@ -196,6 +196,33 @@ Two consequences matter.
   module raises on import: discovery lists it, `sys.modules` never gains it, and the test then
   loads the same entry point itself to show the failure is real.
 
+## Enabling and invoking a plugin
+
+Installation is not activation. A garden opts into an exact installed distribution in its
+configuration; every other advertised entry point remains inert:
+
+```yaml
+plugins:
+  example-hosting:
+    distribution: example-garden-plugin
+    version: 1.2.0
+    plugin_config:
+      endpoint: https://api.example.invalid
+      credentials:
+        token: ${EXAMPLE_TOKEN}
+```
+
+`Config.load_plugins()` checks the installed entry-point metadata, loads manifests only for
+the named plugin keys, verifies the configured distribution and version, and validates each
+`plugin_config` against only that plugin's schema. Unknown keys and wrong types report their
+full configuration path. Capability modules are not imported until `LoadedPlugins.invoke()`;
+the invocation result pairs the value with plugin name, distribution version, API version,
+capability name, and a SHA-256 digest of the validated configuration.
+
+Manifest-declared secret paths build one redactor on the loaded set. `redact_text()` and
+`redact_data()` are the shared boundary for configuration displays, logs, events, briefs, and
+artifacts that may contain plugin values. Validation failures pass through the same redactor.
+
 ## Advertising a plugin
 
 A distribution advertises its manifest under the `garden.plugins` group. Only the name and the

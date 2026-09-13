@@ -7,6 +7,15 @@ is the contract these types express.
 from __future__ import annotations
 
 from .discovery import ENTRY_POINT_GROUP, DiscoveredEntryPoint, installed_entry_points
+from .loading import (
+    ActionProvenance,
+    InvocationResult,
+    LoadedPlugin,
+    LoadedPlugins,
+    PluginConfigurationError,
+    PluginRedactor,
+    load_configured_plugins,
+)
 from .manifest import (
     API_VERSION,
     CAPABILITY_KINDS,
@@ -32,6 +41,7 @@ from .registry import (
 
 __all__ = [
     "API_VERSION",
+    "ActionProvenance",
     "CAPABILITY_KINDS",
     "CORE_ONLY_KINDS",
     "ENTRY_POINT_GROUP",
@@ -42,13 +52,19 @@ __all__ = [
     "DuplicateCapability",
     "DuplicatePlugin",
     "IncompatiblePlugin",
+    "InvocationResult",
+    "LoadedPlugin",
+    "LoadedPlugins",
     "PluginError",
+    "PluginConfigurationError",
     "PluginManifest",
     "PluginRegistry",
+    "PluginRedactor",
     "ResourceDeclaration",
     "UndeclaredCapability",
     "UnknownPlugin",
     "installed_entry_points",
+    "load_configured_plugins",
     "manifest_from_dict",
     "release",
     "split_capability_name",
