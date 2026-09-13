@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 import threading
 from dataclasses import replace
 
@@ -309,8 +310,12 @@ def test_unresolved_effect_blocks_reassignment_and_new_admission(tmp_path):
 
 
 def test_capacity_and_spend_reservations_are_atomic(tmp_path):
-    _admin, alice_a, alice_b, _bob = principals()
+    admin, alice_a, alice_b, _bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
+    coordinator.set_reservation_pool(
+        admin, garden_id="garden", pool="phase-10", unit_limit=1,
+        spend_limit_micros=1000,
+    )
     barrier = threading.Barrier(2)
     results = []
 
@@ -319,7 +324,7 @@ def test_capacity_and_spend_reservations_are_atomic(tmp_path):
         try:
             results.append(coordinator.reserve(
                 actor, garden_id="garden", pool="phase-10", operation_id=operation,
-                units=1, spend_micros=600, unit_limit=1, spend_limit_micros=1000,
+                units=1, spend_micros=600,
             ))
         except Conflict as exc:
             results.append(exc)
@@ -332,6 +337,61 @@ def test_capacity_and_spend_reservations_are_atomic(tmp_path):
         thread.join()
     assert sum(isinstance(result, dict) for result in results) == 1
     assert sum(isinstance(result, Conflict) for result in results) == 1
+
+
+def test_pool_limits_and_reservations_are_coordinator_owned(tmp_path):
+    admin, alice_a, alice_b, bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    coordinator.set_reservation_pool(
+        admin, garden_id="garden", pool="workers", unit_limit=1,
+        spend_limit_micros=1000,
+    )
+    reservation = coordinator.reserve(
+        alice_a, garden_id="garden", pool="workers", operation_id="alice-work",
+        units=1, spend_micros=600,
+    )
+    assert coordinator.reserve(
+        alice_a, garden_id="garden", pool="workers", operation_id="alice-work",
+        units=1, spend_micros=600,
+    ) == reservation
+    with pytest.raises(Conflict, match="coordinator pool policy"):
+        coordinator.reserve(
+            bob, garden_id="garden", pool="workers", operation_id="raised-policy",
+            units=1, spend_micros=1, unit_limit=2, spend_limit_micros=2000,
+        )
+    with pytest.raises(Conflict, match="limit reached"):
+        coordinator.reserve(
+            bob, garden_id="garden", pool="workers", operation_id="raised-ceiling",
+            units=1, spend_micros=1,
+        )
+    with pytest.raises(PermissionError, match="another principal"):
+        coordinator.release_reservation(bob, "garden", "workers", "alice-work")
+    with pytest.raises(PermissionError, match="another principal"):
+        coordinator.release_reservation(alice_b, "garden", "workers", "alice-work")
+    coordinator.release_reservation(admin, "garden", "workers", "alice-work")
+
+
+def test_prior_effect_schema_is_upgraded_for_snapshots(tmp_path):
+    path = tmp_path / "coordination.db"
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE effects (
+            garden TEXT NOT NULL, provider TEXT NOT NULL, effect_key TEXT NOT NULL,
+            operation_id TEXT NOT NULL, actor TEXT NOT NULL, installation TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'task', scope TEXT NOT NULL DEFAULT '',
+            authority_generation INTEGER NOT NULL DEFAULT 0, fence INTEGER NOT NULL,
+            credential_scope TEXT NOT NULL, precondition_value TEXT NOT NULL,
+            request_json TEXT NOT NULL, status TEXT NOT NULL,
+            result_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL,
+            PRIMARY KEY (garden, provider, effect_key), UNIQUE (garden, operation_id))""")
+        db.execute("""INSERT INTO effects VALUES(
+            'garden','github','publish:CG-1','publish-1','alice','alice-a',
+            'task','CG-1',4,1,'pull_requests:write','head=abc','{}','unknown','{}','now')""")
+    coordinator = Coordinator(path)
+    _admin, alice, _alice_b, _bob = principals()
+    assert coordinator.snapshot(alice, "garden")["blocking_effects"] == [{
+        "provider": "github", "effect_key": "publish:CG-1", "claim_kind": "task",
+        "claim_scope": "CG-1", "authority_generation": 4, "status": "unknown",
+    }]
 
 
 def test_phase_claim_is_exclusive_and_reassignment_invalidates_children(tmp_path):
@@ -367,15 +427,19 @@ def test_phase_claim_is_exclusive_and_reassignment_invalidates_children(tmp_path
         operation_id="bob-phase",
     )
     assert bob_claim.fence == 2
+    coordinator.set_reservation_pool(
+        admin, garden_id="garden", pool="phase:demo/phase-10:reviews",
+        unit_limit=1, spend_limit_micros=100,
+    )
     reservation = coordinator.reserve_phase(
         bob, bob_claim, pool="reviews", operation_id="review-capacity", units=1,
-        spend_micros=100, unit_limit=1, spend_limit_micros=100,
+        spend_micros=100,
     )
     assert reservation["status"] == "active"
     with pytest.raises(PermissionError, match="global"):
         coordinator.reserve(
             bob, garden_id="garden", pool="global:publishing", operation_id="global",
-            units=1, spend_micros=0, unit_limit=1, spend_limit_micros=0,
+            units=1, spend_micros=0,
         )
 
 
@@ -529,7 +593,7 @@ def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
 
     reservation = {
         "pool": "phase:demo/p1:reviews", "operation_id": "claimless-reservation",
-        "units": 1, "spend_micros": 100, "unit_limit": 1, "spend_limit_micros": 100,
+        "units": 1, "spend_micros": 100,
     }
     claimless = client.post(
         "/v1/gardens/garden/reservations", headers=headers, json=reservation,
@@ -544,6 +608,11 @@ def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
         "operation_id": "phase-claim",
     })
     assert claim.status_code == 200
+    configured = client.put(
+        "/v1/gardens/garden/reservation-pools/phase:demo/p1:reviews",
+        headers=headers, json={"unit_limit": 1, "spend_limit_micros": 100},
+    )
+    assert configured.status_code == 200
     authorized = client.post("/v1/gardens/garden/reservations", headers=headers, json={
         **reservation,
         "pool": "reviews",
