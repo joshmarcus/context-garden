@@ -7,7 +7,9 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from garden.coordination_api import create_coordination_app
 from garden.members import MemberRegistry, Principal, authorize
+from garden.multiplayer_client import MultiplayerClient
 from garden.runs import RunStore
 from garden.scheduler import (
     MULTIPLAYER_EXECUTION_UNAVAILABLE,
@@ -24,6 +26,138 @@ def _registry(tmp_path):
     principal = registry.authenticate(token)
     assert principal is not None
     return registry, token, principal
+
+
+def test_temporary_username_installations_are_explicit_bound_and_revocable(tmp_path):
+    registry = MemberRegistry(tmp_path / ".garden")
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-host")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member", "assigned", ("demo",))
+
+    alice = registry.enroll_username_installation("alice", "alice-local")
+    assert alice.member_id == "alice"
+    assert alice.role == "member"
+    assert alice.projects == frozenset({"demo"})
+    assert registry.authenticate_username("alice", "alice-local") == alice
+    assert registry.authenticate_username("bob", "alice-local") is None
+    with pytest.raises(PermissionError, match="not an active"):
+        registry.enroll_username_installation("unknown", "unknown-local")
+    with pytest.raises(PermissionError, match="unavailable"):
+        registry.enroll_username_installation("admin", "alice-local")
+
+    registry.revoke_installation(admin, "alice-local")
+    assert registry.authenticate_username("alice", "alice-local") is None
+
+
+def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_input(
+    tmp_path,
+):
+    garden_dir = tmp_path / ".garden"
+    registry = MemberRegistry(garden_dir)
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-host")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "alice", "demo", "p1")
+    credential = TestClient(create_coordination_app(garden_dir))
+    enrollment_path = "/v1/gardens/garden/username-installations"
+    alice_enroll = {"Authorization": "Garden-Temporary-Username YWxpY2U."}
+    alice_auth = {"Authorization": "Garden-Temporary-Username YWxpY2U.alice-local"}
+    bob_enroll = {"Authorization": "Garden-Temporary-Username Ym9i."}
+    bob_auth = {"Authorization": "Garden-Temporary-Username Ym9i.bob-local"}
+    assert credential.post(
+        enrollment_path, json={"installation_id": "alice-local"}, headers=alice_enroll,
+    ).status_code == 404
+    assert credential.get(
+        "/v1/gardens/garden/snapshot",
+        headers={"Authorization": "Garden-Temporary-Username alice-local"},
+    ).status_code == 401
+
+    username = TestClient(create_coordination_app(
+        garden_dir, authentication="temporary-username",
+    ))
+    assert username.post(
+        enrollment_path, json={"installation_id": "alice-local"},
+    ).status_code == 401
+    enrolled = username.post(
+        enrollment_path, json={"installation_id": "alice-local"}, headers=alice_enroll,
+    )
+    assert enrolled.status_code == 200
+    response = username.get(
+        "/v1/gardens/garden/snapshot?username=admin",
+        headers={
+            **alice_auth,
+            "X-Garden-Username": "admin",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["member_id"] == "alice"
+    assert response.json()["role"] == "member"
+    assert response.json()["projects"] == ["demo"]
+    assert response.json()["assignment"]["phase"] == "p1"
+    assert username.get(
+        "/v1/gardens/garden/snapshot",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    ).status_code == 401
+
+    registry.add_member(admin, "bob", "member", "assigned", ("other",))
+    registry.set_assignment(admin, "bob", "other", "p2")
+    assert username.post(
+        enrollment_path, json={"installation_id": "bob-local"}, headers=bob_enroll,
+    ).status_code == 200
+    bob = username.get(
+        "/v1/gardens/garden/snapshot",
+        headers=bob_auth,
+    )
+    assert bob.status_code == 200
+    assert bob.json()["member_id"] == "bob"
+    assert bob.json()["projects"] == ["other"]
+    assert bob.json()["assignment"]["phase"] == "p2"
+    alice_again = username.get(
+        "/v1/gardens/garden/snapshot",
+        headers=alice_auth,
+    )
+    assert alice_again.status_code == 200
+    assert alice_again.json()["member_id"] == "alice"
+    registry.set_member_active(admin, "bob", False)
+    assert username.get(
+        "/v1/gardens/garden/snapshot",
+        headers=bob_auth,
+    ).status_code == 401
+
+
+def test_two_username_clients_freeze_distinct_local_principals(tmp_path, monkeypatch):
+    garden_dir = tmp_path / ".garden"
+    registry = MemberRegistry(garden_dir)
+    token = registry.enroll_administrator("garden", "admin", "admin-host")
+    admin = registry.authenticate(token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member", "assigned", ("alpha",))
+    registry.add_member(admin, "bob", "member", "assigned", ("beta",))
+    app = TestClient(create_coordination_app(garden_dir, authentication="temporary-username"))
+
+    def client_for(username: str, installation: str) -> MultiplayerClient:
+        encoded = "YWxpY2U" if username == "alice" else "Ym9i"
+        enrolled = app.post(
+            "/v1/gardens/garden/username-installations",
+            json={"installation_id": installation},
+            headers={"Authorization": f"Garden-Temporary-Username {encoded}."},
+        )
+        assert enrolled.status_code == 200
+        monkeypatch.setattr(
+            "garden.multiplayer_client.operating_system_username", lambda: username,
+        )
+        return MultiplayerClient(
+            root=tmp_path / username, garden_id="garden", endpoint="http://coordinator",
+            member_id=username, installation_id=installation, credential="",
+            authentication="temporary-username", request=app.request,
+        )
+
+    alice = client_for("alice", "alice-local")
+    bob = client_for("bob", "bob-local")
+    assert alice.refresh(allow_stale=False).snapshot["projects"] == ["alpha"]
+    assert bob.refresh(allow_stale=False).snapshot["projects"] == ["beta"]
 
 
 def test_enrollment_credentials_are_private_stable_and_garden_bound(tmp_path):

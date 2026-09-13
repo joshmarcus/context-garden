@@ -68,6 +68,40 @@ multiplayer:
     assert "ALICE_GARDEN_TOKEN" not in worker and worker["SAFE_VALUE"] == "yes"
 
 
+def test_username_config_needs_no_credential(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.multiplayer_client.operating_system_username", lambda: "alice")
+    (tmp_path / "garden.yaml").write_text("name: shared\n")
+    (tmp_path / "garden.local.yaml").write_text("""
+multiplayer:
+  enabled: true
+  authentication: temporary-username
+  garden_id: garden
+  coordinator_url: http://127.0.0.1:8766
+  member_id: alice
+  installation_id: alice-local
+""")
+    local = MultiplayerClient.from_config(Config.load(tmp_path))
+    assert local is not None
+    assert local.authentication == "temporary-username"
+    assert local._headers == {"Authorization": "Garden-Temporary-Username YWxpY2U.alice-local"}
+
+
+def test_username_config_is_fixed_to_current_os_account(tmp_path, monkeypatch):
+    monkeypatch.setattr("garden.multiplayer_client.operating_system_username", lambda: "bob")
+    (tmp_path / "garden.yaml").write_text("name: shared\n")
+    (tmp_path / "garden.local.yaml").write_text("""
+multiplayer:
+  enabled: true
+  authentication: temporary-username
+  garden_id: garden
+  coordinator_url: http://127.0.0.1:8766
+  member_id: alice
+  installation_id: alice-local
+""")
+    with pytest.raises(MultiplayerUnavailable, match="different operating-system account"):
+        MultiplayerClient.from_config(Config.load(tmp_path))
+
+
 def test_two_roots_keep_stale_reads_but_refuse_offline_commands(tmp_path):
     snapshot = snapshot_identity({
         "protocol_version": 1, "garden_id": "garden", "projections": [],

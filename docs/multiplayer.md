@@ -44,6 +44,45 @@ garden serve
 On separate machines, replace the loopback URL with the administrator's authenticated HTTPS
 endpoint.
 
+### Temporary local username mode
+
+For trusted development on one machine, the coordinator and client can explicitly opt into a
+temporary secretless mode. First admit a member whose Garden member ID exactly matches their OS
+account name, using the normal administrator credential:
+
+```sh
+MEMBER_ID="$(garden members current-username)"
+garden members add "$MEMBER_ID" --role member --credential-env GARDEN_ADMIN_CREDENTIAL
+garden members coordinator --garden /path/to/coordinator-garden --host 127.0.0.1 --port 8766 \
+  --authentication temporary-username
+```
+
+Then, from the checkout used by that same OS account:
+
+```sh
+garden members connect-username garden-1 http://127.0.0.1:8766
+garden members status
+garden serve
+```
+
+`connect-username` derives and freezes the effective OS username in the local client and is the
+only operation that can register the generated local installation ID;
+ordinary reads cannot create one. The ID is retained in the ignored `garden.local.yaml` and reused
+after restart. The client derives the effective account name with the POSIX user database
+(`geteuid`/`getpwuid`); on platforms without that interface it uses Python's `getpass.getuser`
+environment-based account lookup, and asserts that name to the coordinator. The coordinator then
+loads the admitted member's role, project visibility and
+assignment from the existing registry. Unknown or disabled accounts, revoked installations, and an
+installation previously bound to another account are rejected.
+
+This is a temporary trusted-development identity assertion, not remote cryptographic
+authentication. The coordinator refuses this mode on a non-loopback host. Every local process
+that can reach that loopback port is inside the trust boundary and could forge another username;
+use credential mode on shared or untrusted hosts. Browser query, form and ordinary headers cannot
+change the username frozen by the local Garden client.
+Credential mode remains the default, still requires a valid bearer token, and never falls back to
+username mode; non-loopback coordinators retain the HTTPS requirements above.
+
 Open the printed local address in a browser. On a loopback listener, Garden establishes the
 browser's member session from the connected installation credential and revalidates it with the
 coordinator; the credential is not placed in a URL, cookie, or browser storage. Exposed listeners
