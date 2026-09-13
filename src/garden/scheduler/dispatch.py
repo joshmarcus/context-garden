@@ -88,8 +88,6 @@ class DispatchMixin:
                 "execution requirements changed since the source activity; fenced recovery "
                 "requires a fresh author dispatch"
             )
-        if requirements.empty:
-            return requirements, None
         source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
         if source_owner and source_owner != owner:
             detail = (f"source activity belongs to operating user {source_owner!r}; "
@@ -105,6 +103,8 @@ class DispatchMixin:
             or task.extra.get("worker_instance")
             or ""
         )
+        if requirements.empty and not pinned_instance:
+            return requirements, None
         busy = {run.host for run in self.runs.active() if run.host}
         allocations: dict[str, list[Any]] = {}
         for run in self.runs.active():
