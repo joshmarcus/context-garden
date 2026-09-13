@@ -75,6 +75,10 @@ def create_coordination_app(garden_dir: Path) -> FastAPI:
                actor: Principal = Depends(principal)):
         try:
             claim_value = Claim(**body.pop("claim"))
+            # The client carries the revision used for its mandatory fresh read. The
+            # claim itself is the coordinator's authoritative fence, so this transport
+            # precondition must not leak into ``begin_effect``'s provider arguments.
+            body.pop("expected_version", None)
             if claim_value.garden_id != garden_id:
                 raise PermissionError("claim belongs to another garden")
             return coordinator.begin_effect(actor, claim_value, **body)
