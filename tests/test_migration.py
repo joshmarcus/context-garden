@@ -76,23 +76,23 @@ def test_commit_is_explicit_resumable_and_fences_legacy_scheduler(garden, monkey
     admin, choices = _prepared(garden)
     migration = GardenMigration(Store(garden))
     plan = migration.preview(choices)
-    original = Coordinator.set_authority
+    original = Coordinator.initialize_authority
     calls = 0
 
     def interrupted(self, *args, **kwargs):
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 1:
             raise RuntimeError("interrupted")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(Coordinator, "set_authority", interrupted)
+    monkeypatch.setattr(Coordinator, "initialize_authority", interrupted)
     with pytest.raises(RuntimeError, match="interrupted"):
         migration.commit(plan["preview_id"], admin)
     journal = json.loads((garden / ".garden" / "migration" / "cutover.json").read_text())
     assert journal["status"] == "prepared"
 
-    monkeypatch.setattr(Coordinator, "set_authority", original)
+    monkeypatch.setattr(Coordinator, "initialize_authority", original)
     result = migration.commit(plan["preview_id"], admin)
     assert result["status"] == "committed"
     fence = standalone_fence(garden)
@@ -122,3 +122,56 @@ def test_standalone_export_requires_quiescence_and_is_outside_live_garden(garden
         assert marker["mode"] == "standalone"
         assert config["multiplayer"] == {"enabled": False}
         assert ".garden/members.json" not in archive.getnames()
+
+
+def test_preview_accepts_two_unique_installations_for_one_member(garden):
+    admin, choices = _prepared(garden)
+    registry = MemberRegistry(garden / ".garden")
+    registry.issue_installation(admin, "alice", "alice-desktop")
+    choices["installations"]["alice-desktop"] = "alice"
+
+    plan = GardenMigration(Store(garden)).preview(choices)
+
+    assert plan["ready"] is True
+    assert plan["installations"] == [
+        {"installation_id": "alice-desktop", "member_id": "alice"},
+        {"installation_id": "alice-laptop", "member_id": "alice"},
+    ]
+
+
+def test_active_coordinator_claim_blocks_preview_and_atomic_cutover(garden, monkeypatch):
+    admin, choices = _prepared(garden)
+    migration = GardenMigration(Store(garden))
+    plan = migration.preview(choices)
+    coordinator = Coordinator(garden / ".garden" / "coordination.db")
+    original_snapshot = migration._snapshot
+
+    def claim_during_cutover(preview_id):
+        path = original_snapshot(preview_id)
+        coordinator.set_authority(admin, garden_id="garden-1", kind="task", scope="legacy-active",
+            owner_id="alice", authority_generation=1, expected_version=0,
+            operation_id="seed-authority")
+        coordinator.claim(admin, garden_id="garden-1", kind="task", scope="legacy-active",
+            expected_version=1, accepted_owner="alice", authority_generation=1,
+            operation_id="active-claim")
+        return path
+
+    monkeypatch.setattr(migration, "_snapshot", claim_during_cutover)
+    with pytest.raises(MigrationRefused, match="quiescent"):
+        migration.commit(plan["preview_id"], admin)
+    refreshed = migration.preview(choices)
+    assert refreshed["active_claims"]
+    assert "active coordinator claims must drain or be cancelled" in refreshed["required_setup"]
+
+
+def test_standalone_archive_excludes_nested_host_enrollment(garden, tmp_path):
+    _admin, _choices = _prepared(garden)
+    private = garden / ".garden" / "hosts" / "enrollment"
+    private.mkdir(parents=True)
+    (private / "credential.json").write_text('{"token":"must-not-export"}')
+
+    destination = tmp_path / "standalone.tar.gz"
+    GardenMigration(Store(garden)).export_standalone(destination)
+
+    with tarfile.open(destination) as archive:
+        assert not any(name.startswith(".garden/hosts/") for name in archive.getnames())
