@@ -1029,10 +1029,13 @@ class FenceMixin:
         # Plugin selection is executable configuration. Validate and load it before the
         # store adopts the document so a missing/mismatched distribution cannot leave a
         # partially reconfigured scheduler behind.
-        new_plugins = new_cfg.load_plugins()
+        from ..plugins import inspect_lock
+
+        new_plugins, new_plugin_lock = inspect_lock(self.store.root, new_cfg.get("plugins"))
         changed = self.store.adopt_config(new_cfg)
         self.cfg = self.store.config
         self.plugins = new_plugins
+        self.plugin_lock = new_plugin_lock
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         was_held = ctrl.pop("config_hold", None)
         if accepted:

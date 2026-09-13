@@ -16,6 +16,7 @@ from .loading import (
     PluginRedactor,
     load_configured_plugins,
 )
+from .lock import LOCK_NAME, PluginLockStatus, inspect_lock, locked_identity, write_lock
 from .manifest import (
     API_VERSION,
     CAPABILITY_KINDS,
@@ -53,19 +54,24 @@ __all__ = [
     "DuplicatePlugin",
     "IncompatiblePlugin",
     "InvocationResult",
+    "LOCK_NAME",
     "LoadedPlugin",
     "LoadedPlugins",
     "PluginError",
     "PluginConfigurationError",
     "PluginManifest",
+    "PluginLockStatus",
     "PluginRegistry",
     "PluginRedactor",
     "ResourceDeclaration",
     "UndeclaredCapability",
     "UnknownPlugin",
     "installed_entry_points",
+    "inspect_lock",
     "load_configured_plugins",
+    "locked_identity",
     "manifest_from_dict",
     "release",
     "split_capability_name",
+    "write_lock",
 ]

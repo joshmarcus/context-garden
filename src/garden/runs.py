@@ -198,6 +198,8 @@ class Run:
     # Dirty worktree material is never folded into a worker's branch by recovery. Dispatch
     # and reap record named stash artifacts here so provenance stays with the run.
     recovery_artifacts: list[dict[str, Any]] = field(default_factory=list)
+    # Exact compatibility set admitted by the scheduler that created this run.
+    plugin_identity: dict[str, Any] = field(default_factory=dict)
     record_version: int = 0  # optimistic generation for process-safe whole-record writes
 
     @property

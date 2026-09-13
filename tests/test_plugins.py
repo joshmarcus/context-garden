@@ -416,15 +416,36 @@ def test_a_resource_is_declared_safe_only_for_the_products_it_names() -> None:
                             digest=DIGEST, products=("Example Product",))
 
 
+class _InstalledFile:
+    def __init__(self, content: bytes):
+        self._content = content
+
+    def read_bytes(self) -> bytes:
+        return self._content
+
+
 class _Distribution:
-    name = "example-garden-plugin"
-    version = "1.2.0"
+    def __init__(self, name="example-garden-plugin", version="1.2.0", content=b"plugin"):
+        self.name = name
+        self.version = version
+        self._files = {
+            "example_garden_plugin/__init__.py": content,
+            "example_garden_plugin/manifest.json": b'{"name":"example-hosting"}',
+        }
+
+    @property
+    def files(self):
+        return tuple(metadata.PackagePath(path) for path in self._files)
+
+    def locate_file(self, path):
+        return _InstalledFile(self._files[str(path)])
 
 
 class _InstalledPlugin:
-    def __init__(self, name: str, value, calls: list[str]):
+    def __init__(self, name: str, value, calls: list[str], distribution="example-garden-plugin",
+                 content=b"plugin"):
         self.name = name
-        self.dist = _Distribution()
+        self.dist = _Distribution(distribution, content=content)
         self._value = value
         self._calls = calls
 
@@ -459,6 +480,57 @@ def test_loading_imports_only_explicitly_configured_installed_plugins(monkeypatc
 
     assert loaded.plugin_names == ("example-hosting",)
     assert calls == ["example-hosting"]
+
+
+def test_loading_orders_plugins_and_fingerprints_each_distribution(monkeypatch) -> None:
+    calls: list[str] = []
+    second_manifest = manifest(
+        name="another-plugin",
+        distribution="another-distribution",
+        capabilities=[],
+        resources=[],
+    )
+    entries = [
+        _InstalledPlugin("example-hosting", manifest(), calls),
+        _InstalledPlugin("another-plugin", second_manifest, calls, "another-distribution"),
+    ]
+    monkeypatch.setattr(metadata, "entry_points", lambda **_kwargs: entries)
+    monkeypatch.setattr(
+        "garden.plugins.loading._distribution_fingerprint",
+        lambda entry: f"sha256:{entry.dist.name}",
+    )
+    configured = {
+        "example-hosting": _configured()["example-hosting"],
+        "another-plugin": {
+            "distribution": "another-distribution",
+            "version": "1.2.0",
+            "plugin_config": {
+                "endpoint": "https://api.example.invalid",
+                "credentials": {"token": "another-secret"},
+            },
+        },
+    }
+
+    loaded = load_configured_plugins(configured)
+
+    assert loaded.plugin_names == ("another-plugin", "example-hosting")
+    assert calls == ["another-plugin", "example-hosting"]
+    assert loaded.plugin("another-plugin").distribution_fingerprint == "sha256:another-distribution"
+    assert loaded.plugin("example-hosting").distribution_fingerprint == "sha256:example-garden-plugin"
+
+
+def test_distribution_fingerprint_is_stable_and_changes_with_installed_content(monkeypatch) -> None:
+    calls: list[str] = []
+    entry = _InstalledPlugin("example-hosting", manifest(), calls)
+    monkeypatch.setattr(metadata, "entry_points", lambda **_kwargs: [entry])
+
+    first = load_configured_plugins(_configured()).plugin("example-hosting").distribution_fingerprint
+    repeat = load_configured_plugins(_configured()).plugin("example-hosting").distribution_fingerprint
+    entry.dist._files["example_garden_plugin/__init__.py"] = b"changed plugin"
+    changed = load_configured_plugins(_configured()).plugin("example-hosting").distribution_fingerprint
+
+    assert first == repeat
+    assert changed != first
 
 
 def test_namespaced_config_is_strict_and_reports_useful_redacted_paths(monkeypatch) -> None:

@@ -407,7 +407,9 @@ class Scheduler(
             self._hold_startup_config_against_fences()
         # Plugin manifests are executable entry points.  Activate them only after the
         # startup fence has replaced any unaccepted worker-written configuration.
-        self.plugins = self.cfg.load_plugins()
+        from ..plugins import inspect_lock
+
+        self.plugins, self.plugin_lock = inspect_lock(self.store.root, self.cfg.get("plugins"))
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
@@ -1221,6 +1223,16 @@ class Scheduler(
             # Enabling multiplayer is live-reloadable. Re-check the adopted config so a
             # legacy watcher cannot execute one final unbound pass after that switch.
             if not self._refresh_execution_authority():
+                return rep
+            # Installed files can change without garden.yaml changing (for example during
+            # an operator-managed rollback), so admission is re-evaluated every pass.
+            from ..plugins import inspect_lock
+
+            self.plugins, self.plugin_lock = inspect_lock(
+                self.store.root, self.cfg.get("plugins")
+            )
+            if not self.plugin_lock.valid:
+                rep.errors.append(self.plugin_lock.hold_message)
                 return rep
             retry_pending(self.cfg.data)
             with gitops.tick_read_cache(), ci_status.tick_query_cache():

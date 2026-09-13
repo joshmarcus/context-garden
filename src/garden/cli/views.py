@@ -41,6 +41,8 @@ def status(
     table.add_column("!", justify="right")  # non-terminal tasks flagged needs_human (stuck, capped, closed…)
     table.add_column("spent", justify="right")
     sched = _scheduler(store)
+    if not sched.plugin_lock.valid:
+        console.print(f"[yellow]{sched.plugin_lock.hold_message}[/yellow]")
     inbox_items = build_inbox(store, sched)
     closed_phases = []
     retro_waiting = []

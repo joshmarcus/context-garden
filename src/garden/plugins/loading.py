@@ -72,6 +72,7 @@ class LoadedPlugin:
     _configuration_json: str
     redactor: PluginRedactor
     configuration_digest: str
+    distribution_fingerprint: str
 
     @property
     def config(self) -> Mapping[str, Any]:
@@ -87,6 +88,11 @@ class LoadedPlugins:
     def __init__(self, plugins: tuple[LoadedPlugin, ...]):
         self._plugins = {plugin.manifest.name: plugin for plugin in plugins}
         self.registry = PluginRegistry(plugin.manifest for plugin in plugins)
+        self._hold_message = ""
+
+    def hold(self, message: str) -> None:
+        """Fence direct capability invocation when compatibility admission failed."""
+        self._hold_message = message
 
     @property
     def plugin_names(self) -> tuple[str, ...]:
@@ -107,6 +113,8 @@ class LoadedPlugins:
         return value
 
     def invoke(self, capability_name: str, *args: Any, **kwargs: Any) -> InvocationResult[Any]:
+        if self._hold_message:
+            raise PluginError(self._hold_message)
         declaration = self.registry.capability(capability_name)
         plugin = self._plugins[declaration.plugin]
         target = _load_object(declaration.entry_point)
@@ -131,8 +139,9 @@ def load_configured_plugins(configured: Any) -> LoadedPlugins:
         raise PluginConfigurationError("plugins must be a mapping of plugin name to configuration")
 
     installed = _installed_by_name()
-    selected: list[tuple[PluginManifest, Mapping[str, Any]]] = []
-    for name, raw in configured.items():
+    selected: list[tuple[PluginManifest, Mapping[str, Any], metadata.EntryPoint]] = []
+    for name in sorted(configured, key=str):
+        raw = configured[name]
         path = f"plugins.{name}"
         if not isinstance(name, str) or not isinstance(raw, Mapping):
             raise PluginConfigurationError(f"{path} must be a mapping")
@@ -177,12 +186,12 @@ def load_configured_plugins(configured: Any) -> LoadedPlugins:
         plugin_config = raw.get("plugin_config", {})
         if not isinstance(plugin_config, Mapping):
             raise PluginConfigurationError(f"{path}.plugin_config must be a mapping")
-        selected.append((manifest, plugin_config))
+        selected.append((manifest, plugin_config, match))
 
     # Index every manifest before importing any capability implementation.
-    registry = PluginRegistry(manifest for manifest, _ in selected)
+    registry = PluginRegistry(manifest for manifest, _, _ in selected)
     loaded: list[LoadedPlugin] = []
-    for manifest, plugin_config in selected:
+    for manifest, plugin_config, entry in selected:
         prefix = f"plugins.{manifest.name}.plugin_config"
         secrets = _secret_values(plugin_config, manifest.redacted_config_keys)
         redactor = PluginRedactor(secrets)
@@ -194,7 +203,9 @@ def load_configured_plugins(configured: Any) -> LoadedPlugins:
             validated, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         )
         digest = "sha256:" + hashlib.sha256(configuration_json.encode()).hexdigest()
-        loaded.append(LoadedPlugin(manifest, configuration_json, redactor, digest))
+        loaded.append(LoadedPlugin(
+            manifest, configuration_json, redactor, digest, _distribution_fingerprint(entry)
+        ))
     assert len(registry) == len(loaded)
     return LoadedPlugins(tuple(loaded))
 
@@ -214,6 +225,37 @@ def _dist_name(entry: metadata.EntryPoint) -> str:
 def _dist_version(entry: metadata.EntryPoint) -> str:
     dist = getattr(entry, "dist", None)
     return "" if dist is None else str(dist.version or "")
+
+
+def _distribution_fingerprint(entry: metadata.EntryPoint) -> str:
+    """Hash the installed files, not timestamps or environment-specific absolute paths."""
+    dist = getattr(entry, "dist", None)
+    if dist is None:
+        raise PluginConfigurationError(f"installed plugin {entry.name!r} has no distribution metadata")
+    digest = hashlib.sha256()
+    files = sorted((dist.files or ()), key=lambda item: str(item))
+    if not files:
+        raise PluginConfigurationError(
+            f"installed distribution {_dist_name(entry)!r} has no file inventory to fingerprint"
+        )
+    for item in files:
+        relative = str(item).replace("\\", "/")
+        # Bytecode is an interpreter cache, while RECORD contains installation-specific
+        # paths and may describe itself without a digest. Neither is executable source.
+        if relative.endswith((".pyc", ".pyo", "/RECORD")):
+            continue
+        path = dist.locate_file(item)
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise PluginConfigurationError(
+                f"cannot fingerprint {_dist_name(entry)}=={_dist_version(entry)}: "
+                f"installed file {relative!r} is unavailable ({exc})"
+            ) from exc
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(content).digest())
+    return "sha256:" + digest.hexdigest()
 
 
 def _load_object(reference: str) -> Any:

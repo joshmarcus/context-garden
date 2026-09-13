@@ -16,6 +16,111 @@ from garden.store import Store
 runner = CliRunner()
 
 
+def _fake_loaded_plugins(fingerprint="sha256:" + "1" * 64, config_digest="sha256:" + "2" * 64):
+    resource = SimpleNamespace(name="pack", version="1.0", digest="sha256:" + "3" * 64)
+    manifest = SimpleNamespace(
+        name="example-hosting", distribution="example-plugin", distribution_version="1.2.0",
+        api_version="garden.plugins/v1", resources=(resource,),
+    )
+    plugin = SimpleNamespace(
+        manifest=manifest, distribution_fingerprint=fingerprint,
+        configuration_digest=config_digest,
+    )
+    return SimpleNamespace(
+        plugin_names=("example-hosting",), plugin=lambda name: plugin,
+        hold=lambda message: None,
+    )
+
+
+def test_plugin_lock_is_deterministic_and_rollback_restores_validity(tmp_path, monkeypatch):
+    from garden.plugins.lock import inspect_lock, write_lock
+
+    durable_state = tmp_path / ".garden" / "state.json"
+    durable_state.parent.mkdir()
+    durable_state.write_text('{"task": {"attempts": 2}}\n')
+    state_before = durable_state.read_bytes()
+    first = _fake_loaded_plugins()
+    monkeypatch.setattr("garden.plugins.lock.load_configured_plugins", lambda configured: first)
+    _, current = write_lock(tmp_path, first)
+    initial_bytes = (tmp_path / "garden.lock").read_bytes()
+    _, status = inspect_lock(tmp_path, {"example-hosting": {}})
+    assert status.valid
+
+    changed = _fake_loaded_plugins(fingerprint="sha256:" + "9" * 64)
+    monkeypatch.setattr("garden.plugins.lock.load_configured_plugins", lambda configured: changed)
+    _, status = inspect_lock(tmp_path, {"example-hosting": {}})
+    assert not status.valid
+    assert "distribution_fingerprint expected" in status.hold_message
+    assert "9" * 64 in status.hold_message
+
+    monkeypatch.setattr("garden.plugins.lock.load_configured_plugins", lambda configured: first)
+    _, restored = inspect_lock(tmp_path, {"example-hosting": {}})
+    assert restored.valid
+    assert (tmp_path / "garden.lock").read_bytes() == initial_bytes
+    assert durable_state.read_bytes() == state_before
+    assert current["plugins"][0]["configuration_digest"] == "sha256:" + "2" * 64
+
+
+def test_plugins_lock_cli_writes_atomically_and_reports_changes(garden, monkeypatch):
+    fake = _fake_loaded_plugins()
+    monkeypatch.setattr("garden.config.Config.load_plugins", lambda self: fake)
+
+    created = run(garden, "plugins", "lock")
+    assert created.exit_code == 0, created.output
+    assert "created garden.lock" in created.output
+    document = json.loads((garden / "garden.lock").read_text())
+    assert document["plugins"][0]["distribution"] == "example-plugin"
+    assert "plugin_config" not in (garden / "garden.lock").read_text()
+
+    changed = _fake_loaded_plugins(config_digest="sha256:" + "8" * 64)
+    monkeypatch.setattr("garden.config.Config.load_plugins", lambda self: changed)
+    updated = run(garden, "plugins", "lock")
+    assert updated.exit_code == 0, updated.output
+    assert "changed example-hosting: configuration_digest" in updated.output
+
+
+def test_plugin_drift_holds_dispatch_but_status_and_doctor_remain_available(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["plugins"] = {
+        "missing-plugin": {"distribution": "missing-dist", "version": "1.0"}
+    }
+    config_path.write_text(yaml.safe_dump(config))
+
+    status = run(garden, "status")
+    assert status.exit_code == 0, status.output
+    assert "plugin compatibility hold" in status.output
+    assert "install missing-dist==1.0" in status.output
+
+    dispatched = run(garden, "dispatch", "DM-001")
+    assert dispatched.exit_code == 1
+    assert "plugin compatibility hold" in dispatched.output
+
+    doctor = run(garden, "doctor")
+    assert doctor.exit_code == 1
+    assert "plugin compatibility hold" in doctor.output
+
+
+def test_plugin_free_garden_needs_no_lock(garden):
+    result = run(garden, "status")
+    assert result.exit_code == 0, result.output
+    assert "plugin compatibility hold" not in result.output
+    assert not (garden / "garden.lock").exists()
+
+
+def test_explicitly_empty_plugins_need_no_lock(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["plugins"] = {}
+    config_path.write_text(yaml.safe_dump(config))
+
+    result = run(garden, "status")
+
+    assert result.exit_code == 0, result.output
+    assert "plugin compatibility hold" not in result.output
+    assert not (garden / "garden.lock").exists()
+
+
 def run(garden, *args):
     import os
 
@@ -1689,6 +1794,10 @@ def test_take_on_a_good_draft_approves_then_dispatches(garden):
     t = Store(garden).task("DM-003")
     assert t.status == Status.RUNNING
     assert "approved (cli)" in t.body
+    admitted = RunStore(garden / ".garden").latest("DM-003")
+    assert admitted.plugin_identity == {
+        "lock_version": "garden.plugin-lock/v1", "core_version": "0.4.0", "plugins": [],
+    }
 
 
 def test_dispatch_on_a_draft_goes_through_approve_and_is_refused_by_an_incomplete_brief(garden):
