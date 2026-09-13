@@ -37,6 +37,7 @@ from ..plants import (
     vine_svg,
 )
 from ..runs import HistoryUnavailable
+from ..scheduler import MULTIPLAYER_EXECUTION_UNAVAILABLE
 from ..store import Store
 from . import actions, pages
 from .access import (
@@ -220,7 +221,18 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         token = (hub.begin_request() if request.method in {"GET", "HEAD", "OPTIONS"}
                  else hub.begin_action_request())
         try:
-            return await call_next(request)
+            response = await call_next(request)
+            selected_project = request.query_params.get("project")
+            parts = request.url.path.strip("/").split("/")
+            detail_scope = (len(parts) > 1 and parts[0] in {
+                "projects", "phases", "tasks", "runs", "investigations",
+            })
+            if (request.method in {"GET", "HEAD"} and selected_project
+                    and not detail_scope and response.status_code < 400):
+                response.set_cookie(
+                    "garden_project", selected_project, samesite="lax", secure=bool(tls),
+                )
+            return response
         finally:
             hub.end_request(token)
 
@@ -287,7 +299,7 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
                              "by": ctrl.get("by", ""), "at": ctrl.get("at", ""),
                              "reason": ctrl.get("reason", "")})
 
-    site = Site(hub, templates, plates)
+    site = Site(hub, templates, plates, registry)
     pages.register(app, site)
     actions.register(app, site)
 

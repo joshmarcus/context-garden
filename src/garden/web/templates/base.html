@@ -95,6 +95,8 @@ svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw);
 .nav a.on { border-left-color:var(--ink); background:var(--label); }
 .nav .count { font:11px/1 var(--mono); color:var(--stamp); }
 .nav a.on .count.hot, .nav .count.hot { font-weight:700; }
+.project-picker { margin-left:auto; display:flex; align-items:center; gap:8px; font:12px var(--mono); }
+.project-picker select { max-width:18rem; }
 .rail h4 { margin:0 0 6px 8px; font:400 10.5px/1 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
 .drawer { display:flex; gap:10px; align-items:center; padding:8px 10px; border:1px solid var(--line); border-left:3px solid transparent; background:var(--label); text-decoration:none; color:var(--ink); margin-bottom:8px; }
 .drawer:hover, .drawer.on { border-left-color:var(--ink); }
@@ -434,6 +436,14 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
 </aside>
 <main>
+{% if admin_surface %}<div class="warn" role="note"><b>Garden administration.</b> This restricted global surface is not filtered by the project view.</div>{% endif %}
+<div class="project-picker">
+  <label for="garden-project">Project</label>
+  <select id="garden-project" aria-label="Project view">
+    <option value="__all__" {% if viewing_project_value == '__all__' %}selected{% endif %}>All authorized projects</option>
+    {% for project_name in viewing_project_options %}<option value="{{ project_name }}" {% if viewing_project_value == project_name %}selected{% endif %}>{{ project_name }}</option>{% endfor %}
+  </select>
+</div>
 {% if coordinator_status.configured and coordinator_status.stale %}
 <div class="warn" role="status"><b>Shared garden is offline.</b> Showing the last authorized view; changes are disabled until authority refreshes.{% if coordinator_status.error %} {{ coordinator_status.error }}{% endif %}</div>
 {% elif coordinator_status.projection_lag %}
@@ -457,6 +467,36 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </main>
 </div>
 <script>
+// Keep the selected view in URLs as well as this browser's preference. This covers normal
+// navigation, HTMX/fetch links discovered after load, and browser back/forward history.
+(function () {
+  var picker = document.getElementById("garden-project");
+  if (!picker) return;
+  var selected = picker.value;
+  function scoped(raw) {
+    var url = new URL(raw, location.href);
+    if (url.origin === location.origin && !url.pathname.startsWith("/static/")) {
+      url.searchParams.set("project", selected);
+    }
+    return url;
+  }
+  document.querySelectorAll("a[href]").forEach(function (link) {
+    var url = scoped(link.href);
+    if (url.origin === location.origin) link.href = url.pathname + url.search + url.hash;
+  });
+  picker.addEventListener("change", function () {
+    document.cookie = "garden_project=" + encodeURIComponent(picker.value)
+      + "; Path=/; SameSite=Lax" + (location.protocol === "https:" ? "; Secure" : "");
+    var detail = /^\/(?:projects|phases|tasks|runs|investigations)\//.test(location.pathname);
+    var url = new URL(detail ? "/" : location.href, location.href);
+    url.searchParams.set("project", picker.value);
+    location.assign(url.href);
+  });
+  document.addEventListener("htmx:configRequest", function (event) {
+    event.detail.parameters.project = picker.value;
+  });
+  window.gardenScopedUrl = function (raw) { return scoped(raw).pathname + scoped(raw).search; };
+}());
 // ---- the live clock (the owner's rule, 2026-09-06 02:35Z; docs/design/now-1.md, "Live clocks"):
 // every element with data-started (a Now strip, a Board card, a task page's run row) shows how
 // long its run has been going, ticking once a second in the browser from the run's start time
