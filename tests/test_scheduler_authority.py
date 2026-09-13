@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from garden.scheduler import Scheduler
+from garden.scheduler.human import task_action
 from garden.store import Store
 
 
@@ -86,6 +87,25 @@ def test_task_effect_carries_current_generation_and_revision():
         "authority_generation": 4, "expected_version": 7,
         "effect_key": "merge:A-1",
     }]
+
+
+def test_direct_task_action_denial_happens_before_its_first_side_effect():
+    class Action:
+        def __init__(self):
+            self.scheduler = scheduler(snapshot(), "bob")
+            self.mutations = []
+
+        def task_effect(self, item, key):
+            return self.scheduler.task_effect(item, key)
+
+        @task_action("cancel")
+        def cancel(self, item):
+            self.mutations.append(item.id)
+
+    action = Action()
+    with pytest.raises(PermissionError):
+        action.cancel(task("A-1"))
+    assert action.mutations == []
 
 
 def test_unassigned_member_has_no_executable_tick_scope(garden, monkeypatch):

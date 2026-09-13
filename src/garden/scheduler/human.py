@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import re
 import uuid
 from pathlib import Path
@@ -35,6 +36,17 @@ INVESTIGATION_RECOMMENDATIONS = frozenset({
 })
 
 
+def task_action(effect: str):
+    """Fence a direct task control before it can mutate runs, files, or state."""
+    def decorate(method):
+        @functools.wraps(method)
+        def guarded(self, task: Task, *args, **kwargs):
+            with self.task_effect(task, f"{effect}:{task.id}"):
+                return method(self, task, *args, **kwargs)
+        return guarded
+    return decorate
+
+
 def validate_investigation_report(report: Any) -> dict[str, Any]:
     """Return a complete structured investigation report or raise a useful error."""
     required = {"likely_cause", "confidence", "unknowns", "evidence", "attempted_checks",
@@ -61,6 +73,7 @@ def validate_investigation_report(report: Any) -> dict[str, Any]:
 
 
 class HumanMixin:
+    @task_action("set-difficulty")
     def set_difficulty(self, task: Task, difficulty: str, *, reason: str = "", actor: str = "") -> None:
         """Set an implementation tier without accidentally lowering an escalation floor.
 
@@ -111,6 +124,7 @@ class HumanMixin:
             )
         return actor
 
+    @task_action("reserve-manual")
     def reserve_manual(self, task: Task, *, actor: str = "operator", note: str = "") -> dict[str, Any]:
         """Reserve future lifecycle actions without interrupting work already in flight."""
         if actor not in {"operator", "human_owner"}:
@@ -237,6 +251,7 @@ class HumanMixin:
         mode = "revise" if task.status == Status.CHANGES_REQUESTED else "work"
         return self.dispatch(task, mode=mode, runner=ManualRunner({}), worktree=False)
 
+    @task_action("hold-runner")
     def hold_runner(self, task: Task, reason: str, *, actor: str = "delegated_operator") -> None:
         """Temporarily route a task to manual work without creating an owner decision.
 
@@ -294,6 +309,7 @@ class HumanMixin:
         self.store.save(task)
         self.events.emit("runner_hold", task.id, actor=actor, reason=reason, hold_id=hold_id)
 
+    @task_action("release-runner")
     def release_runner_hold(self, task: Task, *, actor: str = "delegated_operator") -> None:
         """Release this task's temporary manual hold and its matching operational stop."""
         ensure_open(task)
@@ -470,6 +486,7 @@ class HumanMixin:
         self.state.save()
         return not protected and new != current
 
+    @task_action("pause-investigation")
     def pause_for_investigation(self, task: Task, reason: str, requester: str = "operator",
                                 owner: str = "operator", scope: str = "read-only diagnosis",
                                 budget: str = "one bounded investigation",
@@ -525,6 +542,7 @@ class HumanMixin:
                                      origins={"references": references.strip(), "context": "garden incident"})
         return task
 
+    @task_action("retry-investigation")
     def retry_investigation(self, task: Task, owner: str = "agent") -> None:
         """Retry a failed diagnosis without losing its transcript, cost, or original bounds."""
         ensure_open(task)
@@ -544,6 +562,7 @@ class HumanMixin:
         self.events.emit("investigation_retried", task.id, owner=owner, request_id=inv["request_id"])
         self.state.save()
 
+    @task_action("take-investigation")
     def take_investigation(self, task: Task) -> None:
         """Let the operator claim a ready investigation without changing task work."""
         ensure_open(task)
@@ -558,6 +577,7 @@ class HumanMixin:
         self.events.emit("investigation_taken", task.id, owner="operator", request_id=inv["request_id"])
         self.state.save()
 
+    @task_action("complete-investigation")
     def complete_investigation(self, task: Task, report: dict[str, Any]) -> None:
         ensure_open(task)
         st = self.state.get(task.id)
@@ -570,6 +590,7 @@ class HumanMixin:
         self.events.emit("investigation_reported", task.id, owner=inv.get("owner", ""))
         self.state.save()
 
+    @task_action("publish-investigation")
     def retry_investigation_publication(self, task: Task) -> None:
         """Retry only the workspace push, preserving the completed agent result."""
         st = self.state.get(task.id)
@@ -591,6 +612,7 @@ class HumanMixin:
                          commit=inv["publication"]["commit"])
         self.state.save()
 
+    @task_action("defer-troubled")
     def defer_troubled(self, task: Task, reason: str) -> None:
         """Keep preserved work paused with an explicit durable owner reason."""
         ensure_open(task)
@@ -605,6 +627,7 @@ class HumanMixin:
         self.events.emit("troubled_deferred", task.id, reason=reason.strip())
         self.state.save()
 
+    @task_action("reconsider-troubled")
     def reconsider_troubled(self, task: Task) -> None:
         """Return a saved deferral to its preserved decision without dispatching work."""
         ensure_open(task)
@@ -621,6 +644,7 @@ class HumanMixin:
         self.events.emit("troubled_reconsidered", task.id, reason=reason)
         self.state.save()
 
+    @task_action("change-troubled")
     def change_troubled_approach(self, task: Task, approach: str, allowance: int = 1) -> None:
         """Queue one preserved revision with the owner's distinct revised approach."""
         if not approach.strip():
@@ -638,6 +662,7 @@ class HumanMixin:
             )
             self._continue_troubled_locked(current, st, allowance=allowance)
 
+    @task_action("cancel-troubled")
     def cancel_troubled(self, task: Task, reason: str) -> None:
         """Cancel from a troubled decision while retaining all branch/run artifacts."""
         ensure_open(task)
@@ -651,6 +676,7 @@ class HumanMixin:
         self._transition(task, Status.CANCELLED, f"cancelled after troubled-task decision: {reason.strip()}")
         self.events.emit("troubled_cancelled", task.id, reason=reason.strip(), preserved_branch=task.branch, preserved_pr=task.pr)
 
+    @task_action("continue-troubled")
     def continue_troubled(self, task: Task, allowance: int = 1, difficulty: str = "") -> None:
         """Idempotently grant bounded preserved revisions without erasing lifetime history."""
         with self._controller_lock():
@@ -738,6 +764,7 @@ class HumanMixin:
         self.events.emit("troubled_continued", task.id, **decision)
         self.state.save()
     # ---- approving a draft --------------------------------------------------
+    @task_action("approve")
     def approve(self, task: Task, by: str = "", phase: Phase | None = None) -> str:
         """Draft -> ready. The one approve gate the CLI, the web and the TUI share: it refuses a
         task that is not a draft, a closed or frozen phase without a freeze exception
@@ -774,6 +801,7 @@ class HumanMixin:
         return not any(t.status != Status.DRAFT for t in phase.tasks if t.id != task.id)
 
     # ---- human answers -----------------------------------------------------
+    @task_action("answer")
     def answer(self, task: Task, text: str) -> Run:
         with self.tick_lock():
             # A web action deliberately does not share Hub's in-process tick lock. Reload
@@ -815,6 +843,7 @@ class HumanMixin:
         dec = self.state.get(task.id).get("decision")
         return dict(dec) if isinstance(dec, dict) and dec.get("kind") else None
 
+    @task_action("accept-decision")
     def accept_decision(self, task: Task, note: str = "") -> None:
         """The person agrees with the worker's call. `wont_do` ends the task; `no_change` resumes the round."""
         ensure_open(task)
@@ -827,6 +856,7 @@ class HumanMixin:
         else:
             self._resume_no_change(task, dec, note)
 
+    @task_action("reject-decision")
     def reject_decision(self, task: Task, note: str) -> None:
         """The person disagrees: the worker's reasoning goes back into a revise round with the note."""
         ensure_open(task)
@@ -849,6 +879,7 @@ class HumanMixin:
         self._transition(task, Status.CHANGES_REQUESTED, f"decision rejected by the person; revise run will follow: {note.strip()[:100]}")
         self.state.save()
 
+    @task_action("mark-wont-do")
     def mark_wont_do(self, task: Task, reason: str = "", note: str = "", run_id: str = "") -> None:
         """End the task in `wont_do`: close any open PR with a comment carrying the reason, record it in the log.
         Used by `accept_decision`, `garden set-status ID wont_do` and the web Accept button."""
@@ -909,6 +940,7 @@ class HumanMixin:
         self.state.save()
 
     # ---- triage: the human's first look at a draft PR ----------------------
+    @task_action("triage")
     def triage(self, task: Task, ready: bool = False, changes: str = "", note: str = "",
                supersede_review: bool = False,
                resolve_review_items: list[str] | None = None) -> None:
@@ -1006,6 +1038,7 @@ class HumanMixin:
                 f"{task.id} has active run {active[0].run_id}; refusing to replace its checkout identity"
             )
 
+    @task_action("attach-pr")
     def attach_pr(self, task: Task, url: str) -> None:
         """Adopt a verified existing PR without discarding task feedback or history."""
         self._refuse_attachment_run_conflict(task)
@@ -1032,6 +1065,7 @@ class HumanMixin:
                          old_pr_number=old_number or 0, new_pr_number=pr.number)
         self.state.save()
 
+    @task_action("mark-done")
     def mark_done(self, task: Task, note: str = "", force: bool = False, *, actor: str = "human_owner") -> None:
         """Mark a task done only after its PR's commits reach the final base, unless forced.
 
@@ -1046,6 +1080,7 @@ class HumanMixin:
         self.events.emit("mark_done", task.id, actor=self._validate_action_actor(actor), reason=note or "marked done")
         self._transition(task, Status.DONE, note or "marked done", base_merged=not force)
 
+    @task_action("set-status")
     def set_status(self, task: Task, status: Status, note: str, *, actor: str = "human_owner") -> None:
         """Apply an explicit operator status override with durable provenance."""
         actor = self._validate_action_actor(actor)
@@ -1078,11 +1113,13 @@ class HumanMixin:
             run.finished_at = now_iso()
             run.save()
 
+    @task_action("cancel")
     def cancel(self, task: Task, note: str = "cancelled") -> None:
         ensure_open(task)
         self._cancel_active_run(task)
         self._transition(task, Status.CANCELLED, note)
 
+    @task_action("move")
     def move(self, task: Task, product: str, phase: str) -> None:
         """Move a task to another phase of the same product, keeping its id, run history,
         state.json entry and dependencies: only the file location and `phase:` field change.
@@ -1112,6 +1149,7 @@ class HumanMixin:
         self.log(f"{task.id}: moved {old_key} -> {ph.key}")
         self.store.invalidate_tasks()
 
+    @task_action("reorder")
     def reorder(self, task: Task, after: str | None = None, direction: str = "") -> None:
         """Reorder a task within its own phase section (the backlog). `after` is the id the task
         should follow, "" for the top of the section; `direction` ('up'/'down') is the no-JS
@@ -1197,6 +1235,7 @@ class HumanMixin:
             return True
         return False
 
+    @task_action("resume-ssh")
     def resume_ssh_collection(self, task: Task) -> None:
         import json
         import time
@@ -1225,6 +1264,7 @@ class HumanMixin:
         self.events.emit("ssh_recovery_resumed", task.id, run=run.run_id)
         self.state.save()
 
+    @task_action("retry")
     def retry(self, task: Task, *, actor: str = "human_owner") -> None:
         ensure_open(task)
         for active in self.runs.runs_for(task.id):
@@ -1275,6 +1315,7 @@ class HumanMixin:
         self._transition(task, Status.READY, "reset to ready by hand")
         self.state.save()
 
+    @task_action("delegate-recovery")
     def delegate_recovery(self, task: Task, rep: TickReport | None = None) -> str:
         """Spend one explicitly delegated recovery continuation.
 
@@ -1361,6 +1402,7 @@ class HumanMixin:
         self.state.save()
         return "one preserved check continuation queued"
 
+    @task_action("resume")
     def resume_task(self, task: Task) -> None:
         """'Nothing to fix': clear the needs-human stop and return the task to the state it
         held before the stop, without starting a run. Pending feedback is dropped too — the
@@ -1436,6 +1478,7 @@ class HumanMixin:
         self.events.emit("phase_reopened", "", phase=phase.key)
         self.log(f"{phase.key} reopened")
 
+    @task_action("finish-manual")
     def finish_manual(self, task: Task, result: dict[str, Any]) -> TickReport:
         from ..runner.manual import ManualRunner
 

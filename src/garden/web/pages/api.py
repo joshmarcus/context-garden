@@ -267,6 +267,10 @@ def register(app: FastAPI, site: Site) -> None:
         member_id = str(host.get("member_id") or "")
         if not member_id:
             return
+        installation_id = str(host.get("name") or "")
+        if (run.execution_member_id and run.execution_member_id != member_id
+                or run.execution_installation_id and run.execution_installation_id != installation_id):
+            raise HTTPException(403, "run lease belongs to another member installation")
         fresh = hub.fresh()
         task = fresh.tasks().get(run.task_id)
         owner = effective_owner(task, fresh.phase(task.product, task.phase))[0] if task else ""
@@ -548,6 +552,10 @@ def register(app: FastAPI, site: Site) -> None:
                         run.save()
                     continue
                 run.host = str(body["host"])
+                run.execution_member_id = str(host_cfg.get("member_id") or "")
+                run.execution_installation_id = (
+                    str(host_cfg.get("name") or "") if run.execution_member_id else ""
+                )
                 claim_time = now.isoformat()
                 if not run.claimed_at:
                     run.claimed_at = claim_time
@@ -582,6 +590,8 @@ def register(app: FastAPI, site: Site) -> None:
                 # to its abandoned ref, never overwrite work from its replacement.
                 run.pushed_ref = f"refs/heads/garden-worker/{run.run_id}/{secrets.token_urlsafe(12)}"
                 run.claim_history.append({"claimed_at": claim_time, "host": run.host,
+                                          "member_id": run.execution_member_id,
+                                          "installation_id": run.execution_installation_id,
                                           "claim_request_id": request_id,
                                           "lease_token_sha256": hashlib.sha256(run.lease_token.encode()).hexdigest(),
                                           "pushed_ref": run.pushed_ref})
