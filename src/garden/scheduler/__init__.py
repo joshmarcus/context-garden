@@ -284,6 +284,7 @@ class Scheduler(
         self.trials = TrialLog(self.cfg.garden_dir / "trials.jsonl")
         self._closing_review_claims: list[tuple[str, str, str]] = []
         self.log = log or (lambda msg: None)
+        self._startup_config_checked = read_only
         # Multiplayer startup recovery is deferred to reap/tick, after a fresh
         # assignment check.  In particular, constructing an unassigned local
         # scheduler must remain observational and cannot migrate scheduler state.
@@ -293,6 +294,7 @@ class Scheduler(
             # A new CLI process has no old Store instance to compare against.  Check active
             # dispatch manifests before constructing anything that could use garden.yaml.
             self._hold_startup_config_against_fences()
+            self._startup_config_checked = True
         notice_patterns = self.cfg.get("github.bot_notice_patterns")
         # PR feedback becomes a worker prompt only from trusted authors: the login the garden
         # uses, `github.trusted_authors`, and the reviewers it requests on every PR.
@@ -369,6 +371,11 @@ class Scheduler(
         self._restarter = restarter
 
     # ---- helpers -----------------------------------------------------------
+    def _hold_startup_config_once(self) -> None:
+        if not self._startup_config_checked:
+            self._hold_startup_config_against_fences()
+            self._startup_config_checked = True
+
     @property
     def stack_enabled(self) -> bool:
         return bool(self.cfg.get("stack", True))
@@ -1030,6 +1037,7 @@ class Scheduler(
         started = time.monotonic()
         self.store.invalidate_tasks()
         self.state = State(self.state.path)
+        self._hold_startup_config_once()
         self._restore_operational_history()
         self._migrate_fence_bookkeeping()
         self.confirm_restarted_upgrade()
@@ -1077,6 +1085,7 @@ class Scheduler(
         started = time.monotonic()
         self.store.invalidate_tasks()  # re-reads task files; garden.yaml goes through the reload gate below
         self.state = State(self.state.path)  # the CLI, web UI or TUI may have written state since the last pass
+        self._hold_startup_config_once()
         self._restore_operational_history()
         self._migrate_fence_bookkeeping()
         self.confirm_restarted_upgrade()
