@@ -7,6 +7,40 @@ Templates and API schemas should consume this inventory instead of maintaining t
 types and help text. Derived entries are display-only. A field that supports only `global`
 scope must never be offered as a project override.
 
+## Anonymous publication
+
+Public viewing uses an exported projection rather than the live garden. Nothing is
+published until a project and every permitted field are named:
+
+```yaml
+publication:
+  projects:
+    context-garden:
+      fields:
+        - project.summary
+        - phase.summary
+        - task.summary
+        - task.dependencies
+```
+
+The summary fields expose project and phase names plus task IDs, titles, and statuses;
+dependencies are limited to tasks in the same published projection. Free-form Markdown is
+separate and must be added explicitly with `project.content`, `phase.content`, or
+`task.content`. Raw logs, transcripts, run data, arbitrary files, configuration, owners,
+links, paths, and costs are never projection fields.
+
+Create and serve an isolated snapshot with:
+
+```console
+garden publish --output /srv/public-garden
+garden serve --public-projection /srv/public-garden --no-watch --host 0.0.0.0
+```
+
+The serving process needs only the exported directory. Re-run `garden publish` after a
+publication change. Replacement is atomic; pages, exports, searches, and event streams read
+the replacement without retaining an application cache. Removing a project revokes it from
+subsequent responses and sends the reduced snapshot to connected event subscribers.
+
 ## Project values and policy
 
 Project configuration uses the existing product scope in `garden.yaml`:
