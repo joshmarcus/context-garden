@@ -207,7 +207,6 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         return bool(assignment and assignment.enabled
                     and assignment.project == task.product and assignment.phase == task.phase
                     and authorize(principal, "mutate_work", owner_id=owner, project=task.product))
-
     hub = Hub(
         store,
         watch,
