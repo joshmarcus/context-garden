@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,6 +120,42 @@ def test_explicitly_empty_plugins_need_no_lock(garden):
     assert result.exit_code == 0, result.output
     assert "plugin compatibility hold" not in result.output
     assert not (garden / "garden.lock").exists()
+
+
+def test_hosts_scale_passes_configured_plugins_to_provider_resolution(
+    garden, monkeypatch,
+):
+    from garden.hosts import ScaleStatus
+    from tests.test_hosts import pool
+
+    configured_plugins = _fake_loaded_plugins()
+    monkeypatch.setattr(
+        "garden.config.Config.load_plugins", lambda self: configured_plugins,
+    )
+    specification = garden / "plugin-pool.json"
+    specification.write_text(json.dumps({
+        "contract_version": "garden.hosts/v1",
+        **asdict(pool(provider="example-hosting/provider")),
+    }))
+    received = []
+
+    class Operation:
+        def status(self, _pool):
+            return ScaleStatus(
+                "op", 0, 0, 0, 0, "profile", "", 0, 0, 0, 0, 0, 0, 0,
+                (), {}, (), (), "",
+            )
+
+    def build(_pool, _state, _enrollment, _config, plugins):
+        received.append(plugins)
+        return Operation()
+
+    monkeypatch.setattr("garden.cli.hosts._build_operation", build)
+
+    result = run(garden, "hosts", "scale", str(specification))
+
+    assert result.exit_code == 0, result.output
+    assert received == [configured_plugins]
 
 
 def run(garden, *args):

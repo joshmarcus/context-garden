@@ -25,6 +25,7 @@ from .scale import (
 )
 
 DEFAULT_ENROLLMENT_DIR = Path(".garden/hosts/enrollment")
+BUILTIN_PROVIDERS = frozenset({"command", "ec2"})
 
 
 def operation_path_for(pool_name: str, garden_dir: Path) -> Path:
@@ -37,6 +38,7 @@ def scale_operation(pool: PoolDeclaration, operation_path: Path,
                     enrollment_config: Path | None = None, *,
                     garden_dir: Path | None = None,
                     providers: dict[str, Any] | None = None,
+                    plugins: Any = None,
                     enrollments: EnrollmentResolver | None = None,
                     health_check: Any = None,
                     interruption_drain: Any = None,
@@ -70,6 +72,12 @@ def scale_operation(pool: PoolDeclaration, operation_path: Path,
             raise ValueError("a command-provider pool takes its identities from the enrollment "
                              "directory, not a provider credential configuration")
         adapters = {"command": CommandProvider()}
+    elif "/" in declaration.provider and plugins is not None:
+        from ..plugins import provenance_dict, resolve_host_provider
+
+        provider, provenance = resolve_host_provider(plugins, declaration.provider)
+        adapters = {declaration.provider: provider}
+        execution_context["plugin_invocation"] = provenance_dict(provenance)
     elif declaration.provider == "ec2":
         adapters, resolver, execution_context, config = _ec2(
             declaration, operation_path, enrollment_dir, enrollment_config, saved, enrollments)

@@ -6,6 +6,26 @@ is the contract these types express.
 
 from __future__ import annotations
 
+from .capabilities import (
+    PluginRunner,
+    RunnerTransport,
+    provenance_dict,
+    resolve_host_provider,
+    resolve_runner_transport,
+)
+from .command import (
+    PROTOCOL_VERSION as COMMAND_PROTOCOL_VERSION,
+)
+from .command import (
+    CommandCancelled,
+    CommandProtocolError,
+    CommandTimedOut,
+    JsonLinesCommand,
+    MalformedOutput,
+    TransportLost,
+    UnsupportedCapabilities,
+    UnsupportedProtocol,
+)
 from .discovery import ENTRY_POINT_GROUP, DiscoveredEntryPoint, installed_entry_points
 from .loading import (
     ActionProvenance,
@@ -66,6 +86,8 @@ __all__ = [
     "PluginRegistry",
     "PluginResources",
     "PluginRedactor",
+    "PluginRunner",
+    "RunnerTransport",
     "ResourceDeclaration",
     "UndeclaredCapability",
     "UnknownPlugin",
@@ -79,4 +101,16 @@ __all__ = [
     "write_lock",
     "apply_profile",
     "profile_files",
+    "resolve_host_provider",
+    "resolve_runner_transport",
+    "provenance_dict",
+    "COMMAND_PROTOCOL_VERSION",
+    "CommandCancelled",
+    "CommandProtocolError",
+    "CommandTimedOut",
+    "JsonLinesCommand",
+    "MalformedOutput",
+    "TransportLost",
+    "UnsupportedCapabilities",
+    "UnsupportedProtocol",
 ]

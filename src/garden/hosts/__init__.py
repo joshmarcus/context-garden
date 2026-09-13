@@ -29,6 +29,7 @@ from .models import (
     WorkerObservation,
     verify_worker_configuration,
 )
+from .provider import HostProvider
 from .scale import (
     DirectoryEnrollmentResolver,
     Enrollment,
@@ -64,6 +65,7 @@ __all__ = [
     "HostFacts",
     "HostAdmission",
     "HostLifecycle",
+    "HostProvider",
     "HostPlan",
     "HostReadiness",
     "HostRequirements",

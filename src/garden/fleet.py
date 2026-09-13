@@ -122,10 +122,12 @@ class FleetController:
     """Resume one admitted pool toward its configured healthy count."""
 
     def __init__(self, config: Any, *, providers: dict[str, Any] | None = None,
+                 plugins: Any = None,
                  enrollments: Any = None, health_check: Any = None,
                  interruption_drain: Any = None, now=_now):
         self.config = config
         self.providers = providers
+        self.plugins = plugins
         self.enrollments = enrollments
         self.health_check = health_check
         self.interruption_drain = interruption_drain
@@ -199,6 +201,7 @@ class FleetController:
         operation = scale_operation(
             pool, operation_path, settings.enrollment_dir, settings.enrollment_config,
             garden_dir=settings.garden_dir, providers=self.providers,
+            plugins=self.plugins,
             enrollments=self.enrollments, health_check=self.health_check,
             interruption_drain=self.interruption_drain, now=self.now,
         )

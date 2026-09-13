@@ -17,8 +17,10 @@ app.add_typer(hosts_app, name="hosts", rich_help_panel=PANEL_LOOP)
 
 
 def _build_operation(pool, operation_path: Path, enrollment_dir: Path | None,
-                     enrollment_config: Path | None = None) -> ScaleOperation:
-    return scale_operation(pool, operation_path, enrollment_dir, enrollment_config)
+                     enrollment_config: Path | None = None, plugins=None) -> ScaleOperation:
+    return scale_operation(
+        pool, operation_path, enrollment_dir, enrollment_config, plugins=plugins,
+    )
 
 
 @hosts_app.command("fleet")
@@ -33,7 +35,7 @@ def fleet(
     from ..fleet import FleetController, fleet_projection
 
     store = _store(root)
-    controller = FleetController(store.config)
+    controller = FleetController(store.config, plugins=store.config.load_plugins())
     if controller.settings is None:
         err.print("[yellow]no workers.pool block configured; this garden uses static "
                   "workers.hosts[/yellow]")
@@ -71,13 +73,18 @@ def scale(
 ):
     """Request or resume a bounded pool scale operation; output contains no secrets."""
     try:
+        from ..config import Config
+
         pool = pool_from_dict(json.loads(specification.read_text()))
         # One convention, shared with the recurring controller: the operation is named for
         # the pool, so a declaration file with any name reaches the same admission.
         operation_path = state or operation_path_for(pool.name, Path(".garden"))
         if sum((bool(deadline), cleanup, continue_operation, emergency_stop)) > 1:
             raise ValueError("choose one of --deadline, --continue, --cleanup or --emergency-stop")
-        operation = _build_operation(pool, operation_path, enrollment_dir, enrollment_config)
+        plugins = Config.load(Path.cwd()).load_plugins()
+        operation = _build_operation(
+            pool, operation_path, enrollment_dir, enrollment_config, plugins,
+        )
         if deadline:
             parsed = dt.datetime.fromisoformat(deadline.replace("Z", "+00:00"))
             status = operation.request(pool, deadline=parsed,
