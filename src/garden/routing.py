@@ -112,9 +112,11 @@ def _run_provenance(store: Any, task_id: str) -> list[dict[str, Any]]:
         if not envelope:
             continue
         envelope.pop("worker_instance", None)
+        readiness = dict((run.env_snapshot or {}).get("worker_readiness") or {})
         rows.append({"run_id": run.run_id, "mode": run.mode, "status": run.status,
                      "profile": str((run.env_snapshot or {}).get("worker_configuration") or ""),
                      "profile_version": str((run.env_snapshot or {}).get("worker_configuration_version") or ""),
+                     "readiness": readiness or {"status": "unknown"},
                      "requirements": dict((run.env_snapshot or {}).get("execution_requirements") or {}),
                      "envelope": envelope})
     return rows
