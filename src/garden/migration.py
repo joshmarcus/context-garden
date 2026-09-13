@@ -86,11 +86,12 @@ class GardenMigration:
             legacy, source = effective_owner(task, phase)
             mapped = legacy in owner_map
             member = str(owner_map.get(legacy) or "") if legacy else ""
-            if legacy and (not mapped or (member and member not in active_members)):
+            eligible = registry.active_execution_member_ids(task.product)
+            if legacy and (not mapped or (member and member not in eligible)):
                 unknown.add(legacy)
             tasks.append({"id": task.id, "project": task.product, "phase": task.phase,
                           "legacy_owner": legacy, "owner_source": source,
-                          "member_id": member if member in active_members else ""})
+                          "member_id": member if member in eligible else ""})
 
         phases: list[dict[str, Any]] = []
         for product in self.store.products():

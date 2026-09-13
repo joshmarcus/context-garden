@@ -60,6 +60,18 @@ def test_preview_reports_unknown_dirty_active_and_required_setup(garden):
     assert plan["ready"] is False
 
 
+def test_preview_rejects_owner_without_project_visibility(garden):
+    admin, choices = _prepared(garden)
+    registry = MemberRegistry(garden / ".garden")
+    registry.add_member(admin, "bob", "member", "assigned", ())
+    choices["owner_map"] = {"legacy-alice": "bob"}
+
+    plan = GardenMigration(Store(garden)).preview(choices)
+
+    assert plan["unknown_owners"] == ["legacy-alice"]
+    assert all(row["member_id"] == "" for row in plan["tasks"])
+
+
 def test_commit_is_explicit_resumable_and_fences_legacy_scheduler(garden, monkeypatch):
     admin, choices = _prepared(garden)
     migration = GardenMigration(Store(garden))
