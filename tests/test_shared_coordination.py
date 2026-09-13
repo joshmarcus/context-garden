@@ -623,3 +623,52 @@ def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
     })
     assert authorized.status_code == 200
     assert authorized.json() == {"status": "active", "units": 1, "spend_micros": 100}
+
+
+def test_http_reservation_release_is_owner_bound_and_returns_capacity(tmp_path):
+    garden_dir = tmp_path / ".garden"
+    registry = MemberRegistry(garden_dir)
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-box")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member")
+    registry.add_member(admin, "bob", "member")
+    alice_token = registry.issue_installation(admin, "alice", "alice-a")
+    alice_other_token = registry.issue_installation(admin, "alice", "alice-b")
+    bob_token = registry.issue_installation(admin, "bob", "bob-box")
+    client = TestClient(create_coordination_app(garden_dir))
+
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    alice_headers = {"Authorization": f"Bearer {alice_token}"}
+    configured = client.put(
+        "/v1/gardens/garden/reservation-pools/workers", headers=admin_headers,
+        json={"unit_limit": 1, "spend_limit_micros": 100},
+    )
+    assert configured.status_code == 200
+    reservation = {"pool": "workers", "operation_id": "alice-work",
+                   "units": 1, "spend_micros": 100}
+    assert client.post(
+        "/v1/gardens/garden/reservations", headers=alice_headers, json=reservation,
+    ).status_code == 200
+
+    release = {"pool": "workers", "operation_id": "alice-work"}
+    for token in (bob_token, alice_other_token):
+        refused = client.post(
+            "/v1/gardens/garden/reservations/release",
+            headers={"Authorization": f"Bearer {token}"}, json=release,
+        )
+        assert refused.status_code == 403
+        assert refused.json() == {"detail": "reservation belongs to another principal"}
+
+    released = client.post(
+        "/v1/gardens/garden/reservations/release", headers=alice_headers, json=release,
+    )
+    assert released.status_code == 200
+    assert released.json() == {"status": "released"}
+    reacquired = client.post(
+        "/v1/gardens/garden/reservations",
+        headers={"Authorization": f"Bearer {bob_token}"},
+        json={**reservation, "operation_id": "bob-work"},
+    )
+    assert reacquired.status_code == 200
+    assert reacquired.json() == {"status": "active", "units": 1, "spend_micros": 100}
