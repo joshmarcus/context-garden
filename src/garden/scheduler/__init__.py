@@ -341,7 +341,6 @@ class Scheduler(
             expected_version=int(row["version"]), effect_key=effect_key,
         ):
             yield
-
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
         operational = {task.id for task in self.store.tasks().values() if not task.status.terminal}

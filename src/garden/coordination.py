@@ -91,6 +91,8 @@ class Coordinator:
                 CREATE TABLE IF NOT EXISTS effects (
                     garden TEXT NOT NULL, provider TEXT NOT NULL, effect_key TEXT NOT NULL,
                     operation_id TEXT NOT NULL, actor TEXT NOT NULL, installation TEXT NOT NULL,
+                    claim_kind TEXT NOT NULL, claim_scope TEXT NOT NULL,
+                    authority_generation INTEGER NOT NULL,
                     fence INTEGER NOT NULL, credential_scope TEXT NOT NULL,
                     precondition_value TEXT NOT NULL, request_json TEXT NOT NULL,
                     status TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}',
@@ -98,9 +100,14 @@ class Coordinator:
                     UNIQUE (garden, operation_id));
                 CREATE TABLE IF NOT EXISTS reservations (
                     garden TEXT NOT NULL, pool TEXT NOT NULL, operation_id TEXT NOT NULL,
+                    actor TEXT NOT NULL, installation TEXT NOT NULL,
                     units INTEGER NOT NULL, spend_micros INTEGER NOT NULL,
                     status TEXT NOT NULL, created_at TEXT NOT NULL,
                     PRIMARY KEY (garden, pool, operation_id));
+                CREATE TABLE IF NOT EXISTS reservation_pools (
+                    garden TEXT NOT NULL, pool TEXT NOT NULL,
+                    unit_limit INTEGER NOT NULL, spend_limit_micros INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL, PRIMARY KEY (garden, pool));
                 CREATE TABLE IF NOT EXISTS evidence (
                     garden TEXT NOT NULL, evidence_id TEXT NOT NULL, operation_id TEXT NOT NULL,
                     payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -124,18 +131,24 @@ class Coordinator:
                     base_revision TEXT NOT NULL, updated_at TEXT NOT NULL,
                     PRIMARY KEY (garden, kind, scope));
             """)
-            self._add_column(db, "effects", "kind", "TEXT NOT NULL DEFAULT 'task'")
-            self._add_column(db, "effects", "scope", "TEXT NOT NULL DEFAULT ''")
+            effect_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(effects)")}
+            self._add_column(db, "effects", "claim_kind", "TEXT NOT NULL DEFAULT 'task'")
+            self._add_column(db, "effects", "claim_scope", "TEXT NOT NULL DEFAULT ''")
             self._add_column(db, "effects", "authority_generation", "INTEGER NOT NULL DEFAULT 0")
+            if {"kind", "scope"} <= effect_columns:
+                db.execute("""UPDATE effects SET claim_kind=kind,claim_scope=scope
+                    WHERE claim_scope=''""")
             db.execute("""UPDATE effects SET
-                kind=COALESCE((SELECT kind FROM claims WHERE claims.garden=effects.garden
-                    AND claims.installation=effects.installation AND claims.fence=effects.fence),kind),
-                scope=COALESCE((SELECT scope FROM claims WHERE claims.garden=effects.garden
-                    AND claims.installation=effects.installation AND claims.fence=effects.fence),scope),
+                claim_kind=COALESCE((SELECT kind FROM claims WHERE claims.garden=effects.garden
+                    AND claims.installation=effects.installation AND claims.fence=effects.fence),claim_kind),
+                claim_scope=COALESCE((SELECT scope FROM claims WHERE claims.garden=effects.garden
+                    AND claims.installation=effects.installation AND claims.fence=effects.fence),claim_scope),
                 authority_generation=COALESCE((SELECT authority_generation FROM claims
                     WHERE claims.garden=effects.garden AND claims.installation=effects.installation
                     AND claims.fence=effects.fence),authority_generation)
-                WHERE scope=''""")
+                WHERE claim_scope=''""")
+            self._add_column(db, "reservations", "actor", "TEXT NOT NULL DEFAULT ''")
+            self._add_column(db, "reservations", "installation", "TEXT NOT NULL DEFAULT ''")
 
     @staticmethod
     def _add_column(db: sqlite3.Connection, table: str, name: str, definition: str) -> None:
@@ -194,6 +207,7 @@ class Coordinator:
                 raise Conflict(f"stale {kind} version: expected {expected_version}, current {version}")
             if row and authority_generation <= int(row["authority_generation"]):
                 raise Conflict("stale authority generation")
+            self._reject_unresolved_effects(db, garden_id, kind, scope)
             new_version = version + 1
             db.execute("""INSERT INTO authority(garden,kind,scope,version,owner,authority_generation)
                 VALUES(?,?,?,?,?,?) ON CONFLICT(garden,kind,scope) DO UPDATE SET
@@ -310,6 +324,7 @@ class Coordinator:
                 db.execute("UPDATE handoffs SET status='ready',completed_at=? "
                            "WHERE garden=? AND kind=? AND scope=? AND to_generation=?",
                            (_iso(now), garden_id, kind, scope, handoff["to_generation"]))
+            self._reject_unresolved_effects(db, garden_id, kind, scope)
             active = db.execute("SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
                                 (garden_id, kind, scope)).fetchone()
             if active and dt.datetime.fromisoformat(active["lease_expires_at"]) > now:
@@ -339,13 +354,17 @@ class Coordinator:
             authority = [dict(row) for row in db.execute(
                 "SELECT * FROM authority WHERE garden=? ORDER BY kind,scope", (garden_id,))]
             claims = [dict(row) for row in db.execute(
-                "SELECT kind,scope,owner,authority_generation,installation,fence,lease_expires_at "
-                "FROM claims WHERE garden=? ORDER BY kind,scope", (garden_id,))]
+                "SELECT garden AS garden_id,kind,scope,owner AS owner_id,"
+                "authority_generation,installation AS installation_id,operation_id,fence,"
+                "lease_expires_at FROM claims WHERE garden=? AND lease_expires_at>? "
+                "ORDER BY kind,scope", (garden_id, _iso(self.clock())))]
             pending = [dict(row) for row in db.execute(
                 "SELECT effect_kind,scope,status,last_error FROM outbox WHERE garden=? AND status!='done'",
                 (garden_id,))]
             effects = [dict(row) for row in db.execute(
-                "SELECT provider,effect_key,status FROM effects WHERE garden=? AND status IN ('pending','unknown')",
+                """SELECT provider,effect_key,claim_kind,claim_scope,
+                    authority_generation,status FROM effects
+                    WHERE garden=? AND status IN ('pending','unknown')""",
                 (garden_id,))]
             handoffs = [dict(row) for row in db.execute(
                 "SELECT * FROM handoffs WHERE garden=? ORDER BY kind,scope", (garden_id,))]
@@ -464,19 +483,20 @@ class Coordinator:
             db.execute("""INSERT INTO effects
                 (garden,provider,effect_key,operation_id,actor,installation,fence,
                  credential_scope,precondition_value,request_json,status,result_json,updated_at,
-                 kind,scope,authority_generation)
+                 claim_kind,claim_scope,authority_generation)
                 VALUES(?,?,?,?,?,?,?,?,?,?,'pending','{}',?,?,?,?)
                 ON CONFLICT(garden,provider,effect_key) DO UPDATE SET
                 operation_id=excluded.operation_id,actor=excluded.actor,installation=excluded.installation,
-                fence=excluded.fence,credential_scope=excluded.credential_scope,
+                claim_kind=excluded.claim_kind,claim_scope=excluded.claim_scope,
+                authority_generation=excluded.authority_generation,fence=excluded.fence,
+                credential_scope=excluded.credential_scope,
                 precondition_value=excluded.precondition_value,request_json=excluded.request_json,
                 status='pending',result_json='{}',updated_at=excluded.updated_at,
-                kind=excluded.kind,scope=excluded.scope,
                 authority_generation=excluded.authority_generation""",
                 (claim.garden_id, provider, effect_key, operation_id, principal.member_id,
                  principal.installation_id, claim.fence, credential_scope,
-                 precondition, json.dumps(request, sort_keys=True), now, claim.kind, claim.scope,
-                 claim.authority_generation))
+                 precondition, json.dumps(request, sort_keys=True), now,
+                 claim.kind, claim.scope, claim.authority_generation))
             response = {"status": "pending", "operation_id": operation_id}
             self._record(db, principal, claim.garden_id, operation_id, "effect", payload, response)
             return response
@@ -490,11 +510,24 @@ class Coordinator:
         with self._transaction() as db:
             row = db.execute("SELECT * FROM effects WHERE garden=? AND operation_id=?",
                              (garden_id, operation_id)).fetchone()
-            if not row or (row["actor"] != principal.member_id
-                           and not authorize(principal, "administer")):
+            if (not row
+                    or (row["actor"] != principal.member_id
+                        and not authorize(principal, "administer"))
+                    or (not authorize(principal, "administer")
+                        and row["installation"] != principal.installation_id)):
                 raise PermissionError("provider operation does not belong to actor")
+            encoded_result = json.dumps(result or {}, sort_keys=True)
+            current = row["status"]
+            if current in {"succeeded", "failed"}:
+                if current == outcome and row["result_json"] == encoded_result:
+                    return
+                raise Conflict("provider effect already has a different terminal outcome")
+            if current == "unknown" and outcome == "unknown":
+                if row["result_json"] == encoded_result:
+                    return
+                raise Conflict("provider effect already has a different unknown outcome")
             db.execute("UPDATE effects SET status=?,result_json=?,updated_at=? WHERE garden=? AND operation_id=?",
-                       (outcome, json.dumps(result or {}, sort_keys=True), _iso(self.clock()),
+                       (outcome, encoded_result, _iso(self.clock()),
                         garden_id, operation_id))
 
     def acknowledge_cancellation(self, principal: Principal, *, garden_id: str, kind: str,
@@ -545,7 +578,7 @@ class Coordinator:
         cancellations = db.execute("""SELECT COUNT(*) FROM cancellations
             WHERE garden=? AND kind=? AND scope=? AND status='requested'""", key).fetchone()[0]
         effects = db.execute("""SELECT COUNT(*) FROM effects
-            WHERE garden=? AND kind=? AND scope=? AND authority_generation<=?
+            WHERE garden=? AND claim_kind=? AND claim_scope=? AND authority_generation<=?
               AND status IN ('pending','unknown')""", (*key, handoff["from_generation"])).fetchone()[0]
         outbox = db.execute("""SELECT COUNT(*) FROM outbox
             WHERE garden=? AND scope=? AND authority_version<? AND status='pending'""",
@@ -560,36 +593,95 @@ class Coordinator:
             blockers.append("old projections are pending")
         return blockers
 
+    def set_reservation_pool(self, principal: Principal, *, garden_id: str, pool: str,
+                             unit_limit: int, spend_limit_micros: int) -> dict[str, Any]:
+        """Set the coordinator-owned ceiling for a shared reservation namespace."""
+        self._garden(principal, garden_id)
+        if not authorize(principal, "administer"):
+            raise PermissionError("administrator role required")
+        if not pool or min(unit_limit, spend_limit_micros) < 0:
+            raise ValueError("reservation pool limits must be non-negative")
+        with self._transaction() as db:
+            active = db.execute("""SELECT COALESCE(SUM(units),0),COALESCE(SUM(spend_micros),0)
+                FROM reservations WHERE garden=? AND pool=? AND status='active'""",
+                (garden_id, pool)).fetchone()
+            if int(active[0]) > unit_limit or int(active[1]) > spend_limit_micros:
+                raise Conflict("new pool limit is below active reservations")
+            db.execute("""INSERT INTO reservation_pools VALUES(?,?,?,?,?)
+                ON CONFLICT(garden,pool) DO UPDATE SET unit_limit=excluded.unit_limit,
+                spend_limit_micros=excluded.spend_limit_micros,updated_at=excluded.updated_at""",
+                (garden_id, pool, unit_limit, spend_limit_micros, _iso(self.clock())))
+        return {"pool": pool, "unit_limit": unit_limit,
+                "spend_limit_micros": spend_limit_micros}
+
     def reserve(self, principal: Principal, *, garden_id: str, pool: str, operation_id: str,
-                units: int, spend_micros: int, unit_limit: int, spend_limit_micros: int) -> dict[str, Any]:
+                units: int, spend_micros: int, unit_limit: int | None = None,
+                spend_limit_micros: int | None = None) -> dict[str, Any]:
         """Atomically reserve shared concurrency and spend; host caps remain additional gates."""
         self._garden(principal, garden_id)
         if principal.role == "viewer" or min(units, spend_micros) < 0:
             raise PermissionError("reservation is not authorized")
+        if pool.startswith("phase:"):
+            raise PermissionError("phase reservation requires a phase-operation claim")
         if pool.startswith("global:") and not authorize(principal, "administer"):
             raise PermissionError("global reservation requires administrator authority")
         with self._transaction() as db:
-            old = db.execute("SELECT * FROM reservations WHERE garden=? AND pool=? AND operation_id=?",
-                             (garden_id, pool, operation_id)).fetchone()
-            if old:
-                if int(old["units"]) != units or int(old["spend_micros"]) != spend_micros:
-                    raise Conflict("operation id was reused with a different reservation")
-                return {"status": old["status"], "units": units, "spend_micros": spend_micros}
-            totals = db.execute("""SELECT COALESCE(SUM(units),0),COALESCE(SUM(spend_micros),0)
-                FROM reservations WHERE garden=? AND pool=? AND status='active'""",
-                (garden_id, pool)).fetchone()
-            if int(totals[0]) + units > unit_limit or int(totals[1]) + spend_micros > spend_limit_micros:
-                raise Conflict("shared capacity or spending limit reached; waiting")
-            db.execute("INSERT INTO reservations VALUES(?,?,?,?,?,'active',?)",
-                       (garden_id, pool, operation_id, units, spend_micros, _iso(self.clock())))
-            return {"status": "active", "units": units, "spend_micros": spend_micros}
+            return self._reserve(
+                db, principal=principal, garden_id=garden_id, pool=pool,
+                operation_id=operation_id, units=units, spend_micros=spend_micros,
+                requested_unit_limit=unit_limit,
+                requested_spend_limit_micros=spend_limit_micros,
+            )
+
+    def _reserve(self, db: sqlite3.Connection, *, principal: Principal, garden_id: str,
+                 pool: str, operation_id: str, units: int, spend_micros: int,
+                 requested_unit_limit: int | None = None,
+                 requested_spend_limit_micros: int | None = None) -> dict[str, Any]:
+        old = db.execute("SELECT * FROM reservations WHERE garden=? AND pool=? AND operation_id=?",
+                         (garden_id, pool, operation_id)).fetchone()
+        if old:
+            if (old["actor"] != principal.member_id
+                    or old["installation"] != principal.installation_id
+                    or int(old["units"]) != units or int(old["spend_micros"]) != spend_micros):
+                raise Conflict("operation id was reused with a different reservation")
+            return {"status": old["status"], "units": units, "spend_micros": spend_micros}
+        limits = db.execute("SELECT * FROM reservation_pools WHERE garden=? AND pool=?",
+                            (garden_id, pool)).fetchone()
+        if not limits:
+            raise Conflict("shared reservation pool is not configured")
+        if ((requested_unit_limit is not None
+             and requested_unit_limit != int(limits["unit_limit"]))
+                or (requested_spend_limit_micros is not None
+                    and requested_spend_limit_micros != int(limits["spend_limit_micros"]))):
+            raise Conflict("requested limits do not match coordinator pool policy")
+        totals = db.execute("""SELECT COALESCE(SUM(units),0),COALESCE(SUM(spend_micros),0)
+            FROM reservations WHERE garden=? AND pool=? AND status='active'""",
+            (garden_id, pool)).fetchone()
+        if (int(totals[0]) + units > int(limits["unit_limit"])
+                or int(totals[1]) + spend_micros > int(limits["spend_limit_micros"])):
+            raise Conflict("shared capacity or spending limit reached; waiting")
+        db.execute("""INSERT INTO reservations
+            (garden,pool,operation_id,actor,installation,units,spend_micros,status,created_at)
+            VALUES(?,?,?,?,?,?,?,'active',?)""", (
+            garden_id, pool, operation_id, principal.member_id, principal.installation_id,
+            units, spend_micros, _iso(self.clock()),
+        ))
+        return {"status": "active", "units": units, "spend_micros": spend_micros}
 
     def release_reservation(self, principal: Principal, garden_id: str, pool: str,
                             operation_id: str) -> None:
         self._garden(principal, garden_id)
         with self._transaction() as db:
-            db.execute("UPDATE reservations SET status='released' WHERE garden=? AND pool=? AND operation_id=?",
-                       (garden_id, pool, operation_id))
+            row = db.execute("SELECT * FROM reservations WHERE garden=? AND pool=? AND operation_id=?",
+                             (garden_id, pool, operation_id)).fetchone()
+            if not row:
+                raise Conflict("reservation does not exist")
+            if (not authorize(principal, "administer")
+                    and (row["actor"] != principal.member_id
+                         or row["installation"] != principal.installation_id)):
+                raise PermissionError("reservation belongs to another principal")
+            db.execute("""UPDATE reservations SET status='released'
+                WHERE garden=? AND pool=? AND operation_id=?""", (garden_id, pool, operation_id))
 
     def pending_outbox(self, garden_id: str) -> list[dict[str, Any]]:
         with self._connect() as db:
@@ -597,18 +689,37 @@ class Coordinator:
                 "SELECT * FROM outbox WHERE garden=? AND status='pending' ORDER BY id", (garden_id,))]
 
     def reserve_phase(self, principal: Principal, claim: Claim, *, pool: str, operation_id: str,
-                      units: int, spend_micros: int, unit_limit: int,
-                      spend_limit_micros: int) -> dict[str, Any]:
+                      units: int, spend_micros: int, unit_limit: int | None = None,
+                      spend_limit_micros: int | None = None) -> dict[str, Any]:
         """Reserve phase-wide resources only beneath a current exclusive phase claim."""
         if claim.kind != "phase":
             raise PermissionError("phase reservation requires a phase-operation claim")
+        self._garden(principal, claim.garden_id)
+        if principal.role == "viewer" or min(units, spend_micros) < 0:
+            raise PermissionError("reservation is not authorized")
         with self._transaction() as db:
             self._validate_claim(db, principal, claim)
-        return self.reserve(
-            principal, garden_id=claim.garden_id, pool=f"phase:{claim.scope}:{pool}",
-            operation_id=operation_id, units=units, spend_micros=spend_micros,
-            unit_limit=unit_limit, spend_limit_micros=spend_limit_micros,
-        )
+            return self._reserve(
+                db, principal=principal, garden_id=claim.garden_id,
+                pool=f"phase:{claim.scope}:{pool}", operation_id=operation_id,
+                units=units, spend_micros=spend_micros,
+                requested_unit_limit=unit_limit,
+                requested_spend_limit_micros=spend_limit_micros,
+            )
+
+    @staticmethod
+    def _reject_unresolved_effects(db: sqlite3.Connection, garden_id: str,
+                                   kind: str, scope: str) -> None:
+        unresolved = db.execute(
+            """SELECT status FROM effects WHERE garden=?
+                AND ((claim_kind=? AND claim_scope=?) OR claim_kind='' OR claim_scope='')
+                AND status IN ('pending','unknown') LIMIT 1""",
+            (garden_id, kind, scope),
+        ).fetchone()
+        if unresolved:
+            raise Conflict(
+                f"scope has a {unresolved['status']} provider effect; reconciliation required"
+            )
 
     def _validate_claim(self, db: sqlite3.Connection, principal: Principal, claim: Claim,
                         expected_version: int | None = None) -> sqlite3.Row:
@@ -616,7 +727,11 @@ class Coordinator:
         row = db.execute("SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
                          (claim.garden_id, claim.kind, claim.scope)).fetchone()
         now = self.clock()
-        if (not row or row["operation_id"] != claim.operation_id or int(row["fence"]) != claim.fence
+        if (not row or row["owner"] != claim.owner_id
+                or int(row["authority_generation"]) != claim.authority_generation
+                or row["installation"] != claim.installation_id
+                or row["operation_id"] != claim.operation_id or int(row["fence"]) != claim.fence
+                or row["lease_expires_at"] != claim.lease_expires_at
                 or row["installation"] != principal.installation_id
                 or dt.datetime.fromisoformat(row["lease_expires_at"]) <= now):
             raise Conflict("stale or expired fencing lease")

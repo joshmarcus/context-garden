@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 import threading
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from garden.coordination import Conflict, Coordinator, ProtocolMismatch
+from garden.coordination import Claim, Conflict, Coordinator, ProtocolMismatch
 from garden.coordination_api import create_coordination_app
 from garden.members import MemberRegistry, Principal
 
@@ -106,8 +108,10 @@ def test_server_clock_expiry_restart_and_stale_fences(tmp_path):
     path = tmp_path / "coordination.db"
     coordinator = Coordinator(path, clock=clock)
     _authority, old = authority_and_claim(coordinator, admin, alice)
+    assert Claim(**coordinator.snapshot(alice, "garden")["active_claims"][0]) == old
     clock.now += dt.timedelta(seconds=121)
     restarted = Coordinator(path, clock=clock)
+    assert restarted.snapshot(alice, "garden")["active_claims"] == []
     new = restarted.claim(
         alice, garden_id="garden", kind="task", scope="CG-1", expected_version=1,
         accepted_owner="alice", authority_generation=4, operation_id="replacement",
@@ -157,6 +161,26 @@ def test_transition_outbox_is_recoverable_and_stale_projection_is_blocked(tmp_pa
         )
 
 
+@pytest.mark.parametrize("field,value", [
+    ("owner_id", "bob"),
+    ("authority_generation", 5),
+    ("installation_id", "alice-b"),
+    ("lease_expires_at", "2099-01-01T00:00:00+00:00"),
+])
+def test_transition_rejects_claim_material_not_issued_by_server(tmp_path, field, value):
+    admin, alice, _alice_b, _bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+
+    with pytest.raises(Conflict, match="stale or expired fencing lease"):
+        coordinator.transition(
+            alice, replace(claim, **{field: value}), expected_version=1,
+            new_state="doing", markdown="forged", operation_id=f"forged-{field}",
+        )
+
+    assert coordinator.pending_outbox("garden") == []
+
+
 def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     admin, alice, _alice_b, _bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
@@ -175,9 +199,10 @@ def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
         )
     snapshot = coordinator.snapshot(admin, "garden")
     assert snapshot["member_id"] == "admin" and snapshot["installation_id"] == "admin-box"
-    assert snapshot["active_claims"][0]["installation"] == "alice-a"
+    assert snapshot["active_claims"][0]["installation_id"] == "alice-a"
     assert snapshot["blocking_effects"] == [
-        {"provider": "github", "effect_key": "publish:CG-1", "status": "unknown"}
+        {"provider": "github", "effect_key": "publish:CG-1", "claim_kind": "task",
+         "claim_scope": "CG-1", "authority_generation": 4, "status": "unknown"}
     ]
     # The ledger records the requested narrow scope, never credential material.
     assert "secret-delegated-token" not in (
@@ -185,9 +210,114 @@ def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     ).read_bytes().decode(errors="ignore")
 
 
+def test_provider_reconciliation_is_installation_bound_and_terminal_after_restart(tmp_path):
+    admin, alice, alice_other_installation, bob = principals()
+    path = tmp_path / "coordination.db"
+    coordinator = Coordinator(path)
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+    coordinator.begin_effect(
+        alice, claim, provider="github", effect_key="publish:CG-1", operation_id="publish-1",
+        credential_scope="pull_requests:write", precondition="head=abc", request={"head": "abc"},
+    )
+    coordinator.finish_effect(
+        alice, "garden", "publish-1", outcome="unknown", result={"receipt": "lost"},
+    )
+
+    restarted = Coordinator(path)
+    with pytest.raises(PermissionError, match="does not belong"):
+        restarted.finish_effect(
+            alice_other_installation, "garden", "publish-1", outcome="succeeded",
+            result={"pull_request": 7},
+        )
+    restarted.finish_effect(
+        alice, "garden", "publish-1", outcome="succeeded", result={"pull_request": 7},
+    )
+    # An identical lost reply is idempotent, while delayed or contradictory reports cannot
+    # reverse the reconciled outcome or recreate an admission conflict.
+    restarted.finish_effect(
+        alice, "garden", "publish-1", outcome="succeeded", result={"pull_request": 7},
+    )
+    with pytest.raises(Conflict, match="different terminal outcome"):
+        restarted.finish_effect(
+            alice, "garden", "publish-1", outcome="unknown", result={"receipt": "lost"},
+        )
+    with pytest.raises(Conflict, match="different terminal outcome"):
+        restarted.finish_effect(
+            alice, "garden", "publish-1", outcome="failed", result={"reason": "late"},
+        )
+    with restarted._connect() as db:
+        effect = db.execute(
+            "SELECT status,result_json,installation FROM effects WHERE garden=? AND operation_id=?",
+            ("garden", "publish-1"),
+        ).fetchone()
+    assert dict(effect) == {
+        "status": "succeeded", "result_json": '{"pull_request": 7}', "installation": "alice-a",
+    }
+
+    changed = restarted.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+        authority_generation=5, expected_version=1, operation_id="reassign-after-reconcile",
+    )
+    assert changed["version"] == 2
+    restarted.acknowledge_cancellation(
+        alice, garden_id="garden", kind="task", scope="CG-1", fence=claim.fence,
+    )
+    admitted = restarted.claim(
+        bob, garden_id="garden", kind="task", scope="CG-1", expected_version=2,
+        accepted_owner="bob", authority_generation=5, operation_id="bob-claim",
+    )
+    assert admitted.owner_id == "bob"
+
+
+def test_unresolved_effect_blocks_reassignment_and_new_admission(tmp_path):
+    admin, alice, alice_b, bob = principals()
+    clock = Clock()
+    coordinator = Coordinator(tmp_path / "coordination.db", clock=clock)
+    _authority, claim = authority_and_claim(coordinator, admin, alice)
+    coordinator.begin_effect(
+        alice, claim, provider="github", effect_key="publish:first", operation_id="publish-1",
+        credential_scope="pull_requests:write", precondition="head=abc", request={},
+    )
+
+    with pytest.raises(Conflict, match="pending provider effect"):
+        coordinator.set_authority(
+            admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+            authority_generation=5, expected_version=1, operation_id="reassign-blocked",
+        )
+    clock.now += dt.timedelta(seconds=121)
+    with pytest.raises(Conflict, match="pending provider effect"):
+        coordinator.claim(
+            alice_b, garden_id="garden", kind="task", scope="CG-1", expected_version=1,
+            accepted_owner="alice", authority_generation=4, operation_id="takeover-blocked",
+        )
+
+    coordinator.finish_effect(alice, "garden", "publish-1", outcome="succeeded")
+    changed = coordinator.set_authority(
+        admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+        authority_generation=5, expected_version=1, operation_id="reassign-after-reconciliation",
+    )
+    coordinator.acknowledge_cancellation(
+        alice, garden_id="garden", kind="task", scope="CG-1", fence=claim.fence,
+    )
+    admitted = coordinator.claim(
+        bob, garden_id="garden", kind="task", scope="CG-1",
+        expected_version=changed["version"], accepted_owner="bob", authority_generation=5,
+        operation_id="new-owner",
+    )
+    coordinator.begin_effect(
+        bob, admitted, provider="github", effect_key="publish:different",
+        operation_id="publish-2", credential_scope="pull_requests:write",
+        precondition="head=def", request={},
+    )
+
+
 def test_capacity_and_spend_reservations_are_atomic(tmp_path):
-    _admin, alice_a, alice_b, _bob = principals()
+    admin, alice_a, alice_b, _bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
+    coordinator.set_reservation_pool(
+        admin, garden_id="garden", pool="phase-10", unit_limit=1,
+        spend_limit_micros=1000,
+    )
     barrier = threading.Barrier(2)
     results = []
 
@@ -196,7 +326,7 @@ def test_capacity_and_spend_reservations_are_atomic(tmp_path):
         try:
             results.append(coordinator.reserve(
                 actor, garden_id="garden", pool="phase-10", operation_id=operation,
-                units=1, spend_micros=600, unit_limit=1, spend_limit_micros=1000,
+                units=1, spend_micros=600,
             ))
         except Conflict as exc:
             results.append(exc)
@@ -209,6 +339,61 @@ def test_capacity_and_spend_reservations_are_atomic(tmp_path):
         thread.join()
     assert sum(isinstance(result, dict) for result in results) == 1
     assert sum(isinstance(result, Conflict) for result in results) == 1
+
+
+def test_pool_limits_and_reservations_are_coordinator_owned(tmp_path):
+    admin, alice_a, alice_b, bob = principals()
+    coordinator = Coordinator(tmp_path / "coordination.db")
+    coordinator.set_reservation_pool(
+        admin, garden_id="garden", pool="workers", unit_limit=1,
+        spend_limit_micros=1000,
+    )
+    reservation = coordinator.reserve(
+        alice_a, garden_id="garden", pool="workers", operation_id="alice-work",
+        units=1, spend_micros=600,
+    )
+    assert coordinator.reserve(
+        alice_a, garden_id="garden", pool="workers", operation_id="alice-work",
+        units=1, spend_micros=600,
+    ) == reservation
+    with pytest.raises(Conflict, match="coordinator pool policy"):
+        coordinator.reserve(
+            bob, garden_id="garden", pool="workers", operation_id="raised-policy",
+            units=1, spend_micros=1, unit_limit=2, spend_limit_micros=2000,
+        )
+    with pytest.raises(Conflict, match="limit reached"):
+        coordinator.reserve(
+            bob, garden_id="garden", pool="workers", operation_id="raised-ceiling",
+            units=1, spend_micros=1,
+        )
+    with pytest.raises(PermissionError, match="another principal"):
+        coordinator.release_reservation(bob, "garden", "workers", "alice-work")
+    with pytest.raises(PermissionError, match="another principal"):
+        coordinator.release_reservation(alice_b, "garden", "workers", "alice-work")
+    coordinator.release_reservation(admin, "garden", "workers", "alice-work")
+
+
+def test_prior_effect_schema_is_upgraded_for_snapshots(tmp_path):
+    path = tmp_path / "coordination.db"
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE effects (
+            garden TEXT NOT NULL, provider TEXT NOT NULL, effect_key TEXT NOT NULL,
+            operation_id TEXT NOT NULL, actor TEXT NOT NULL, installation TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'task', scope TEXT NOT NULL DEFAULT '',
+            authority_generation INTEGER NOT NULL DEFAULT 0, fence INTEGER NOT NULL,
+            credential_scope TEXT NOT NULL, precondition_value TEXT NOT NULL,
+            request_json TEXT NOT NULL, status TEXT NOT NULL,
+            result_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL,
+            PRIMARY KEY (garden, provider, effect_key), UNIQUE (garden, operation_id))""")
+        db.execute("""INSERT INTO effects VALUES(
+            'garden','github','publish:CG-1','publish-1','alice','alice-a',
+            'task','CG-1',4,1,'pull_requests:write','head=abc','{}','unknown','{}','now')""")
+    coordinator = Coordinator(path)
+    _admin, alice, _alice_b, _bob = principals()
+    assert coordinator.snapshot(alice, "garden")["blocking_effects"] == [{
+        "provider": "github", "effect_key": "publish:CG-1", "claim_kind": "task",
+        "claim_scope": "CG-1", "authority_generation": 4, "status": "unknown",
+    }]
 
 
 def test_phase_claim_is_exclusive_and_reassignment_invalidates_children(tmp_path):
@@ -244,25 +429,37 @@ def test_phase_claim_is_exclusive_and_reassignment_invalidates_children(tmp_path
         operation_id="bob-phase",
     )
     assert bob_claim.fence == 2
+    coordinator.set_reservation_pool(
+        admin, garden_id="garden", pool="phase:demo/phase-10:reviews",
+        unit_limit=1, spend_limit_micros=100,
+    )
     reservation = coordinator.reserve_phase(
         bob, bob_claim, pool="reviews", operation_id="review-capacity", units=1,
-        spend_micros=100, unit_limit=1, spend_limit_micros=100,
+        spend_micros=100,
     )
     assert reservation["status"] == "active"
     with pytest.raises(PermissionError, match="global"):
         coordinator.reserve(
             bob, garden_id="garden", pool="global:publishing", operation_id="global",
-            units=1, spend_micros=0, unit_limit=1, spend_limit_micros=0,
+            units=1, spend_micros=0,
         )
 
 
-def test_handoff_waits_for_worker_and_original_provider_operation(tmp_path):
+def test_handoff_waits_for_reconciled_provider_operation_and_old_worker(tmp_path):
     admin, alice, _alice_b, bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
     _authority, old = authority_and_claim(coordinator, admin, alice)
     coordinator.begin_effect(
         alice, old, provider="github", effect_key="publish:CG-1", operation_id="publish-old",
         credential_scope="pull_requests:write", precondition="head=old", request={"head": "old"},
+    )
+    with pytest.raises(Conflict, match="pending provider effect"):
+        coordinator.set_authority(
+            admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
+            authority_generation=5, expected_version=1, operation_id="handoff-blocked",
+        )
+    coordinator.finish_effect(
+        alice, "garden", "publish-old", outcome="succeeded", result={"pr": 17},
     )
     changed = coordinator.set_authority(
         admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
@@ -271,7 +468,7 @@ def test_handoff_waits_for_worker_and_original_provider_operation(tmp_path):
     view = coordinator.snapshot(bob, "garden")
     assert view["handoffs"][0]["status"] == "reconciling"
     assert view["cancellation_requests"][0]["installation"] == "alice-a"
-    with pytest.raises(Conflict, match="old workers.*provider outcomes"):
+    with pytest.raises(Conflict, match="old workers"):
         coordinator.claim(
             bob, garden_id="garden", kind="task", scope="CG-1",
             expected_version=changed["version"], accepted_owner="bob",
@@ -280,15 +477,6 @@ def test_handoff_waits_for_worker_and_original_provider_operation(tmp_path):
 
     coordinator.acknowledge_cancellation(
         alice, garden_id="garden", kind="task", scope="CG-1", fence=old.fence,
-    )
-    with pytest.raises(Conflict, match="provider outcomes"):
-        coordinator.claim(
-            bob, garden_id="garden", kind="task", scope="CG-1",
-            expected_version=changed["version"], accepted_owner="bob",
-            authority_generation=5, operation_id="bob-still-too-soon",
-        )
-    coordinator.finish_effect(
-        admin, "garden", "publish-old", outcome="succeeded", result={"pr": 17},
     )
     resumed = coordinator.claim(
         bob, garden_id="garden", kind="task", scope="CG-1",
@@ -386,7 +574,8 @@ def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
     garden_dir = tmp_path / ".garden"
     registry = MemberRegistry(garden_dir)
     token = registry.enroll_administrator("garden", "admin", "admin-box")
-    client = TestClient(create_coordination_app(garden_dir))
+    app = create_coordination_app(garden_dir)
+    client = TestClient(app)
 
     assert client.get("/v1/gardens/garden/snapshot").status_code == 401
     headers = {"Authorization": f"Bearer {token}"}
@@ -403,3 +592,83 @@ def test_http_service_authenticates_and_reports_protocol_conflicts(tmp_path):
         "authority_generation": 1, "expected_version": 0, "operation_id": "authority",
     })
     assert authority.status_code == 200 and authority.json()["version"] == 1
+
+    reservation = {
+        "pool": "phase:demo/p1:reviews", "operation_id": "claimless-reservation",
+        "units": 1, "spend_micros": 100,
+    }
+    claimless = client.post(
+        "/v1/gardens/garden/reservations", headers=headers, json=reservation,
+    )
+    assert claimless.status_code == 403
+    with app.state.coordinator._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0] == 0
+
+    claim = client.post("/v1/gardens/garden/claims", headers=headers, json={
+        "kind": "phase", "scope": "demo/p1", "expected_version": 1,
+        "accepted_owner": "admin", "authority_generation": 1,
+        "operation_id": "phase-claim",
+    })
+    assert claim.status_code == 200
+    configured = client.put(
+        "/v1/gardens/garden/reservation-pools/phase:demo/p1:reviews",
+        headers=headers, json={"unit_limit": 1, "spend_limit_micros": 100},
+    )
+    assert configured.status_code == 200
+    authorized = client.post("/v1/gardens/garden/reservations", headers=headers, json={
+        **reservation,
+        "pool": "reviews",
+        "operation_id": "authorized-reservation",
+        "claim": claim.json(),
+    })
+    assert authorized.status_code == 200
+    assert authorized.json() == {"status": "active", "units": 1, "spend_micros": 100}
+
+
+def test_http_reservation_release_is_owner_bound_and_returns_capacity(tmp_path):
+    garden_dir = tmp_path / ".garden"
+    registry = MemberRegistry(garden_dir)
+    admin_token = registry.enroll_administrator("garden", "admin", "admin-box")
+    admin = registry.authenticate(admin_token)
+    assert admin is not None
+    registry.add_member(admin, "alice", "member")
+    registry.add_member(admin, "bob", "member")
+    alice_token = registry.issue_installation(admin, "alice", "alice-a")
+    alice_other_token = registry.issue_installation(admin, "alice", "alice-b")
+    bob_token = registry.issue_installation(admin, "bob", "bob-box")
+    client = TestClient(create_coordination_app(garden_dir))
+
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    alice_headers = {"Authorization": f"Bearer {alice_token}"}
+    configured = client.put(
+        "/v1/gardens/garden/reservation-pools/workers", headers=admin_headers,
+        json={"unit_limit": 1, "spend_limit_micros": 100},
+    )
+    assert configured.status_code == 200
+    reservation = {"pool": "workers", "operation_id": "alice-work",
+                   "units": 1, "spend_micros": 100}
+    assert client.post(
+        "/v1/gardens/garden/reservations", headers=alice_headers, json=reservation,
+    ).status_code == 200
+
+    release = {"pool": "workers", "operation_id": "alice-work"}
+    for token in (bob_token, alice_other_token):
+        refused = client.post(
+            "/v1/gardens/garden/reservations/release",
+            headers={"Authorization": f"Bearer {token}"}, json=release,
+        )
+        assert refused.status_code == 403
+        assert refused.json() == {"detail": "reservation belongs to another principal"}
+
+    released = client.post(
+        "/v1/gardens/garden/reservations/release", headers=alice_headers, json=release,
+    )
+    assert released.status_code == 200
+    assert released.json() == {"status": "released"}
+    reacquired = client.post(
+        "/v1/gardens/garden/reservations",
+        headers={"Authorization": f"Bearer {bob_token}"},
+        json={**reservation, "operation_id": "bob-work"},
+    )
+    assert reacquired.status_code == 200
+    assert reacquired.json() == {"status": "active", "units": 1, "spend_micros": 100}

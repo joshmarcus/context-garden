@@ -145,6 +145,10 @@ def test_two_local_users_reassign_and_recover_without_duplicate_ownership(garden
         operation_id="alex-publish", credential_scope="pull_requests:write",
         precondition="head=alex", request={"head": "alex"},
     )
+    with pytest.raises(Conflict, match="pending provider effect"):
+        set_authority(coordinator, admin, "task", "DM-001", "blair", 2, version=1)
+    coordinator.finish_effect(people["alex"], "shared", "alex-publish", outcome="succeeded",
+                              result={"pr": 41})
     changed = set_authority(coordinator, admin, "task", "DM-001", "blair", 2, version=1)
     coordinator.retain_stale_evidence(
         people["alex"], garden_id="shared", kind="task", scope="DM-001",
@@ -156,7 +160,7 @@ def test_two_local_users_reassign_and_recover_without_duplicate_ownership(garden
             people["alex"], alex_work, expected_version=changed["version"],
             new_state="review", markdown="stale source", operation_id="stale-transition",
         )
-    with pytest.raises(Conflict, match="old workers.*provider outcomes"):
+    with pytest.raises(Conflict, match="old workers have not acknowledged cancellation"):
         claim(coordinator, people["blair"], "task", "DM-001", 2, 2, "too-soon")
 
     # Restart both the authority service and the affected local scheduler.  A real
@@ -187,8 +191,6 @@ def test_two_local_users_reassign_and_recover_without_duplicate_ownership(garden
         people["alex"], garden_id="shared", kind="task", scope="DM-001",
         fence=alex_work.fence,
     )
-    restarted.finish_effect(admin, "shared", "alex-publish", outcome="succeeded",
-                             result={"pr": 41})
     recovered = claim(restarted, people["blair"], "task", "DM-001", 2, 2, "blair-resume")
     assert recovered.fence > alex_work.fence
     snapshot = restarted.snapshot(admin, "shared")
@@ -296,7 +298,7 @@ def test_phase_owner_is_exclusive_fenced_and_keeps_separate_child_reviews(
 
     with sqlite3.connect(state_dir / "coordination.db") as connection:
         unknown = connection.execute(
-            "SELECT operation_id FROM effects WHERE kind='phase' AND status='unknown'"
+            "SELECT operation_id FROM effects WHERE claim_kind='phase' AND status='unknown'"
         ).fetchall()
     for (operation_id,) in unknown:
         coordinator.finish_effect(admin, "shared", operation_id, outcome="failed",
