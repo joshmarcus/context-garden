@@ -1,18 +1,16 @@
-"""Explicit multiplayer enrollment and coordinator startup operations."""
+"""Explicit local enrollment for Git-coordinated multiplayer gardens."""
 
 from __future__ import annotations
 
-import base64
-import ipaddress
 import os
 import tempfile
 import uuid
 from pathlib import Path
 
-import httpx
 import typer
 import yaml
 
+from ..git_coordination import GitCoordinationError, GitMultiplayerClient
 from ..members import MemberRegistry, operating_system_username
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from .common import PANEL_LOOP, _store, app, console, err
@@ -25,38 +23,6 @@ def _registry() -> MemberRegistry:
     return MemberRegistry(_store().config.garden_dir)
 
 
-@members_app.command("coordinator")
-def coordinator(
-    garden: Path = typer.Option(..., exists=True, file_okay=False, resolve_path=True),
-    host: str = typer.Option("127.0.0.1"),
-    port: int = typer.Option(8766, min=1, max=65535),
-    authentication: str = typer.Option("credential", help="credential or temporary-username"),
-) -> None:
-    """Serve this garden's authenticated multiplayer coordination endpoint."""
-    if authentication == "temporary-username":
-        try:
-            loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            loopback = False
-        if not loopback:
-            raise typer.BadParameter("temporary-username authentication requires a loopback host")
-    import uvicorn
-
-    from ..coordination_api import create_coordination_app
-    from ..store import Store
-    from ..web.app import multiplayer_tls_files
-
-    store = Store(garden)
-    tls = multiplayer_tls_files(store, host, require_multiplayer=True)
-    uvicorn.run(
-        create_coordination_app(store.config.garden_dir, authentication=authentication),
-        host=host,
-        port=port,
-        ssl_certfile=tls[0] if tls else None,
-        ssl_keyfile=tls[1] if tls else None,
-    )
-
-
 def _actor(registry: MemberRegistry, credential_env: str):
     token = os.environ.get(credential_env, "")
     actor = registry.authenticate(token)
@@ -65,7 +31,7 @@ def _actor(registry: MemberRegistry, credential_env: str):
     return actor
 
 
-def _save_local_enrollment(root: Path, values: dict[str, str]) -> None:
+def _save_local_enrollment(root: Path, values: dict[str, object]) -> None:
     """Store connection metadata only in the ignored local overlay, never the credential."""
     path = root / "garden.local.yaml"
     current = yaml.safe_load(path.read_text()) if path.exists() else {}
@@ -99,29 +65,33 @@ def enroll_administrator(garden_id: str, member_id: str, installation_id: str) -
 
 
 @members_app.command("connect")
-def connect(garden_id: str, coordinator_url: str, member_id: str, installation_id: str,
-            credential_env: str = typer.Option(...)) -> None:
-    """Validate an installation credential and save its non-secret local connection settings."""
+def connect(garden_id: str, member_id: str, installation_id: str,
+            remote: str = typer.Option("origin"),
+            state_ref: str = typer.Option("refs/heads/garden-state")) -> None:
+    """Validate an admitted installation on the Garden state ref and bind this checkout."""
     store = _store()
-    credential = os.environ.get(credential_env, "")
-    if not credential:
-        err.print(f"[red]{credential_env} is not set; export the installation credential first[/red]")
-        raise typer.Exit(2)
     try:
-        client = MultiplayerClient(
-            root=store.root, garden_id=garden_id, endpoint=coordinator_url,
-            member_id=member_id, installation_id=installation_id, credential=credential,
+        client = GitMultiplayerClient.connect(
+            store.root, garden_id=garden_id, member_id=member_id,
+            installation_id=installation_id, remote=remote, state_ref=state_ref,
         )
+        principal = client.authenticate_local_session()
+        if principal is None:
+            raise GitCoordinationError("installation is not admitted for this member")
         view = client.refresh(allow_stale=False)
-    except MultiplayerUnavailable as exc:
+    except (GitCoordinationError, MultiplayerUnavailable) as exc:
         err.print(f"[red]could not connect this installation: {exc}[/red]")
         raise typer.Exit(2) from None
     _save_local_enrollment(store.root, {
-        "garden_id": garden_id, "coordinator_url": coordinator_url,
+        "garden_id": garden_id, "git": {"remote": remote, "state_ref": state_ref},
         "member_id": member_id, "installation_id": installation_id,
-        "authentication": "credential", "credential_env": credential_env,
+        "authentication": "credential", "credential_env": "",
+        "coordinator_url": "",
     })
-    console.print(f"connected {view.snapshot['member_id']} ({view.snapshot['role']}) to {garden_id}")
+    console.print(
+        f"connected {view.snapshot['member_id']} ({view.snapshot['role']}) to {garden_id} "
+        f"at {view.snapshot['observed_revision']}"
+    )
 
 
 @members_app.command("current-username")
@@ -131,37 +101,31 @@ def current_username() -> None:
 
 
 @members_app.command("connect-username")
-def connect_username(garden_id: str, coordinator_url: str) -> None:
-    """Enroll this local OS account without a per-user bearer credential."""
+def connect_username(garden_id: str, installation_id: str = typer.Option(""),
+                     remote: str = typer.Option("origin"),
+                     state_ref: str = typer.Option("refs/heads/garden-state")) -> None:
+    """Bind an already-admitted installation to the effective local OS account."""
     store = _store()
-    existing = ""
-    if (store.config.get("multiplayer.authentication", "") == "temporary-username"
-            and store.config.get("multiplayer.garden_id", "") == garden_id):
-        existing = store.config.get("multiplayer.installation_id", "")
-    installation_id = str(existing) or f"local-{uuid.uuid4().hex}"
+    existing = store.config.get("multiplayer.installation_id", "")
+    installation_id = installation_id or str(existing) or f"local-{uuid.uuid4().hex}"
     username = operating_system_username()
-    assertion = base64.urlsafe_b64encode(username.encode()).decode().rstrip("=")
     try:
-        response = httpx.post(
-            f"{coordinator_url.rstrip('/')}/v1/gardens/{garden_id}/username-installations",
-            json={"installation_id": installation_id},
-            headers={"Authorization": f"Garden-Temporary-Username {assertion}."}, timeout=10,
+        client = GitMultiplayerClient.connect(
+            store.root, garden_id=garden_id, member_id=username,
+            installation_id=installation_id, remote=remote, state_ref=state_ref,
+            authentication="temporary-username",
         )
-        response.raise_for_status()
-        identity = response.json()
-        client = MultiplayerClient(
-            root=store.root, garden_id=garden_id, endpoint=coordinator_url,
-            member_id=str(identity["member_id"]), installation_id=installation_id,
-            authentication="temporary-username", credential="",
-        )
+        if client.authenticate_local_session() is None:
+            raise GitCoordinationError("installation is not admitted for this OS account")
         view = client.refresh(allow_stale=False)
-    except (httpx.HTTPError, KeyError, ValueError, MultiplayerUnavailable) as exc:
+    except (GitCoordinationError, MultiplayerUnavailable) as exc:
         err.print(f"[red]could not connect this username installation: {exc}[/red]")
         raise typer.Exit(2) from None
     _save_local_enrollment(store.root, {
-        "garden_id": garden_id, "coordinator_url": coordinator_url,
-        "member_id": str(identity["member_id"]), "installation_id": installation_id,
+        "garden_id": garden_id, "git": {"remote": remote, "state_ref": state_ref},
+        "member_id": username, "installation_id": installation_id,
         "authentication": "temporary-username", "credential_env": "",
+        "coordinator_url": "",
     })
     console.print(f"connected {view.snapshot['member_id']} ({view.snapshot['role']}) to {garden_id}")
 
@@ -170,6 +134,11 @@ def connect_username(garden_id: str, coordinator_url: str) -> None:
 def status() -> None:
     """Inspect the authenticated identity and execution assignment for this installation."""
     store = _store()
+    provenance = "default"
+    for source, document in store.config.source_documents:
+        setting = document.get("multiplayer", {})
+        if isinstance(setting, dict) and "enabled" in setting:
+            provenance = source
     try:
         client = MultiplayerClient.from_config(store.config)
         if client is None:
@@ -179,6 +148,7 @@ def status() -> None:
         err.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from None
     assignment = view.snapshot.get("assignment")
+    console.print(f"mode: multiplayer Git (multiplayer.enabled from {provenance})")
     console.print(f"identity: {view.snapshot['member_id']} ({view.snapshot['role']})")
     console.print(f"installation: {view.snapshot['installation_id']}")
     if assignment and assignment.get("enabled"):
@@ -188,9 +158,9 @@ def status() -> None:
     else:
         console.print("execution: No work assignment")
     if view.stale:
-        console.print(f"[yellow]coordinator: disconnected; showing cached authority ({view.error})[/yellow]")
+        console.print(f"[yellow]Git: unavailable; showing cached authority ({view.error})[/yellow]")
     else:
-        console.print("coordinator: connected")
+        console.print(f"Git: synchronized at {view.snapshot.get('observed_revision', '')}")
 
 
 @members_app.command("add")

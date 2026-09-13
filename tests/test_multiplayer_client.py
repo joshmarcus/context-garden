@@ -64,10 +64,8 @@ multiplayer:
 """)
     monkeypatch.setenv("ALICE_GARDEN_TOKEN", "not-in-config")
 
-    enrolled = MultiplayerClient.from_config(Config.load(tmp_path))
-
-    assert enrolled is not None
-    assert enrolled.installation_id == "alice-a"
+    with pytest.raises(MultiplayerUnavailable, match="obsolete"):
+        MultiplayerClient.from_config(Config.load(tmp_path))
     assert "not-in-config" not in repr(Config.load(tmp_path).data)
     monkeypatch.setenv("SAFE_VALUE", "yes")
     worker = scrubbed_env({
@@ -89,10 +87,8 @@ multiplayer:
   member_id: alice
   installation_id: alice-local
 """)
-    local = MultiplayerClient.from_config(Config.load(tmp_path))
-    assert local is not None
-    assert local.authentication == "temporary-username"
-    assert local._headers == {"Authorization": "Garden-Temporary-Username YWxpY2U.alice-local"}
+    with pytest.raises(MultiplayerUnavailable, match="obsolete"):
+        MultiplayerClient.from_config(Config.load(tmp_path))
 
 
 def test_username_config_is_fixed_to_current_os_account(tmp_path, monkeypatch):
@@ -107,7 +103,7 @@ multiplayer:
   member_id: alice
   installation_id: alice-local
 """)
-    with pytest.raises(MultiplayerUnavailable, match="different operating-system account"):
+    with pytest.raises(MultiplayerUnavailable, match="obsolete"):
         MultiplayerClient.from_config(Config.load(tmp_path))
 
 
