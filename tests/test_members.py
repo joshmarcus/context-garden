@@ -434,7 +434,6 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     assert len(client.get("/api/decisions", headers=alice_headers).json()) == 1
     assert client.get("/api/decisions", headers=bob_headers).json() == []
 
-
 def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
