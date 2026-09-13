@@ -217,19 +217,6 @@ def test_provider_effect_rejects_a_stale_authority_version(tmp_path):
         )
 
 
-def test_provider_effect_rejects_a_stale_authority_version(tmp_path):
-    admin, alice, _alice_b, _bob = principals()
-    coordinator = Coordinator(tmp_path / "coordination.db")
-    _authority, claim = authority_and_claim(coordinator, admin, alice)
-
-    with pytest.raises(Conflict, match="stale authority version"):
-        coordinator.begin_effect(
-            alice, claim, provider="github", effect_key="publish:CG-1",
-            operation_id="stale-publish", credential_scope="pull_requests:write",
-            precondition="head=abc", request={"head": "abc"}, expected_version=0,
-        )
-
-
 def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     admin, alice, _alice_b, _bob = principals()
     coordinator = Coordinator(tmp_path / "coordination.db")
@@ -450,14 +437,6 @@ def test_handoff_waits_for_reconciled_provider_operation_and_old_worker(tmp_path
         alice, old, provider="github", effect_key="publish:CG-1", operation_id="publish-old",
         credential_scope="pull_requests:write", precondition="head=old", request={"head": "old"},
     )
-    with pytest.raises(Conflict, match="pending provider effect"):
-        coordinator.set_authority(
-            admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
-            authority_generation=5, expected_version=1, operation_id="handoff-blocked",
-        )
-    coordinator.finish_effect(
-        alice, "garden", "publish-old", outcome="succeeded", result={"pr": 17},
-    )
     changed = coordinator.set_authority(
         admin, garden_id="garden", kind="task", scope="CG-1", owner_id="bob",
         authority_generation=5, expected_version=1, operation_id="handoff",
@@ -465,13 +444,16 @@ def test_handoff_waits_for_reconciled_provider_operation_and_old_worker(tmp_path
     view = coordinator.snapshot(bob, "garden")
     assert view["handoffs"][0]["status"] == "reconciling"
     assert view["cancellation_requests"][0]["installation"] == "alice-a"
-    with pytest.raises(Conflict, match="old workers"):
+    with pytest.raises(Conflict, match="old workers.*provider outcomes"):
         coordinator.claim(
             bob, garden_id="garden", kind="task", scope="CG-1",
             expected_version=changed["version"], accepted_owner="bob",
             authority_generation=5, operation_id="bob-too-soon",
         )
 
+    coordinator.finish_effect(
+        alice, "garden", "publish-old", outcome="succeeded", result={"pr": 17},
+    )
     coordinator.acknowledge_cancellation(
         alice, garden_id="garden", kind="task", scope="CG-1", fence=old.fence,
     )
