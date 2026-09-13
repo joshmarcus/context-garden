@@ -44,6 +44,18 @@ fields and presentation omissions are advisory. Explicit phase evidence holds an
 current-head CI still apply.
 """
 
+DEFAULT_PULL_REQUEST_TEMPLATE = ".github/PULL_REQUEST_TEMPLATE.md"
+
+PR_DESCRIPTION_GUIDANCE = """\
+## Pull-request description
+
+Write the `pr_body` for a reader unfamiliar with the affected subsystem. Explain in plain
+language the project-level purpose of the change and the resulting behavior; define any
+domain terms needed to understand it. Use the target repository's current pull-request
+template when one is supplied below, preserving its sections and order. The product overview
+is durable project contribution guidance; it is not a substitute for the exact template.
+"""
+
 
 OPERATING_RULES = """\
 ## Operating rules
@@ -96,7 +108,7 @@ Continue the task from where you stopped, in the same worktree and branch. The s
 REVISE_RULES = """\
 ## Revision round
 
-This branch already has an open pull request: {pr}. Reviewers left feedback (below). Findings and their fixes are this round's work: address every one, or explain why not. Improvements are optional: take or decline each one, and name your choices in `improvements_taken` and `improvements_declined` (with a reason for each decline). Do not start over; build on the existing commits. To reply to reviewers (e.g., if you decline a suggestion or explain a tradeoff), set `pr_comment` in your GARDEN_RESULT JSON; the garden will post it as a comment on the PR. Do not add review responses to the PR description (`pr_body`) — they belong in the comment thread, not in the change description.
+This branch already has an open pull request: {pr}. Reviewers left feedback (below). Findings and their fixes are this round's work: address every one, or explain why not. Improvements are optional: take or decline each one, and name your choices in `improvements_taken` and `improvements_declined` (with a reason for each decline). Description-only feedback can be addressed by rewriting `pr_body`; do not make an otherwise correct source change into an empty implementation revision. Do not start over; build on the existing commits. To reply to reviewers (e.g., if you decline a suggestion or explain a tradeoff), set `pr_comment` in your GARDEN_RESULT JSON; the garden will post it as a comment on the PR. Do not add review responses to the PR description (`pr_body`) — they belong in the comment thread, not in the change description.
 """
 
 PRE_PR_REVISE_RULES = """\
@@ -357,6 +369,42 @@ def _read_at_base(path: Path, repo: Path, base: str) -> str | None:
     return shown.stdout if shown.returncode == 0 else None
 
 
+def _read_repository_file_at_base(repo: Path, base: str, rel: str) -> str | None:
+    """Read a safe repository-relative file from the assigned revision.
+
+    Unlike a filesystem read, ``git show`` neither observes dirty worktree content nor
+    follows a checkout symlink outside the repository.
+    """
+    path = Path(rel)
+    if not rel.strip() or path.is_absolute() or ".." in path.parts:
+        return None
+    try:
+        is_repo = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, check=False,
+        )
+        if is_repo.returncode != 0:
+            return None
+        shown = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{base}:{path.as_posix()}"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def _pull_request_template(store: Store, task: Task, base: str) -> tuple[str, str, bool] | None:
+    """Return ``(path, content, explicitly_configured)`` from the assigned source revision."""
+    configured = store.config.product_pull_request_template(task.product)
+    path = configured or DEFAULT_PULL_REQUEST_TEMPLATE
+    for repo in product_dirs(store, task):
+        content = _read_repository_file_at_base(repo, base, path)
+        if content is not None:
+            return path, content, configured is not None
+    return None
+
+
 # A criterion whose text is only one of these is a planning placeholder, not a real,
 # testable acceptance criterion: the template's own `...`, filler words, or a "to be
 # written at planning" promise. Matched against a single line after its list/checkbox
@@ -470,6 +518,7 @@ def build_brief(
                                  cfg.product_ci_policy(task.product)),
         )
         sections.append(("rules", rules + "\n" + EVIDENCE_GUIDANCE))
+        sections.append(("pr_description", PR_DESCRIPTION_GUIDANCE))
         if review_feedback:
             if task.pr:
                 sections.append(("revise", REVISE_RULES.format(pr=task.pr)))
@@ -490,6 +539,24 @@ def build_brief(
     if product.overview_path:
         refs.append(f"- Product overview: `{snapshot('product.md', _read(product.overview_path))}`")
         inlined.append(store.rel(product.overview_path))
+
+    configured_template = cfg.product_pull_request_template(task.product)
+    template = _pull_request_template(store, task, base or "HEAD")
+    if template is not None:
+        template_path, template_content, _explicit = template
+        template_ref = snapshot("pull-request-template.md", template_content)
+        refs.append(
+            f"- Repository pull-request template (`{template_path}` at the assigned source revision): "
+            f"`{template_ref}`"
+        )
+    elif configured_template is not None:
+        sections.append((
+            "pr_template_missing",
+            "## Pull-request template\n\n"
+            f"The explicitly configured repository template `{configured_template}` was unavailable at the "
+            "assigned source revision. Do not invent a replacement; follow the universal description "
+            "guidance instead.\n",
+        ))
 
     if phase.goals_path:
         refs.append(f"- Phase goals and owner decisions: `{snapshot('phase-goals.md', goals_text(phase.goals_path))}`")
