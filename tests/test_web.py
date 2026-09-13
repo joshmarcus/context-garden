@@ -624,7 +624,9 @@ def test_page_store_snapshot_scans_once_and_refreshes_next_request(garden, monke
     assert response.status_code == 200
     before = (scans, parses, stats)
 
-    assert before[0:2] == (2, 244)
+    # The legacy path repeats discovery for each of the four page/auth consumers. The
+    # request snapshot above still collapses all of them into one shared generation.
+    assert before[0:2] == (8, 976)
     assert before[2] > after[2]
     changed = task_dir / "DM-001-first.md"
     changed.write_text(changed.read_text().replace("First task", "Fresh task title"))

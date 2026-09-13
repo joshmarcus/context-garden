@@ -795,7 +795,8 @@ def test_stream_carries_progress_and_the_tick_and_never_takes_the_hub_lock(garde
     assert len(calls) >= 1
     # the page itself never polls: no data-poll hook and no setInterval fetch of a region
     page = c.get("/now").text
-    assert 'data-poll="' not in page and 'new EventSource("/now/stream")' in page
+    assert 'data-poll="' not in page
+    assert 'gardenScopedUrl("/now/stream")' in page and "new EventSource(streamUrl)" in page
     head_events = re.search(r"var HEAD = \{([^}]+)\}", page).group(1)
     for event in ("profile_changed", "config_reloaded", "config_override", "config_override_cleared"):
         assert f"{event}: 1" in head_events
