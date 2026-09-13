@@ -369,6 +369,21 @@ def test_pending_execution_permit_blocks_owner_handoff(clones):
     assert "run:pending" in state["permits"]
 
 
+def test_existing_version_one_ref_without_handoff_table_upgrades_additively(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    head, state = store.read()
+    state.pop("handoffs")
+    state["sequence"] += 1
+    legacy = store._commit(state, head, "legacy-before-handoffs")
+    store._push(legacy, head)
+
+    observed, upgraded = store.read()
+
+    assert observed == legacy
+    assert upgraded["handoffs"] == {}
+
+
 @pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
 def test_acknowledged_handoff_blocks_new_work_then_advances_generation(clones, entity_key):
     _, one, two = clones
