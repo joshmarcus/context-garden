@@ -680,9 +680,6 @@ class Site:
 
     def _inbox_recipient(self, store: Store, tasks: dict[str, Any],
                          item: dict[str, Any]) -> str:
-        recipient = str(item.get("recipient") or "")
-        if recipient:
-            return recipient
         if item.get("task"):
             task = tasks.get(str(item["task"]))
             if task is None:
@@ -690,6 +687,9 @@ class Site:
             return self.registry.effective_task_owner(
                 task, store.phase(task.product, task.phase),
             )[0] if self.registry else str(item.get("owner") or "")
+        recipient = str(item.get("recipient") or "")
+        if recipient:
+            return recipient
         phase_key = str(item.get("phase") or "")
         product, separator, phase = phase_key.partition("/")
         if separator and self.registry:

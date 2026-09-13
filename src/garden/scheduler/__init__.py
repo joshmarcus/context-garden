@@ -15,7 +15,6 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 from __future__ import annotations
 
 import fcntl
-import os
 import re
 import threading
 import time
@@ -34,7 +33,7 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..members import MemberRegistry, Principal, current_principal
+from ..members import MemberRegistry, Principal
 from ..model import Phase, Status, Task, effective_owner, now_iso
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from ..notify import notify, retry_pending, should_notify
@@ -365,9 +364,11 @@ class Scheduler(
             # diagnostic even when enrollment is incomplete.
             self.coordinator = None
         self.members = MemberRegistry(self.cfg.garden_dir)
-        credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
-        self.principal = principal or current_principal() or (
-            self.members.authenticate(credential) if credential else None
+        # Execution identity belongs to this installation, not to the browser request
+        # that happened to construct a scheduler.  Request principals authorize HTTP
+        # actions in OriginCheck; they must never select workers or phase authority.
+        self.principal = principal or (
+            self.coordinator.authenticate_local_session() if self.coordinator else None
         )
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
