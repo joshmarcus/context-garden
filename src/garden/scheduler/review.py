@@ -709,7 +709,7 @@ class ReviewMixin:
         changed = gitops.diff_names(wt, review_base_head)
         work_run = self._review_source_for_head(task, review_head, work_run)
         execution_requirements, worker_match = self._execution_match(
-            task, "review", source_run=work_run
+            task, "review", source_run=work_run, checkpoint_run=run
         )
         source_run = work_run.run_id if work_run is not None else ""
         source_head = self._review_source_head(work_run) if work_run is not None else ""

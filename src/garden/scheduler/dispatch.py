@@ -26,7 +26,8 @@ MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 
 
 class DispatchMixin:
-    def _execution_match(self, task: Task, mode: str, *, source_run: Run | None = None):
+    def _execution_match(self, task: Task, mode: str, *, source_run: Run | None = None,
+                         checkpoint_run: Run | None = None):
         """Use the shared worker matcher before creating a constrained execution run."""
         try:
             requirements = self.cfg.execution_requirements(
@@ -40,13 +41,35 @@ class DispatchMixin:
             }
             self.state.save()
             raise ResourcePressureError(f"worker match invalid_requirements: {exc}") from None
-        if requirements.empty:
-            return requirements, None
         from ..hosts import MatchReason, match_worker
 
         owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
         source_envelope = source_snapshot.get("execution_envelope") or {}
+        requirement_data = requirements.to_dict()
+        source_requirements = source_snapshot.get("execution_requirements")
+        if source_requirements and source_requirements != requirement_data:
+            run = checkpoint_run or next((
+                candidate for candidate in reversed(self.runs.runs_for(task.id))
+                if candidate.mode == mode
+                and candidate.status == "failed"
+                and candidate.env_snapshot.get("execution_requirements") == requirement_data
+                and (candidate.env_snapshot.get("execution_envelope") or {}).get(
+                    "source_run_id"
+                ) == source_run.run_id
+            ), None)
+            run = run or self.runs.new_run(task.id, source_run.runner or "remote", mode=mode)
+            self._fail_execution_continuation(
+                task, run, mode, requirements, source_run,
+                "execution requirements changed since the source activity; "
+                "continuation fenced before launch",
+            )
+            raise ResourcePressureError(
+                "execution requirements changed since the source activity; fenced recovery "
+                "requires a fresh author dispatch"
+            )
+        if requirements.empty:
+            return requirements, None
         source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
         if source_owner and source_owner != owner:
             detail = (f"source activity belongs to operating user {source_owner!r}; "
@@ -87,6 +110,34 @@ class DispatchMixin:
     def _execution_activity(mode: str) -> str:
         return "work" if mode in {"work", "revise", "resume", "rebase"} else mode
 
+    def _fail_execution_continuation(self, task: Task, run: Run, mode: str,
+                                     requirements: Any, source_run: Run, error: str) -> None:
+        """Durably checkpoint a continuation rejected before worker launch."""
+        owner, owner_source = effective_owner(task, self.store.phase(task.product, task.phase))
+        requirement_data = requirements.to_dict()
+        encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
+        source_snapshot = source_run.env_snapshot or {}
+        source_envelope = source_snapshot.get("execution_envelope") or {}
+        run.env_snapshot.update({
+            "execution_requirements": requirement_data,
+            "execution_owner": owner,
+            "execution_envelope": {
+                "version": "garden.execution-envelope/v1",
+                "activity": self._execution_activity(mode),
+                "project": task.product,
+                "owner": owner,
+                "owner_source": owner_source,
+                "requirements_sha256": hashlib.sha256(encoded).hexdigest(),
+                "source_run_id": source_run.run_id,
+                "worker_instance": str(source_envelope.get("worker_instance")
+                                       or source_snapshot.get("worker_instance") or ""),
+            },
+        })
+        run.status = "failed"
+        run.finished_at = now_iso()
+        run.error = error
+        run.save()
+
     def _record_execution_envelope(self, task: Task, run: Run, mode: str,
                                    requirements: Any, match: Any,
                                    *, source_run: Run | None = None) -> None:
@@ -98,19 +149,6 @@ class DispatchMixin:
         encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
         source_envelope = source_snapshot.get("execution_envelope") or {}
-        source_requirements = source_snapshot.get("execution_requirements")
-        if source_requirements and source_requirements != requirement_data:
-            run.status = "failed"
-            run.finished_at = now_iso()
-            run.error = (
-                "execution requirements changed since the source activity; "
-                "continuation fenced before launch"
-            )
-            run.save()
-            raise ResourcePressureError(
-                "execution requirements changed since the source activity; fenced recovery "
-                "requires a fresh author dispatch"
-            )
         instance = match.instance if match is not None else None
         source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
         source_instance = str(source_envelope.get("worker_instance")
@@ -693,7 +731,7 @@ class DispatchMixin:
         source_run = (self._execution_source_run(task)
                       if mode in {"revise", "resume", "rebase"} else None)
         execution_requirements, worker_match = self._execution_match(
-            task, mode, source_run=source_run
+            task, mode, source_run=source_run, checkpoint_run=reserved_run
         )
         # A read-only local diagnosis may explain work in a closed or frozen phase, but it
         # is still new phase-owned model work and therefore obeys sequential phase order.
