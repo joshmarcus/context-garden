@@ -21,12 +21,21 @@ class Service:
         self.online = True
         self.posts = []
 
-    def __call__(self, method, _url, **kwargs):
+    def __call__(self, method, url, **kwargs):
         if not self.online:
             raise httpx.ConnectError("offline")
         if method == "GET":
             return response(200, self.snapshot)
         self.posts.append(kwargs["json"])
+        if url.endswith("/claims"):
+            body = kwargs["json"]
+            return response(200, {
+                "garden_id": "garden", "kind": body["kind"], "scope": body["scope"],
+                "owner_id": body["accepted_owner"],
+                "authority_generation": body["authority_generation"],
+                "installation_id": "alice-a", "operation_id": body["operation_id"],
+                "fence": 1, "lease_expires_at": "2099-01-01T00:00:00+00:00",
+            })
         return response(200, {"version": kwargs["json"]["expected_version"] + 1})
 
 
@@ -55,10 +64,8 @@ multiplayer:
 """)
     monkeypatch.setenv("ALICE_GARDEN_TOKEN", "not-in-config")
 
-    enrolled = MultiplayerClient.from_config(Config.load(tmp_path))
-
-    assert enrolled is not None
-    assert enrolled.installation_id == "alice-a"
+    with pytest.raises(MultiplayerUnavailable, match="obsolete"):
+        MultiplayerClient.from_config(Config.load(tmp_path))
     assert "not-in-config" not in repr(Config.load(tmp_path).data)
     monkeypatch.setenv("SAFE_VALUE", "yes")
     worker = scrubbed_env({
@@ -80,10 +87,8 @@ multiplayer:
   member_id: alice
   installation_id: alice-local
 """)
-    local = MultiplayerClient.from_config(Config.load(tmp_path))
-    assert local is not None
-    assert local.authentication == "temporary-username"
-    assert local._headers == {"Authorization": "Garden-Temporary-Username YWxpY2U.alice-local"}
+    with pytest.raises(MultiplayerUnavailable, match="obsolete"):
+        MultiplayerClient.from_config(Config.load(tmp_path))
 
 
 def test_username_config_is_fixed_to_current_os_account(tmp_path, monkeypatch):
@@ -98,7 +103,7 @@ multiplayer:
   member_id: alice
   installation_id: alice-local
 """)
-    with pytest.raises(MultiplayerUnavailable, match="different operating-system account"):
+    with pytest.raises(MultiplayerUnavailable, match="obsolete"):
         MultiplayerClient.from_config(Config.load(tmp_path))
 
 
@@ -192,6 +197,91 @@ def test_stale_cache_is_bound_to_the_authenticated_installation(tmp_path):
 
     with pytest.raises(MultiplayerUnavailable, match="unavailable"):
         client(tmp_path, service, "alice-b").refresh()
+
+
+def test_transition_refreshes_syncs_claims_and_commits_before_local_write(tmp_path):
+    path = "demo/p1/tasks/CG-1-task.md"
+    original = "old\n"
+    snapshot = snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden",
+        "authority": [{"kind": "task", "scope": "CG-1", "version": 3,
+                       "owner": "alice", "authority_generation": 7}],
+        "projections": [{"kind": "task", "scope": "CG-1", "version": 3,
+                         "path": path, "markdown": original,
+                         "base_revision": hashlib.sha256(b"").hexdigest()}],
+    })
+    service = Service(snapshot)
+    local = client(tmp_path, service)
+
+    result = local.transition(
+        kind="task", scope="CG-1", new_state="running", markdown="new\n", path=path,
+        canonical_revision=hashlib.sha256(original.encode()).hexdigest(),
+    )
+
+    assert result == {"version": 4}
+    assert (tmp_path / path).read_text() == original
+    assert service.posts[0]["accepted_owner"] == "alice"
+    assert service.posts[1]["claim"]["installation_id"] == "alice-a"
+    assert service.posts[1]["canonical_revision"] == hashlib.sha256(original.encode()).hexdigest()
+
+    service.online = False
+    with pytest.raises(MultiplayerUnavailable, match="unavailable"):
+        local.transition(
+            kind="task", scope="CG-1", new_state="done", markdown="offline\n",
+            path=path, canonical_revision=hashlib.sha256(original.encode()).hexdigest(),
+        )
+    assert (tmp_path / path).read_text() == original
+
+
+def test_effect_reacquires_claim_absent_from_fresh_authoritative_snapshot(tmp_path):
+    state = snapshot_identity({
+        "protocol_version": 1, "garden_id": "garden", "projections": [],
+        "authority": [{"kind": "task", "scope": "CG-1", "version": 3}],
+        "active_claims": [],
+    })
+
+    class ExpiringClaimService(Service):
+        def __init__(self, snapshot):
+            super().__init__(snapshot)
+            self.fence = 0
+
+        def __call__(self, method, url, **kwargs):
+            if method == "GET":
+                return response(200, self.snapshot)
+            if url.endswith("/claims"):
+                self.fence += 1
+                body = kwargs["json"]
+                claim = {
+                    "garden_id": "garden", "kind": body["kind"], "scope": body["scope"],
+                    "owner_id": body["accepted_owner"],
+                    "authority_generation": body["authority_generation"],
+                    "installation_id": "alice-a", "operation_id": body["operation_id"],
+                    "fence": self.fence,
+                    "lease_expires_at": f"2099-01-0{self.fence}T00:00:00+00:00",
+                }
+                self.snapshot["active_claims"] = [claim]
+                self.posts.append(body)
+                return response(200, claim)
+            self.posts.append(kwargs["json"])
+            return response(200, {"status": "ok"})
+
+    service = ExpiringClaimService(state)
+    local = client(tmp_path, service)
+    effect = dict(kind="task", scope="CG-1", owner_id="alice",
+                  authority_generation=7, expected_version=3)
+
+    with local.effect(**effect, effect_key="first"):
+        pass
+    assert service.fence == 1
+
+    # The server clock has expired and omitted the old claim from its next snapshot.
+    service.snapshot["active_claims"] = []
+    with local.effect(**effect, effect_key="after-expiry") as replacement:
+        assert replacement["fence"] == 2
+
+    assert service.fence == 2
+    submitted_effects = [post for post in service.posts if "claim" in post]
+    assert [post["claim"]["fence"] for post in submitted_effects] == [1, 2]
 
 
 def test_cancellation_is_acknowledged_only_after_local_worker_stops(tmp_path):

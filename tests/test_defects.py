@@ -14,6 +14,7 @@ from garden.members import MemberRegistry
 from garden.model import Status
 from garden.store import Store
 from garden.web.app import create_app
+from tests.test_members import _git_enrolled_app
 
 
 def _closed(store: Store, task_id: str = "DM-001"):
@@ -133,7 +134,7 @@ def test_multiplayer_permissions_and_project_projection_apply(garden):
     viewer_token = registry.issue_installation(admin, "eve", "eve-browser")
     registry.add_member(admin, "bob", "member", "assigned", ("other",))
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
-    client = TestClient(create_app(store, watch=False, host="testserver"))
+    client = TestClient(_git_enrolled_app(garden))
     payload = {"severity": "minor", "description": "problem", "idempotency_key": "one"}
     assert client.post(f"/api/tasks/{task.id}/defects", json=payload,
                        headers={"Authorization": f"Bearer {viewer_token}"}).status_code == 403

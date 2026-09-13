@@ -3,22 +3,12 @@
 from __future__ import annotations
 
 import os
-import shutil
-import signal
-import socket
-import subprocess
-import sys
-import time
-import urllib.error
-import urllib.request
 
-import httpx
 import yaml
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from garden.cli import app as cli_app
-from garden.members import operating_system_username
 from garden.multiplayer_client import AuthoritativeView, MultiplayerClient
 from garden.scheduler import Scheduler
 from garden.store import Store
@@ -38,8 +28,13 @@ class _Coordinator:
             "project_visibility": "all", "projects": [],
             "authority": [], "projections": [], "cancellation_requests": [],
         }
+        self.preparations = []
 
     def refresh(self, **_kwargs):
+        return AuthoritativeView(self.snapshot, False)
+
+    def prepare(self, *, mutation=False):
+        self.preparations.append(mutation)
         return AuthoritativeView(self.snapshot, False)
 
     def projection_lag(self, _snapshot):
@@ -62,154 +57,6 @@ def _run(garden, *args):
         os.chdir(previous)
 
 
-def _available_port() -> int:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
-
-
-def _wait_until_serving(url: str) -> None:
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            urllib.request.urlopen(url, timeout=0.2)
-        except urllib.error.HTTPError:
-            return
-        except (OSError, urllib.error.URLError):
-            time.sleep(0.05)
-        else:
-            return
-    raise AssertionError(f"coordinator did not start at {url}")
-
-
-def test_documented_coordinator_command_connects_disposable_installation(
-    garden, tmp_path, monkeypatch,
-):
-    coordinator_garden = tmp_path / "coordinator"
-    local_garden = tmp_path / "alex"
-    shutil.copytree(garden, coordinator_garden)
-    shutil.copytree(garden, local_garden)
-    admin = _run(
-        coordinator_garden, "members", "enroll-administrator",
-        "garden-1", "admin", "coordinator-host",
-    )
-    assert admin.exit_code == 0, admin.output
-    monkeypatch.setenv("GARDEN_ADMIN_CREDENTIAL", admin.output.strip())
-    added = _run(
-        coordinator_garden, "members", "add", "alex", "--role", "member",
-        "--credential-env", "GARDEN_ADMIN_CREDENTIAL",
-    )
-    assert added.exit_code == 0, added.output
-    issued = _run(
-        coordinator_garden, "members", "issue-installation", "alex", "alex-laptop",
-        "--credential-env", "GARDEN_ADMIN_CREDENTIAL",
-    )
-    assert issued.exit_code == 0, issued.output
-
-    port = _available_port()
-    endpoint = f"http://127.0.0.1:{port}"
-    process = subprocess.Popen(
-        [
-            sys.executable, "-m", "garden", "members", "coordinator",
-            "--garden", str(coordinator_garden), "--host", "127.0.0.1", "--port", str(port),
-        ],
-        cwd=coordinator_garden,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    try:
-        _wait_until_serving(f"{endpoint}/v1/gardens/garden-1/snapshot")
-        monkeypatch.setenv("GARDEN_ALEX_CREDENTIAL", issued.output.strip())
-        connected = _run(
-            local_garden, "members", "connect", "garden-1", endpoint,
-            "alex", "alex-laptop", "--credential-env", "GARDEN_ALEX_CREDENTIAL",
-        )
-        assert connected.exit_code == 0, connected.output
-        enrollment = yaml.safe_load((local_garden / "garden.local.yaml").read_text())
-        assert enrollment["multiplayer"]["authentication"] == "credential"
-        status = _run(local_garden, "members", "status")
-        assert status.exit_code == 0, status.output
-        assert "identity: alex (member)" in status.output
-        assert "execution: No work assignment" in status.output
-        page = TestClient(create_app(Store(local_garden), watch=False)).get("/")
-        assert page.status_code == 200
-        assert "No work assignment" in page.text
-    finally:
-        os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=5)
-        assert process.returncode is not None
-
-
-def test_temporary_username_coordinator_and_cli_connect_without_credential(
-    garden, tmp_path, monkeypatch,
-):
-    coordinator_garden = tmp_path / "coordinator-username"
-    local_garden = tmp_path / "local-username"
-    shutil.copytree(garden, coordinator_garden)
-    shutil.copytree(garden, local_garden)
-    username = operating_system_username()
-    admin = _run(
-        coordinator_garden, "members", "enroll-administrator",
-        "garden-1", "admin", "coordinator-host",
-    )
-    assert admin.exit_code == 0, admin.output
-    monkeypatch.setenv("GARDEN_ADMIN_CREDENTIAL", admin.output.strip())
-    added = _run(
-        coordinator_garden, "members", "add", username, "--role", "member",
-        "--credential-env", "GARDEN_ADMIN_CREDENTIAL",
-    )
-    assert added.exit_code == 0, added.output
-
-    port = _available_port()
-    endpoint = f"http://127.0.0.1:{port}"
-    process = subprocess.Popen(
-        [
-            sys.executable, "-m", "garden", "members", "coordinator",
-            "--garden", str(coordinator_garden), "--host", "127.0.0.1", "--port", str(port),
-            "--authentication", "temporary-username",
-        ],
-        cwd=coordinator_garden,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    try:
-        _wait_until_serving(f"{endpoint}/v1/gardens/garden-1/snapshot")
-        connected = _run(local_garden, "members", "connect-username", "garden-1", endpoint)
-        assert connected.exit_code == 0, connected.output
-        assert f"connected {username} (member)" in connected.output
-        status = _run(local_garden, "members", "status")
-        assert status.exit_code == 0, status.output
-        assert f"identity: {username} (member)" in status.output
-        page = TestClient(create_app(Store(local_garden), watch=False)).get("/")
-        assert page.status_code == 200
-        assert f"identity: {username} (member)" in page.text
-        assert "No work assignment" in page.text
-        first = yaml.safe_load((local_garden / "garden.local.yaml").read_text())
-        assert first["multiplayer"]["credential_env"] == ""
-        installation = first["multiplayer"]["installation_id"]
-        assert installation
-        again = _run(local_garden, "members", "connect-username", "garden-1", endpoint)
-        assert again.exit_code == 0, again.output
-        second = yaml.safe_load((local_garden / "garden.local.yaml").read_text())
-        assert second["multiplayer"]["installation_id"] == installation
-    finally:
-        os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=5)
-
-
-def test_temporary_username_coordinator_refuses_non_loopback(garden):
-    result = _run(
-        garden, "members", "coordinator", "--garden", str(garden),
-        "--host", "0.0.0.0", "--authentication", "temporary-username",
-    )
-    assert result.exit_code == 2
-    assert "requires a loopback host" in result.output
-
-
 def test_unassigned_member_tick_does_not_create_scheduler_state(garden, monkeypatch):
     store = _multiplayer_store(garden)
     client = _Coordinator("member")
@@ -222,41 +69,6 @@ def test_unassigned_member_tick_does_not_create_scheduler_state(garden, monkeypa
 
     after = {path.relative_to(garden): path.read_bytes() for path in garden.rglob("*") if path.is_file()}
     assert after == before
-
-
-def test_connected_unassigned_member_opens_local_ui_without_browser_token(garden, monkeypatch):
-    snapshot = {
-        **_Coordinator("member").snapshot,
-        "project_visibility": "all", "projects": [],
-    }
-    coordinator_status = 200
-
-    def request(method, url, **_kwargs):
-        request = httpx.Request(method, url)
-        if coordinator_status != 200:
-            return httpx.Response(coordinator_status, request=request)
-        return httpx.Response(200, json=snapshot, request=request)
-
-    monkeypatch.setattr("garden.multiplayer_client.httpx.request", request)
-    monkeypatch.setenv("GARDEN_ALEX_CREDENTIAL", "private-installation-credential")
-    connected = _run(
-        garden, "members", "connect", "garden-1", "https://coordinator.test",
-        "alex", "alex-laptop", "--credential-env", "GARDEN_ALEX_CREDENTIAL",
-    )
-    assert connected.exit_code == 0, connected.output
-    store = Store(garden)
-    client = TestClient(create_app(store, watch=False))
-
-    response = client.get("/")
-
-    assert response.status_code == 200
-    assert "No work assignment" in response.text
-    assert "identity: alex (member)" in response.text
-    assert "viewing: All authorized projects" in response.text
-    assert "execution: No work assignment" in response.text
-
-    coordinator_status = 401
-    assert client.get("/").status_code == 401
 
 
 def test_viewer_serve_never_starts_embedded_scheduler(garden, monkeypatch):
@@ -294,5 +106,7 @@ def test_viewer_serve_rejects_worker_ingress_and_controller_helpers(garden, monk
         assert getattr(client, method)(
             path, headers={"Authorization": "Bearer worker-credential"},
         ).status_code == 404
+    assert True in coordinator.preparations
+    assert False in coordinator.preparations
 
     assert client.get("/healthz").status_code == 200
