@@ -539,15 +539,15 @@ class Site:
             legacy = False
 
         parts = request.url.path.strip("/").split("/")
-        explicit = ""
+        explicit: str | None = None
         if len(parts) > 1 and parts[0] in {"projects", "phases"}:
             explicit = parts[1]
         elif len(parts) > 1 and parts[0] in {"tasks", "runs", "investigations"}:
             task = s.tasks().get(parts[1])
-            explicit = task.product if task else ""
+            explicit = task.product if task else None
         elif "project" in request.query_params:
             explicit = request.query_params.get("project", "")
-        if explicit:
+        if explicit is not None:
             if explicit == "__all__":
                 return remember(self.ViewScope(
                     None if legacy else authorized, "", "url", tuple(sorted(authorized)),
