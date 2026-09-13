@@ -156,10 +156,6 @@ class Scheduler(
                 self.coordinator.prepare(mutation=True)
             except MultiplayerUnavailable as exc:
                 raise MultiplayerExecutionUnavailable(str(exc)) from exc
-        try:
-            self.coordinator.prepare(mutation=True)
-        except MultiplayerUnavailable as exc:
-            raise MultiplayerExecutionUnavailable(str(exc)) from exc
 
     def execution_status(self) -> dict[str, str]:
         """Describe this installation's execution boundary without starting work."""
@@ -236,7 +232,9 @@ class Scheduler(
             run.save()
         return True
 
-    def _task_authority(self, task: Task) -> dict[str, Any] | None:
+    def _task_authority(
+        self, task: Task, *, expected_assignment_generation: int | None = None,
+    ) -> dict[str, Any] | None:
         """Return current authority only inside this operator's assigned project/phase."""
         if self.coordinator is None:
             return None
@@ -248,6 +246,9 @@ class Scheduler(
                 or assignment.get("project") != task.product
                 or assignment.get("phase") != task.phase):
             raise PermissionError(f"{task.id} is outside the authenticated member's assignment")
+        if (expected_assignment_generation is not None
+                and int(assignment["generation"]) != expected_assignment_generation):
+            raise RuntimeError("stale assignment generation")
         row = next((value for value in snapshot.get("authority", [])
                     if value.get("kind") == "task" and value.get("scope") == task.id), None)
         if row is None or row.get("owner") != self.coordinator.member_id:

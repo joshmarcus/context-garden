@@ -346,6 +346,7 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     sched.store.set_phase_closed(phase, "2026-09-12")
     sched.store.invalidate()
     phase = sched.store.phase("demo", "p1")
+    registry.set_assignment(admin, "alice", phase.product, phase.name)
 
     bound, coordinator = _coordinated_scheduler(sched, alice, alice_token)
     with pytest.raises(PermissionError, match="phase operation is not owned"):
@@ -372,6 +373,7 @@ def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparati
     assert alice is not None
     registry.set_assignment(admin, "alice", "demo", "p1")
     phase = sched.store.phase("demo", "p1")
+    registry.set_assignment(admin, "alice", phase.product, phase.name)
     bound, coordinator = _coordinated_scheduler(sched, alice, alice_token)
     run = object()
     calls = []
