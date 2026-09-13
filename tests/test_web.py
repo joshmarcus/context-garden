@@ -1036,7 +1036,7 @@ def test_core_pages_do_not_access_the_product_checkout(garden, monkeypatch):
     assert status_page.status_code == inbox_page.status_code == 200
     # The base template stamps each response with the current time. Apart from that clock,
     # repeated task reads render the same stored content and no discovered design entries.
-    dynamic_utc = r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+\+00:00"
+    dynamic_utc = r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00"
     assert re.sub(dynamic_utc, "<now>", task_page.text) == re.sub(
         dynamic_utc, "<now>", repeated_task_page.text
     )
