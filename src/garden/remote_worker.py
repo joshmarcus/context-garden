@@ -35,7 +35,7 @@ from .worker_diagnostics import (
     endpoint_class,
     safe_correlation_id,
 )
-from .workload_identity import AuthorityRedactor
+from .workload_identity import AuthorityRedactor, subprocess_authority
 
 
 class WorkerRequestError(RuntimeError):
@@ -939,6 +939,29 @@ def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
                           parsed: dict[str, Any], usage: dict[str, Any],
                           cost: float | None, error: str, rc: int,
                           execution_dir: Path | None = None) -> None:
+    markers = tuple(str(value) for value in run.get("restricted_export_markers") or [])
+    artifact_boundary = str(run.get("restricted_artifact_boundary") or "")
+    if markers or artifact_boundary:
+        from .restricted_data import RestrictedDataError, validate_restricted_markers
+
+        changed = subprocess.run(
+            ["git", "status", "--porcelain", "-z"], cwd=repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.split("\0")
+        for entry in changed:
+            relative = entry[3:] if len(entry) >= 4 else ""
+            if artifact_boundary and (
+                relative == artifact_boundary or relative.startswith(artifact_boundary + "/")
+            ):
+                raise RestrictedDataError("private artifact cannot leave its boundary")
+            path = repo / relative
+            if markers and path.is_file():
+                try:
+                    validate_restricted_markers(path.read_text(), markers)
+                except UnicodeDecodeError:
+                    # Binary artifacts are not evidence text; marker tests use textual
+                    # canaries and private binary outputs must stay under their boundary.
+                    pass
     if subprocess.run(
         ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
     ).stdout.strip():
@@ -964,6 +987,12 @@ def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
     }
     if execution_dir is not None:
         finish_payload["validation_receipts"] = _validation_receipts(execution_dir)
+    if markers:
+        from .restricted_data import validate_restricted_markers
+
+        # The marker set is persisted in the active-claim handoff, so restart recovery
+        # cannot bypass the same final export boundary.
+        validate_restricted_markers(finish_payload, markers)
     safe_finish_payload = AuthorityRedactor(()).redact_data(finish_payload)
     pending_result = _persist_pending_result(root, str(run["id"]), safe_finish_payload)
     heartbeat.finish(safe_finish_payload)
@@ -1127,6 +1156,43 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
             return
         setup = dict(run.get("setup") or {})
         identity_target = "check" if run.get("mode") == "check" else "worker"
+        restricted_authorization = None
+        restricted = (host_config or {}).get("restricted_data") or {}
+        boundaries = restricted.get("boundaries") if isinstance(restricted, dict) else None
+        if isinstance(boundaries, dict) and identity_target in boundaries:
+            from .restricted_data import RestrictedDataError, authorize_restricted_workload
+            from .workload_identity import WorkloadIdentityError
+
+            identity_boundary = ((host_config or {}).get("workload_identity") or {}).get(
+                "boundaries", {}
+            ).get(identity_target, {})
+            try:
+                with subprocess_authority(
+                    host_config or {}, identity_target, f"automation:{run['id']}", env,
+                ) as (_identity_env, metadata, _redactor, _authority):
+                    if metadata is None:
+                        raise WorkloadIdentityError(
+                            "restricted-data dispatch requires a workload identity"
+                        )
+                    restricted_authorization = authorize_restricted_workload(
+                        host_config or {}, identity_target, identity=metadata,
+                        identity_reference=str(identity_boundary.get("reference") or ""),
+                        project=str(run.get("product") or ""),
+                        activity=("work" if run.get("mode") in {
+                            "work", "revise", "resume", "rebase"
+                        } else str(run.get("mode") or "")),
+                        model=str(run.get("model") or ""), tool=str(run.get("harness") or ""),
+                    )
+                    run["restricted_export_markers"] = list(
+                        restricted_authorization.synthetic_markers
+                    )
+                    run["restricted_artifact_boundary"] = (
+                        restricted_authorization.artifact_boundary
+                    )
+            except (RestrictedDataError, WorkloadIdentityError) as exc:
+                failure = ClaimMaterializationError("authorization", str(exc))
+                _finish_materialization_failure(run, heartbeat, failure)
+                return
         if run.get("mode") == "check":
             check_data = _host_check_data(run, repo)
             # A managed consumer passes the product command above so admission covers it.

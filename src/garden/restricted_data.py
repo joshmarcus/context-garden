@@ -50,6 +50,7 @@ class RestrictedWorkloadAuthorization:
     allowed_tools: tuple[str, ...]
     artifact_boundary: str
     evidence_exports: tuple[str, ...]
+    synthetic_markers: tuple[str, ...]
 
     @property
     def digest(self) -> str:
@@ -64,6 +65,7 @@ class RestrictedWorkloadAuthorization:
             "allowed_tools": self.allowed_tools,
             "artifact_boundary": self.artifact_boundary,
             "evidence_exports": self.evidence_exports,
+            "synthetic_markers": self.synthetic_markers,
         }
         return "sha256:" + hashlib.sha256(
             json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
@@ -93,6 +95,23 @@ class RestrictedWorkloadAuthorization:
             raise RestrictedDataError("evidence contains a restricted synthetic marker")
         return {"kind": kind, "state": state.value, "summary": payload}
 
+    def validate_export_payload(self, payload: Any) -> None:
+        """Reject restricted markers anywhere in an outbound JSON payload."""
+        validate_restricted_markers(payload, self.synthetic_markers)
+
+
+def validate_restricted_markers(payload: Any, markers: tuple[str, ...]) -> None:
+    """Reject configured restricted markers recursively at a transport boundary."""
+    if isinstance(payload, str):
+        if any(marker and marker in payload for marker in markers):
+            raise RestrictedDataError("evidence contains a restricted synthetic marker")
+    elif isinstance(payload, Mapping):
+        for value in payload.values():
+            validate_restricted_markers(value, markers)
+    elif isinstance(payload, (list, tuple)):
+        for value in payload:
+            validate_restricted_markers(value, markers)
+
 
 def authorize_restricted_workload(
     config: Mapping[str, Any], boundary: str, *, identity: AuthorityMetadata,
@@ -111,7 +130,7 @@ def authorize_restricted_workload(
         raise RestrictedDataError(f"restricted-data boundary {boundary!r} is not configured")
     unknown = set(policy) - {
         "identity_reference", "projects", "activities", "datasets", "models", "tools",
-        "artifact_boundary", "evidence_exports",
+        "artifact_boundary", "evidence_exports", "synthetic_markers",
     }
     if unknown:
         raise RestrictedDataError(f"restricted-data boundary {boundary!r} has unsupported fields")
@@ -152,6 +171,7 @@ def authorize_restricted_workload(
         tuple(sorted(str(value) for value in policy.get("tools") or [])),
         str(policy.get("artifact_boundary") or ""),
         tuple(sorted(str(value) for value in policy.get("evidence_exports") or [])),
+        tuple(sorted(str(value) for value in policy.get("synthetic_markers") or [])),
     )
     if not authorization.artifact_boundary:
         raise RestrictedDataError("restricted-data artifact boundary is not configured")

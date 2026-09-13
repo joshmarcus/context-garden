@@ -2441,9 +2441,21 @@ run.save()
     env_dump = tmp_path / "remote-worker.env"
     monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(env_dump))
     payload["env_allowlist"] = [*payload.get("env_allowlist", []), "FAKE_CLAUDE_*", "PYTHONPATH"]
+    host_identity_config = identity_config("tests.test_workload_identity")
+    host_identity_config["restricted_data"] = {"boundaries": {"worker": {
+        "identity_reference": "packages/read",
+        "projects": [payload["product"]],
+        "activities": ["work"],
+        "datasets": {"synthetic-private": "read"},
+        "models": [payload["model"]],
+        "tools": [payload["harness"]],
+        "artifact_boundary": "private",
+        "evidence_exports": ["validation-state"],
+        "synthetic_markers": ["RESTRICTED-ROW-42"],
+    }}}
     execute_claim(
         payload, tmp_path / "independent-host", PostingClient(),
-        host_config=identity_config("tests.test_workload_identity"),
+        host_config=host_identity_config,
     )
     dumped_env = env_dump.read_text()
     assert "SERVICE_TOKEN=synthetic-secret-" in dumped_env

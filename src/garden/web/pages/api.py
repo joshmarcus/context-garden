@@ -612,6 +612,7 @@ def register(app: FastAPI, site: Site) -> None:
                 setup = hub.store.config.product_setup(product) or {}
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
+                    "product": product,
                     "lease_token": run.lease_token,
                     "heartbeat_seconds": max(0.05, int(hub.store.config.get("workers.lease_seconds", 120)) / 3),
                     "execution_deadline_at": execution_deadline(run).isoformat()
