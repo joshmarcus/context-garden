@@ -658,6 +658,14 @@ class ReviewMixin:
         self._supersede_running_review(task)
         base = self.base_for(task)
         branch = task.branch or task.default_branch()
+        st = self.state.get(task.id)
+        source_head_hint = self._review_source_head(work_run) if work_run is not None else ""
+        # A provider-backed PR number makes state.head_sha an observed immutable source
+        # identity. Some internal/test callers dispatch a reviewer over a local author result
+        # before any PR exists; those retain the ordinary local-worktree path.
+        expected_review_head = str(st.get("head_sha") or source_head_hint or "") if (
+            task.pr and st.get("pr_number")
+        ) else ""
         canonical_enabled = str(self.cfg.product_checkout(task.product).get("strategy") or "worktree") == "in_place"
         run: Run | None = None
         canonical = None
@@ -667,21 +675,38 @@ class ReviewMixin:
             run.branch, run.base = branch, base
             canonical = self.prepare_canonical_run(task, run, runner, branch, base)
         if canonical is not None:
-            wt = canonical
+            wt = (gitops.prepare_review_worktree(
+                self.repo_for(task), canonical, branch, base, expected_review_head,
+            ) if expected_review_head else canonical)
         elif run is not None:
             self._recheck_local_materialization(run, "review checkout materialization")
-            wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+            wt = (gitops.prepare_review_worktree(
+                self.repo_for(task), self.worktree_for(task), branch, base, expected_review_head,
+            ) if expected_review_head else gitops.prepare_worktree(
+                self.repo_for(task), self.worktree_for(task), branch, base,
+            ))
         else:
             with self._local_staging_admission("review checkout materialization"):
-                wt = gitops.prepare_worktree(self.repo_for(task), self.worktree_for(task), branch, base)
+                wt = (gitops.prepare_review_worktree(
+                    self.repo_for(task), self.worktree_for(task), branch, base, expected_review_head,
+                ) if expected_review_head else gitops.prepare_worktree(
+                    self.repo_for(task), self.worktree_for(task), branch, base,
+                ))
         if run is not None:
             run.worktree = str(wt)
             run.save()
-        diff = gitops.diff(wt, base)
         review_head = gitops.head_sha(wt)
         review_base_head = gitops.rev_parse(wt, gitops.base_ref(wt, base))
-        review_diff_hash = gitops.diff_hash(wt, base)
-        changed = gitops.diff_names(wt, base)
+        if expected_review_head and review_head != expected_review_head:
+            raise gitops.GitError(
+                f"review checkout is not the observed pull request head: expected "
+                f"{expected_review_head[:12]}, got {review_head[:12]}"
+            )
+        # Freeze the resolved base commit once. The model must use the same source boundary
+        # as the controller even when a plain local base branch is stale.
+        diff = gitops.diff(wt, review_base_head)
+        review_diff_hash = gitops.diff_hash(wt, review_base_head)
+        changed = gitops.diff_names(wt, review_base_head)
         work_run = self._review_source_for_head(task, review_head, work_run)
         source_run = work_run.run_id if work_run is not None else ""
         source_head = self._review_source_head(work_run) if work_run is not None else ""
@@ -862,7 +887,8 @@ class ReviewMixin:
             run = (self.runs.new_run(task.id, "remote", mode="review")
                    if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
         reference_files: dict[str, str] = {}
-        text = review_brief(self.store, task, branch=branch, base=base, pr_title=pr_title, pr_body=pr_body,
+        text = review_brief(self.store, task, branch=branch, base=review_base_head,
+                            pr_title=pr_title, pr_body=pr_body,
                             diff=diff, max_diff_chars=int(self.cfg.get("review.max_diff_chars", 60000)),
                             pr_comment=pr_comment, verified=verified, captures=capture_paths,
                             checks=check_results, capture_advisories=capture_advisories,
@@ -933,6 +959,12 @@ class ReviewMixin:
         run.brief_tokens = max(1, len(text) // 4)
         run.save()
         try:
+            current_review_head = gitops.head_sha(wt)
+            if current_review_head != review_head:
+                raise gitops.GitError(
+                    f"review checkout moved before launch: expected {review_head[:12]}, "
+                    f"got {current_review_head[:12]}"
+                )
             runner.start(run, wt, text)
         except Exception as exc:
             run.status = "failed"
@@ -1060,7 +1092,13 @@ class ReviewMixin:
         if run is None:
             return self._queue_review_recovery(task, None, "review run record is missing", rep,
                                                started=True, count_round=False)
-        if self._verdict_is_moot(task) or not self._review_evidence_is_current(task, run):
+        evidence_current = self._review_evidence_is_current(task, run)
+        if evidence_current is None:
+            note = "review verdict awaiting a current pull-request head from the provider"
+            self.log(f"{task.id}: {note}")
+            rep.transitions.append(f"{task.id} review collection deferred (provider unavailable)")
+            return False
+        if self._verdict_is_moot(task) or not evidence_current:
             return self._close_obsolete_review(task, run, rep)
         if run.status != "running":
             # The run record is already terminal. Usually a prior reap applied its verdict and
@@ -1281,13 +1319,33 @@ class ReviewMixin:
             return True
         return self._apply_review(task, run, review, rep, emitted=False)
 
-    def _review_evidence_is_current(self, task: Task, run: Run) -> bool:
-        """Whether this review inspected the branch head that is still current."""
+    def _review_evidence_is_current(self, task: Task, run: Run) -> bool | None:
+        """Whether this review inspected the branch head that is still current.
+
+        ``None`` means a provider-backed PR could not be re-observed.  Collection must
+        remain pending in that case: applying the verdict would fail open, while discarding
+        it would prevent an otherwise valid result from being retried after recovery.
+        """
         reviewed = str((run.env_snapshot or {}).get("review_head") or "")
         if not reviewed:
             return False
-        current = gitops.head_sha(self.worktree_for(task))
-        return current == reviewed
+        observed = str(self.state.get(task.id).get("head_sha") or "")
+        current = gitops.head_sha(Path(run.worktree) if run.worktree else self.worktree_for(task))
+        if current != reviewed or (observed and observed != reviewed):
+            return False
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if self.state.get(task.id).get("attached_pr") and task.pr and number:
+            if not slug or not self.github.available:
+                return None
+            try:
+                provider_head = str(self.github.get_pr(slug, number).head_sha or "")
+            except (GitHubError, KeyError, OSError, ValueError):
+                return None
+            if not provider_head:
+                return None
+            return provider_head == reviewed
+        return True
 
     def _close_obsolete_review(self, task: Task, run: Run, rep: TickReport) -> bool:
         """Collect a completed review for accounting without applying an obsolete verdict."""

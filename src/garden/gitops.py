@@ -311,13 +311,14 @@ def _ensure_base(repo: Path, worktree: Path, base: str) -> bool:
     return True
 
 
-def prepare_worktree(repo: Path, path: Path, branch: str, base: str) -> Path:
+def prepare_worktree(repo: Path, path: Path, branch: str, base: str, *, fetch_remote: bool = True) -> Path:
     """Create (or reuse) a worktree on `branch`, creating the branch from `base` if needed.
 
     However the worktree is established, the branch is reconciled with `base` (see
     _ensure_base): a branch with no commits of its own is fast-forwarded onto `base`, so a
     stacked task actually sits on its parent's branch instead of a stale base."""
-    fetch(repo)
+    if fetch_remote:
+        fetch(repo)
     if path.exists() and (path / ".git").exists():
         # reuse; make sure we're on the right branch
         cur = git("rev-parse", "--abbrev-ref", "HEAD", cwd=path).strip()
@@ -341,6 +342,55 @@ def prepare_worktree(repo: Path, path: Path, branch: str, base: str) -> Path:
             pass
         git("worktree", "add", "-b", branch, str(path), base_ref(repo, base), cwd=repo)
     return path
+
+
+def prepare_review_worktree(repo: Path, path: Path, branch: str, base: str,
+                            expected_head: str) -> Path:
+    """Materialize one provider-observed PR head without discarding local work.
+
+    A task branch may have been attached from outside the controller clone, while an old
+    worktree or local branch with the same name still points somewhere else.  Fetch only the
+    observed head and base refs, verify that the branch has not moved since the provider
+    observation, and fast-forward a clean ancestor.  Dirty, ahead, or divergent work remains
+    untouched and makes review admission fail closed.
+    """
+    for name in (branch, base):
+        git("check-ref-format", "--branch", name, cwd=repo)
+    refspecs = list(dict.fromkeys(
+        f"+refs/heads/{name}:refs/remotes/origin/{name}" for name in (branch, base)
+    ))
+    _invalidate_cached_refs(repo)
+    git("fetch", "--prune", "origin", *refspecs, cwd=repo)
+
+    expected = git("rev-parse", "--verify", f"{expected_head}^{{commit}}", cwd=repo).strip()
+    remote_head = git("rev-parse", "--verify", f"refs/remotes/origin/{branch}", cwd=repo).strip()
+    if expected != expected_head or remote_head != expected:
+        raise GitError(
+            f"pull request head moved during review materialization: expected "
+            f"{expected_head[:12]}, fetched {remote_head[:12]}"
+        )
+
+    if path.exists() and (path / ".git").exists() and status_lines(path):
+        raise GitError("review worktree has retained changes; refusing to overwrite them")
+    worktree = prepare_worktree(repo, path, branch, base, fetch_remote=False)
+    dirty = status_lines(worktree)
+    if dirty:
+        raise GitError("review worktree has retained changes; refusing to overwrite them")
+    current = head_sha(worktree)
+    if current != expected:
+        if not is_ancestor(worktree, current, expected):
+            raise GitError(
+                f"review worktree has commits outside the pull request head: "
+                f"current {current[:12]}, expected {expected[:12]}"
+            )
+        git("merge", "--ff-only", "-q", expected, cwd=worktree)
+    materialized = head_sha(worktree)
+    if materialized != expected:
+        raise GitError(
+            f"review worktree head does not match pull request head: "
+            f"expected {expected[:12]}, got {materialized[:12]}"
+        )
+    return worktree
 
 
 def add_detached_worktree(repo: Path, path: Path, commit: str) -> Path:

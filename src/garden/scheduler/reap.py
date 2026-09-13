@@ -735,6 +735,8 @@ class ReapMixin:
                 run.save()
                 self._retry_or_fail(task, run, rep, run.error)
                 return
+            run.worktree = str(wt)
+            run.save()
             task.branch = branch
             self._after_push(task, run, wt, branch, base, result, rep, cost,
                              check_stall=status != "no_change")
@@ -1199,6 +1201,7 @@ class ReapMixin:
                 )
                 task.pr = pr.url
                 st["pr_number"] = pr.number
+                st.pop("attached_pr", None)
                 st["revisions"] = 0
                 st["review_rounds"] = 0
                 st.pop("review_loop_friction", None)

@@ -1348,12 +1348,16 @@ def test_forced_done_custom_note_is_not_a_merge(sched):
     assert done["base_merged"] is False
 
 
-def test_external_open_pr_uses_claimed_identity_and_review_without_managed_worktree(sched, fake_github):
+def test_external_open_pr_uses_claimed_identity_and_review_without_managed_worktree(
+        sched, fake_github, garden):
     """An operator-owned directory is audit data, not a signal to push or test it."""
     sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
     task = sched.store.task("DM-001")
+    repo = sched.repo_for(task)
+    gitops.git("push", "origin", "HEAD:refs/heads/operator/fix", cwd=repo)
     pr = fake_github.create_pr("test/demo", "operator/fix", "main", "external", "")
-    pr.head_sha, pr.head_repo = "verified-head", "test/demo"
+    pr.head_sha, pr.head_repo = gitops.head_sha(repo), "test/demo"
+    fake_github.remote = garden.parent / "remote.git"
     coincidental_path = sched.worktree_for(task)
     coincidental_path.mkdir(parents=True)
     run = sched.dispatch(task, runner=ManualRunner({}), worktree=False,
@@ -1495,6 +1499,7 @@ def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sc
     gitops.git("commit", "-q", "-m", "external work", cwd=clone)
     pushed_sha = gitops.git("rev-parse", "HEAD", cwd=clone).strip()
     gitops.git("push", "-q", "origin", branch, cwd=clone)
+    fake_github.remote = tmp_path / "remote.git"
     result = {
         "status": "done", "summary": "authored elsewhere", "repository": "test/demo",
         "branch": branch, "pushed_sha": pushed_sha,
@@ -1506,6 +1511,9 @@ def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sc
 
     worktree = sched.worktree_for(task)
     assert gitops.git("rev-parse", "HEAD", cwd=worktree).strip() == pushed_sha
+    work_run = next(run for run in sched.runs.runs_for(task.id) if run.mode == "work")
+    assert work_run.worktree == str(worktree)
+    assert sched.state.get(task.id)["head_sha"] == pushed_sha
     assert sched.store.task(task.id).status == Status.IN_REVIEW
     assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
 

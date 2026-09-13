@@ -1,8 +1,10 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
+from garden import gitops
 from garden.brief import build_brief
 from garden.inbox import build_inbox
 from garden.model import Status
@@ -1048,6 +1050,84 @@ def test_review_brief_and_parse(garden):
     assert parse_review("nothing") == {}
 
 
+def test_attached_pr_review_materializes_exact_head_and_pins_resolved_base(
+        sched, fake_github, garden):
+    """An attached branch may have a stale local worktree and local base branch."""
+    from garden import gitops
+
+    task = sched.store.task("DM-001")
+    repo = sched.repo_for(task)
+    initial = gitops.rev_parse(repo, "HEAD")
+
+    (repo / "base.txt").write_text("new remote base\n")
+    gitops.git("add", "base.txt", cwd=repo)
+    gitops.git("commit", "-m", "advance base", cwd=repo)
+    base_head = gitops.rev_parse(repo, "HEAD")
+    gitops.git("push", "origin", "main", cwd=repo)
+
+    branch = "operator/attached"
+    gitops.git("checkout", "-b", branch, cwd=repo)
+    (repo / "attached.txt").write_text("the pull request change\n")
+    gitops.git("add", "attached.txt", cwd=repo)
+    gitops.git("commit", "-m", "attached change", cwd=repo)
+    pr_head = gitops.rev_parse(repo, "HEAD")
+    gitops.git("push", "-u", "origin", branch, cwd=repo)
+
+    # Retain deliberately stale local refs and an already-existing task worktree. The
+    # provider's remote refs remain at base_head/pr_head.
+    gitops.git("checkout", "main", cwd=repo)
+    gitops.git("reset", "--hard", initial, cwd=repo)
+    gitops.git("branch", "-f", branch, initial, cwd=repo)
+    worktree = sched.worktree_for(task)
+    gitops.git("worktree", "add", str(worktree), branch, cwd=repo)
+
+    pr = fake_github.create_pr("test/demo", branch, "main", "Attached", "Body")
+    pr.head_sha, pr.head_repo = pr_head, "test/demo"
+    fake_github.remote = garden.parent / "remote.git"
+    sched.attach_pr(task, pr.url)
+    sched.cfg.data["review"]["enabled"] = True
+
+    run = sched.dispatch_review(sched.store.task(task.id))
+    brief = (run.path / "brief.md").read_text()
+
+    assert gitops.head_sha(worktree) == pr_head
+    assert gitops.rev_parse(repo, "main") == initial  # the stale local base was not trusted
+    assert gitops.diff_names(worktree, base_head) == ["attached.txt"]
+    assert run.env_snapshot["review_head"] == pr_head
+    assert run.env_snapshot["review_base_head"] == base_head
+    assert run.env_snapshot["validation_plan"]["head"] == pr_head
+    assert f"git diff {base_head}...HEAD" in brief
+    assert "git diff main...HEAD" not in brief
+
+    retained = worktree / "retained.txt"
+    retained.write_text("do not overwrite\n")
+    with pytest.raises(gitops.GitError, match="retained changes"):
+        gitops.prepare_review_worktree(repo, worktree, branch, "main", pr_head)
+    assert retained.read_text() == "do not overwrite\n"
+    retained.unlink()
+    gitops.git("clean", "-fd", cwd=worktree)
+
+    (worktree / "local-only.txt").write_text("retain this commit\n")
+    gitops.git("add", "local-only.txt", cwd=worktree)
+    gitops.git("commit", "-m", "retained local commit", cwd=worktree)
+    retained_head = gitops.rev_parse(worktree, "HEAD")
+    with pytest.raises(gitops.GitError, match="commits outside the pull request head"):
+        gitops.prepare_review_worktree(repo, worktree, branch, "main", pr_head)
+    assert gitops.head_sha(worktree) == retained_head
+    gitops.git("reset", "--hard", pr_head, cwd=worktree)
+
+    # If the provider branch moves after observation, exact-head preparation refuses
+    # before touching the materialized source.
+    (worktree / "later.txt").write_text("later push\n")
+    gitops.git("add", "later.txt", cwd=worktree)
+    gitops.git("commit", "-m", "move attached head", cwd=worktree)
+    gitops.git("push", "origin", branch, cwd=worktree)
+    gitops.git("reset", "--hard", pr_head, cwd=worktree)
+    with pytest.raises(gitops.GitError, match="head moved during review materialization"):
+        gitops.prepare_review_worktree(repo, worktree, branch, "main", pr_head)
+    assert gitops.head_sha(worktree) == pr_head
+
+
 def test_review_brief_requests_typed_failure_categories(garden):
     store = Store(garden)
     text = review_brief(store, store.task("DM-001"), branch="b", base="main",
@@ -1797,6 +1877,64 @@ def test_second_review_dispatch_supersedes_the_first(sched, fake_github):
     assert st["review_run"] == run2.run_id != run1_id
     # the superseded run no longer counts as active
     assert run1_id not in {r.run_id for r in sched.runs.active()}
+
+
+def test_finished_review_is_discarded_when_provider_head_moves_before_reap(sched, fake_github):
+    """A provider push after dispatch cannot apply the verdict for the prior head."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()  # reap work -> PR opened -> review dispatched and process finished
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run_id = st["review_run"]
+    run = next(candidate for candidate in sched.runs.runs_for(task.id)
+               if candidate.run_id == run_id)
+    reviewed_head = run.env_snapshot["review_head"]
+
+    pr = fake_github.get_pr("test/demo", st["pr_number"])
+    st["head_sha"] = reviewed_head  # cached polling state has not observed the push yet
+    st["attached_pr"] = True
+    pr.head_sha = "f" * 40
+    assert st["head_sha"] == reviewed_head
+    assert gitops.head_sha(Path(run.worktree)) == reviewed_head
+
+    rep = TickReport()
+    assert sched.reap_review(task, rep)
+
+    saved = next(candidate for candidate in sched.runs.runs_for(task.id)
+                 if candidate.run_id == run_id)
+    assert saved.status == "done"
+    assert "verdict discarded" in saved.error
+    assert st["review_run"] == ""
+    assert not st.get("last_review")
+    assert any("closed (obsolete)" in transition for transition in rep.transitions)
+
+
+def test_finished_attached_review_waits_when_provider_head_is_unavailable(
+        sched, fake_github, monkeypatch):
+    """Provider failure leaves the verdict unapplied and available for a later retry."""
+    sched.cfg.data["stack"] = False
+    sched.cfg.data["review"] = {"enabled": True, "max_rounds": 2, "max_diff_chars": 60000}
+    sched.tick()
+    sched.tick()
+    task = sched.store.task("DM-001")
+    st = sched.state.get(task.id)
+    run_id = st["review_run"]
+    run = next(candidate for candidate in sched.runs.runs_for(task.id)
+               if candidate.run_id == run_id)
+    st.update({"head_sha": run.env_snapshot["review_head"], "attached_pr": True})
+
+    def unavailable(*_args):
+        raise KeyError("down")
+
+    monkeypatch.setattr(fake_github, "get_pr", unavailable)
+    rep = TickReport()
+
+    assert not sched.reap_review(task, rep)
+    assert st["review_run"] == run_id
+    assert not st.get("last_review")
+    assert any("provider unavailable" in transition for transition in rep.transitions)
 
 
 def test_revise_with_pr_comment(sched, fake_github, monkeypatch):
