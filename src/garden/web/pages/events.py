@@ -18,8 +18,12 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         since_iso = parse_since(since) if since else ""
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(since=since_iso)
+        tasks = site.visible_tasks(request, s)
+        evs = site.visible_events(request, evs, tasks)
         d = digest(evs)
-        tasks = s.tasks()
+        all_events = site.visible_events(
+            request, EventLog(s.config.garden_dir / "events.jsonl").read(), tasks,
+        )
         return templates.TemplateResponse(request, "events.html", ctx(
             request, page="events", events=list(reversed(evs))[:300], digest=d, since=since, tasks=tasks,
-            metrics=metrics(EventLog(s.config.garden_dir / "events.jsonl").read(), tasks), tiers=tier_bars_svg(tier_rows(s, tasks))))
+            metrics=metrics(all_events, tasks), tiers=tier_bars_svg(tier_rows(s, tasks, all_events))))

@@ -149,6 +149,8 @@ class RetroMixin:
         """Persist one idempotent request per newly eligible phase; admission happens later."""
         for product in self.store.products():
             for phase in product.phases:
+                if not self.phase_is_authorized(phase.product, phase.name):
+                    continue
                 status = self.closing_review_status(phase)
                 if not status["eligible"]:
                     continue
@@ -178,6 +180,8 @@ class RetroMixin:
         """Claim one queued request; its potentially slow preparation runs after the tick lock."""
         for entry in self._retro_list():
             if entry.get("stage") not in {"queued", "preparing", "dispatching"}:
+                continue
+            if not self.phase_is_authorized(str(entry.get("product")), str(entry.get("phase_name"))):
                 continue
             owner_pid = int(entry.get("preparation_pid") or 0)
             if entry.get("stage") != "queued" and owner_pid:
@@ -547,6 +551,7 @@ class RetroMixin:
         """Start a phase retro. Runs the missing persona reviews (unless `skip_personas`), then
         the reconciliation, then opens a PR to the garden's own repo. Driven across ticks by
         `reap_retro`, like a trial."""
+        self.require_execution_authority()
         self.require_maintenance_running()
         # A queued automatic request already contains the configuration identity needed to
         # finish it.  Load that durable identity before consulting current configuration:
@@ -912,6 +917,7 @@ class RetroMixin:
 
     def _launch_prepared_reconcile(self, prepared: dict[str, Any]) -> None:
         """Launch exactly the payload whose identity was durably committed under the lock."""
+        self.require_execution_authority()
         run = prepared["run"]
         runner = prepared["runner"]
         phase = prepared["phase"]
@@ -966,6 +972,8 @@ class RetroMixin:
 
     def reap_retro(self, rep: TickReport) -> None:
         for entry in list(self._retro_list()):
+            if not self.phase_is_authorized(str(entry.get("product")), str(entry.get("phase_name"))):
+                continue
             try:
                 if entry.get("stage") == "launching_reconcile":
                     run_id = str(entry.get("recon_run_id") or "")
@@ -1498,6 +1506,8 @@ class RetroMixin:
                 phase = self.store.phase(*key.split("/", 1))
             except (KeyError, ValueError):
                 continue
+            if not self.phase_is_authorized(phase.product, phase.name):
+                continue
             if phase.closed or self.retro_blocking_open(phase):
                 continue
             try:
@@ -1513,6 +1523,10 @@ class RetroMixin:
         """Accept or change a phase's retro verdict. `reopen` (re)opens the phase and approves
         its blocking tasks; `close`/`close_with_followups` close the phase (refusing on open
         tasks the way `close-phase` does). Records who decided and when."""
+        with self.phase_effect(phase.product, phase.name, f"retro-decision:{phase.key}"):
+            return self._retro_decide(phase, choice, note, by)
+
+    def _retro_decide(self, phase: Phase, choice: str, note: str, by: str) -> dict[str, Any]:
         choice = normalize_verdict(choice)
         if not choice:
             raise RuntimeError("choose one of: close, followups, reopen")

@@ -69,14 +69,16 @@ def register(app: FastAPI, site: Site) -> None:
     typical_cache: tuple[float, dict[str, float]] | None = None
     burst_seconds = 0.25
 
-    def snap(window: str) -> dict[str, Any]:
+    def snap(request: Request, window: str) -> dict[str, Any]:
         s = hub.fresh()
-        return now1.snapshot(s, hub.reader(), window=window if window in WINDOW_KEYS else "hour", tick=hub.tick_state())
+        projects = site.allowed_projects(request)
+        return now1.snapshot(s, hub.reader(), window=window if window in WINDOW_KEYS else "hour",
+                             tick=hub.tick_state(), projects=projects)
 
     def page_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
-        return ctx(request, page="now", f=FORMAT, snap=snap(window), **kw)
+        return ctx(request, page="now", f=FORMAT, snap=snap(request, window), **kw)
 
-    def partial_snap(window: str, burst: str) -> dict[str, Any]:
+    def partial_snap(request: Request, window: str, burst: str) -> dict[str, Any]:
         with partial_lock:
             # Sample after acquiring the lock.  If another event arrived while this request
             # waited for an earlier build, its log/state signature forces a follow-up build
@@ -94,11 +96,12 @@ def register(app: FastAPI, site: Site) -> None:
             # boundary: all regions for one event share a reading even when the server cannot
             # schedule their requests inside the fallback TTL, while a later event cannot
             # reuse it merely because it arrived quickly.
-            key = (selected, burst, *signatures)
+            allowed = site.allowed_projects(request)
+            key = (selected, burst, tuple(sorted(allowed)) if allowed is not None else None, *signatures)
             cached = partial_cache.get(key)
             if cached is not None and (bool(burst) or cached[0] >= _monotonic()):
                 return cached[1]
-            reading = snap(selected)
+            reading = snap(request, selected)
             partial_cache.clear()
             partial_cache[key] = (_monotonic() + burst_seconds, reading)
             return reading
@@ -107,7 +110,7 @@ def register(app: FastAPI, site: Site) -> None:
         # Region templates use only request, the Now formatters and the snapshot.  Rebuilding
         # Site.ctx here would also rebuild the global rail and Inbox even though neither is in
         # a partial response.
-        return {"request": request, "f": FORMAT, "snap": partial_snap(window, burst), **kw}
+        return {"request": request, "f": FORMAT, "snap": partial_snap(request, window, burst), **kw}
 
     def cached_typical(runs: RunStore) -> dict[str, float]:
         nonlocal typical_cache
@@ -153,6 +156,10 @@ def register(app: FastAPI, site: Site) -> None:
         run = next((r for r in runs.runs_for(task_id) if r.run_id == run_id), None)
         if run is None:
             raise HTTPException(404)
+        task = s.tasks().get(task_id)
+        allowed = site.allowed_projects(request)
+        if allowed is not None and (task is None or task.product not in allowed):
+            raise HTTPException(403, "project is not visible to this member")
         typical = cached_typical(runs)
         strip = now1.strip_for_run(run, s.tasks(), s, typical)
         return templates.TemplateResponse(request, "_now1_strip.html",
@@ -166,6 +173,7 @@ def register(app: FastAPI, site: Site) -> None:
         the tab goes away. Never holds the hub lock."""
         s = hub.fresh()
         deadline = time.monotonic() + seconds if seconds is not None else None
-        body = now1.stream(s, hub.tick_state, start=start, limit=limit, deadline=deadline)
+        body = now1.stream(s, hub.tick_state, start=start, limit=limit, deadline=deadline,
+                           projects=site.allowed_projects(request))
         return SSEStreamingResponse(body, media_type="text/event-stream",
                                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

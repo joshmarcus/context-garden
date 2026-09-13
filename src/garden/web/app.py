@@ -9,6 +9,7 @@ loop runs in a background thread when `watch=True` (the `garden serve` default).
 from __future__ import annotations
 
 import os
+import ssl
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
 from ..harness import DIFFICULTIES
+from ..members import MemberRegistry, authorize
 from ..model import PRIORITY_SCALE, STATUS_ORDER, priority_label
 from ..now1 import board_run_fact_html, live_clock_html
 from ..plants import (
@@ -37,7 +39,14 @@ from ..plants import (
 from ..runs import HistoryUnavailable
 from ..store import Store
 from . import actions, pages
-from .access import loopback_listener, route_access
+from .access import (
+    ADMINISTRATOR_READ_PATHS,
+    ADMINISTRATOR_READ_PREFIXES,
+    PROJECT_COLLECTION_PATHS,
+    PROJECT_COLLECTION_PREFIXES,
+    loopback_listener,
+    route_access,
+)
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
 from .trust import OriginCheck, safe_json, server_origins
 
@@ -56,24 +65,64 @@ def _tojson(value: Any) -> Markup:
     return Markup(safe_json(value))
 
 
+def multiplayer_tls_files(
+    store: Store, host: str, *, require_multiplayer: bool = False,
+) -> tuple[str, str] | None:
+    """Validate and return TLS material required by a non-local multiplayer listener."""
+    if ((not require_multiplayer and not store.config.get("multiplayer.enabled", False))
+            or loopback_listener(host)):
+        return None
+    if store.config.get("multiplayer.transport", "") != "https":
+        raise RuntimeError(
+            "multiplayer listeners outside local development require authenticated HTTPS transport"
+        )
+    values = []
+    for setting in ("tls_certfile", "tls_keyfile"):
+        configured = str(store.config.get(f"multiplayer.{setting}", "") or "")
+        path = Path(configured)
+        if configured and not path.is_absolute():
+            path = store.root / path
+        if not configured or not path.is_file():
+            raise RuntimeError(f"multiplayer HTTPS requires a readable multiplayer.{setting}")
+        values.append(str(path))
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(values[0], values[1])
+    except (OSError, ssl.SSLError) as exc:
+        raise RuntimeError("multiplayer HTTPS certificate/key pair is invalid") from exc
+    return values[0], values[1]
+
+
 def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None, github: Any | None = None,
                host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
     """The web app. `github` is an optional stand-in for `garden.github.GitHub` that every
     scheduler the app builds will use (`garden qa` passes its pretend GitHub). `host`/`port`
     are the address `garden serve` binds to; they fix the origins a POST may come from."""
     app = FastAPI(title="context-garden")
+    tls = multiplayer_tls_files(store, host)
     # A POST from another site (a page open in the same browser) is refused; see web/trust.py.
     # The allowlist is the bound address plus any web.trusted_origins; the request's Host is
     # never trusted, so a DNS-rebound page is refused even when its Host and Origin agree.
-    allowed = server_origins(host, port) + [str(o) for o in (store.config.get("web.trusted_origins") or [])]
+    allowed = server_origins(host, port, scheme="https" if tls else "http") + [
+        str(o) for o in (store.config.get("web.trusted_origins") or [])
+    ]
     tokens = [os.environ.get(str(h.get("token_env") or ""), "")
               for h in (store.config.get("workers.hosts") or [])]
     from ..hosts.registry import authenticate_worker, worker_configuration
 
     operator_env = str(store.config.get("web.operator_token_env") or "")
     operator_token = os.environ.get(operator_env, "") if operator_env else ""
-    require_operator_auth = not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
-    if require_operator_auth and not operator_token:
+    multiplayer = bool(store.config.get("multiplayer.enabled", False))
+    registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
+    local_session_authenticator = None
+    if multiplayer and loopback_listener(host) and store.config.get("multiplayer.coordinator_url", ""):
+        from ..multiplayer_client import MultiplayerClient
+
+        connected_client = MultiplayerClient.from_config(store.config)
+        if connected_client is not None:
+            local_session_authenticator = connected_client.authenticate_local_session
+    require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
+    if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
             "operator authentication is required for this listener; set web.operator_token_env "
             "to an environment variable containing its bearer token"
@@ -81,14 +130,85 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     if operator_token and authenticate_worker(worker_configuration(store.config), operator_token) is not None:
         raise RuntimeError("operator and worker credentials must be different")
 
+    def authenticate_run_credential(token: str) -> Any | None:
+        """Keep member installations and legacy worker enrollments distinct."""
+        principal = registry.authenticate(token) if registry else None
+        if principal is not None:
+            return principal
+        return authenticate_worker(worker_configuration(store.config), token)
+
+    def member_authorizer(principal: Any, method: str, path: str) -> bool:
+        if method in {"GET", "HEAD", "OPTIONS"}:
+            # Project visibility governs garden content, not operational configuration.
+            # Keep this explicit in the route inventory so administrative read surfaces
+            # cannot accidentally inherit the generic project-read policy.
+            normalized = path.rstrip("/") or "/"
+            if (normalized in ADMINISTRATOR_READ_PATHS
+                    or normalized.startswith(ADMINISTRATOR_READ_PREFIXES)):
+                return authorize(principal, "administer")
+            parts = path.rstrip("/").split("/")
+            project = parts[2] if len(parts) > 2 and parts[1] in {"projects", "phases"} else ""
+            task_detail_roots = {"tasks", "runs", "investigations"}
+            if len(parts) > 2 and parts[1] in task_detail_roots:
+                task = store.tasks().get(parts[2])
+                project = task.product if task else ""
+            if len(parts) > 3 and parts[1] == "partials" and parts[2] in {"runs", "tasks"}:
+                task = store.tasks().get(parts[3])
+                project = task.product if task else ""
+            if len(parts) > 4 and parts[1:3] == ["api", "operations"]:
+                task = store.tasks().get(parts[3])
+                project = task.product if task else ""
+            collection = (normalized in PROJECT_COLLECTION_PATHS
+                          or path.startswith(PROJECT_COLLECTION_PREFIXES))
+            if collection and principal.project_visibility == "assigned" and not principal.projects:
+                # Empty assignment is a valid idle/view-only state; projected collections
+                # render empty rather than turning it into implicit garden-wide access.
+                return True
+            if not project and collection and principal.projects:
+                project = sorted(principal.projects)[0]
+            if project or collection:
+                return authorize(principal, "read", project=project)
+            # Route templates are inventoried below, but concrete request aliases and new
+            # dynamic shapes must also fail closed. An unscoped read is garden-wide and is
+            # therefore administrative regardless of all-project visibility.
+            return authorize(principal, "administer")
+        # Configuration, lifecycle and phase-wide actions are administrator operations.
+        task_id = ""
+        parts = path.split("/")
+        if path.startswith("/tasks/") and len(parts) > 2:
+            task_id = parts[2]
+        elif path.startswith("/api/control/tasks/") and len(parts) > 4:
+            task_id = parts[4]
+        elif path.startswith("/api/tasks/") and len(parts) > 3:
+            task_id = parts[3]
+        if not task_id:
+            return authorize(principal, "administer")
+        task = store.tasks().get(task_id)
+        if task is None:
+            return False
+        from ..model import effective_owner
+
+        owner = effective_owner(task, store.phase(task.product, task.phase))[0]
+        return authorize(principal, "mutate_work", owner_id=owner, project=task.product)
+
+    hub = Hub(
+        store,
+        watch,
+        github=github,
+    )
+    app.state.hub = hub
+    viewer_only = hub.execution_status()["state"] == "viewer"
+
     app.add_middleware(
         OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
-        worker_authenticator=lambda token: authenticate_worker(
-            worker_configuration(store.config), token) is not None,
-        operator_token=operator_token, require_operator_auth=require_operator_auth,
+        worker_authenticator=authenticate_run_credential,
+        operator_token="" if multiplayer else operator_token,
+        require_operator_auth=require_operator_auth,
+        member_authenticator=registry.authenticate if registry else None,
+        local_session_authenticator=local_session_authenticator,
+        member_authorizer=member_authorizer if registry else None,
+        viewer_only=viewer_only,
     )
-    hub = Hub(store, watch, github=github)
-    app.state.hub = hub
 
     @app.middleware("http")
     async def request_store_snapshot(request: Request, call_next: Any) -> Response:

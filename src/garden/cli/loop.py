@@ -14,6 +14,7 @@ from rich.table import Table
 from ..configuration import CONFIG_FIELDS, revision
 from ..github import pull_request_number
 from ..model import Status, now_iso
+from ..scheduler import MultiplayerExecutionUnavailable
 from ..scheduler_health import WatchHeartbeat
 from .common import (
     PANEL_BOARD,
@@ -322,7 +323,11 @@ def config_reset_saved(
 def tick(no_dispatch: bool = typer.Option(False, help="Only reap and poll; don't start workers")):
     """One scheduler pass: reap finished workers, poll PRs, dispatch ready tasks."""
     store = _store()
-    rep = _scheduler(store).tick(dispatch=not no_dispatch)
+    try:
+        rep = _scheduler(store).tick(dispatch=not no_dispatch)
+    except MultiplayerExecutionUnavailable as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
     console.print(rep.summary())
     if rep.errors:
         raise typer.Exit(1) from None
@@ -334,8 +339,19 @@ def watch(interval: int = typer.Option(0, help="Seconds between ticks (default: 
     store = _store()
     interval = interval or int(store.config.get("tick_interval", 60))
     sched = _scheduler(store)
+    try:
+        sched.require_execution_authority()
+    except MultiplayerExecutionUnavailable as e:
+        err.print(f"[yellow]{e}[/yellow]")
+        raise typer.Exit(1) from None
+    execution = sched.execution_status()
+    if execution["state"] in {"viewer", "unavailable"}:
+        err.print(f"[yellow]{execution['label']}[/yellow]")
+        raise typer.Exit(2)
     heartbeat = WatchHeartbeat(store.config.garden_dir, interval)
     console.print(f"watching {store.root} every {interval}s (ctrl-c to stop)")
+    if execution["state"] in {"unassigned", "paused"}:
+        console.print(f"[yellow]{execution['label']}[/yellow] — watching without scheduler work")
     try:
         heartbeat.write("starting")
         start_rep = sched.reap_on_start()  # reap any run the last process finished but never reaped
