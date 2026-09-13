@@ -756,7 +756,7 @@ class HostLifecycle:
                     )
                 except ProviderError as exc:
                     detail = f"{host.host_id}: admission unavailable: {exc}"
-                    self._record_environment_stop(pool, detail, data=data)
+                    self._record_environment_stop(pool, detail)
                     raise EnvironmentStop(detail) from exc
             claim_time = now()
             if requirements is not None:
@@ -776,6 +776,7 @@ class HostLifecycle:
                     continue
             # Read and claim again under the store lock. Another controller may have
             # completed the same readiness probe while this one was in the wrapper.
+            conflicting_lease = False
             with self.state.locked():
                 claimed = self.state.read()
                 claimed_leases = claimed.setdefault("leases", {})
@@ -791,35 +792,37 @@ class HostLifecycle:
                     )
                     active_run = bool(existing_run and not process_terminal(existing_run))
                     if actively_reserved or active_run:
-                        if admission is not None and admission.lease_id:
-                            try:
-                                provider.release_admission(
-                                    host.provider_id, lease_id=admission.lease_id
-                                )
-                            except ProviderError as exc:
-                                detail = f"{host.host_id}: admission lease release failed: {exc}"
-                                self._record_environment_stop(pool, detail, data=claimed)
-                                raise EnvironmentStop(detail) from exc
-                        continue
-                    acquired_at = float(existing.get("acquired_at", acquired_at))
-                claimed_leases[host.provider_id] = {
-                    "acquired_at": acquired_at,
-                    "last_used_at": claim_time,
-                    "reserved_until": claim_time + self.reservation_seconds,
-                    "workspace": workspace,
-                    "revision": revision,
-                    "harness": harness,
-                    "run_id": "",
-                    "released": False,
-                }
-                if admission is not None:
-                    claimed_leases[host.provider_id]["admission"] = asdict(admission)
-                    claimed_leases[host.provider_id]["requirements"] = asdict(requirements)
-                stops = claimed.setdefault("environment_stops", {})
-                if isinstance(stops, dict):
-                    stops.pop(pool.name, None)
-                self.state.write(claimed)
-                return host
+                        conflicting_lease = True
+                    else:
+                        acquired_at = float(existing.get("acquired_at", acquired_at))
+                if not conflicting_lease:
+                    claimed_leases[host.provider_id] = {
+                        "acquired_at": acquired_at,
+                        "last_used_at": claim_time,
+                        "reserved_until": claim_time + self.reservation_seconds,
+                        "workspace": workspace,
+                        "revision": revision,
+                        "harness": harness,
+                        "run_id": "",
+                        "released": False,
+                    }
+                    if admission is not None:
+                        claimed_leases[host.provider_id]["admission"] = asdict(admission)
+                        claimed_leases[host.provider_id]["requirements"] = asdict(requirements)
+                    stops = claimed.setdefault("environment_stops", {})
+                    if isinstance(stops, dict):
+                        stops.pop(pool.name, None)
+                    self.state.write(claimed)
+            if conflicting_lease:
+                if admission is not None and admission.lease_id:
+                    try:
+                        provider.release_admission(host.provider_id, lease_id=admission.lease_id)
+                    except ProviderError as exc:
+                        detail = f"{host.host_id}: admission lease release failed: {exc}"
+                        self._record_environment_stop(pool, detail)
+                        raise EnvironmentStop(detail) from exc
+                continue
+            return host
         detail = "; ".join(failures) or "no ready host is available"
         self._record_environment_stop(pool, detail)
         raise EnvironmentStop(detail)
@@ -956,12 +959,13 @@ class HostLifecycle:
         self, pool: PoolDeclaration, provider_id: str, *, now: Callable[[], float] = time.time
     ) -> HostAdmission:
         """Renew a host-owned lease, failing closed when ownership was lost."""
-        data = self.state.read()
-        leases = data.get("leases", {})
-        lease = leases.get(provider_id) if isinstance(leases, dict) else None
-        raw = lease.get("admission") if isinstance(lease, dict) else None
-        raw_requirements = lease.get("requirements") if isinstance(lease, dict) else None
-        lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.get("leases", {})
+            lease = leases.get(provider_id) if isinstance(leases, dict) else None
+            raw = lease.get("admission") if isinstance(lease, dict) else None
+            raw_requirements = lease.get("requirements") if isinstance(lease, dict) else None
+            lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
         if not lease_id or not isinstance(raw_requirements, dict):
             raise EnvironmentStop("host admission lease is not recorded")
         try:
@@ -980,7 +984,7 @@ class HostLifecycle:
             admission = provider.renew_admission(provider_id, lease_id=lease_id)
         except ProviderError as exc:
             detail = f"host admission lease lost: {exc}"
-            self._record_environment_stop(pool, detail, data=data)
+            self._record_environment_stop(pool, detail)
             raise EnvironmentStop(detail) from exc
         current_time = now()
         rejection = self._admission_rejection(admission, requirements, current_time)
@@ -988,16 +992,28 @@ class HostLifecycle:
             rejection = "host admission lease identity changed"
         if rejection:
             detail = f"host admission lease lost: {rejection}"
-            self._record_environment_stop(pool, detail, data=data)
+            self._record_environment_stop(pool, detail)
             raise EnvironmentStop(detail)
-        lease["admission"] = asdict(admission)
-        self.state.write(data)
-        return admission
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.get("leases", {})
+            lease = leases.get(provider_id) if isinstance(leases, dict) else None
+            raw = lease.get("admission") if isinstance(lease, dict) else None
+            current_lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+            if (current_lease_id != lease_id or not isinstance(lease, dict)
+                    or lease.get("requirements") != raw_requirements):
+                detail = "host admission lease lost: recorded lease or requirements changed"
+            else:
+                lease["admission"] = asdict(admission)
+                self.state.write(data)
+                return admission
+        self._record_environment_stop(pool, detail)
+        raise EnvironmentStop(detail)
 
     def activate_admission(
         self, pool: PoolDeclaration, provider_id: str, *, now: Callable[[], float] = time.time
     ) -> HostAdmission:
-        """Atomically recheck and activate an admission immediately before process start."""
+        """Recheck the host-owned lease and preserve concurrent controller state."""
         with self.state.locked():
             data = self.state.read()
             leases = data.get("leases", {})
@@ -1007,33 +1023,44 @@ class HostLifecycle:
             if not isinstance(raw, dict) or not isinstance(raw_requirements, dict):
                 raise EnvironmentStop("host admission lease is not recorded")
             lease_id = str(raw.get("lease_id", ""))
-            try:
-                requirements = HostRequirements(
-                    **{
-                        **raw_requirements,
-                        "capabilities": tuple(raw_requirements.get("capabilities", ())),
-                        "gpu_features": tuple(raw_requirements.get("gpu_features", ())),
-                    }
-                )
-                self._validate_requirements(requirements)
-                admission = self._provider(pool).activate_admission(
-                    provider_id, lease_id=lease_id, requirements=requirements
-                )
-            except (TypeError, ValueError, ProviderError) as exc:
-                detail = f"host admission activation failed: {exc}"
-                self._record_environment_stop(pool, detail, data=data)
-                raise EnvironmentStop(detail) from exc
-            rejection = self._admission_rejection(admission, requirements, now())
-            if admission.lease_id != lease_id:
-                rejection = "host admission lease identity changed"
-            if rejection:
-                detail = f"host admission activation failed: {rejection}"
-                self._record_environment_stop(pool, detail, data=data)
-                raise EnvironmentStop(detail)
-            lease["admission"] = asdict(admission)
-            lease["activated_at"] = now()
-            self.state.write(data)
-            return admission
+        try:
+            requirements = HostRequirements(
+                **{
+                    **raw_requirements,
+                    "capabilities": tuple(raw_requirements.get("capabilities", ())),
+                    "gpu_features": tuple(raw_requirements.get("gpu_features", ())),
+                }
+            )
+            self._validate_requirements(requirements)
+            admission = self._provider(pool).activate_admission(
+                provider_id, lease_id=lease_id, requirements=requirements
+            )
+        except (TypeError, ValueError, ProviderError) as exc:
+            detail = f"host admission activation failed: {exc}"
+            self._record_environment_stop(pool, detail)
+            raise EnvironmentStop(detail) from exc
+        rejection = self._admission_rejection(admission, requirements, now())
+        if admission.lease_id != lease_id:
+            rejection = "host admission lease identity changed"
+        if rejection:
+            detail = f"host admission activation failed: {rejection}"
+            self._record_environment_stop(pool, detail)
+            raise EnvironmentStop(detail)
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.get("leases", {})
+            lease = leases.get(provider_id) if isinstance(leases, dict) else None
+            raw = lease.get("admission") if isinstance(lease, dict) else None
+            current_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+            if (current_id == lease_id and isinstance(lease, dict)
+                    and lease.get("requirements") == raw_requirements):
+                lease["admission"] = asdict(admission)
+                lease["activated_at"] = now()
+                self.state.write(data)
+                return admission
+        detail = "host admission activation failed: recorded lease or requirements changed"
+        self._record_environment_stop(pool, detail)
+        raise EnvironmentStop(detail)
 
     def launch_admitted(
         self,
@@ -1057,14 +1084,13 @@ class HostLifecycle:
         self,
         pool: PoolDeclaration,
         detail: str,
-        *,
-        data: dict[str, object] | None = None,
     ) -> None:
-        value = data if data is not None else self.state.read()
-        stops = value.setdefault("environment_stops", {})
-        assert isinstance(stops, dict)
-        stops[pool.name] = {"detail": detail, "recorded_at": time.time()}
-        self.state.write(value)
+        with self.state.locked():
+            value = self.state.read()
+            stops = value.setdefault("environment_stops", {})
+            assert isinstance(stops, dict)
+            stops[pool.name] = {"detail": detail, "recorded_at": time.time()}
+            self.state.write(value)
 
     def attach_run(self, provider_id: str, run_id: str) -> None:
         """Persist the controller run identity after dispatch."""
@@ -1082,12 +1108,13 @@ class HostLifecycle:
         self, provider_id: str, *, pool: PoolDeclaration | None = None
     ) -> None:
         """Cancel before dispatch, releasing a host-owned admission when present."""
-        data = self.state.read()
-        leases = data.setdefault("leases", {})
-        assert isinstance(leases, dict)
-        lease = leases.get(provider_id)
-        raw = lease.get("admission") if isinstance(lease, dict) else None
-        lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.setdefault("leases", {})
+            assert isinstance(leases, dict)
+            lease = leases.get(provider_id)
+            raw = lease.get("admission") if isinstance(lease, dict) else None
+            lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
         if lease_id and isinstance(lease, dict) and (
             lease.get("activated_at") or lease.get("run_id")
         ):
@@ -1102,48 +1129,78 @@ class HostLifecycle:
                 self._provider(pool).release_admission(provider_id, lease_id=lease_id)
             except ProviderError as exc:
                 detail = f"host admission lease release failed: {exc}"
-                self._record_environment_stop(pool, detail, data=data)
+                self._record_environment_stop(pool, detail)
                 raise EnvironmentStop(detail) from exc
-        leases.pop(provider_id, None)
-        self.state.write(data)
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.setdefault("leases", {})
+            assert isinstance(leases, dict)
+            current = leases.get(provider_id)
+            current_raw = current.get("admission") if isinstance(current, dict) else None
+            current_id = (
+                str(current_raw.get("lease_id", "")) if isinstance(current_raw, dict) else ""
+            )
+            if current_id == lease_id and (lease_id or current == lease):
+                leases.pop(provider_id, None)
+                self.state.write(data)
+                return
+        detail = "host admission lease lost: recorded lease identity changed during cancellation"
+        if pool is not None:
+            self._record_environment_stop(pool, detail)
+        raise EnvironmentStop(detail)
 
     def release(self, pool: PoolDeclaration, provider_id: str) -> HostFacts:
         """Release a warm host while retaining its age and prior process identity."""
-        data = self.state.read()
-        leases = data.setdefault("leases", {})
-        assert isinstance(leases, dict)
-        lease = leases.get(provider_id)
-        raw = lease.get("admission") if isinstance(lease, dict) else None
-        lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.setdefault("leases", {})
+            assert isinstance(leases, dict)
+            lease = leases.get(provider_id)
+            raw = lease.get("admission") if isinstance(lease, dict) else None
+            lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        original_lease = lease
         released = self._owned(pool, provider_id)
         if released.state not in {HostState.STOPPED, HostState.TERMINATED}:
             try:
                 released = self.stop(pool, provider_id)
             except ProviderError as exc:
                 detail = f"host stop failed before admission lease release: {exc}"
-                self._record_environment_stop(pool, detail, data=data)
+                self._record_environment_stop(pool, detail)
                 raise EnvironmentStop(detail) from exc
         if released.state not in {HostState.STOPPED, HostState.TERMINATED}:
             detail = (
                 "host stop did not prove termination before admission lease release: "
                 f"{released.state.value}"
             )
-            self._record_environment_stop(pool, detail, data=data)
+            self._record_environment_stop(pool, detail)
             raise EnvironmentStop(detail)
         if lease_id:
             try:
                 self._provider(pool).release_admission(provider_id, lease_id=lease_id)
             except ProviderError as exc:
                 detail = f"host admission lease release failed: {exc}"
-                self._record_environment_stop(pool, detail, data=data)
+                self._record_environment_stop(pool, detail)
                 raise EnvironmentStop(detail) from exc
-        if isinstance(lease, dict):
-            lease["released"] = True
-            lease["last_used_at"] = time.time()
-            lease.pop("admission", None)
-            lease.pop("requirements", None)
-        self.state.write(data)
-        return released
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.setdefault("leases", {})
+            assert isinstance(leases, dict)
+            lease = leases.get(provider_id)
+            raw = lease.get("admission") if isinstance(lease, dict) else None
+            current_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+            if lease is None and original_lease is None:
+                return released
+            if (isinstance(lease, dict) and current_id == lease_id
+                    and (lease_id or lease == original_lease)):
+                lease["released"] = True
+                lease["last_used_at"] = time.time()
+                lease.pop("admission", None)
+                lease.pop("requirements", None)
+                self.state.write(data)
+                return released
+        detail = "host admission lease lost: recorded lease identity changed during release"
+        self._record_environment_stop(pool, detail)
+        raise EnvironmentStop(detail)
 
     def orphaned(self, *, process_terminal: Callable[[str], bool]) -> list[str]:
         data = self.state.read()
