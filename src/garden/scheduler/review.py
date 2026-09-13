@@ -1530,7 +1530,7 @@ class ReviewMixin:
                 blockers += [item for item in review.get("findings", [])
                              if isinstance(item, dict) and item.get("severity") == "blocking"]
                 operator_categories = {"infrastructure", "admission", "unavailable_evidence",
-                                       "owner_input", "external_gate"}
+                                       "owner_input", "external_gate", "stale_check"}
                 if blockers and all(item.get("failure_category") in operator_categories
                                     for item in blockers):
                     # The review and CI facts stay intact. The operator diagnoses the

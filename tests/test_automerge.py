@@ -675,7 +675,7 @@ def test_stale_ci_only_review_does_not_queue_author_revision(sched, fake_github)
     assert not sched._automerge_gate(task, pr)[0]
 
 
-@pytest.mark.parametrize("category", ["infrastructure", "admission", "unavailable_evidence", "owner_input"])
+@pytest.mark.parametrize("category", ["infrastructure", "admission", "unavailable_evidence", "owner_input", "stale_check"])
 def test_review_process_problem_routes_to_operator_without_author_round(sched, fake_github, category):
     from garden.scheduler.report import TickReport
 
