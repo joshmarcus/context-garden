@@ -154,9 +154,7 @@ class Scheduler(
                 owner = str(row.get("owner") or "")
                 if owner == "-":
                     owner = ""
-                source = "unassigned" if task.owner_unassigned else (
-                    "task" if task.owner else "phase"
-                )
+                _local_owner, source = self.members.effective_task_owner(task, phase)
                 return owner, source
         if (self.cfg.get("multiplayer.enabled", False)
                 and hasattr(self.members, "effective_task_owner")):
