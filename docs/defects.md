@@ -30,7 +30,10 @@ The JSON API mirrors this workflow:
 - `PATCH /api/tasks/{task_id}/defects/{defect_id}` requires `expected_revision` and accepts
   corrections, analysis fields, severity, or `disposition`. Stale revisions return `409`.
 - `GET /api/defects` filters by `severity`, `product`, `phase`, `task_id`, `disposition`,
-  `discovered_from`, and `discovered_to`. Its summary counts defect IDs, never edits.
+  `discovered_from`, and `discovered_to`. Discovery bounds accept ISO 8601 dates or
+  timezone-aware timestamps. Dates are UTC calendar dates (an upper date includes its whole
+  day), while timestamps are inclusive at the exact instant. Its summary counts defect IDs,
+  never edits.
 
 Known facts, hypotheses, and unknowns are separate fields. Analysis may identify what could
 have caught the issue, recurrence prevention, and proposed follow-up without asserting blame
