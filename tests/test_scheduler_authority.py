@@ -172,6 +172,7 @@ def test_phase_authority_is_distinct_from_task_and_admin_visibility():
 
     assert not sched.phase_is_authorized("demo", "p2")
     with pytest.raises(PermissionError, match="not owned"):
+        sched.require_phase_authority("demo", "p1")
         sched.phase_effect("demo", "p1", "phase-review:demo/p1").__enter__()
 
 
