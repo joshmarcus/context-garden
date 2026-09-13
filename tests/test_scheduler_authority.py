@@ -18,6 +18,7 @@ class CoordinatorStub:
         self.installation_id = f"{member_id}-laptop"
         self.snapshot = snapshot
         self.effects = []
+        self.prepare_calls = 0
 
     def refresh(self, *, allow_stale):
         assert not allow_stale
@@ -25,6 +26,7 @@ class CoordinatorStub:
 
     def prepare(self, *, mutation):
         assert mutation
+        self.prepare_calls += 1
         return SimpleNamespace(snapshot=self.snapshot)
 
     @contextmanager
@@ -71,6 +73,16 @@ def snapshot(*, assignment=True):
              "authority_generation": 2},
         ],
     }
+
+
+def test_execution_authority_preserves_standalone_and_prepares_multiplayer_once(garden):
+    standalone = Scheduler(Store(garden))
+    standalone.require_execution_authority()
+
+    coordinated = scheduler(snapshot())
+    coordinated.require_execution_authority()
+
+    assert coordinated.coordinator.prepare_calls == 1
 
 
 def test_task_lifecycle_requires_assignment_owner_and_phase():

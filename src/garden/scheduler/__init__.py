@@ -146,15 +146,10 @@ class Scheduler(
         multiplayer = self.cfg.get("multiplayer.enabled", False) or standalone_fence(
             self.store.root
         )
-        if multiplayer and self.coordinator is None and self.principal is None:
+        if not multiplayer:
+            return
+        if self.coordinator is None or self.principal is None:
             raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
-        if self.cfg.get("multiplayer.enabled", False) and self.coordinator is not None:
-            if self.principal is None:
-                raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
-            try:
-                self.coordinator.prepare(mutation=True)
-            except MultiplayerUnavailable as exc:
-                raise MultiplayerExecutionUnavailable(str(exc)) from exc
         try:
             self.coordinator.prepare(mutation=True)
         except MultiplayerUnavailable as exc:
