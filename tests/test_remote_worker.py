@@ -2320,7 +2320,9 @@ def test_restricted_transcript_marker_split_across_chunks_never_uploads():
             uploads.append((offset, chunk))
             return offset + len(chunk.encode())
 
-    exporter = _TranscriptExporter(Heartbeat(), ("RESTRICTED-ROW-42",))
+    exporter = _TranscriptExporter(
+        Heartbeat(), ("RESTRICTED-ROW-42",), restricted=True, export_allowed=True,
+    )
     exporter.add("safe prefix RESTRICTED-")
     exporter.add("ROW-42 unsafe tail")
 
@@ -2338,7 +2340,9 @@ def test_restricted_clean_transcript_uploads_only_after_complete_validation():
             uploads.append((offset, chunk))
             return offset + len(chunk.encode())
 
-    exporter = _TranscriptExporter(Heartbeat(), ("RESTRICTED-ROW-42",))
+    exporter = _TranscriptExporter(
+        Heartbeat(), ("RESTRICTED-ROW-42",), restricted=True, export_allowed=True,
+    )
     exporter.add("clean live output\n")
     assert uploads == []
     exporter.add("clean tail\n")
@@ -2355,12 +2359,45 @@ def test_unrestricted_transcript_preserves_live_upload_offsets():
             uploads.append((offset, chunk))
             return offset + len(chunk.encode())
 
-    exporter = _TranscriptExporter(Heartbeat(), ())
+    exporter = _TranscriptExporter(Heartbeat(), (), restricted=False, export_allowed=False)
     exporter.add("hé")
     exporter.add("llo")
     exporter.finish()
 
     assert uploads == [(0, "hé"), (3, "llo")]
+
+
+def test_restricted_transcript_without_markers_or_permission_stays_local():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), (), restricted=True, export_allowed=False)
+    exporter.add("private live output\n")
+    exporter.add("private tail\n")
+    exporter.finish()
+
+    assert uploads == []
+
+
+def test_restricted_transcript_without_markers_exports_only_when_permitted():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), (), restricted=True, export_allowed=True)
+    exporter.add("sanitized live output\n")
+    assert uploads == []
+    exporter.add("sanitized tail\n")
+    exporter.finish()
+
+    assert uploads == [(0, "sanitized live output\nsanitized tail\n")]
 
 
 def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
@@ -2502,7 +2539,7 @@ run.save()
         "models": [payload["model"]],
         "tools": [payload["harness"]],
         "artifact_boundary": "private",
-        "evidence_exports": ["validation-state"],
+        "evidence_exports": ["transcript", "validation-state"],
         "synthetic_markers": ["RESTRICTED-ROW-42"],
     }}}
     execute_claim(

@@ -736,24 +736,28 @@ class _LeaseHeartbeat:
 class _TranscriptExporter:
     """Keep restricted transcripts local until their complete contents are safe."""
 
-    def __init__(self, heartbeat: _LeaseHeartbeat, markers: tuple[str, ...]):
+    def __init__(self, heartbeat: _LeaseHeartbeat, markers: tuple[str, ...], *,
+                 restricted: bool, export_allowed: bool):
         self.heartbeat = heartbeat
         self.markers = markers
+        self.restricted = restricted
+        self.export_allowed = export_allowed
         self.offset = 0
         self.buffer: list[str] = []
 
     def add(self, chunk: str) -> None:
         if not chunk:
             return
-        if self.markers:
+        if self.restricted:
             # A marker may span any number of reads. Holding the complete restricted
-            # transcript prevents a safe-looking prefix from crossing the boundary.
+            # transcript prevents a safe-looking prefix from crossing the boundary;
+            # marker absence is never treated as export permission.
             self.buffer.append(chunk)
             return
         self.offset = self.heartbeat.upload(self.offset, chunk)
 
     def finish(self) -> None:
-        if not self.buffer:
+        if not self.buffer or not self.export_allowed:
             return
         transcript = "".join(self.buffer)
         from .restricted_data import validate_restricted_markers
@@ -1215,6 +1219,10 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                     run["restricted_export_markers"] = list(
                         restricted_authorization.synthetic_markers
                     )
+                    run["restricted_data_authorized"] = True
+                    run["restricted_transcript_export"] = (
+                        "transcript" in restricted_authorization.evidence_exports
+                    )
                     run["restricted_artifact_boundary"] = (
                         restricted_authorization.artifact_boundary
                     )
@@ -1319,6 +1327,8 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                 transcript_exporter = _TranscriptExporter(
                     heartbeat,
                     tuple(str(value) for value in run.get("restricted_export_markers") or []),
+                    restricted=bool(run.get("restricted_data_authorized")),
+                    export_allowed=bool(run.get("restricted_transcript_export")),
                 )
                 timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
                 deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
