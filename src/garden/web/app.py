@@ -67,11 +67,15 @@ def _tojson(value: Any) -> Markup:
 
 
 def multiplayer_tls_files(
-    store: Store, host: str, *, require_multiplayer: bool = False,
+    store: Store,
+    host: str,
+    *,
+    require_multiplayer: bool = False,
 ) -> tuple[str, str] | None:
     """Validate and return TLS material required by a non-local multiplayer listener."""
-    if ((not require_multiplayer and not store.config.get("multiplayer.enabled", False))
-            or loopback_listener(host)):
+    if (
+        not require_multiplayer and not store.config.get("multiplayer.enabled", False)
+    ) or loopback_listener(host):
         return None
     if store.config.get("multiplayer.transport", "") != "https":
         raise RuntimeError(
@@ -94,8 +98,14 @@ def multiplayer_tls_files(
     return values[0], values[1]
 
 
-def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None, github: Any | None = None,
-               host: str = "127.0.0.1", port: int | None = None) -> FastAPI:
+def create_app(
+    store: Store,
+    watch: bool = False,
+    plates_dir: Path | None = None,
+    github: Any | None = None,
+    host: str = "127.0.0.1",
+    port: int | None = None,
+) -> FastAPI:
     """The web app. `github` is an optional stand-in for `garden.github.GitHub` that every
     scheduler the app builds will use (`garden qa` passes its pretend GitHub). `host`/`port`
     are the address `garden serve` binds to; they fix the origins a POST may come from."""
@@ -107,8 +117,10 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     allowed = server_origins(host, port, scheme="https" if tls else "http") + [
         str(o) for o in (store.config.get("web.trusted_origins") or [])
     ]
-    tokens = [os.environ.get(str(h.get("token_env") or ""), "")
-              for h in (store.config.get("workers.hosts") or [])]
+    tokens = [
+        os.environ.get(str(h.get("token_env") or ""), "")
+        for h in (store.config.get("workers.hosts") or [])
+    ]
     from ..hosts.registry import authenticate_worker, worker_configuration
 
     operator_env = str(store.config.get("web.operator_token_env") or "")
@@ -116,19 +128,29 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     multiplayer = bool(store.config.get("multiplayer.enabled", False))
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
     local_session_authenticator = None
-    if multiplayer and loopback_listener(host) and store.config.get("multiplayer.coordinator_url", ""):
-        from ..multiplayer_client import MultiplayerClient
+    if multiplayer and loopback_listener(host):
+        from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 
-        connected_client = MultiplayerClient.from_config(store.config)
+        try:
+            connected_client = MultiplayerClient.from_config(store.config)
+        except MultiplayerUnavailable:
+            connected_client = None
         if connected_client is not None:
             local_session_authenticator = connected_client.authenticate_local_session
-    require_operator_auth = multiplayer or not loopback_listener(host) or bool(store.config.get("web.worker_ingress", False))
+    require_operator_auth = (
+        multiplayer
+        or not loopback_listener(host)
+        or bool(store.config.get("web.worker_ingress", False))
+    )
     if require_operator_auth and not operator_token and registry is None:
         raise RuntimeError(
             "operator authentication is required for this listener; set web.operator_token_env "
             "to an environment variable containing its bearer token"
         )
-    if operator_token and authenticate_worker(worker_configuration(store.config), operator_token) is not None:
+    if (
+        operator_token
+        and authenticate_worker(worker_configuration(store.config), operator_token) is not None
+    ):
         raise RuntimeError("operator and worker credentials must be different")
 
     def authenticate_run_credential(token: str) -> Any | None:
@@ -143,8 +165,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             # Keep this explicit in the route inventory so administrative read surfaces
             # cannot accidentally inherit the generic project-read policy.
             normalized = path.rstrip("/") or "/"
-            if (normalized in ADMINISTRATOR_READ_PATHS
-                    or normalized.startswith(ADMINISTRATOR_READ_PREFIXES)):
+            if normalized in ADMINISTRATOR_READ_PATHS or normalized.startswith(
+                ADMINISTRATOR_READ_PREFIXES
+            ):
                 return authorize(principal, "administer")
             parts = path.rstrip("/").split("/")
             project = parts[2] if len(parts) > 2 and parts[1] in {"projects", "phases"} else ""
@@ -158,8 +181,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             if len(parts) > 4 and parts[1:3] == ["api", "operations"]:
                 task = store.tasks().get(parts[3])
                 project = task.product if task else ""
-            collection = (normalized in PROJECT_COLLECTION_PATHS
-                          or path.startswith(PROJECT_COLLECTION_PREFIXES))
+            collection = normalized in PROJECT_COLLECTION_PATHS or path.startswith(
+                PROJECT_COLLECTION_PREFIXES
+            )
             if collection and principal.project_visibility == "assigned" and not principal.projects:
                 # Empty assignment is a valid idle/view-only state; projected collections
                 # render empty rather than turning it into implicit garden-wide access.
@@ -194,20 +218,29 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             task_id = parts[3]
         if not task_id:
             if path.startswith("/decisions/") and len(parts) > 2:
-                decision = State(current_store.config.garden_dir / "state.json").get("_decisions").get(parts[2])
+                decision = (
+                    State(current_store.config.garden_dir / "state.json")
+                    .get("_decisions")
+                    .get(parts[2])
+                )
                 if not isinstance(decision, dict):
                     return False
                 target = current_store.tasks().get(str(decision.get("target") or ""))
                 if target is not None:
                     owner = registry.effective_task_owner(
-                        target, current_store.phase(target.product, target.phase),
+                        target,
+                        current_store.phase(target.product, target.phase),
                     )[0]
                     assignment = registry.assignment(principal.member_id)
-                    return bool(assignment and assignment.enabled
-                                and assignment.project == target.product
-                                and assignment.phase == target.phase
-                                and authorize(principal, "mutate_work", owner_id=owner,
-                                              project=target.product))
+                    return bool(
+                        assignment
+                        and assignment.enabled
+                        and assignment.project == target.product
+                        and assignment.phase == target.phase
+                        and authorize(
+                            principal, "mutate_work", owner_id=owner, project=target.product
+                        )
+                    )
                 product, separator, phase = str(decision.get("phase") or "").partition("/")
                 if separator:
                     return registry.authorize_phase_operation(principal, product, phase)
@@ -218,11 +251,18 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         task = current_store.tasks().get(task_id)
         if task is None:
             return False
-        owner = registry.effective_task_owner(task, current_store.phase(task.product, task.phase))[0]
+        owner = registry.effective_task_owner(task, current_store.phase(task.product, task.phase))[
+            0
+        ]
         assignment = registry.assignment(principal.member_id)
-        return bool(assignment and assignment.enabled
-                    and assignment.project == task.product and assignment.phase == task.phase
-                    and authorize(principal, "mutate_work", owner_id=owner, project=task.product))
+        return bool(
+            assignment
+            and assignment.enabled
+            and assignment.project == task.product
+            and assignment.phase == task.phase
+            and authorize(principal, "mutate_work", owner_id=owner, project=task.product)
+        )
+
     hub = Hub(
         store,
         watch,
@@ -232,7 +272,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
     viewer_only = hub.execution_status()["state"] == "viewer"
 
     app.add_middleware(
-        OriginCheck, allowed_origins=allowed, worker_tokens=tokens,
+        OriginCheck,
+        allowed_origins=allowed,
+        worker_tokens=tokens,
         worker_authenticator=authenticate_run_credential,
         operator_token="" if multiplayer else operator_token,
         require_operator_auth=require_operator_auth,
@@ -249,19 +291,33 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         Safe requests borrow the current copy-on-write generation; actions get a private
         Store because schedulers intentionally mutate their task objects before saving.
         """
-        token = (hub.begin_request() if request.method in {"GET", "HEAD", "OPTIONS"}
-                 else hub.begin_action_request())
+        token = (
+            hub.begin_request()
+            if request.method in {"GET", "HEAD", "OPTIONS"}
+            else hub.begin_action_request()
+        )
         try:
             response = await call_next(request)
             selected_project = request.query_params.get("project")
             parts = request.url.path.strip("/").split("/")
-            detail_scope = (len(parts) > 1 and parts[0] in {
-                "projects", "phases", "tasks", "runs", "investigations",
-            })
-            if (request.method in {"GET", "HEAD"} and selected_project
-                    and not detail_scope and response.status_code < 400):
+            detail_scope = len(parts) > 1 and parts[0] in {
+                "projects",
+                "phases",
+                "tasks",
+                "runs",
+                "investigations",
+            }
+            if (
+                request.method in {"GET", "HEAD"}
+                and selected_project
+                and not detail_scope
+                and response.status_code < 400
+            ):
                 response.set_cookie(
-                    "garden_project", selected_project, samesite="lax", secure=bool(tls),
+                    "garden_project",
+                    selected_project,
+                    samesite="lax",
+                    secure=bool(tls),
                 )
             return response
         finally:
@@ -326,9 +382,15 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         from ..scheduler.state import State
 
         ctrl = State(store.config.garden_dir / "state.json").get("_control")
-        return JSONResponse({"ok": True, "dispatch": ctrl.get("dispatch", "running"),
-                             "by": ctrl.get("by", ""), "at": ctrl.get("at", ""),
-                             "reason": ctrl.get("reason", "")})
+        return JSONResponse(
+            {
+                "ok": True,
+                "dispatch": ctrl.get("dispatch", "running"),
+                "by": ctrl.get("by", ""),
+                "at": ctrl.get("at", ""),
+                "reason": ctrl.get("reason", ""),
+            }
+        )
 
     site = Site(hub, templates, plates, registry)
     pages.register(app, site)
@@ -349,7 +411,9 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
             route_access(str(method), path)
 
     @app.exception_handler(HistoryUnavailable)
-    async def unavailable_history_page(_request: Request, exc: HistoryUnavailable) -> PlainTextResponse:
+    async def unavailable_history_page(
+        _request: Request, exc: HistoryUnavailable
+    ) -> PlainTextResponse:
         return PlainTextResponse(
             f"Run history is temporarily unavailable: {exc}. "
             "Verify or rebuild .garden/run-archive/index.json before relying on totals.",
@@ -364,7 +428,11 @@ def create_app(store: Store, watch: bool = False, plates_dir: Path | None = None
         Internal Server Error. The traceback and the request path go to the log either way."""
         LOGGER.exception("unhandled error rendering %s %s", request.method, request.url.path)
         try:
-            context = site.ctx(request, page="", flash="Something went wrong rendering this page; the error is in the log.")
+            context = site.ctx(
+                request,
+                page="",
+                flash="Something went wrong rendering this page; the error is in the log.",
+            )
             return templates.TemplateResponse(request, "error.html", context, status_code=500)
         except Exception:
             LOGGER.exception("also failed to render the error page for %s", request.url.path)

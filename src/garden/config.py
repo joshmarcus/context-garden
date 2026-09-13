@@ -64,6 +64,7 @@ def _owner_names(owners: Any) -> set[str]:
         return {name for owner in owners.values() for name in _owner_names(owner)}
     return {owners} if isinstance(owners, str) else set()
 
+
 # Config keys read once at startup — either when the Scheduler is constructed or when the
 # watch/serve loop first computes its sleep interval — and so NOT picked up by the per-tick
 # garden.yaml reload (see Store.reload_config_if_changed). Changing one needs a restart;
@@ -72,7 +73,9 @@ RESTART_KEYS: list[str] = [
     field.key for field in CONFIG_FIELDS.values() if field.apply == ApplyMode.RESTART
 ]
 
-NO_LIVE_GARDEN = "no-live-garden"  # subdirectory name used to build a GARDEN_ROOT that can't resolve
+NO_LIVE_GARDEN = (
+    "no-live-garden"  # subdirectory name used to build a GARDEN_ROOT that can't resolve
+)
 
 
 def no_live_garden_root(base: Path) -> str:
@@ -114,10 +117,19 @@ def _normalize_review_count_policy(data: dict[str, Any]) -> None:
 # never hand a worker's own garden.yaml write a route to execute before the fence (at reap)
 # can revert it.
 EXECUTABLE_KEYS: tuple[str, ...] = (
-    "notify.command", "notify.recipient", "notify.destinations", "checks", "worker_env.pass",
-    "worker_env.config_files", "sandbox", "runner_adapters", "workload_identity",
+    "notify.command",
+    "notify.recipient",
+    "notify.destinations",
+    "checks",
+    "worker_env.pass",
+    "worker_env.config_files",
+    "sandbox",
+    "runner_adapters",
+    "workload_identity",
     "restricted_data",
-    "worker_configurations", "worker_instances", "plugins",
+    "worker_configurations",
+    "worker_instances",
+    "plugins",
 )
 
 
@@ -146,7 +158,8 @@ def executable_signature(data: dict[str, Any]) -> dict[str, Any]:
     }
     sig["harnesses"] = {
         name: {"bin": h.get("bin"), "command": h.get("command")}
-        for name, h in (data.get("harnesses") or {}).items() if isinstance(h, dict)
+        for name, h in (data.get("harnesses") or {}).items()
+        if isinstance(h, dict)
     }
     return sig
 
@@ -218,13 +231,13 @@ def apply_executable_signature(data: dict[str, Any], signature: dict[str, Any]) 
 
 
 DEFAULTS: dict[str, Any] = {
-    "work_dir": "",               # product clones and worktrees; empty = .garden (see Config.work_dir)
-    "worktrees": {"keep_days": 2}, # prune terminal-task worktrees after this age
+    "work_dir": "",  # product clones and worktrees; empty = .garden (see Config.work_dir)
+    "worktrees": {"keep_days": 2},  # prune terminal-task worktrees after this age
     "storage_cleanup": {
-        "limit": 20,                # maximum trees/caches removed by one incremental sweep
-        "home_keep_days": 2,        # retain recently used isolated worker homes
-        "audit_keep": 20,           # bounded durable sweep receipts
-        "inventory_limit": 2000,    # maximum owned paths classified by one pass
+        "limit": 20,  # maximum trees/caches removed by one incremental sweep
+        "home_keep_days": 2,  # retain recently used isolated worker homes
+        "audit_keep": 20,  # bounded durable sweep receipts
+        "inventory_limit": 2000,  # maximum owned paths classified by one pass
     },
     "branches": {
         "remote": "origin",
@@ -237,6 +250,7 @@ DEFAULTS: dict[str, Any] = {
     # Membership records and credential verifiers live in .garden/members.json, never here.
     "multiplayer": {
         "enabled": False,
+        "git": {"remote": "origin", "state_ref": "refs/heads/garden-state"},
         # Enrollment belongs in garden.local.yaml. The secret itself stays in the named
         # environment variable, outside both shared context and Config.
         "garden_id": "",
@@ -270,12 +284,12 @@ DEFAULTS: dict[str, Any] = {
     "harness": "claude",
     "max_parallel": 10,
     "phase_execution": "concurrent",  # concurrent (legacy behavior) or earliest open phase per product
-    "review_parallel": None,      # concurrent review/persona/comparison runs; None = same as max_parallel
-    "resources": {               # host-wide local admission; thresholds of 0 disable sensing
-        "max_parallel": None,     # capacity units shared by workers + reviews + checks
-        "weight": 1,              # default reservation per run, in capacity units
-        "max_bypasses": 3,        # cheap claims allowed past an older heavy run before reserving room
-        "heavy_test_parallel": 1, # per-user supported setup/check/validation capacity
+    "review_parallel": None,  # concurrent review/persona/comparison runs; None = same as max_parallel
+    "resources": {  # host-wide local admission; thresholds of 0 disable sensing
+        "max_parallel": None,  # capacity units shared by workers + reviews + checks
+        "weight": 1,  # default reservation per run, in capacity units
+        "max_bypasses": 3,  # cheap claims allowed past an older heavy run before reserving room
+        "heavy_test_parallel": 1,  # per-user supported setup/check/validation capacity
         # A detached check can wait for the host-wide heavy-validation lease without looking
         # like a silent worker.  This is deliberately separate from idle_kill_minutes: the
         # supervisor reports admission state, while idle detection reports missing progress.
@@ -285,8 +299,8 @@ DEFAULTS: dict[str, Any] = {
         "disk_reserve_bytes": 20 * 1024**3,
         "operation_required_bytes": 0,
         "windows_backing_path": "",
-        "execution_cgroup": "",   # delegated cgroup directory for local run descendants
-        "reclaim_max_mb": 512,     # bounded best-effort file-cache reclaim; 0 disables it
+        "execution_cgroup": "",  # delegated cgroup directory for local run descendants
+        "reclaim_max_mb": 512,  # bounded best-effort file-cache reclaim; 0 disables it
         "reclaim_timeout_seconds": 5,
         "reclaim_cooldown_seconds": 300,
     },
@@ -299,8 +313,8 @@ DEFAULTS: dict[str, Any] = {
         "decision_after": 6,
     },
     "timeout_minutes": 90,
-    "idle_minutes": 10,           # warn: show "idle N min" once a running worker has gone this long with no output or file change
-    "idle_kill_minutes": 20,      # stop: past this a silent worker is killed and handled like a timeout (retry or fail); 0 disables
+    "idle_minutes": 10,  # warn: show "idle N min" once a running worker has gone this long with no output or file change
+    "idle_kill_minutes": 20,  # stop: past this a silent worker is killed and handled like a timeout (retry or fail); 0 disables
     "tick_interval": 60,
     "auto_revise": True,
     "auto_dispatch": True,
@@ -311,13 +325,13 @@ DEFAULTS: dict[str, Any] = {
         # authority, not permission to change a product outcome.
         "delegated": False,
     },
-    "upgrade": "manual",          # "auto" upgrades the pinned tool install on the next idle tick;
-                                  # may also be a mapping {auto, package, pip} (see Config.upgrade_*)
+    "upgrade": "manual",  # "auto" upgrades the pinned tool install on the next idle tick;
+    # may also be a mapping {auto, package, pip} (see Config.upgrade_*)
     "plan": {"auto_approve": True},
-    "stack": True,                # start tasks on top of a dependency's open PR branch
+    "stack": True,  # start tasks on top of a dependency's open PR branch
     "discovered": {"auto_approve_blocking": True},  # blocking discovered work is created ready
-    "stall": {"enabled": True},   # escalate to a human when revise rounds stop changing the diff
-    "budgets": {},                # "<product>/<phase>": usd cap; also products.<name>.budget_usd
+    "stall": {"enabled": True},  # escalate to a human when revise rounds stop changing the diff
+    "budgets": {},  # "<product>/<phase>": usd cap; also products.<name>.budget_usd
     # One hard execution budget for worker-issued validations and detached checks. Admission
     # waiting is reported separately by run_supervisor and does not consume this clock.
     "checks": {"pre_pr": [], "ci": [], "timeout_seconds": 900},
@@ -327,63 +341,71 @@ DEFAULTS: dict[str, Any] = {
         # The UI check still records a failure; only its trusted infrastructure cause becomes
         # advisory. Visible/application/check failures remain blocking.
         "capture_infrastructure_policy": "require",  # require | advisory
-        "max_rounds": 2,          # positive automated-review cap per PR; null means unlimited
-        "friction_after": 4,      # positive round count that records a non-blocking loop signal; null disables it
+        "max_rounds": 2,  # positive automated-review cap per PR; null means unlimited
+        "friction_after": 4,  # positive round count that records a non-blocking loop signal; null disables it
         "max_diff_chars": 60000,  # bigger diffs are read by the reviewer from git
-        "harness": "",            # empty = default harness
-        "difficulty": "",         # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
-        "ladder": [],              # weakest-to-strongest `harness:model` PR reviewer route
-        "personas": [],           # persona reviews to run on every new PR round, e.g. [security]
-        "recovery_attempts": 2,   # bounded retries for a review that never yields a verdict
+        "harness": "",  # empty = default harness
+        "difficulty": "",  # empty = the task's difficulty tier; or easy|medium|hard; PR reviews only
+        "ladder": [],  # weakest-to-strongest `harness:model` PR reviewer route
+        "personas": [],  # persona reviews to run on every new PR round, e.g. [security]
+        "recovery_attempts": 2,  # bounded retries for a review that never yields a verdict
         "recovery_backoff_seconds": 30,  # linear delay before each recovered review admission
     },
     "retro": {
-        "auto_start": False,     # queue a phase-closing review once its declared gates pass
-        "personas": [],          # empty = the configured/built-in phase personas
-        "prerequisites": {},     # phase key -> phase keys which must already be closed
+        "auto_start": False,  # queue a phase-closing review once its declared gates pass
+        "personas": [],  # empty = the configured/built-in phase personas
+        "prerequisites": {},  # phase key -> phase keys which must already be closed
         "require_owner_approval": False,
-        "allow_frozen": False,   # freezes are holds unless closing review explicitly opts in
-        "difficulty": "hard",     # tier for persona reviews (phase and PR), the retro reconciliation and
-                                  # trial comparisons; separate from review.difficulty so nobody has to
-                                  # edit config before a retro
-        "model": "",              # names the judge's model outright, for the default harness (see
-                                  # harnesses.<h>.retro_model for a non-default harness); wins over the
-                                  # tier map above so a garden can price work cheaply and still judge on
-                                  # its best model without editing the hard tier
+        "allow_frozen": False,  # freezes are holds unless closing review explicitly opts in
+        "difficulty": "hard",  # tier for persona reviews (phase and PR), the retro reconciliation and
+        # trial comparisons; separate from review.difficulty so nobody has to
+        # edit config before a retro
+        "model": "",  # names the judge's model outright, for the default harness (see
+        # harnesses.<h>.retro_model for a non-default harness); wins over the
+        # tier map above so a garden can price work cheaply and still judge on
+        # its best model without editing the hard tier
     },
     "harnesses": {},
-    "models": {},               # tier -> model string, or [{harness, model, weight}] pool
+    "models": {},  # tier -> model string, or [{harness, model, weight}] pool
     "dispatch": {"spread": "quota_aware", "quota_window_hours": 6},
-    "prices": {},              # generic per-model price table (input/cached_input/cache_write/output per
-                               # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
-                               # the codex defaults and docs/codex.md for where the numbers came from
-    "ssh": {"hosts": [],
-            "probe_interval_seconds": 300,  # cadence of the bounded read-only host probe
-            "probe_timeout_seconds": 15},   # per-host bound on one probe
+    "prices": {},  # generic per-model price table (input/cached_input/cache_write/output per
+    # million tokens) any harness can draw on; see harness.DEFAULT_HARNESSES for
+    # the codex defaults and docs/codex.md for where the numbers came from
+    "ssh": {
+        "hosts": [],
+        "probe_interval_seconds": 300,  # cadence of the bounded read-only host probe
+        "probe_timeout_seconds": 15,
+    },  # per-host bound on one probe
     "workers": {"lease_seconds": 120, "recovery_seconds": 300, "poll_seconds": 5, "hosts": []},
-    "git": {"user_name": "", "user_email": ""},  # identity written into a fresh product clone; see Scheduler.git_identity
+    "git": {
+        "user_name": "",
+        "user_email": "",
+    },  # identity written into a fresh product clone; see Scheduler.git_identity
     "brief": {
         "inline_max_chars": 24000,  # reading-list files larger than this are listed, not inlined
         "total_max_chars": 120000,
     },
     "github": {
         "use_gh": True,  # prefer the gh CLI when available, else REST with GITHUB_TOKEN
-        "draft_pr": True,         # open PRs as drafts; the human's triage marks them ready for review
-        "project_users": [],      # additional PR authors shown in repository observations; the
-                                   # authenticated user is always included
+        "draft_pr": True,  # open PRs as drafts; the human's triage marks them ready for review
+        "project_users": [],  # additional PR authors shown in repository observations; the
+        # authenticated user is always included
         "reviewers": [],
-        "trusted_authors": [],    # logins whose PR comments may become a worker prompt, besides the
-                                  # garden's own login and `reviewers`; others are logged and ignored
-        "trusted_bots": [],       # [bot] logins whose PR comments may become a worker prompt; empty by
-                                  # default, so no review app is trusted until its login is named here
-        "automerge": False,       # let the scheduler merge a PR once every loop gate is green (off by default)
-        "automerge_method": "squash",           # squash | merge | rebase
+        "trusted_authors": [],  # logins whose PR comments may become a worker prompt, besides the
+        # garden's own login and `reviewers`; others are logged and ignored
+        "trusted_bots": [],  # [bot] logins whose PR comments may become a worker prompt; empty by
+        # default, so no review app is trusted until its login is named here
+        "automerge": False,  # let the scheduler merge a PR once every loop gate is green (off by default)
+        "automerge_method": "squash",  # squash | merge | rebase
         "automerge_require_current_base": True,  # rebase onto the latest base before merging
-        "automerge_min_review_rounds": 1,        # legacy values above one are normalized to one
-        "automerge_tiers": ["easy", "medium"],   # only these difficulty tiers automerge under the plain policy
-        "automerge_hard_tier": True,             # also merge hard-tier PRs after the configured review
-                                                 # rounds and the garden's own scratch-merge check; off to
-                                                 # keep hard-tier merges by hand
+        "automerge_min_review_rounds": 1,  # legacy values above one are normalized to one
+        "automerge_tiers": [
+            "easy",
+            "medium",
+        ],  # only these difficulty tiers automerge under the plain policy
+        "automerge_hard_tier": True,  # also merge hard-tier PRs after the configured review
+        # rounds and the garden's own scratch-merge check; off to
+        # keep hard-tier merges by hand
     },
     "ci": {
         # github preserves the existing PR-rollup gate. worker_check accepts only durable
@@ -393,24 +415,24 @@ DEFAULTS: dict[str, Any] = {
         "worker_check": {"command": ""},
     },
     "notify": {
-        "command": "",            # shell command to run when a task needs a human; empty = disabled
-        "timeout_seconds": 30,    # timeout for the command
-        "recipient": "",          # fixed calling user included in GARDEN_NOTIFICATION_JSON; never task text
-        "destinations": {},         # trusted logical destination -> typed adapter configuration
+        "command": "",  # shell command to run when a task needs a human; empty = disabled
+        "timeout_seconds": 30,  # timeout for the command
+        "recipient": "",  # fixed calling user included in GARDEN_NOTIFICATION_JSON; never task text
+        "destinations": {},  # trusted logical destination -> typed adapter configuration
     },
     "worker_env": {
-        "pass": [],               # extra environment variable names or globs a worker and its setup
-                                  # command keep, on top of runner.base.PASS_ENV; everything else is
-                                  # dropped. HOME is not inherited (a worker runs under an isolated
-                                  # scratch home); add "HOME" here to restore the operator's, or "*"
-                                  # for full inheritance.
-        "config_dirs": {},        # override credential *sources*, keyed by the environment
-                                  # variable the harness reads. Claude's .credentials.json and
-                                  # Codex's auth.json are copied into fresh writable harness
-                                  # state per dispatch; source files remain protected and
-                                  # custom variables pass through unchanged.
-        "config_files": {},       # explicitly named {source, destination, required} files;
-                                  # destinations are relative to the isolated worker HOME.
+        "pass": [],  # extra environment variable names or globs a worker and its setup
+        # command keep, on top of runner.base.PASS_ENV; everything else is
+        # dropped. HOME is not inherited (a worker runs under an isolated
+        # scratch home); add "HOME" here to restore the operator's, or "*"
+        # for full inheritance.
+        "config_dirs": {},  # override credential *sources*, keyed by the environment
+        # variable the harness reads. Claude's .credentials.json and
+        # Codex's auth.json are copied into fresh writable harness
+        # state per dispatch; source files remain protected and
+        # custom variables pass through unchanged.
+        "config_files": {},  # explicitly named {source, destination, required} files;
+        # destinations are relative to the isolated worker HOME.
     },
     "sandbox": {
         # Opt in to fail-closed execution isolation. Agent runs use their native sandbox;
@@ -420,29 +442,33 @@ DEFAULTS: dict[str, Any] = {
         "command": [],
     },
     "browser_readiness": {
-        "timeout_seconds": 20,   # bounded Chromium launch before capture-required work dispatches
-        "retry_seconds": 300,    # retry an unchanged failed environment at most this often
+        "timeout_seconds": 20,  # bounded Chromium launch before capture-required work dispatches
+        "retry_seconds": 300,  # retry an unchanged failed environment at most this often
     },
     "web": {
-        "trusted_origins": [],    # origins besides the server's own loopback host whose POSTs
-                                  # `garden serve` accepts, e.g. [https://garden.internal] behind a
-                                  # reverse proxy, or a LAN address the browser reaches it by
-        "operator_token_env": "", # operator bearer token; required beyond loopback
+        "trusted_origins": [],  # origins besides the server's own loopback host whose POSTs
+        # `garden serve` accepts, e.g. [https://garden.internal] behind a
+        # reverse proxy, or a LAN address the browser reaches it by
+        "operator_token_env": "",  # operator bearer token; required beyond loopback
         "worker_ingress": False,  # require it on a loopback bind published to remote workers
     },
     "observe": {
-        "interval": "30m",        # `garden observe --follow`: seconds between passes (30m, 2h, ... or a bare number of seconds)
-        "digest_window": "30m",   # how far back each pass's digest looks
-        "events": ["question", "needs_human", "failed"],  # kinds (or aliases; see garden.observe) `--follow` streams between passes
-        "stuck_after": "15m",     # a running run with no output for this long is a stuck card
-        "line_width": 160,        # wrap width for the text output
-        "phases": "open",         # "open", or a list of "product/phase" keys, scoping the status line's counts
-        "profile": "",            # one of the built-ins (quiet, watch, debug) or a name from `profiles`; empty = the fields above as-is
-        "profiles": {},           # name -> partial override of interval/digest_window/events/stuck_after/line_width/phases
+        "interval": "30m",  # `garden observe --follow`: seconds between passes (30m, 2h, ... or a bare number of seconds)
+        "digest_window": "30m",  # how far back each pass's digest looks
+        "events": [
+            "question",
+            "needs_human",
+            "failed",
+        ],  # kinds (or aliases; see garden.observe) `--follow` streams between passes
+        "stuck_after": "15m",  # a running run with no output for this long is a stuck card
+        "line_width": 160,  # wrap width for the text output
+        "phases": "open",  # "open", or a list of "product/phase" keys, scoping the status line's counts
+        "profile": "",  # one of the built-ins (quiet, watch, debug) or a name from `profiles`; empty = the fields above as-is
+        "profiles": {},  # name -> partial override of interval/digest_window/events/stuck_after/line_width/phases
     },
-    "operating_profile": "",      # the active stop (economy|balanced|fast, or a name from `profiles`); empty = plain config values
-    "profiles": {},               # name -> partial stop (workers, reviews, models, review_difficulty, retro_difficulty, observe);
-                                  # see garden.profiles.BUILTIN_PROFILES for the built-in economy/balanced/fast stops
+    "operating_profile": "",  # the active stop (economy|balanced|fast, or a name from `profiles`); empty = plain config values
+    "profiles": {},  # name -> partial stop (workers, reviews, models, review_difficulty, retro_difficulty, observe);
+    # see garden.profiles.BUILTIN_PROFILES for the built-in economy/balanced/fast stops
     "products": {},
     # Trusted logical names. Definitions describe authority; requesting a name never grants it.
     "capability_definitions": {},
@@ -479,9 +505,26 @@ class Config:
                 documents.append((name, raw))
         _validate_product_policies(data)
         validate_configuration(data)
+        multiplayer = data.get("multiplayer", {})
+        if not isinstance(multiplayer, dict):
+            raise ValueError("multiplayer must be a mapping")
+        if not isinstance(multiplayer.get("enabled", False), bool):
+            raise ValueError("multiplayer.enabled must be true or false")
+        git_settings = multiplayer.get("git", {})
+        if not isinstance(git_settings, dict):
+            raise ValueError("multiplayer.git must be a mapping")
+        remote = git_settings.get("remote", "origin")
+        state_ref = git_settings.get("state_ref", "refs/heads/garden-state")
+        if not isinstance(remote, str) or not remote.strip():
+            raise ValueError("multiplayer.git.remote must be a non-empty remote alias")
+        if (
+            not isinstance(state_ref, str)
+            or not state_ref.startswith("refs/heads/")
+            or any(character.isspace() for character in state_ref)
+        ):
+            raise ValueError("multiplayer.git.state_ref must be a full branch ref")
         _normalize_review_count_policy(data)
-        return cls(root=root, data=data, sources=sources, env=env,
-                   source_documents=documents)
+        return cls(root=root, data=data, sources=sources, env=env, source_documents=documents)
 
     def editable(self) -> Config:
         """The defaults plus the document the Configuration page can actually change."""
@@ -495,18 +538,15 @@ class Config:
         if path.exists():
             documents.append((CONFIG_NAME, raw))
             sources.append(CONFIG_NAME)
-        return type(self)(self.root, _merge(dict(DEFAULTS), raw), sources, self.env,
-                          documents)
+        return type(self)(self.root, _merge(dict(DEFAULTS), raw), sources, self.env, documents)
 
     def setting_source(self, key: str, product: str | None = None) -> str:
         """Name the source documents that contribute the resolved saved value."""
-        project_has_override = product is not None and key in product_configuration(
-            self.data, product
-        )[0]
+        project_has_override = (
+            product is not None and key in product_configuration(self.data, product)[0]
+        )
         resolved_lock = (
-            product_configuration(self.data, product)[1].get(key)
-            if product is not None
-            else None
+            product_configuration(self.data, product)[1].get(key) if product is not None else None
         )
         policy_supplies_value = isinstance(resolved_lock, dict) and "value" in resolved_lock
         owners: Any = None
@@ -589,7 +629,9 @@ class Config:
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"revision_policy.{key} must be a positive integer")
         if decision_after < every:
-            raise ValueError("revision_policy.decision_after must be at least revision_policy.every")
+            raise ValueError(
+                "revision_policy.decision_after must be at least revision_policy.every"
+            )
         return {"enabled": enabled, "every": every, "decision_after": decision_after}
 
     def _positive_optional_int(self, dotted: str) -> int | None:
@@ -607,16 +649,22 @@ class Config:
         """A configuration value with its global/project/policy provenance."""
         return resolve_value(self.data, key, product)
 
-    def execution_requirements(self, task: Task, phase: Phase | None = None) -> ExecutionRequirements:
+    def execution_requirements(
+        self, task: Task, phase: Phase | None = None
+    ) -> ExecutionRequirements:
         """Resolve product, phase, and task policy monotonically with source attribution."""
         product = self.product(task.product)
-        layers = [parse_execution_requirements(
-            product.get("execution_requirements"), source=f"product:{task.product}"
-        )]
+        layers = [
+            parse_execution_requirements(
+                product.get("execution_requirements"), source=f"product:{task.product}"
+            )
+        ]
         if phase is not None:
-            layers.append(parse_execution_requirements(
-                phase.meta.get("execution_requirements"), source=f"phase:{phase.key}"
-            ))
+            layers.append(
+                parse_execution_requirements(
+                    phase.meta.get("execution_requirements"), source=f"phase:{phase.key}"
+                )
+            )
         layers.append(task.execution_requirements)
         effective = merge_execution_requirements(*layers)
         definitions = self.data.get("capability_definitions") or {}
@@ -627,7 +675,8 @@ class Config:
             effective, self.data.get("execution_limits") or {}, "execution_limits"
         )
         _enforce_execution_limits(
-            effective, product.get("execution_limits") or {},
+            effective,
+            product.get("execution_limits") or {},
             f"products.{task.product}.execution_limits",
         )
         return effective
@@ -645,10 +694,18 @@ class Config:
         """Return private authenticated instances; several may use the same template."""
         from .hosts import worker_instance_from_dict
 
-        return tuple(worker_instance_from_dict(value) for value in self.data.get("worker_instances") or [])
+        return tuple(
+            worker_instance_from_dict(value) for value in self.data.get("worker_instances") or []
+        )
 
-    def save_changes(self, changes: dict[str, Any], *, product: str | None = None,
-                     expected_revision: str | None = None, reset: bool = False) -> Config:
+    def save_changes(
+        self,
+        changes: dict[str, Any],
+        *,
+        product: str | None = None,
+        expected_revision: str | None = None,
+        reset: bool = False,
+    ) -> Config:
         """Atomically update known settings in ``garden.yaml`` and return the reloaded config.
 
         The optimistic token describes the fully layered document the caller read. Only the
@@ -661,11 +718,20 @@ class Config:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
             current = type(self).load(self.root, self.env)
             return current._save_changes_locked(
-                changes, product=product, expected_revision=expected_revision, reset=reset,
+                changes,
+                product=product,
+                expected_revision=expected_revision,
+                reset=reset,
             )
 
-    def _save_changes_locked(self, changes: dict[str, Any], *, product: str | None,
-                             expected_revision: str | None, reset: bool) -> Config:
+    def _save_changes_locked(
+        self,
+        changes: dict[str, Any],
+        *,
+        product: str | None,
+        expected_revision: str | None,
+        reset: bool,
+    ) -> Config:
         if expected_revision is not None and expected_revision != revision(self.data):
             raise RuntimeError("configuration changed since it was read; reload and try again")
         path = self.root / CONFIG_NAME
@@ -752,22 +818,19 @@ class Config:
         value = self.product(name).get("source_control")
         if value is None:
             github = self.product_github(name)
-            return ({"provider": "github", "repository": github.pop("slug"), **github}
-                    if github else {})
+            return (
+                {"provider": "github", "repository": github.pop("slug"), **github} if github else {}
+            )
         if not isinstance(value, dict):
             raise ValueError(f"products.{name}.source_control must be a mapping")
         provider = str(value.get("provider") or "")
         repository = str(value.get("repository") or "")
         if not provider or not repository:
-            raise ValueError(
-                f"products.{name}.source_control requires provider and repository"
-            )
+            raise ValueError(f"products.{name}.source_control requires provider and repository")
         web_url = str(value.get("web_url") or "")
         api_url = str(value.get("api_url") or "")
         if not web_url or not api_url:
-            raise ValueError(
-                f"products.{name}.source_control requires web_url and api_url"
-            )
+            raise ValueError(f"products.{name}.source_control requires web_url and api_url")
         return {
             "provider": provider,
             "repository": repository,
@@ -883,8 +946,12 @@ class Config:
         exact-head validation receipt, while ``scheduler`` runs the command itself on the
         controller and reads one exact-head CI answer back from it.
         """
-        base = {"provider": "legacy", "command": "", "run_by": "worker",
-                "timeout_seconds": DEFAULT_COMMAND_TIMEOUT_SECONDS}
+        base = {
+            "provider": "legacy",
+            "command": "",
+            "run_by": "worker",
+            "timeout_seconds": DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        }
         value = self.product(name).get("validation")
         if value is None:
             return base
@@ -894,11 +961,13 @@ class Config:
             raise ValueError(f"products.{name}.validation must be a string or mapping")
         # An unusable budget stays unusable here; the provider fails closed on it rather
         # than borrowing the default (validation rejects it at load).
-        return {**base,
-                "provider": str(value.get("provider") or ""),
-                "command": str(value.get("command") or ""),
-                "run_by": str(value.get("run_by") or "worker"),
-                "timeout_seconds": command_timeout(value.get("timeout_seconds"))}
+        return {
+            **base,
+            "provider": str(value.get("provider") or ""),
+            "command": str(value.get("command") or ""),
+            "run_by": str(value.get("run_by") or "worker"),
+            "timeout_seconds": command_timeout(value.get("timeout_seconds")),
+        }
 
     def product_ci_policy(self, name: str) -> dict[str, Any]:
         """Resolve the exact-head gate from the product validation policy.
@@ -919,8 +988,10 @@ class Config:
                 return {
                     "status_provider": "command",
                     "required": True,
-                    "command": {"command": validation["command"],
-                                "timeout_seconds": validation["timeout_seconds"]},
+                    "command": {
+                        "command": validation["command"],
+                        "timeout_seconds": validation["timeout_seconds"],
+                    },
                 }
             return {
                 "status_provider": "worker_check",
@@ -938,6 +1009,7 @@ class Config:
         """
         value = self.product(name).get("checkout")
         return dict(value) if isinstance(value, dict) else {}
+
     def product_timeout_minutes(self, name: str) -> float:
         """Worker/revision wall-clock budget, inherited from the garden default.
 
@@ -955,7 +1027,9 @@ class Config:
             raise ValueError(f"products.{name}.resources must be a mapping")
         value = resources.get("weight", self.get("resources.weight", 1))
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(f"products.{name}.resources.weight must be a positive integer (capacity units)")
+            raise ValueError(
+                f"products.{name}.resources.weight must be a positive integer (capacity units)"
+            )
         return value
 
     def product_checks(self, name: str) -> dict[str, Any]:
@@ -996,7 +1070,11 @@ class Config:
         # editing one price in garden.yaml does not silently drop the rest of the table.
         default_prices = dict((DEFAULT_HARNESSES.get(name) or {}).get("prices") or {})
         generic_prices = self.data.get("prices")
-        merged = {**default_prices, **(generic_prices if isinstance(generic_prices, dict) else {}), **(cfg.get("prices") or {})}
+        merged = {
+            **default_prices,
+            **(generic_prices if isinstance(generic_prices, dict) else {}),
+            **(cfg.get("prices") or {}),
+        }
         if merged:
             cfg["prices"] = merged
         return Harness(name, cfg)
@@ -1004,7 +1082,9 @@ class Config:
     def harness_choices(self) -> dict[str, list[str]]:
         """harness name -> known model choices, for every harness under `harnesses:` (or
         just the default harness if none is configured) — populates trial contender pickers."""
-        names = list((self.data.get("harnesses") or {}).keys()) or [str(self.get("harness") or "claude")]
+        names = list((self.data.get("harnesses") or {}).keys()) or [
+            str(self.get("harness") or "claude")
+        ]
         return {name: self.harness(name).known_models() for name in names}
 
     # ---- self-upgrade (the pinned tool install) ----------------------------
@@ -1098,15 +1178,19 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
     if not isinstance(remote, str) or not remote.strip():
         raise ValueError("branches.remote must be a non-empty remote name")
     protected_branches = branches.get("protected", [])
-    if (not isinstance(protected_branches, list)
-            or any(not isinstance(branch, str) or not branch.strip() for branch in protected_branches)):
+    if not isinstance(protected_branches, list) or any(
+        not isinstance(branch, str) or not branch.strip() for branch in protected_branches
+    ):
         raise ValueError("branches.protected must be a list of non-empty branch names")
     cleanup_limit = branches.get("cleanup_limit", 20)
     if isinstance(cleanup_limit, bool) or not isinstance(cleanup_limit, int) or cleanup_limit < 0:
         raise ValueError("branches.cleanup_limit must be a non-negative integer")
     remote_timeout = branches.get("remote_timeout_seconds", 5)
-    if (isinstance(remote_timeout, bool) or not isinstance(remote_timeout, (int, float))
-            or remote_timeout <= 0):
+    if (
+        isinstance(remote_timeout, bool)
+        or not isinstance(remote_timeout, (int, float))
+        or remote_timeout <= 0
+    ):
         raise ValueError("branches.remote_timeout_seconds must be a positive number")
     storage = data.get("storage_cleanup") or {}
     if not isinstance(storage, dict):
@@ -1140,9 +1224,9 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         product_requirements = parse_execution_requirements(
             product.get("execution_requirements"), source=f"products.{name}"
         )
-        unknown = sorted(set(product_requirements.capabilities) - set(
-            data.get("capability_definitions", {})
-        ))
+        unknown = sorted(
+            set(product_requirements.capabilities) - set(data.get("capability_definitions", {}))
+        )
         if unknown:
             raise ValueError(
                 f"products.{name}.execution_requirements has unknown capabilities: "
@@ -1156,13 +1240,21 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
         if owner not in ("garden", "external"):
             raise ValueError(f"products.{name}.stack_owner must be 'garden' or 'external'")
         paths = product.get("protected_paths", [])
-        if not isinstance(paths, list) or any(not isinstance(path, str) or not path for path in paths):
-            raise ValueError(f"products.{name}.protected_paths must be a list of non-empty patterns")
+        if not isinstance(paths, list) or any(
+            not isinstance(path, str) or not path for path in paths
+        ):
+            raise ValueError(
+                f"products.{name}.protected_paths must be a list of non-empty patterns"
+            )
         if "pull_request_template" in product:
             template = product["pull_request_template"]
             path = Path(template) if isinstance(template, str) else None
-            if (not isinstance(template, str) or not template.strip() or path.is_absolute()
-                    or ".." in path.parts):
+            if (
+                not isinstance(template, str)
+                or not template.strip()
+                or path.is_absolute()
+                or ".." in path.parts
+            ):
                 raise ValueError(
                     f"products.{name}.pull_request_template must be a non-empty, "
                     "repository-relative path without '..'"
@@ -1188,12 +1280,20 @@ def _validate_product_policies(data: dict[str, Any]) -> None:
                 raise ValueError(
                     f"products.{name}.validation.provider must be 'actions', 'status', 'command', or 'none'"
                 )
-            if provider == "command" and (not isinstance(validation_command, str) or not validation_command.strip()):
-                raise ValueError(f"products.{name}.validation.command is required for the command provider")
+            if provider == "command" and (
+                not isinstance(validation_command, str) or not validation_command.strip()
+            ):
+                raise ValueError(
+                    f"products.{name}.validation.command is required for the command provider"
+                )
             if provider != "command" and validation_command:
-                raise ValueError(f"products.{name}.validation.command is only valid with the command provider")
+                raise ValueError(
+                    f"products.{name}.validation.command is only valid with the command provider"
+                )
             if run_by not in ("worker", "scheduler"):
-                raise ValueError(f"products.{name}.validation.run_by must be 'worker' or 'scheduler'")
+                raise ValueError(
+                    f"products.{name}.validation.run_by must be 'worker' or 'scheduler'"
+                )
             if provider != "command" and run_by != "worker":
                 raise ValueError(
                     f"products.{name}.validation.run_by is only valid with the command provider"
@@ -1248,24 +1348,35 @@ def _validate_worker_configurations(data: dict[str, Any]) -> None:
     identities: set[tuple[str, str]] = set()
     credential_owners: dict[str, tuple[str, str]] = {}
     for instance in instances:
-        if (not isinstance(instance.instance_id, str) or not instance.instance_id.strip()
-                or instance.instance_id in instance_ids):
+        if (
+            not isinstance(instance.instance_id, str)
+            or not instance.instance_id.strip()
+            or instance.instance_id in instance_ids
+        ):
             raise ValueError("worker instances require unique non-empty instance IDs")
         instance_ids.add(instance.instance_id)
         profile = profiles.get(instance.configuration)
         if profile is None:
-            raise ValueError(f"worker instance {instance.instance_id!r} references unknown configuration")
-        if (instance.configuration_version != profile.version
-                or instance.profile_generation != profile.generation):
-            raise ValueError(f"worker instance {instance.instance_id!r} has a stale profile generation")
+            raise ValueError(
+                f"worker instance {instance.instance_id!r} references unknown configuration"
+            )
+        if (
+            instance.configuration_version != profile.version
+            or instance.profile_generation != profile.generation
+        ):
+            raise ValueError(
+                f"worker instance {instance.instance_id!r} has a stale profile generation"
+            )
         identity = (instance.operating_user, instance.installation_id)
         if not all(identity) or identity in identities:
             raise ValueError("worker instances require unique user-owned installation bindings")
         identities.add(identity)
         for binding in instance.identity_bindings:
-            if (binding.identity_reference not in profile.identity_references
-                    or binding.operating_user != instance.operating_user
-                    or binding.installation_id != instance.installation_id):
+            if (
+                binding.identity_reference not in profile.identity_references
+                or binding.operating_user != instance.operating_user
+                or binding.installation_id != instance.installation_id
+            ):
                 raise ValueError(
                     f"worker instance {instance.instance_id!r} has an identity binding outside "
                     "its profile, operating user, or installation"
@@ -1284,10 +1395,15 @@ def _validate_capability_definitions(value: Any) -> None:
         raise ValueError("capability_definitions must be a mapping")
     for name, definition in value.items():
         if not isinstance(name, str) or not re.fullmatch(
-                r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*", name):
+            r"[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*", name
+        ):
             raise ValueError(f"invalid capability definition name {name!r}")
-        if (not isinstance(definition, dict) or set(definition) - {
-                "type", "description", "issuer", "privileged"}):
+        if not isinstance(definition, dict) or set(definition) - {
+            "type",
+            "description",
+            "issuer",
+            "privileged",
+        }:
             raise ValueError(f"capability_definitions.{name} has unknown fields")
         for key in ("type", "description", "issuer"):
             if not isinstance(definition.get(key), str) or not definition[key].strip():
@@ -1301,7 +1417,9 @@ def _validate_execution_limits(value: Any, source: str) -> None:
         raise ValueError(f"{source} must contain only memory_mib, vcpu, and gpu")
     for key in ("memory_mib", "vcpu"):
         limit = value.get(key)
-        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 0):
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
+        ):
             raise ValueError(f"{source}.{key} must be a non-negative whole number")
     gpu = value.get("gpu")
     if gpu is not None:
@@ -1320,12 +1438,16 @@ def _enforce_execution_limits(requirements: ExecutionRequirements, value: Any, s
     }
     for key, requested in checks.items():
         if key in value and requested > value[key]:
-            raise ValueError(f"{key} requirement {requested} exceeds deployment ceiling {value[key]}")
+            raise ValueError(
+                f"{key} requirement {requested} exceeds deployment ceiling {value[key]}"
+            )
     gpu = requirements.resources.gpu
     gpu_limits = value.get("gpu") or {}
     if gpu:
-        for key, requested in (("count", gpu.count),
-                               ("min_device_memory_mib", gpu.min_device_memory_mib)):
+        for key, requested in (
+            ("count", gpu.count),
+            ("min_device_memory_mib", gpu.min_device_memory_mib),
+        ):
             if key in gpu_limits and requested > gpu_limits[key]:
                 raise ValueError(
                     f"gpu.{key} requirement {requested} exceeds deployment ceiling {gpu_limits[key]}"

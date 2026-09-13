@@ -113,14 +113,23 @@ class MultiplayerClient:
     each command refreshes authority and names the revision it was based on.
     """
 
-    def __init__(self, *, root: Path, garden_id: str, endpoint: str, credential: str,
-                 member_id: str, installation_id: str,
-                 authentication: str = "credential",
-                 request: Callable[..., httpx.Response] | None = None):
+    def __init__(
+        self,
+        *,
+        root: Path,
+        garden_id: str,
+        endpoint: str,
+        credential: str,
+        member_id: str,
+        installation_id: str,
+        authentication: str = "credential",
+        request: Callable[..., httpx.Response] | None = None,
+    ):
         if authentication not in {"credential", "temporary-username"}:
             raise MultiplayerUnavailable("unsupported multiplayer authentication mode")
         if not all((garden_id, endpoint, member_id, installation_id)) or (
-                authentication == "credential" and not credential):
+            authentication == "credential" and not credential
+        ):
             raise MultiplayerUnavailable(
                 "multiplayer enrollment is incomplete or its selected credential is missing"
             )
@@ -136,10 +145,13 @@ class MultiplayerClient:
                 "temporary username enrollment belongs to a different operating-system account"
             )
         assertion = base64.urlsafe_b64encode(username.encode()).decode().rstrip("=")
-        self._headers = {"Authorization": (
-            f"Bearer {credential}" if authentication == "credential"
-            else f"Garden-Temporary-Username {assertion}.{installation_id}"
-        )}
+        self._headers = {
+            "Authorization": (
+                f"Bearer {credential}"
+                if authentication == "credential"
+                else f"Garden-Temporary-Username {assertion}.{installation_id}"
+            )
+        }
         self._request = request or httpx.request
         self._cache_path = self.root / ".garden" / "authoritative-snapshot.json"
         self._projection_path = self.root / ".garden" / "authoritative-projections.json"
@@ -149,15 +161,28 @@ class MultiplayerClient:
     def from_config(cls, config: Config, **kwargs: Any) -> MultiplayerClient | None:
         if not config.get("multiplayer.enabled", False):
             return None
+        # Existing enrolled installations retain a read/recovery path while operators
+        # migrate them. New configurations omit coordinator_url and always use Git.
+        if (config.get("multiplayer.git.remote", "")
+                and not config.get("multiplayer.coordinator_url", "")):
+            from .git_coordination import GitCoordinationError, GitMultiplayerClient
+
+            try:
+                return GitMultiplayerClient.from_config(config)  # type: ignore[return-value]
+            except GitCoordinationError as exc:
+                raise MultiplayerUnavailable(str(exc)) from exc
         credential_env = str(config.get("multiplayer.credential_env", ""))
         credential = os.environ.get(credential_env, "") if credential_env else ""
         authentication = str(config.get("multiplayer.authentication", "credential"))
         return cls(
-            root=config.root, garden_id=str(config.get("multiplayer.garden_id", "")),
+            root=config.root,
+            garden_id=str(config.get("multiplayer.garden_id", "")),
             endpoint=str(config.get("multiplayer.coordinator_url", "")),
             member_id=str(config.get("multiplayer.member_id", "")),
             installation_id=str(config.get("multiplayer.installation_id", "")),
-            credential=credential, authentication=authentication, **kwargs,
+            credential=credential,
+            authentication=authentication,
+            **kwargs,
         )
 
     def _url(self, suffix: str) -> str:
@@ -166,10 +191,12 @@ class MultiplayerClient:
     def _load_cache(self) -> dict[str, Any] | None:
         try:
             value = json.loads(self._cache_path.read_text())
-            if (value.get("garden_id") != self.garden_id
-                    or value.get("protocol_version") != PROTOCOL_VERSION
-                    or value.get("member_id") != self.member_id
-                    or value.get("installation_id") != self.installation_id):
+            if (
+                value.get("garden_id") != self.garden_id
+                or value.get("protocol_version") != PROTOCOL_VERSION
+                or value.get("member_id") != self.member_id
+                or value.get("installation_id") != self.installation_id
+            ):
                 return None
             return value
         except (OSError, ValueError, AttributeError):
@@ -178,17 +205,24 @@ class MultiplayerClient:
     def refresh(self, *, allow_stale: bool = True) -> AuthoritativeView:
         try:
             response = self._request(
-                "GET", self._url("/snapshot"), headers=self._headers,
-                params={"protocol_version": PROTOCOL_VERSION}, timeout=10,
+                "GET",
+                self._url("/snapshot"),
+                headers=self._headers,
+                params={"protocol_version": PROTOCOL_VERSION},
+                timeout=10,
             )
             response.raise_for_status()
             snapshot = response.json()
             if snapshot.get("garden_id") != self.garden_id:
                 raise MultiplayerUnavailable("coordinator returned a different garden")
             if snapshot.get("protocol_version") != PROTOCOL_VERSION:
-                raise MultiplayerUnavailable("coordinator protocol version does not match this client")
-            if (snapshot.get("member_id") != self.member_id
-                    or snapshot.get("installation_id") != self.installation_id):
+                raise MultiplayerUnavailable(
+                    "coordinator protocol version does not match this client"
+                )
+            if (
+                snapshot.get("member_id") != self.member_id
+                or snapshot.get("installation_id") != self.installation_id
+            ):
                 raise MultiplayerUnavailable(
                     "coordinator credential belongs to a different member or installation"
                 )
@@ -209,17 +243,26 @@ class MultiplayerClient:
             role = snapshot.get("role")
             visibility = snapshot.get("project_visibility")
             projects = snapshot.get("projects", [])
-            if role not in ROLES or visibility not in VISIBILITIES or not isinstance(projects, list):
+            if (
+                role not in ROLES
+                or visibility not in VISIBILITIES
+                or not isinstance(projects, list)
+            ):
                 return None
             return Principal(
-                self.garden_id, self.member_id, self.installation_id, role, visibility,
+                self.garden_id,
+                self.member_id,
+                self.installation_id,
+                role,
+                visibility,
                 frozenset(str(project) for project in projects),
             )
         except (MultiplayerUnavailable, TypeError, ValueError):
             return None
 
-    def command(self, path: str, body: dict[str, Any], *, kind: str, scope: str,
-                expected_version: int) -> dict[str, Any]:
+    def command(
+        self, path: str, body: dict[str, Any], *, kind: str, scope: str, expected_version: int
+    ) -> dict[str, Any]:
         current = self.refresh(allow_stale=False)
         actual = current.revision(kind, scope)
         if actual != expected_version:
@@ -230,48 +273,87 @@ class MultiplayerClient:
         payload.setdefault("expected_version", expected_version)
         try:
             response = self._request(
-                "POST", self._url(path), headers=self._headers, json=payload, timeout=10,
+                "POST",
+                self._url(path),
+                headers=self._headers,
+                json=payload,
+                timeout=10,
             )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as exc:
             raise MultiplayerUnavailable(f"authoritative command rejected: {exc}") from exc
 
-    def claim(self, *, kind: str, scope: str, owner_id: str,
-              authority_generation: int, expected_version: int) -> dict[str, Any]:
+    def claim(
+        self,
+        *,
+        kind: str,
+        scope: str,
+        owner_id: str,
+        authority_generation: int,
+        expected_version: int,
+    ) -> dict[str, Any]:
         """Acquire (or reuse) this installation's fenced lifecycle lease."""
         key = (kind, scope)
         current = self._claims.get(key)
-        if (current and current.get("owner_id") == owner_id
-                and int(current.get("authority_generation", -1)) == authority_generation):
+        if (
+            current
+            and current.get("owner_id") == owner_id
+            and int(current.get("authority_generation", -1)) == authority_generation
+        ):
             return current
         operation_id = f"claim:{self.installation_id}:{kind}:{scope}:{uuid.uuid4().hex}"
         claim = self.command(
-            "/claims", {
-                "kind": kind, "scope": scope, "accepted_owner": owner_id,
+            "/claims",
+            {
+                "kind": kind,
+                "scope": scope,
+                "accepted_owner": owner_id,
                 "authority_generation": authority_generation,
                 "operation_id": operation_id,
-            }, kind=kind, scope=scope, expected_version=expected_version,
+            },
+            kind=kind,
+            scope=scope,
+            expected_version=expected_version,
         )
         self._claims[key] = claim
         return claim
 
     @contextmanager
-    def effect(self, *, kind: str, scope: str, owner_id: str,
-               authority_generation: int, expected_version: int,
-               effect_key: str, provider: str = "scheduler"):
+    def effect(
+        self,
+        *,
+        kind: str,
+        scope: str,
+        owner_id: str,
+        authority_generation: int,
+        expected_version: int,
+        effect_key: str,
+        provider: str = "scheduler",
+    ):
         """Fence one mutation and leave uncertain effects blocked for reconciliation."""
-        claim = self.claim(kind=kind, scope=scope, owner_id=owner_id,
-                           authority_generation=authority_generation,
-                           expected_version=expected_version)
+        claim = self.claim(
+            kind=kind,
+            scope=scope,
+            owner_id=owner_id,
+            authority_generation=authority_generation,
+            expected_version=expected_version,
+        )
         operation_id = f"effect:{self.installation_id}:{uuid.uuid4().hex}"
         self.command(
-            "/effects", {
-                "claim": claim, "provider": provider, "effect_key": effect_key,
-                "operation_id": operation_id, "credential_scope": f"{provider}:write",
+            "/effects",
+            {
+                "claim": claim,
+                "provider": provider,
+                "effect_key": effect_key,
+                "operation_id": operation_id,
+                "credential_scope": f"{provider}:write",
                 "precondition": f"authority={expected_version}",
                 "request": {"kind": kind, "scope": scope},
-            }, kind=kind, scope=scope, expected_version=expected_version,
+            },
+            kind=kind,
+            scope=scope,
+            expected_version=expected_version,
         )
         try:
             yield claim
@@ -284,12 +366,17 @@ class MultiplayerClient:
     def _finish_effect(self, operation_id: str, outcome: str) -> None:
         try:
             response = self._request(
-                "POST", self._url(f"/effects/{operation_id}/finish"),
-                headers=self._headers, json={"outcome": outcome}, timeout=10,
+                "POST",
+                self._url(f"/effects/{operation_id}/finish"),
+                headers=self._headers,
+                json={"outcome": outcome},
+                timeout=10,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise MultiplayerUnavailable(f"could not record authoritative effect outcome: {exc}") from exc
+            raise MultiplayerUnavailable(
+                f"could not record authoritative effect outcome: {exc}"
+            ) from exc
 
     def acknowledge_cancellations(
         self, snapshot: dict[str, Any], cancel: Callable[[str, str], bool]
@@ -304,7 +391,9 @@ class MultiplayerClient:
                 continue
             try:
                 response = self._request(
-                    "POST", self._url("/cancellations/acknowledge"), headers=self._headers,
+                    "POST",
+                    self._url("/cancellations/acknowledge"),
+                    headers=self._headers,
                     json={"kind": kind, "scope": scope, "fence": int(request["fence"])},
                     timeout=10,
                 )
@@ -317,13 +406,22 @@ class MultiplayerClient:
             self._claims.pop((kind, scope), None)
         return acknowledged
 
-    def retain_stale_evidence(self, *, kind: str, scope: str, evidence_id: str,
-                              operation_id: str, payload: dict[str, Any]) -> None:
+    def retain_stale_evidence(
+        self, *, kind: str, scope: str, evidence_id: str, operation_id: str, payload: dict[str, Any]
+    ) -> None:
         try:
             response = self._request(
-                "POST", self._url("/stale-evidence"), headers=self._headers,
-                json={"kind": kind, "scope": scope, "evidence_id": evidence_id,
-                      "operation_id": operation_id, "payload": payload}, timeout=10,
+                "POST",
+                self._url("/stale-evidence"),
+                headers=self._headers,
+                json={
+                    "kind": kind,
+                    "scope": scope,
+                    "evidence_id": evidence_id,
+                    "operation_id": operation_id,
+                    "payload": payload,
+                },
+                timeout=10,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -352,7 +450,9 @@ class MultiplayerClient:
                 continue
             updates.append((relative, target, content, int(row["version"])))
         if conflicts:
-            raise ProjectionConflict("local authored content conflicts with authority: " + ", ".join(conflicts))
+            raise ProjectionConflict(
+                "local authored content conflicts with authority: " + ", ".join(conflicts)
+            )
         changed: list[str] = []
         for relative, target, content, version in updates:
             if not target.exists() or target.read_text() != content:
