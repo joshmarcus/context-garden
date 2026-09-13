@@ -2,10 +2,10 @@
 {% block title %}Inbox{% endblock %}
 {% block body %}
 <div class="page-head">
-  <div><h1>{{ 'Administration Inbox' if inbox_view == 'admin' else 'Team Inbox' if inbox_view == 'team' else 'Mine Inbox' }}</h1><p>Decision cards need the named recipient's judgment; team cards are read-only for everyone else.</p></div>
+  <div><h1>Inbox</h1><p>{% if inbox_view == 'team' %}Team decisions are read-only unless they are addressed to you.{% elif inbox_view == 'admin' %}Garden-wide decisions that need an administrator.{% else %}Decisions and work addressed to you.{% endif %}</p></div>
   <div class="tools"><button class="quiet" data-toggle="incident-deep-dive">Deep dive…</button><a class="btn" href="/board">Board</a><a class="btn" href="/events">Timeline</a></div>
 </div>
-{% if identity_status %}<nav class="actions" aria-label="Inbox views" style="margin-bottom:12px"><a class="btn {{ 'primary' if inbox_view == 'mine' else 'quiet' }}" href="/inbox?view=mine">Mine</a><a class="btn {{ 'primary' if inbox_view == 'team' else 'quiet' }}" href="/inbox?view=team">Team</a><a class="btn {{ 'primary' if inbox_view == 'admin' else 'quiet' }}" href="/inbox?view=admin">Administration</a></nav>{% endif %}
+{% if multiplayer %}<nav class="actions" aria-label="Inbox views" style="margin-bottom:12px"><a class="btn {{ 'primary' if inbox_view == 'mine' else 'quiet' }}" href="/inbox?view=mine">My work</a><a class="btn {{ 'primary' if inbox_view == 'team' else 'quiet' }}" href="/inbox?view=team">Team</a>{% if inbox_is_admin %}<a class="btn {{ 'primary' if inbox_view == 'admin' else 'quiet' }}" href="/inbox?view=admin">Administration</a>{% endif %}</nav>{% endif %}
 <div id="incident-deep-dive" class="panel" hidden style="margin-bottom:14px"><div class="eyebrow">Garden incident deep dive</div><p>Ask a local investigation agent about an event that is broader than one task.</p><form method="post" action="/investigations"><select name="scope" required>{% for value, label in investigation_scopes %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select><textarea name="question" required placeholder="What happened, and what should the investigation explain?"></textarea><textarea name="references" placeholder="Optional task, run, PR, issue, or event references"></textarea><button class="primary">Queue deep dive</button></form></div>
 <div class="kpis">
   <div class="kpi {{ 'hot' if inbox_count else '' }}"><div class="v">{{ inbox_count }}</div><div class="l">need you</div></div>
@@ -40,7 +40,7 @@
 </div>
 {% endif %}
 {% if not inbox_count %}<div class="inbox-zero"><b>Inbox zero</b>Nothing needs a person right now. Workers keep going; come back when the rail count changes.</div>{% endif %}
-<form method="get" action="/inbox" class="actions" style="margin:0 0 12px"><label class="muted" for="owner-filter">My work</label><input id="owner-filter" name="owner" value="{{ owner_filter or '' }}" placeholder="logical owner id"><button class="quiet">Filter</button>{% if owner_filter is not none %}<a class="btn quiet" href="/inbox">All work</a>{% endif %}</form>
+{% if multiplayer and inbox_view == 'team' %}<form method="get" action="/inbox" class="actions" style="margin:0 0 12px"><input type="hidden" name="view" value="team"><label class="muted" for="owner-filter">Person</label><select id="owner-filter" name="owner" onchange="this.form.submit()"><option value="__all__">Everyone</option>{% for member in inbox_members %}<option value="{{ member }}"{% if owner_filter == member %} selected{% endif %}>{{ member }}</option>{% endfor %}</select><noscript><button class="quiet">Filter</button></noscript></form>{% endif %}
 {% if owner_filter is not none and not owner_task_items %}<div class="inbox-zero"><b>No work assigned to {{ owner_filter or 'unassigned' }}</b>Task cards for other owners are hidden by this filter.</div>{% endif %}
 {% for group, gtitle, gdesc, gkind in groups %}{% set gitems = items|selectattr('group', 'equalto', group)|list %}{% if gitems %}
 <section class="group {{ 'notice' if gkind == 'notice' else '' }}">

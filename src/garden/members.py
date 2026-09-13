@@ -175,15 +175,21 @@ class MemberRegistry:
                          or member.get("project_visibility") == "all"
                          or project in (member.get("projects") or ())))
 
+    def active_administrator_ids(self) -> frozenset[str]:
+        """Return administrators suitable for concise assignment guidance."""
+        state = self._read()
+        return frozenset(member_id for member_id, member in state["members"].items()
+                         if member.get("active") and member.get("role") == "administrator")
+
     def garden_id(self) -> str:
         return str(self._read()["garden_id"])
 
-    def active_execution_member_ids(self, project: str) -> frozenset[str]:
+    def active_execution_member_ids(self, project: str = "") -> frozenset[str]:
         """Active non-viewers with access to a project may own executable work."""
         state = self._read()
         return frozenset(member_id for member_id, member in state["members"].items()
                          if member.get("active") and member.get("role") != "viewer"
-                         and (member.get("project_visibility") == "all"
+                         and (not project or member.get("project_visibility") == "all"
                          or project in (member.get("projects") or ())))
 
     def effective_task_owner(self, task: Task, phase: Phase) -> tuple[str, str]:
