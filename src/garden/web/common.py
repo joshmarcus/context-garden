@@ -618,7 +618,6 @@ class Site:
                 if (event.get("task") in task_ids
                     or (event.get("product") in projects and event.get("product"))
                     or str(event.get("phase") or "").partition("/")[0] in projects)]
-
     def inbox_items(self, request: Request, store: Store, sched: Scheduler, *,
                     view: str = "mine", visible_tasks: dict[str, Any] | None = None,
                     items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
