@@ -19,6 +19,9 @@ class CoordinatorStub:
         assert not allow_stale
         return SimpleNamespace(snapshot=self.snapshot)
 
+    def prepare(self, *, mutation):
+        assert mutation
+
     @contextmanager
     def effect(self, **request):
         self.effects.append(request)
