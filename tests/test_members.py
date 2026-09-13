@@ -328,7 +328,8 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    assert accepted.status_code == 303
+    assert accepted.status_code == 409
+    assert MULTIPLAYER_EXECUTION_UNAVAILABLE in accepted.text
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -995,7 +996,8 @@ def test_multiplayer_watch_and_direct_dispatch_without_installation_fail_closed(
             headers={"Authorization": f"Bearer {admin_token}"},
             follow_redirects=False,
         )
-        assert response.status_code == 303
+        assert response.status_code == 409
+        assert MULTIPLAYER_EXECUTION_UNAVAILABLE in response.text
 
     scheduler = Scheduler(Store(garden))
     with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
