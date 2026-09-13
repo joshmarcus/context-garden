@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 from fastapi.testclient import TestClient
 
-from garden.coordination import Conflict, Coordinator, ProtocolMismatch
+from garden.coordination import Claim, Conflict, Coordinator, ProtocolMismatch
 from garden.coordination_api import create_coordination_app
 from garden.members import MemberRegistry, Principal
 
@@ -108,8 +108,10 @@ def test_server_clock_expiry_restart_and_stale_fences(tmp_path):
     path = tmp_path / "coordination.db"
     coordinator = Coordinator(path, clock=clock)
     _authority, old = authority_and_claim(coordinator, admin, alice)
+    assert Claim(**coordinator.snapshot(alice, "garden")["active_claims"][0]) == old
     clock.now += dt.timedelta(seconds=121)
     restarted = Coordinator(path, clock=clock)
+    assert restarted.snapshot(alice, "garden")["active_claims"] == []
     new = restarted.claim(
         alice, garden_id="garden", kind="task", scope="CG-1", expected_version=1,
         accepted_owner="alice", authority_generation=4, operation_id="replacement",
@@ -197,7 +199,7 @@ def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
         )
     snapshot = coordinator.snapshot(admin, "garden")
     assert snapshot["member_id"] == "admin" and snapshot["installation_id"] == "admin-box"
-    assert snapshot["active_claims"][0]["installation"] == "alice-a"
+    assert snapshot["active_claims"][0]["installation_id"] == "alice-a"
     assert snapshot["blocking_effects"] == [
         {"provider": "github", "effect_key": "publish:CG-1", "claim_kind": "task",
          "claim_scope": "CG-1", "authority_generation": 4, "status": "unknown"}
