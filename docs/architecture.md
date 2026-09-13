@@ -148,7 +148,7 @@ of the loop touch different files.
 | `runner/base.py` | shared runner lifecycle helpers |
 | `runner/local.py` | the local worker runner backend |
 | `runner/ssh.py` | the remote-over-SSH worker runner backend |
-| `ssh_session.py`, `ssh_transport.py` | the trusted remote tmux supervisor and the controller-side, restartable receipt and log collector for SSH runs |
+| `ssh_session.py`, `ssh_transport.py`, `ssh_attach.py` | the trusted remote tmux supervisor, controller-side restartable receipt and log collector, and safe operator attachment command for SSH runs |
 | `runner/manual.py` | the human-driven runner backend |
 | `runner/remote.py` | the pull-based remote worker runner backend |
 | `remote_worker.py` | the independent-host worker agent |

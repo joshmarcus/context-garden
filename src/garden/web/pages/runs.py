@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ...runs import RunStore
+from ...ssh_attach import attach_command, attachment_problem
 from ..artifacts import artifact_response
 from ..common import Site
 from .design import recorded_captures
@@ -128,6 +129,9 @@ def register(app: FastAPI, site: Site) -> None:
             stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
             check_view=check_view, captures=captures, recovery=recovery,
             ssh_reconnect=ssh_reconnect,
+            attach_command=(
+                attach_command(run, exact=True) if attachment_problem(run) is None else ""
+            ),
         ))
 
     @app.get("/runs/{task_id}/{run_id}/ui/{name}")

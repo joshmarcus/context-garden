@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -121,6 +122,79 @@ def test_doctor_rejects_a_tracked_ssh_connection_target_without_echoing_it(garde
     assert "host identities" in result.output
     assert "ssh.hosts[0].host" in result.output
     assert target not in result.output
+
+
+def test_attach_resolves_a_confirmed_ssh_run_to_the_current_configured_route(garden, monkeypatch):
+    record = RunStore(garden / ".garden").new_run("DM-001", "ssh", run_id="live-run")
+    record.host = "boxA"
+    record.status = "running"
+    record.env_snapshot["ssh_tmux_session"] = "garden-DM-001-live"
+    record.save()
+    (record.path / "ssh-state.json").write_text(json.dumps({
+        "status": "running", "session": "garden-DM-001-live",
+    }))
+    calls = []
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda argv, check: calls.append((argv, check)) or SimpleNamespace(returncode=7),
+    )
+
+    result = run(garden, "attach", "DM-001")
+
+    assert result.exit_code == 7
+    assert calls == [([
+        str(Path(__file__).parent / "fake_ssh.py"), "-o", "BatchMode=yes", "boxA", "tmux",
+        "attach-session", "-r", "-t", "garden-DM-001-live",
+    ], False)]
+
+
+def test_attach_requires_an_exact_live_session_and_never_launches_for_invalid_records(garden, monkeypatch):
+    runs = RunStore(garden / ".garden")
+    local = runs.new_run("DM-001", "local", run_id="local-run")
+    local.status = "running"
+    local.save()
+    unknown = runs.new_run("DM-001", "ssh", run_id="uncertain-run")
+    unknown.host = "boxA"
+    unknown.status = "running"
+    unknown.env_snapshot["ssh_tmux_session"] = "garden-DM-001-uncertain"
+    unknown.save()
+    (unknown.path / "ssh-state.json").write_text(json.dumps({"status": "held"}))
+    launched = []
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: launched.append(args) or SimpleNamespace(returncode=0),
+    )
+
+    assert run(garden, "attach", "DM-001").exit_code == 1
+    selected = run(garden, "attach", "DM-001", "--run", "local-run")
+    assert selected.exit_code == 1 and "does not use the SSH runner" in selected.output
+    assert run(garden, "attach", "DM-001", "--run", "missing-run").exit_code == 1
+    assert run(garden, "attach", "missing-task").exit_code == 1
+    assert not launched
+
+
+def test_attach_requires_an_unambiguous_current_route(garden, monkeypatch):
+    runs = RunStore(garden / ".garden")
+    for run_id in ("live-one", "live-two"):
+        record = runs.new_run("DM-001", "ssh", run_id=run_id)
+        record.host = "boxA"
+        record.status = "running"
+        record.env_snapshot["ssh_tmux_session"] = f"garden-{run_id}"
+        record.save()
+        (record.path / "ssh-state.json").write_text(json.dumps({
+            "status": "running", "session": f"garden-{run_id}",
+        }))
+    launched = []
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *args, **kwargs: launched.append(args) or SimpleNamespace(returncode=0),
+    )
+
+    ambiguous = run(garden, "attach", "DM-001")
+    assert ambiguous.exit_code == 1 and "multiple live SSH sessions" in ambiguous.output
+    exact = run(garden, "attach", "DM-001", "--run", "live-one")
+    assert exact.exit_code == 0
+    assert len(launched) == 1
 
 
 def test_inbox_only_counts_current_automated_approval_as_pr_action(garden):

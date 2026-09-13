@@ -720,7 +720,7 @@ def test_legacy_transport_exit_is_held_by_reap_and_dead_run_sweep(sched, tmp_pat
     assert "legacy SSH" in sched.state.get(task.id)["ssh_recovery_hold"]
 
 
-def test_log_exposes_recovery_state(sched, tmp_path, garden):
+def test_log_exposes_recovery_state_without_raw_attach_details(sched, tmp_path, garden):
     from tests.test_cli import run as cli
 
     runner, run = start(sched, tmp_path)
@@ -728,6 +728,8 @@ def test_log_exposes_recovery_state(sched, tmp_path, garden):
     output = cli(garden, "log", run.task_id)
     assert output.exit_code == 0, output.output
     assert "SSH: terminal" in output.output
+    assert "tmux attach-session" not in output.output
+    assert "boxA" not in output.output
     reap_collector(run)
 
 
@@ -754,6 +756,10 @@ def test_recovery_page_reconnects_same_run_without_offering_a_fresh_worker(sched
             assert f'/tasks/{task.id}/ssh-recover' in page.text
             assert "Reconnect to remote run" in page.text
             assert f'action="/tasks/{task.id}/retry"' not in page.text
+            if path.startswith("/tasks/"):
+                assert "tmux attach-session" not in page.text
+                assert run.env_snapshot["ssh_tmux_session"] not in page.text
+                assert "garden attach" not in page.text
         response = client.post(f"/tasks/{task.id}/ssh-recover", follow_redirects=False)
         assert response.status_code == 303, response.text
     assert resumed == [run.run_id]
