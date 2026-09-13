@@ -39,5 +39,6 @@ def register(app: FastAPI, site: Site) -> None:
         hide_url = "/trellis?" + urlencode({**qs, "hide": "done"})
         return templates.TemplateResponse(request, "trellis.html", ctx(
             request, page="trellis", svg=svg(tasks, hide_done=hide_done, stack_for=sched.stack_enabled_for), mermaid=mermaid(tasks, visible=vis), product=product, phase=phase,
-            closed=closed, critical=cp, ready=[t.id for t in sched.ready_tasks(tasks)], problems=validate(tasks),
+            closed=closed, critical=cp, ready=[t.id for t in sched.ready_tasks(tasks)],
+            problems=validate(tasks) if allowed is None else [],
             hide_done=hide_done, hidden_count=hidden_count, show_url=show_url, hide_url=hide_url))

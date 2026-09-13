@@ -2468,6 +2468,13 @@ def test_live_output_panel_preserves_scroll_during_refresh():
     assert "el.scrollTop = followsTail ? el.scrollHeight : scrollTop" in base
 
 
+def test_background_polling_uses_the_page_project_scope():
+    """History-restored pages must not let a newer preference cookie rescope polling."""
+    base = (Path(__file__).parents[1] / "src/garden/web/templates/base.html").read_text()
+
+    assert "window.gardenScopedUrl(el.dataset.poll)" in base
+
+
 @pytest.mark.browser
 def test_live_output_polling_preserves_reader_position(garden, tmp_path):
     """Refreshing live output retains a reader's place, including horizontal scroll."""

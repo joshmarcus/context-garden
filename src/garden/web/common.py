@@ -13,6 +13,7 @@ import os
 import select
 import threading
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -497,18 +498,104 @@ class Site:
     context and the board's columns. Every `pages.*.register(app, site)` and
     `actions.*.register(app, site)` gets one of these."""
 
-    def __init__(self, hub: Hub, templates: Jinja2Templates, plates: Path):
+    def __init__(self, hub: Hub, templates: Jinja2Templates, plates: Path, registry: Any | None = None):
         self.hub = hub
         self.templates = templates
         self.plates = plates
+        self.registry = registry
 
-    @staticmethod
-    def allowed_projects(request: Request) -> frozenset[str] | None:
-        """Projects visible to this request, or ``None`` for legacy/all-project access."""
+    @dataclass(frozen=True)
+    class ViewScope:
+        projects: frozenset[str] | None
+        selected: str
+        source: str
+        options: tuple[str, ...]
+
+    def view_scope(self, request: Request, store: Store | None = None) -> ViewScope:
+        """Resolve the presentation scope without changing execution authority.
+
+        A project encoded by a detail URL is strongest, followed by the selector query,
+        this browser's saved choice, and the member's execution assignment. Invalid
+        explicit scopes fail closed; stale preferences and assignments fall back to the
+        neutral authorized overview.
+        """
+        cached = getattr(request.state, "garden_view_scope", None)
+        if isinstance(cached, self.ViewScope):
+            return cached
+
+        def remember(scope: Site.ViewScope) -> Site.ViewScope:
+            request.state.garden_view_scope = scope
+            return scope
+
+        s = store or self.hub.fresh()
+        known = frozenset(product.name for product in s.products())
         principal = getattr(request.state, "principal", None)
-        if not isinstance(principal, Principal) or principal.project_visibility == "all":
+        if not isinstance(principal, Principal):
+            authorized = known
+            legacy = True
+        else:
+            authorized = (known if principal.project_visibility == "all"
+                          else known & principal.projects)
+            legacy = False
+
+        parts = request.url.path.strip("/").split("/")
+        explicit: str | None = None
+        if len(parts) > 1 and parts[0] in {"projects", "phases"}:
+            explicit = parts[1]
+        elif len(parts) > 1 and parts[0] in {"tasks", "runs", "investigations"}:
+            task = s.tasks().get(parts[1])
+            explicit = task.product if task else None
+        elif "project" in request.query_params:
+            explicit = request.query_params.get("project", "")
+        if explicit is not None:
+            if explicit == "__all__":
+                return remember(self.ViewScope(
+                    None if legacy else authorized, "", "url", tuple(sorted(authorized)),
+                ))
+            if explicit not in authorized:
+                from fastapi import HTTPException
+                raise HTTPException(403, "project is not visible to this member")
+            return remember(self.ViewScope(
+                frozenset({explicit}), explicit, "url", tuple(sorted(authorized)),
+            ))
+
+        preferred = request.cookies.get("garden_project", "")
+        if preferred == "__all__":
+            return remember(self.ViewScope(
+                None if legacy else authorized, "", "browser", tuple(sorted(authorized)),
+            ))
+        if preferred in authorized:
+            return remember(self.ViewScope(
+                frozenset({preferred}), preferred, "browser", tuple(sorted(authorized)),
+            ))
+
+        assignment = None
+        if isinstance(principal, Principal) and self.registry is not None:
+            assignment = self.registry.assignment(principal.member_id)
+        assigned = assignment.project if assignment is not None else ""
+        if assigned in authorized:
+            scope = self.ViewScope(
+                frozenset({assigned}), assigned, "assignment", tuple(sorted(authorized)),
+            )
+        else:
+            scope = self.ViewScope(
+                None if legacy else authorized, "", "overview", tuple(sorted(authorized)),
+            )
+        return remember(scope)
+
+    def allowed_projects(self, request: Request) -> frozenset[str] | None:
+        """Projects in this request's resolved presentation scope."""
+        principal = getattr(request.state, "principal", None)
+        parts = request.url.path.strip("/").split("/")
+        detail_scope = len(parts) > 1 and parts[0] in {
+            "projects", "phases", "tasks", "runs", "investigations",
+        }
+        if (not isinstance(principal, Principal)
+                and "project" not in request.query_params and not detail_scope):
+            # Legacy requests have unrestricted scope. Avoid a discovery pass here; ctx()
+            # resolves the complete selector options from its existing page snapshot.
             return None
-        return principal.projects
+        return self.view_scope(request).projects
 
     def visible_tasks(self, request: Request, store: Store | None = None) -> dict[str, Any]:
         s = store or self.hub.fresh()
@@ -530,6 +617,13 @@ class Site:
         return [event for event in events
                 if (event.get("task") in task_ids
                     or (event.get("product") in projects and event.get("product")))]
+
+    @staticmethod
+    def dependency_labels(task: Any, tasks: dict[str, Any]) -> list[str]:
+        """Name visible dependencies and collapse cross-scope references to one opaque fact."""
+        visible = [dependency for dependency in task.depends_on if dependency in tasks]
+        hidden = sum(dependency not in tasks for dependency in task.depends_on)
+        return [*visible, *([f"{hidden} inaccessible blocker{'s' if hidden != 1 else ''}"] if hidden else [])]
 
     def ctx(
         self,
@@ -617,10 +711,9 @@ class Site:
                 "meaning": "",
             })
         active_option = next(option for option in profile_options if option["value"] == active)
-        viewing_project = request.query_params.get("project", "")
-        parts = request.url.path.strip("/").split("/")
-        if not viewing_project and len(parts) > 1 and parts[0] in {"projects", "phases"}:
-            viewing_project = parts[1]
+        scope = self.view_scope(request, s)
+        admin_surface = (request.url.path in {"/config", "/design", "/trials", "/now/workers"}
+                         or request.url.path.startswith("/design/"))
         return {
             "request": request,
             "page": page,
@@ -632,7 +725,11 @@ class Site:
             "coordinator_status": hub.coordinator_status(),
             "execution_status": hub.execution_status(),
             "identity_status": hub.identity_status(),
-            "viewing_project": viewing_project or "All authorized projects",
+            "viewing_project": scope.selected or "All authorized projects",
+            "viewing_project_value": scope.selected or "__all__",
+            "viewing_project_source": scope.source,
+            "viewing_project_options": scope.options,
+            "admin_surface": admin_surface,
             "server_now": now_iso(),  # the clock every live elapsed counter is offset against
             "products": visible_products,
             "has_design": any(product_design_root(s, p.name).is_dir() for p in visible_products),
@@ -715,7 +812,14 @@ class Site:
                 col = "in_review"
                 info = st.get("merged_into_parent") or {}
                 merged_parent = str(info.get("parent") or st.get("stack_parent") or info.get("branch") or "")
-            cols[col].append({"task": t, "blockers": sched.task_blockers(t, tasks) if eff == "blocked" else [],
+            blocker_ids = sched.task_blockers(t, tasks) if eff == "blocked" else []
+            hidden_blockers = sum(dependency not in tasks for dependency in blocker_ids)
+            visible_blockers = [dependency for dependency in blocker_ids if dependency in tasks]
+            blocker_labels = [*visible_blockers, *(
+                [f"{hidden_blockers} inaccessible blocker{'s' if hidden_blockers != 1 else ''}"]
+                if hidden_blockers else []
+            )]
+            cols[col].append({"task": t, "blockers": blocker_labels,
                               "stack": "" if merged_parent else st.get("stack_parent", ""),
                               "merged_parent": merged_parent,
                               "needs_human": "" if t.status.terminal else (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
@@ -729,7 +833,8 @@ class Site:
         visible_runs = [r for r in runs.all_runs() if r.task_id in visible_tasks]
         return {"cols": cols, "active": active, "product": product, "phase": phase,
                 "totals": runs.totals() if allowed_projects is None else _rollup(visible_runs),
-                "closed": include_closed, "problems": validate(visible_tasks)}
+                "closed": include_closed,
+                "problems": validate(visible_tasks) if allowed_projects is None else []}
 
     def backlog_data(self, product: str | None, include_closed: bool = False,
                      allowed_projects: frozenset[str] | None = None) -> dict[str, Any]:
@@ -765,14 +870,22 @@ class Site:
                     st = state.get(t.id)
                     # A running or in-review task can be reordered but not moved to another phase.
                     movable = not (t.status == Status.RUNNING or t.status.pr_open or t.id in active)
+                    blocker_ids = sched.task_blockers(t, tasks) if eff == "blocked" else []
+                    hidden_blockers = sum(dependency not in tasks for dependency in blocker_ids)
+                    blocker_labels = [dependency for dependency in blocker_ids if dependency in tasks]
+                    if hidden_blockers:
+                        blocker_labels.append(
+                            f"{hidden_blockers} inaccessible blocker{'s' if hidden_blockers != 1 else ''}"
+                        )
                     rows.append({"task": t, "eff": eff,
-                                 "blockers": sched.task_blockers(t, tasks) if eff == "blocked" else [],
+                                 "blockers": blocker_labels,
                                  "needs_human": (needs_human_info(st.get("needs_human")) or {}).get("reason", ""),
                                  "movable": movable,
                                  "move_reason": "" if movable else f"{eff.replace('_', ' ')}: reorder it here, but finish or cancel the run before moving it"})
                 sections.append({"phase": ph, "rows": rows})
         return {"sections": sections, "move_phases": move_phases, "active": active,
-                "product": product, "phase": None, "closed": include_closed, "problems": validate(tasks)}
+                "product": product, "phase": None, "closed": include_closed,
+                "problems": validate(tasks) if allowed_projects is None else []}
 
     def pr_data(self, product: str | None,
                 allowed_projects: frozenset[str] | None = None) -> dict[str, Any]:
@@ -784,7 +897,7 @@ class Site:
         visible_tasks = {task_id: task for task_id, task in s.tasks().items()
                          if allowed_projects is None or task.product in allowed_projects}
         base = {"product": selected or None, "phase": None, "closed": False,
-                "problems": validate(visible_tasks)}
+                "problems": validate(visible_tasks) if allowed_projects is None else []}
         if selected not in configured:
             return {**base, "pr_product": selected, "pr_rows": [], "pr_error": "No GitHub repository is configured for this product."}
 

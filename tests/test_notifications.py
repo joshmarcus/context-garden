@@ -112,6 +112,7 @@ def test_rail_shows_the_toggle_and_the_page_carries_the_script(garden):
     assert "Notify me in this browser" in html
     # the polling script and the permission request are present
     assert "/api/decisions?since=" in html
+    assert "window.gardenScopedUrl(decisionsUrl)" in html
     assert "Notification.requestPermission" in html
     assert 'tag: "garden-decisions"' in html
 

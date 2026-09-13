@@ -408,7 +408,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         assert response.status_code == 403
 
 
-def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
+def test_multiplayer_filters_project_pages_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -432,6 +432,68 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
+
+
+def test_shared_project_selector_resolves_url_preference_assignment_and_revocation(garden):
+    private = garden / "private" / "p1"
+    (private / "tasks").mkdir(parents=True)
+    (garden / "private" / "product.md").write_text("# Private\n")
+    (private / "goals.md").write_text("# Private phase\n")
+    (private / "tasks" / "PV-001-private.md").write_text("""---
+id: PV-001
+title: PRIVATE_SELECTOR_MARKER
+status: ready
+depends_on: [DM-001]
+priority: 1
+reading: []
+created: '2026-01-01T00:00:00+00:00'
+updated: '2026-01-01T00:00:00+00:00'
+---
+""")
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["products"]["private"] = {
+        "repo": "../repo", "base_branch": "main", "id_prefix": "PV",
+        "github": "test/private",
+    }
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo", "private"))
+    token = registry.issue_installation(admin, "bob", "bob-browser")
+    registry.set_assignment(admin, "bob", "demo", "p1")
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assigned = client.get("/board", headers=headers)
+    assert assigned.status_code == 200
+    assert "DM-001" in assigned.text and "PRIVATE_SELECTOR_MARKER" not in assigned.text
+    assert '<option value="demo" selected>' in assigned.text
+
+    selected = client.get("/board?project=private", headers=headers)
+    assert selected.status_code == 200
+    assert "PRIVATE_SELECTOR_MARKER" in selected.text and "DM-001" not in selected.text
+    assert "1 inaccessible blocker" in selected.text
+    private_rows = client.get("/api/tasks", headers=headers).json()
+    assert private_rows[0]["product"] == "private"
+    assert private_rows[0]["depends_on"] == []
+    assert private_rows[0]["inaccessible_blocker_count"] == 1
+    private_task = client.get("/tasks/PV-001", headers=headers)
+    assert "1 inaccessible blocker" in private_task.text and "DM-001" not in private_task.text
+    assert client.get("/tasks/DM-001", headers=headers).status_code == 200
+
+    overview = client.get("/api/tasks?project=__all__", headers=headers).json()
+    assert {row["product"] for row in overview} == {"demo", "private"}
+    assert client.get("/board?project=missing", headers=headers).status_code == 403
+    assert client.get("/board?project=", headers=headers).status_code == 403
+    assert client.get("/api/tasks?project=", headers=headers).status_code == 403
+
+    state = json.loads(registry.path.read_text())
+    state["members"]["bob"]["projects"] = ["demo"]
+    registry.path.write_text(json.dumps(state))
+    fallback = client.get("/board", headers=headers)
+    assert fallback.status_code == 200
+    assert "DM-001" in fallback.text and "PRIVATE_SELECTOR_MARKER" not in fallback.text
+    assert client.get("/board?project=private", headers=headers).status_code == 403
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
@@ -544,6 +606,7 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
@@ -692,6 +755,31 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
         "DM-002": "ready",
     }
     assert RunStore(garden / ".garden").active() == []
+
+def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    bob_token = registry.issue_installation(admin, "bob", "bob-browser")
+    registry.add_member(admin, "eve", "viewer", "assigned", ())
+    eve_token = registry.issue_installation(admin, "eve", "eve-browser")
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    bob = {"Authorization": f"Bearer {bob_token}"}
+    eve = {"Authorization": f"Bearer {eve_token}"}
+    rows = client.get("/api/tasks", headers=bob).json()
+    assert rows and {row["product"] for row in rows} == {"demo"}
+    assert client.get("/api/tasks", headers=eve).json() == []
+    assert client.get("/config", headers=bob).status_code == 403
+    assert client.get("/tasks/DM-001", headers=bob).status_code == 200
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
+
+
 
 
 def test_legacy_loopback_behavior_is_unchanged(garden):
