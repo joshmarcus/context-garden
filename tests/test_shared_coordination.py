@@ -262,7 +262,6 @@ def test_unknown_provider_effect_blocks_retry_until_reconciliation(tmp_path):
     ).read_bytes().decode(errors="ignore")
 
 
-<<<<<<< HEAD
 def test_provider_reconciliation_is_installation_bound_and_terminal_after_restart(tmp_path):
     admin, alice, alice_other_installation, bob = principals()
     path = tmp_path / "coordination.db"
