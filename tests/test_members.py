@@ -8,6 +8,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from garden.coordination_api import create_coordination_app
+from garden.events import DECISION_KINDS, EventLog
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
 from garden.runs import RunStore
@@ -15,6 +16,7 @@ from garden.scheduler import (
     MULTIPLAYER_EXECUTION_UNAVAILABLE,
     MultiplayerExecutionUnavailable,
     Scheduler,
+    State,
 )
 from garden.store import Store
 from garden.web.app import create_app, multiplayer_tls_files
@@ -416,6 +418,7 @@ def test_multiplayer_filters_project_pages_and_allows_owned_api_actions(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
@@ -494,6 +497,111 @@ updated: '2026-01-01T00:00:00+00:00'
     assert fallback.status_code == 200
     assert "DM-001" in fallback.text and "PRIVATE_SELECTOR_MARKER" not in fallback.text
     assert client.get("/board?project=private", headers=headers).status_code == 403
+
+
+def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garden):
+    first = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    second = next((garden / "demo" / "p1" / "tasks").glob("DM-002-*.md"))
+    first.write_text(first.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
+    second.write_text(second.read_text().replace("status: ready", "status: waiting_human\nowner: alice"))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, alice_token, alice = _registry(garden)
+    registry.add_member(alice, "bob", "member", "assigned", ("demo",))
+    bob_token = registry.issue_installation(alice, "bob", "bob-browser")
+    registry.set_assignment(alice, "alice", "demo", "p1")
+    registry.set_assignment(alice, "bob", "demo", "p1")
+    registry.set_phase_owner(alice, "demo", "p1", "alice")
+    state = State(garden / ".garden/state.json")
+    state.get("DM-001")["question"] = "BOB_PRIVATE_QUESTION"
+    state.get("DM-002")["question"] = "ALICE_PRIVATE_QUESTION"
+    state.get("_decisions")["kickoff-q1"] = {
+        "id": "kickoff-q1", "kind": "question", "status": "pending", "target": "",
+        "phase": "demo/p1", "question": "PHASE_OWNER_QUESTION", "source": "kickoff:demo/p1",
+        "recipient": "alice",
+    }
+    state.get("_decisions")["global-q1"] = {
+        "id": "global-q1", "kind": "question", "status": "pending", "target": "",
+        "phase": "", "question": "ADMINISTRATION_QUESTION", "source": "operator",
+    }
+    state.save()
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    alice_headers = {"Authorization": f"Bearer {alice_token}"}
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+
+    alice_mine = client.get("/inbox", headers=alice_headers).text
+    bob_mine = client.get("/inbox", headers=bob_headers).text
+    assert "ALICE_PRIVATE_QUESTION" in alice_mine and "BOB_PRIVATE_QUESTION" not in alice_mine
+    assert "PHASE_OWNER_QUESTION" in alice_mine
+    assert "ADMINISTRATION_QUESTION" not in alice_mine
+    assert "BOB_PRIVATE_QUESTION" in bob_mine and "ALICE_PRIVATE_QUESTION" not in bob_mine
+    assert "PHASE_OWNER_QUESTION" not in bob_mine
+
+    team = client.get("/inbox?view=team", headers=bob_headers).text
+    assert "ALICE_PRIVATE_QUESTION" in team and "Addressed to alice · read-only" in team
+    assert "ADMINISTRATION_QUESTION" not in team
+    assert client.get("/inbox?view=admin", headers=bob_headers).status_code == 403
+    assert "ADMINISTRATION_QUESTION" in client.get(
+        "/inbox?view=team", headers=alice_headers,
+    ).text
+    admin_view = client.get("/inbox?view=admin", headers=alice_headers).text
+    assert "ADMINISTRATION_QUESTION" in admin_view and "Answer" in admin_view
+    assert client.post(
+        "/decisions/global-q1/answer", headers=bob_headers,
+        data={"answer": "not authorized"}, follow_redirects=False,
+    ).status_code == 403
+    assert client.post(
+        "/decisions/global-q1/answer", headers=alice_headers,
+        data={"answer": "authorized"}, follow_redirects=False,
+    ).status_code == 303
+    phase = client.get("/phases/demo/p1", headers=bob_headers).text
+    assert "phase owner alice" in phase and "task default owner" in phase
+
+    registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
+    assert "PHASE_OWNER_QUESTION" in client.get("/inbox", headers=alice_headers).text
+    assert "PHASE_OWNER_QUESTION" not in client.get("/inbox", headers=bob_headers).text
+
+    events = garden / ".garden" / "events.jsonl"
+    events.write_text(json.dumps({
+        "at": "2026-01-02T00:00:00+00:00", "kind": "decision", "task": "",
+        "phase": "demo/p1", "decision": "kickoff-q1", "decision_kind": "question",
+        "recipient": "alice",
+    }) + "\n")
+    assert len(EventLog(events).read(kinds=DECISION_KINDS)) == 1
+    assert len(client.get("/api/decisions", headers=alice_headers).json()) == 1
+    assert client.get("/api/decisions", headers=bob_headers).json() == []
+
+
+def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    token = registry.issue_installation(admin, "bob", "bob-browser")
+    state = State(garden / ".garden/state.json")
+    state.get("DM-001")["question"] = "OUTSIDE_ASSIGNMENT_QUESTION"
+    state.get("DM-001")["question_recipient"] = "bob"
+    state.save()
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    inbox = client.get("/inbox", headers=headers).text
+    assert "OUTSIDE_ASSIGNMENT_QUESTION" in inbox and "Addressed to bob · read-only" in inbox
+    assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "no"}).status_code == 403
+
+    registry.set_assignment(admin, "bob", "demo", "p1")
+    assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
+                       follow_redirects=False).status_code == 303
+    task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
+    stale_inbox = client.get("/inbox", headers=headers).text
+    assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
+    assert "Addressed to bob · read-only" in stale_inbox
+    assert client.post("/tasks/DM-001/retry", headers=headers,
+                       follow_redirects=False).status_code == 403
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
@@ -756,7 +864,7 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
     }
     assert RunStore(garden / ".garden").active() == []
 
-def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
+def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -776,10 +884,8 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
     assert client.get("/api/tasks", headers=eve).json() == []
     assert client.get("/config", headers=bob).status_code == 403
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
-
-
 
 
 def test_legacy_loopback_behavior_is_unchanged(garden):

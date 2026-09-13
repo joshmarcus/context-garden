@@ -566,9 +566,12 @@ class ReapMixin:
             st["session_host"] = run.host
             st["session_harness"] = run.harness
             st["question_run"] = run.run_id
+            recipient = self.coordinator.member_id if self.coordinator is not None else ""
+            st["question_recipient"] = recipient
             # An immediate answer needs the question and its resume identity.
             self.state.save()
-            self.events.emit("waiting_human", task.id, question=question, run=run.run_id)
+            self.events.emit("waiting_human", task.id, question=question, run=run.run_id,
+                             recipient=recipient)
             self._transition(task, Status.WAITING_HUMAN, f"worker asks: {question}{cost}")
             rep.transitions.append(f"{task.id} -> waiting_human")
             return
@@ -612,6 +615,7 @@ class ReapMixin:
             decision["result"].setdefault("summary", reason)
             st["decision"] = decision
             st.pop("question", None)
+            st.pop("question_recipient", None)
             # Readers can observe the task status before this tick finishes.
             # Persist its decision before publishing the waiting status.
             self.state.save()
@@ -1322,6 +1326,7 @@ class ReapMixin:
             return
         if run.mode == "resume":
             st["question"] = snap.get("question", "")
+            st["question_recipient"] = snap.get("question_recipient", "")
             st["session_id"] = snap.get("session_id", "")
             self.state.save()
             self._transition(task, Status.WAITING_HUMAN, f"{note}; the pending question and session are restored, answer again once it resumes")

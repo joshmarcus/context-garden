@@ -20,6 +20,17 @@ def register(app: FastAPI, site: Site) -> None:
         with hub.action_lock:
             sched = hub.scheduler()
             try:
+                decision = next((row for row in sched.pending_decisions()
+                                 if row.get("id") == decision_id), None)
+                if decision is None:
+                    raise KeyError(decision_id)
+                target = sched.store.tasks().get(str(decision.get("target") or ""))
+                if target is not None:
+                    sched.require_task_authority(target)
+                else:
+                    product, separator, phase = str(decision.get("phase") or "").partition("/")
+                    if separator:
+                        sched.require_phase_authority(product, phase)
                 if action == "answer":
                     sched.answer_question(decision_id, answer, by="web")
                 elif action == "dismiss":

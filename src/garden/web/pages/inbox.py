@@ -107,8 +107,12 @@ def register(app: FastAPI, site: Site) -> None:
         s = hub.fresh()
         sched = hub.reader()
         tasks = site.visible_tasks(request, s)
-        items = [item for item in build_inbox(s, sched)
-                 if site.allowed_projects(request) is None or item.get("task") in tasks]
+        inbox_view = request.query_params.get("view", "mine")
+        if getattr(request.state, "principal", None) is not None and site.registry is not None:
+            items = site.inbox_items(request, s, sched, view=inbox_view, visible_tasks=tasks)
+        else:
+            items = [item for item in build_inbox(s, sched)
+                     if site.allowed_projects(request) is None or item.get("task") in tasks]
         owner = request.query_params.get("owner")
         if owner is not None:
             owner = "" if owner == "-" else owner
@@ -142,6 +146,7 @@ def register(app: FastAPI, site: Site) -> None:
         }
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, owner_filter=owner,
+            inbox_view=inbox_view,
             owner_task_items=owner_task_items, inbox_count=len(decisions(items)), prs_open=prs_open,
             pr_destinations=pr_destinations,
             tool_build=sched.upgrade_status(),

@@ -7,7 +7,7 @@ from typing import Any
 from ..brief import brief_gaps
 from ..github import GitHubError, mark_garden_comment
 from ..harness import DIFFICULTIES
-from ..model import Status, Task, now_iso
+from ..model import Status, Task, effective_owner, now_iso
 from ..runs import Run
 
 
@@ -186,6 +186,7 @@ class DiscoveredMixin:
             "id": did, "kind": kind, "target": target, "target_title": tgt.title, "of": of,
             "reason": reason, "proposed_by": task.id, "proposed_by_title": task.title,
             "run": run.run_id, "phase": tgt.key, "at": now_iso(), "status": "pending",
+            "recipient": effective_owner(tgt, self.store.phase(tgt.product, tgt.phase))[0],
         }
         self.events.emit("decision", target, decision=did, decision_kind=kind, proposed_by=task.id,
                          of=of, reason=reason, run=run.run_id)

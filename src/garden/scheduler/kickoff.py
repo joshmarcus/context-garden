@@ -163,6 +163,7 @@ class KickoffMixin:
                             "duplicate": True}
         decisions = self.state.get("_decisions")
         did = f"{run_id}-q{idx}"
+        recipient = self.coordinator.member_id if self.coordinator is not None else ""
         decisions[did] = {
             "id": did, "kind": "question", "target": "", "target_title": question[:80],
             "phase": phase.key, "question": question, "context": str(item.get("context") or "").strip(),
@@ -170,8 +171,10 @@ class KickoffMixin:
             "reason": "", "run": run_id, "at": now_iso(), "status": "pending",
             "discovered_from": source, "source": source, "blocking": bool(item.get("blocking")),
             "document_paths": [str(p) for p in (document_paths or [])],
+            "recipient": recipient,
         }
-        self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key, run=run_id)
+        self.events.emit("decision", "", decision=did, decision_kind="question", phase=phase.key,
+                         run=run_id, recipient=recipient)
         return {"question": question, "context": str(item.get("context") or "").strip(),
                 "options": [str(o) for o in (item.get("options") or [])],
                 "blocking": bool(item.get("blocking")), "decision_id": did}
