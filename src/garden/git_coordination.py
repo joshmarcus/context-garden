@@ -671,7 +671,21 @@ class GitStateStore:
                 self._require_authorized_owner(state, entity, owner)
                 self._stage_lifecycle_handoff(state, key, pending_owner=owner)
                 affected.append(task_id)
-                pending.append(task_id)
+                handoff = state["handoffs"][key]
+                if handoff["status"] == "ready":
+                    entity.update({
+                        "owner": owner,
+                        "authority_generation": int(handoff["from_generation"]) + 1,
+                        "draining": False, "pending_owner": "",
+                        "version": int(entity.get("version", 0)) + 1,
+                    })
+                    state["claims"].pop(key, None)
+                    state["recovery"].append({
+                        "kind": "handoff", "entity": key, **deepcopy(handoff),
+                    })
+                    del state["handoffs"][key]
+                else:
+                    pending.append(task_id)
             return {"affected": affected, "pending": pending}
 
         return self.transact(operation_id, inputs, mutate)

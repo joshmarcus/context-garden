@@ -800,6 +800,8 @@ def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner
     accepted = authority.read()[1]
     assert accepted["entities"]["task:DM-001"]["owner"] == "alice"
     assert accepted["handoffs"]["task:DM-001"]["pending_owner"] == "bob"
+    assert accepted["entities"]["task:DM-002"]["owner"] == "bob"
+    assert "task:DM-002" not in accepted["handoffs"]
     client = TestClient(app)
     alice_headers = {"Authorization": f"Bearer {alice_token}"}
     bob_headers = {"Authorization": f"Bearer {bob_token}"}
