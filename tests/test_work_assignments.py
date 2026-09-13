@@ -306,7 +306,7 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
         alice, "alice", task.product, task.phase, enabled=False,
         expected_generation=assignment.generation,
     )
-    with pytest.raises(PermissionError, match="outside"):
+    with pytest.raises(PermissionError, match="paused"):
         bound.retry(task, assignment_generation=paused.generation)
     assert task.status == Status.FAILED
 
@@ -321,7 +321,7 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
     assert task.status == Status.FAILED
 
     registry.clear_assignment(alice, "alice", expected_generation=wrong_phase.generation)
-    with pytest.raises(PermissionError, match="outside"):
+    with pytest.raises(PermissionError, match="no execution assignment"):
         bound.retry(task)
     assert task.status == Status.FAILED
 

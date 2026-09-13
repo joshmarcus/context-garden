@@ -15,6 +15,9 @@ from typing import Any
 
 PROTOCOL = "context-garden/git-coordination"
 VERSION = 1
+HANDOFF_ENTITY_FIELDS = frozenset(
+    {"owner", "authority_generation", "kind", "scope", "draining", "pending_owner"}
+)
 CLAIM_IDENTITY_FIELDS = (
     "operation_id",
     "kind",
@@ -60,11 +63,14 @@ def empty_state(garden_id: str) -> dict[str, Any]:
         "sequence": 0,
         "members": {},
         "installations": {},
+        "revoked_installations": {},
         "entities": {},
         "claims": {},
         "operations": {},
         "permits": {},
         "effects": {},
+        "handoffs": {},
+        "authority_changes": {},
         "reservations": {},
         "policy": {"pools": {}},
         "recovery": [],
@@ -81,11 +87,14 @@ def validate_state(state: dict[str, Any], garden_id: str) -> None:
     for name in (
         "members",
         "installations",
+        "revoked_installations",
         "entities",
         "claims",
         "operations",
         "permits",
         "effects",
+        "handoffs",
+        "authority_changes",
         "reservations",
     ):
         if not isinstance(state.get(name), dict):
@@ -210,7 +219,13 @@ class GitStateStore:
             names = _run(self.repo, "ls-tree", "--name-only", commit).splitlines()
             if names != ["state.json"]:
                 raise GitCoordinationError("coordination commit must contain only state.json")
-            return json.loads(_run(self.repo, "show", f"{commit}:state.json"))
+            state = json.loads(_run(self.repo, "show", f"{commit}:state.json"))
+            # Version-1 refs created before acknowledged handoffs remain readable. The
+            # first accepted handoff transaction materializes the additive table.
+            state.setdefault("handoffs", {})
+            state.setdefault("authority_changes", {})
+            state.setdefault("revoked_installations", {})
+            return state
         except (ValueError, TypeError) as exc:
             raise GitCoordinationError("coordination state is not valid JSON") from exc
 
@@ -317,6 +332,16 @@ class GitStateStore:
         }
 
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            pending_changes = state.get("authority_changes", {}).values()
+            if any(
+                change.get("status") == "draining"
+                and (
+                    change.get("member_id") == actor
+                    or change.get("installation_id") == installation
+                )
+                for change in pending_changes
+            ):
+                raise PermissionError("member or installation authority is draining")
             binding = state["installations"].get(installation)
             if binding != actor or actor not in state["members"]:
                 raise PermissionError("installation is not bound to an active member")
@@ -346,10 +371,22 @@ class GitStateStore:
                         f"effect recovery evidence cannot be deleted: {key}"
                     )
             for entity, patch in changes.get("entities", {}).items():
-                current = state["entities"].setdefault(entity, {"version": 0})
+                current = state["entities"].get(entity)
+                if current is None:
+                    current = state["entities"].setdefault(entity, {"version": 0})
+                else:
+                    changed_authority = sorted(
+                        field
+                        for field in HANDOFF_ENTITY_FIELDS.intersection(patch)
+                        if patch[field] != current.get(field)
+                    )
+                    if changed_authority:
+                        raise GitCoordinationError(
+                            "authority changes require an acknowledged handoff: "
+                            + ", ".join(changed_authority)
+                        )
                 current.update(deepcopy(patch))
                 current["version"] += 1
-            released_claims: dict[str, str] = {}
             for table in ("claims", "permits", "effects", "reservations"):
                 for key, value in changes.get(table, {}).items():
                     current = state[table].get(key)
@@ -358,8 +395,10 @@ class GitStateStore:
                             current.get("actor"), current.get("installation")
                         ) != (actor, installation):
                             raise PermissionError(f"cannot release another member's {table[:-1]}")
-                        if table == "claims" and current:
-                            released_claims[key] = current.get("operation_id")
+                        if current and table in {"claims", "permits"}:
+                            raise GitCoordinationError(
+                                f"{table[:-1]} release requires a validated lifecycle transition"
+                            )
                         state[table].pop(key, None)
                     else:
                         row = deepcopy(value)
@@ -395,13 +434,32 @@ class GitStateStore:
                                 entity.get("authority_generation", -1)
                             ):
                                 raise GitContention("claim generation does not match authority")
+                            if entity.get("draining"):
+                                raise GitCoordinationError("authority is draining; new claims are blocked")
                         if table in {"permits", "effects"}:
-                            claim_ids = {
-                                claim.get("operation_id") for claim in state["claims"].values()
+                            claim_entities = {
+                                claim.get("operation_id"): entity_key
+                                for entity_key, claim in state["claims"].items()
                             }
-                            if row.get("claim") not in claim_ids:
+                            if row.get("claim") not in claim_entities:
                                 raise GitCoordinationError(
                                     f"{table[:-1]} does not reference an active claim"
+                                )
+                            claim_entity = state["entities"].get(claim_entities[row["claim"]], {})
+                            if claim_entity.get("draining") and current is None:
+                                raise GitCoordinationError(
+                                    "authority is draining; new permits and effects are blocked"
+                                )
+                        if table == "permits":
+                            if current is None and row.get("status", "pending") != "pending":
+                                raise GitCoordinationError(
+                                    "new execution permits must start pending"
+                                )
+                            if current and row.get(
+                                "status", current.get("status", "pending")
+                            ) != current.get("status", "pending"):
+                                raise GitCoordinationError(
+                                    "permit status requires validated terminal or fencing evidence"
                                 )
                         if table == "effects" and current:
                             prior_outcome = current.get("outcome", "pending")
@@ -425,19 +483,6 @@ class GitStateStore:
                         ):
                             raise GitContention(f"conflicting {table[:-1]} {key}")
                         state[table][key] = row
-            for claim_key, claim_operation in released_claims.items():
-                blocked = [
-                    key
-                    for key, permit in state["permits"].items()
-                    if permit.get("claim") == claim_operation
-                    and (state["effects"].get(key) or {}).get("outcome", "pending")
-                    in {"pending", "unknown"}
-                ]
-                if blocked:
-                    raise GitCoordinationError(
-                        f"claim release blocked by unresolved permits or effects for "
-                        f"{claim_key}: {', '.join(sorted(blocked))}"
-                    )
             for pool, limit in state["policy"]["pools"].items():
                 reservations = [
                     row for row in state["reservations"].values() if row.get("pool") == pool
@@ -481,6 +526,443 @@ class GitStateStore:
             }
             result = {"sequence": state["sequence"] + 1, "unresolved_effects": sorted(unresolved)}
             return result
+
+        return self.transact(operation_id, inputs, mutate)
+
+    @staticmethod
+    def _handoff_blockers(state: dict[str, Any], entity_key: str) -> list[str]:
+        claim_operations = {
+            claim.get("operation_id")
+            for key, claim in state["claims"].items()
+            if key == entity_key
+        }
+        blockers = [
+            key
+            for key, permit in state["permits"].items()
+            if permit.get("claim") in claim_operations
+            and permit.get("status", "pending") not in {"terminal", "fenced"}
+            and (state["effects"].get(key) or {}).get("outcome", "pending")
+            in {"pending", "unknown"}
+        ]
+        blockers.extend(
+            key
+            for key, effect in state["effects"].items()
+            if effect.get("scope") == entity_key
+            and effect.get("outcome", "pending") in {"pending", "unknown"}
+        )
+        return sorted(set(blockers))
+
+    @staticmethod
+    def _require_active_installation(
+        state: dict[str, Any], actor: str, installation: str
+    ) -> dict[str, Any]:
+        member = state["members"].get(actor) or {}
+        if state["installations"].get(installation) != actor or not member.get("active"):
+            raise PermissionError("handoff installation is not bound to an active member")
+        return member
+
+    @staticmethod
+    def _require_authorized_owner(
+        state: dict[str, Any], entity: dict[str, Any], owner: str
+    ) -> None:
+        """Require a nonempty handoff target that may own work in this project."""
+        if not owner:
+            return
+        member = state["members"].get(owner) or {}
+        if not member.get("active") or member.get("role", "member") not in {
+            "owner", "admin", "administrator", "member",
+        }:
+            raise PermissionError("handoff target is not an active execution member")
+        project = str(entity.get("project", ""))
+        if not project and entity.get("kind") == "phase":
+            project = str(entity.get("scope", "")).split("/", 1)[0]
+        visibility = member.get("project_visibility", member.get("visibility", "assigned"))
+        if not project or (
+            visibility != "all" and project not in (member.get("projects") or ())
+        ):
+            raise PermissionError("handoff target is not authorized for the entity project")
+
+    def begin_handoff(
+        self, operation_id: str, *, actor: str, installation: str,
+        entity_key: str, expected_version: int, pending_owner: str,
+    ) -> AcceptedTransaction:
+        """Accept draining intent without changing effective ownership or generation."""
+        inputs = {
+            "actor": actor, "installation": installation, "entity": entity_key,
+            "expected_version": expected_version, "pending_owner": pending_owner,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            entity = state["entities"].get(entity_key)
+            if not entity or int(entity.get("version", 0)) != expected_version:
+                raise GitContention(f"stale entity version for {entity_key}")
+            member = self._require_active_installation(state, actor, installation)
+            effective_owner = str(entity.get("owner", ""))
+            administrator = member.get("role") in {"owner", "admin", "administrator"}
+            if actor != effective_owner and not administrator:
+                raise PermissionError("only the effective owner or an administrator may begin handoff")
+            if entity_key in state["handoffs"]:
+                raise GitCoordinationError("authority already has a pending handoff")
+            self._require_authorized_owner(state, entity, pending_owner)
+            entity["draining"] = True
+            entity["pending_owner"] = pending_owner
+            entity["version"] = expected_version + 1
+            prior_claim = state["claims"].get(entity_key) or {}
+            state["handoffs"][entity_key] = {
+                "from_owner": effective_owner,
+                "from_generation": int(entity.get("authority_generation", 0)),
+                "from_installation": str(prior_claim.get("installation", "")),
+                "pending_owner": pending_owner,
+                "status": "blocked",
+                "stop_acknowledged": False,
+                "external_fence": None,
+            }
+            return {
+                "status": "blocked", "effective_owner": effective_owner,
+                "pending_owner": pending_owner, "blockers": self._handoff_blockers(state, entity_key),
+            }
+
+        return self.transact(operation_id, inputs, mutate)
+
+    @staticmethod
+    def _stage_lifecycle_handoff(
+        state: dict[str, Any], entity_key: str, *, pending_owner: str = ""
+    ) -> None:
+        """Fence one authority while retaining its effective owner and generation."""
+        entity = state["entities"][entity_key]
+        if entity_key in state["handoffs"]:
+            raise GitCoordinationError(f"authority already has a pending handoff: {entity_key}")
+        entity["draining"] = True
+        entity["pending_owner"] = pending_owner
+        entity["version"] = int(entity.get("version", 0)) + 1
+        claim = state["claims"].get(entity_key) or {}
+        claim_installation = str(claim.get("installation", ""))
+        state["handoffs"][entity_key] = {
+            "from_owner": str(entity.get("owner", "")),
+            "from_generation": int(entity.get("authority_generation", 0)),
+            "from_installation": claim_installation,
+            "pending_owner": pending_owner,
+            "status": "ready" if not claim_installation else "blocked",
+            "stop_acknowledged": not claim_installation,
+            "external_fence": None,
+        }
+
+    def begin_member_authority_change(
+        self, operation_id: str, *, actor: str, installation: str, member_id: str,
+        active: bool | None = None, projects: list[str] | None = None,
+    ) -> AcceptedTransaction:
+        """Fence authorities before disabling a member or narrowing project access."""
+        inputs = {
+            "actor": actor, "installation": installation, "member_id": member_id,
+            "active": active, "projects": projects,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            administrator = self._require_active_installation(state, actor, installation)
+            if administrator.get("role") not in {"owner", "admin", "administrator"}:
+                raise PermissionError("member authority changes require an administrator")
+            member = state["members"].get(member_id)
+            if member is None:
+                raise KeyError(member_id)
+            if active is not False and projects is None:
+                raise GitCoordinationError("authority change must disable or change project scope")
+            change_key = f"member:{member_id}"
+            if change_key in state["authority_changes"]:
+                raise GitCoordinationError("member already has a pending authority change")
+            retained_projects = None if projects is None else sorted(set(projects))
+            affected = []
+            for entity_key, entity in state["entities"].items():
+                if entity.get("owner") != member_id:
+                    continue
+                project = str(entity.get("project", ""))
+                if active is False or (retained_projects is not None and project not in retained_projects):
+                    self._stage_lifecycle_handoff(state, entity_key)
+                    affected.append(entity_key)
+            state["authority_changes"][change_key] = {
+                "status": "draining", "kind": "member", "member_id": member_id,
+                "active": active, "projects": retained_projects, "entities": sorted(affected),
+                "requested_by": actor,
+            }
+            return {"status": "draining", "entities": sorted(affected)}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def begin_installation_revocation(
+        self, operation_id: str, *, actor: str, installation: str,
+        installation_id: str,
+    ) -> AcceptedTransaction:
+        """Immediately deny new work and drain claims bound to an installation."""
+        inputs = {
+            "actor": actor, "installation": installation,
+            "installation_id": installation_id,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            administrator = self._require_active_installation(state, actor, installation)
+            if administrator.get("role") not in {"owner", "admin", "administrator"}:
+                raise PermissionError("installation revocation requires an administrator")
+            member_id = state["installations"].get(installation_id)
+            if member_id is None:
+                raise KeyError(installation_id)
+            change_key = f"installation:{installation_id}"
+            if change_key in state["authority_changes"]:
+                raise GitCoordinationError("installation already has a pending revocation")
+            affected = []
+            for entity_key, claim in state["claims"].items():
+                if claim.get("installation") == installation_id:
+                    self._stage_lifecycle_handoff(state, entity_key)
+                    affected.append(entity_key)
+            state["authority_changes"][change_key] = {
+                "status": "draining", "kind": "installation",
+                "member_id": member_id, "installation_id": installation_id,
+                "entities": sorted(affected), "requested_by": actor,
+            }
+            return {"status": "draining", "entities": sorted(affected)}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def enroll_installation(
+        self, operation_id: str, *, actor: str, installation: str,
+        installation_id: str, member_id: str,
+    ) -> AcceptedTransaction:
+        """Explicitly bind an unused installation; live enrollments are immutable."""
+        inputs = {
+            "actor": actor, "installation": installation,
+            "installation_id": installation_id, "member_id": member_id,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            administrator = self._require_active_installation(state, actor, installation)
+            if administrator.get("role") not in {"owner", "admin", "administrator"}:
+                raise PermissionError("installation enrollment requires an administrator")
+            member = state["members"].get(member_id) or {}
+            if not member.get("active"):
+                raise PermissionError("installation owner must be an active member")
+            if installation_id in state["installations"]:
+                raise GitCoordinationError(
+                    "live installation ownership is immutable; revoke before re-enrollment"
+                )
+            if f"installation:{installation_id}" in state["authority_changes"]:
+                raise GitCoordinationError("installation revocation is not complete")
+            state["installations"][installation_id] = member_id
+            state["revoked_installations"].pop(installation_id, None)
+            return {"installation_id": installation_id, "member_id": member_id}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def complete_authority_change(
+        self, operation_id: str, *, actor: str, installation: str, change_key: str,
+    ) -> AcceptedTransaction:
+        """Atomically finish every fenced authority before changing membership or enrollment."""
+        inputs = {
+            "actor": actor, "installation": installation, "change_key": change_key,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            administrator = self._require_active_installation(state, actor, installation)
+            if administrator.get("role") not in {"owner", "admin", "administrator"}:
+                raise PermissionError("authority change completion requires an administrator")
+            change = state["authority_changes"].get(change_key)
+            if not change:
+                raise GitCoordinationError("no pending authority change")
+            for entity_key in change["entities"]:
+                handoff = state["handoffs"].get(entity_key)
+                blockers = self._handoff_blockers(state, entity_key)
+                if blockers:
+                    raise GitCoordinationError(
+                        "authority change remains blocked by: " + ", ".join(blockers)
+                    )
+                if not handoff or (
+                    not handoff.get("stop_acknowledged") and not handoff.get("external_fence")
+                ):
+                    raise GitCoordinationError(
+                        f"authority change requires acknowledgement or external fence: {entity_key}"
+                    )
+            for entity_key in change["entities"]:
+                handoff = state["handoffs"].pop(entity_key)
+                entity = state["entities"][entity_key]
+                state["claims"].pop(entity_key, None)
+                entity.update({
+                    "owner": "", "authority_generation": int(handoff["from_generation"]) + 1,
+                    "draining": False, "pending_owner": "",
+                    "version": int(entity.get("version", 0)) + 1,
+                })
+                state["recovery"].append({
+                    "kind": "handoff", "entity": entity_key, **deepcopy(handoff),
+                })
+            if change["kind"] == "member":
+                member = state["members"][change["member_id"]]
+                if change.get("active") is not None:
+                    member["active"] = bool(change["active"])
+                if change.get("projects") is not None:
+                    member["projects"] = deepcopy(change["projects"])
+                    member["project_visibility"] = "assigned"
+            else:
+                revoked_id = change["installation_id"]
+                prior_member = state["installations"].pop(revoked_id, None)
+                state["revoked_installations"][revoked_id] = prior_member
+            state["recovery"].append({"kind": "authority-change", **deepcopy(change)})
+            del state["authority_changes"][change_key]
+            return {"status": "complete", "change": change_key}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def acknowledge_stop(
+        self, operation_id: str, *, actor: str, installation: str, entity_key: str,
+    ) -> AcceptedTransaction:
+        """Bind a stop/release acknowledgement to the installation being handed off."""
+        inputs = {"actor": actor, "installation": installation, "entity": entity_key}
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            handoff = state["handoffs"].get(entity_key)
+            if not handoff or (handoff["from_owner"], handoff["from_installation"]) != (
+                actor, installation,
+            ):
+                raise PermissionError("stop acknowledgement is not bound to the prior installation")
+            blockers = self._handoff_blockers(state, entity_key)
+            if blockers:
+                raise GitCoordinationError("stop acknowledgement blocked by: " + ", ".join(blockers))
+            handoff["stop_acknowledged"] = True
+            handoff["status"] = "ready"
+            return {"status": "ready"}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def record_external_fence(
+        self, operation_id: str, *, actor: str, installation: str, entity_key: str,
+        proof: dict[str, Any],
+    ) -> AcceptedTransaction:
+        """Record an administrator's durable, specific proof of independent fencing."""
+        inputs = {
+            "actor": actor, "installation": installation, "entity": entity_key, "proof": proof,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            member = state["members"].get(actor) or {}
+            if state["installations"].get(installation) != actor or member.get("role") not in {
+                "owner", "admin", "administrator",
+            }:
+                raise PermissionError("external fencing requires an enrolled administrator")
+            if not proof.get("execution") or not proof.get("publication"):
+                raise GitCoordinationError("external fence must cover execution and publication")
+            handoff = state["handoffs"].get(entity_key)
+            if not handoff:
+                raise GitCoordinationError("no pending handoff")
+            claim_operations = {
+                claim.get("operation_id")
+                for key, claim in state["claims"].items()
+                if key == entity_key
+            }
+            unresolved_effects = [
+                key for key, effect in state["effects"].items()
+                if effect.get("scope") == entity_key
+                and effect.get("outcome", "pending") in {"pending", "unknown"}
+            ]
+            if unresolved_effects:
+                raise GitCoordinationError(
+                    "external fence blocked by unresolved effects: " + ", ".join(unresolved_effects)
+                )
+            for permit in state["permits"].values():
+                if permit.get("claim") in claim_operations and permit.get(
+                    "status", "pending"
+                ) not in {"terminal", "fenced"}:
+                    permit["status"] = "fenced"
+            handoff["external_fence"] = {"actor": actor, "installation": installation, **deepcopy(proof)}
+            handoff["status"] = "ready"
+            return {"status": "ready"}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def retain_late_evidence(
+        self, operation_id: str, *, actor: str, installation: str, entity_key: str,
+        prior_generation: int, evidence_id: str, payload: dict[str, Any],
+    ) -> AcceptedTransaction:
+        """Archive late output as attributed evidence without applying lifecycle state."""
+        inputs = {
+            "actor": actor, "installation": installation, "entity": entity_key,
+            "prior_generation": prior_generation, "evidence_id": evidence_id, "payload": payload,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            enrolled_actor = state["installations"].get(installation)
+            revoked_actor = state.get("revoked_installations", {}).get(installation)
+            if actor not in {enrolled_actor, revoked_actor}:
+                raise PermissionError("evidence installation is not enrolled")
+            entity = state["entities"].get(entity_key)
+            if not entity or int(entity.get("authority_generation", 0)) <= prior_generation:
+                raise GitCoordinationError("evidence is not from a fenced prior generation")
+            state["recovery"].append({
+                "kind": "late-evidence", "entity": entity_key,
+                "generation": prior_generation, "evidence_id": evidence_id,
+                "actor": actor, "installation": installation, "payload": deepcopy(payload),
+            })
+            return {"retained": evidence_id, "applied": False}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def reconcile_effect(
+        self, operation_id: str, *, actor: str, installation: str,
+        effect_operation_id: str, outcome: str, evidence: dict[str, Any],
+    ) -> AcceptedTransaction:
+        """Resolve the original provider operation by ID without issuing a replacement effect."""
+        if outcome not in {"succeeded", "failed", "fenced"}:
+            raise ValueError("reconciled outcome must be terminal")
+        inputs = {
+            "actor": actor, "installation": installation, "effect": effect_operation_id,
+            "outcome": outcome, "evidence": evidence,
+        }
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            if state["installations"].get(installation) != actor:
+                raise PermissionError("recovery installation is not enrolled")
+            effect = state["effects"].get(effect_operation_id)
+            if not effect:
+                raise GitCoordinationError("original provider effect was not found")
+            if effect.get("outcome", "pending") not in {"pending", "unknown", outcome}:
+                raise GitCoordinationError("provider effect already has a different terminal outcome")
+            effect.update({"outcome": outcome, "reconciled_by": actor, "evidence": deepcopy(evidence)})
+            permit = state["permits"].get(effect_operation_id)
+            if permit is not None:
+                permit["status"] = "fenced" if outcome == "fenced" else "terminal"
+            return {"effect": effect_operation_id, "outcome": outcome}
+
+        return self.transact(operation_id, inputs, mutate)
+
+    def complete_handoff(
+        self, operation_id: str, *, actor: str, installation: str, entity_key: str,
+    ) -> AcceptedTransaction:
+        """Atomically release old authority, assign the pending owner, and advance generation."""
+        inputs = {"actor": actor, "installation": installation, "entity": entity_key}
+
+        def mutate(state: dict[str, Any]) -> dict[str, Any]:
+            member = self._require_active_installation(state, actor, installation)
+            handoff = state["handoffs"].get(entity_key)
+            if not handoff:
+                raise GitCoordinationError("no pending handoff")
+            administrator = member.get("role") in {"owner", "admin", "administrator"}
+            if actor not in {handoff["from_owner"], handoff["pending_owner"]} and not administrator:
+                raise PermissionError("handoff completion requires a participating owner or administrator")
+            blockers = self._handoff_blockers(state, entity_key)
+            if blockers:
+                raise GitCoordinationError("handoff remains blocked by: " + ", ".join(blockers))
+            if not handoff.get("stop_acknowledged") and not handoff.get("external_fence"):
+                raise GitCoordinationError("handoff requires bound stop acknowledgement or external fence")
+            entity = state["entities"][entity_key]
+            self._require_authorized_owner(state, entity, handoff["pending_owner"])
+            state["claims"].pop(entity_key, None)
+            entity.update({
+                "owner": handoff["pending_owner"],
+                "authority_generation": int(handoff["from_generation"]) + 1,
+                "draining": False,
+                "pending_owner": "",
+                "version": int(entity.get("version", 0)) + 1,
+            })
+            state["recovery"].append({"kind": "handoff", "entity": entity_key, **deepcopy(handoff)})
+            del state["handoffs"][entity_key]
+            return {
+                "status": "complete", "owner": entity["owner"],
+                "authority_generation": entity["authority_generation"],
+            }
 
         return self.transact(operation_id, inputs, mutate)
 

@@ -41,6 +41,18 @@ def task_action(effect: str):
     def decorate(method):
         @functools.wraps(method)
         def guarded(self, task: Task, *args, **kwargs):
+            # Reject stale/paused assignment cursors before admitting a durable provider
+            # effect. A denied action must not leave an unknown effect that blocks the
+            # later, correctly authorized retry or ownership handoff.
+            authority_owner = self if hasattr(self, "require_task_authority") else self.scheduler
+            authority_owner.require_task_authority(task)
+            expected_generation = kwargs.get("assignment_generation")
+            if expected_generation is not None and self.coordinator is not None:
+                assignment = self.coordinator.refresh(allow_stale=False).snapshot.get(
+                    "assignment"
+                ) or {}
+                if int(assignment.get("generation", -1)) != int(expected_generation):
+                    raise RuntimeError("stale assignment generation")
             with self.task_effect(task, f"{effect}:{task.id}"):
                 return method(self, task, *args, **kwargs)
         return guarded
