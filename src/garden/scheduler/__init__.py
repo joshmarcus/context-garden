@@ -144,6 +144,20 @@ class Scheduler(
     def effective_task_owner(self, task: Task) -> tuple[str, str]:
         """Resolve ownership from the authority source selected for this installation."""
         phase = self.store.phase(task.product, task.phase)
+        if self.coordinator is not None:
+            snapshot = getattr(self, "_authority_snapshot", None)
+            if snapshot is None:
+                snapshot = self.coordinator.refresh().snapshot
+            row = next((value for value in snapshot.get("authority", [])
+                        if value.get("kind") == "task" and value.get("scope") == task.id), None)
+            if row is not None:
+                owner = str(row.get("owner") or "")
+                if owner == "-":
+                    owner = ""
+                source = "unassigned" if task.owner_unassigned else (
+                    "task" if task.owner else "phase"
+                )
+                return owner, source
         if (self.cfg.get("multiplayer.enabled", False)
                 and hasattr(self.members, "effective_task_owner")):
             return self.members.effective_task_owner(task, phase)

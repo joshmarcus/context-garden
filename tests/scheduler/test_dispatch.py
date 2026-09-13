@@ -154,6 +154,16 @@ def test_run_provenance_preserves_admission_readiness_after_worker_update(sched)
         "status": "verified", "checked_at": 1, "expires_at": 4_102_444_800,
     }
 
+
+def test_routing_view_uses_scheduler_effective_owner(sched):
+    task = sched.store.task("DM-001")
+
+    view = task_routing_view(
+        sched.store, task, owner_resolver=lambda _task: ("accepted-owner", "phase"),
+    )
+
+    assert (view["owner"], view["owner_source"]) == ("accepted-owner", "phase")
+
 def test_execution_envelope_records_explicit_empty_requirements(sched):
     task = sched.store.task("DM-001")
     requirements, match = sched._execution_match(task, "work")
