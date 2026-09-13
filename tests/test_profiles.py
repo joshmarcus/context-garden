@@ -47,6 +47,8 @@ def test_default_and_legacy_selections_use_configured_baseline(sched):
     assert sched.review_parallel_limit() == 3
     sched.set_operating_profile("plain", by="test")
     assert sched.operating_profile_name() == "default"
+    sched.overrides()["operating_profile"] = ""
+    assert sched.operating_profile_name() == "default"
 
 
 def test_custom_legacy_name_is_preserved(sched):

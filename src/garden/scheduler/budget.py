@@ -345,12 +345,10 @@ class BudgetMixin:
         return profile_stops(self.cfg)
 
     def operating_profile_name(self) -> str:
-        """The active stop's name, or "" when none is set (plain garden.yaml/live-override
-        values). A live override on `operating_profile` (`garden profile <name>` or the rail)
-        wins; otherwise the garden.yaml `operating_profile` key, if set."""
+        """The active stop name, with absent legacy selections represented as Default."""
         ov = self.overrides()
         if "operating_profile" in ov:
-            return str(ov["operating_profile"] or "")
+            return normalized_name(self.cfg, str(ov["operating_profile"] or ""))
         return normalized_name(self.cfg, str(self.cfg.get("operating_profile") or ""))
 
     def operating_profile(self) -> dict[str, Any]:
@@ -377,9 +375,7 @@ class BudgetMixin:
                 continue
             new = prospective.get(profile_key, self.cfg.get(key))
             self._assert_runtime_change_preserves_locks(key, new)
-        if name == "default":
-            self.overrides()["operating_profile"] = name
-        elif name:
+        if name:
             self.overrides()["operating_profile"] = name
         else:
             self.overrides().pop("operating_profile", None)
