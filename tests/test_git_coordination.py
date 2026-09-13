@@ -435,7 +435,7 @@ def test_external_fence_requires_provider_reconciliation_and_preserves_late_evid
         },
     )
     first.begin_handoff(
-        "drain-partitioned", actor="alice", installation="one",
+        "drain-partitioned", actor="admin", installation="admin",
         entity_key="task:CG-1", expected_version=0, pending_owner="bob",
     )
     recovery = GitStateStore(two, garden_id="garden")
