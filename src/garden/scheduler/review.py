@@ -1525,6 +1525,23 @@ class ReviewMixin:
                           f"automated review: {verdict} (description rewritten){cost}", task.pr or "")
                 return True
             if verdict == "request_changes":
+                blockers = [item for item in review.get("criteria", [])
+                            if isinstance(item, dict) and item.get("met") is False]
+                blockers += [item for item in review.get("findings", [])
+                             if isinstance(item, dict) and item.get("severity") == "blocking"]
+                operator_categories = {"infrastructure", "admission", "unavailable_evidence",
+                                       "owner_input", "external_gate"}
+                if blockers and all(item.get("failure_category") in operator_categories
+                                    for item in blockers):
+                    # The review and CI facts stay intact. The operator diagnoses the
+                    # missing capability/evidence instead of sending unchanged code to an author.
+                    self._set_needs_human(task, "review_evidence",
+                                          "Review requires operator evidence or infrastructure recovery",
+                                          run=run.run_id, owner="operator")
+                    task.log("review routed to operator recovery; no author revision queued")
+                    self.store.save(task)
+                    self.state.save()
+                    return True
                 signal = review_implementation_failure_signal(review)
                 if signal:
                     self._record_implementation_failure(

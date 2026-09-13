@@ -630,3 +630,62 @@ def test_command_validation_requires_durable_receipt_for_exact_pr_head(sched, fa
         },
     }))
     assert sched._automerge_gate(t, pr)[0]
+
+
+def test_approval_collected_after_mechanical_rebase_can_merge_without_new_review(sched, fake_github):
+    from garden.scheduler.report import TickReport
+
+    task, state, pr = _in_review(sched, fake_github)
+    sched.cfg.data["github"]["automerge_require_current_base"] = False
+    original = state["last_review_head"]
+    rebase = _finished_rebase(sched, task, original, "rebased-during-review")
+    state["head_sha"] = pr.head_sha = "rebased-during-review"
+    review = next(run for run in sched.runs.runs_for(task.id) if run.run_id == "rev-1")
+    sched._apply_review(task, review, {"verdict": "approve", "findings": []}, TickReport(), emitted=True)
+
+    assert state["last_review_head"] == original
+    assert not state.get("derived_review_approval")  # verdict arrived after rebase bookkeeping
+    assert sched._automerge_gate(task, pr)[0]
+    assert len([run for run in sched.runs.runs_for(task.id) if run.mode == "review"]) == 1
+    pr.checks = "FAILURE"
+    assert not sched._automerge_gate(task, pr)[0]
+    pr.checks = "SUCCESS"
+    rebase.patch_id_after = "substantive-change"
+    rebase.save()
+    assert not sched._automerge_gate(task, pr)[0]
+
+
+def test_stale_ci_only_review_does_not_queue_author_revision(sched, fake_github):
+    from garden.scheduler.report import TickReport
+
+    task, state, pr = _in_review(sched, fake_github)
+    review = next(run for run in sched.runs.runs_for(task.id) if run.run_id == "rev-1")
+    result = {"verdict": "request_changes", "criteria": [
+        {"criterion": "Requested behavior", "met": True},
+        {"criterion": "CI identifier", "met": False, "failure_category": "stale_check"},
+    ], "findings": []}
+    sched._apply_review(task, review, result, TickReport(), emitted=True)
+    assert state["last_review"]["verdict"] == "approve"
+    assert state["last_review"]["criteria"][1]["met"] is False
+    assert not state.get("pending_feedback")
+    assert task.status == Status.IN_REVIEW
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "revise"]
+    pr.checks = "PENDING"
+    assert not sched._automerge_gate(task, pr)[0]
+
+
+@pytest.mark.parametrize("category", ["infrastructure", "admission", "unavailable_evidence", "owner_input"])
+def test_review_process_problem_routes_to_operator_without_author_round(sched, fake_github, category):
+    from garden.scheduler.report import TickReport
+
+    task, state, _pr = _in_review(sched, fake_github)
+    review = next(run for run in sched.runs.runs_for(task.id) if run.run_id == "rev-1")
+    result = {"verdict": "request_changes", "findings": [
+        {"severity": "blocking", "failure_category": category, "summary": "Environment needs recovery"},
+    ]}
+    sched._apply_review(task, review, result, TickReport(), emitted=True)
+    assert state["needs_human"]["kind"] == "review_evidence"
+    assert state["last_review"]["verdict"] == "request_changes"
+    assert not state.get("pending_feedback")
+    assert task.status == Status.IN_REVIEW
+    assert not [run for run in sched.runs.runs_for(task.id) if run.mode == "revise"]

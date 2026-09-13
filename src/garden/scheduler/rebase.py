@@ -146,7 +146,12 @@ class RebaseMixin:
 
     def _effective_approved_head(self, task: Task, st: dict[str, object]) -> str:
         """The reviewed head, advanced only through a fully proven mechanical lineage."""
-        return self._derived_approved_head(task, st) or str(st.get("last_review_head") or "")
+        reviewed = str(st.get("last_review_head") or "")
+        current = str(st.get("head_sha") or "")
+        if (self._review_approval_is_proven(task, st)
+                and self._head_is_mechanically_derived(task, reviewed, current)):
+            return current
+        return self._derived_approved_head(task, st) or reviewed
 
     def _extend_approved_head_lineage(self, task: Task, run: Run) -> bool:
         """Bind an unchanged-patch rebase head to the existing approval without rewriting it."""

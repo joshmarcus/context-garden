@@ -2964,3 +2964,16 @@ def test_unlimited_review_cap_dispatches_beyond_the_former_limit_under_review_ad
     assert st["review_rounds"] == 3
     assert len(sched.review_runs_active()) == 1
     assert sched.review_slots_free() == 0
+
+
+def test_amended_response_is_matched_to_replacement_with_original_snapshot(garden):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.body += "\n## Acceptance criteria\n\n- [ ] The intended outcome works.\n"
+    task.extra["criteria_amended"] = [{"index": 0, "text": "The intended outcome works.",
+                                       "reason": "Equivalent inspection replaces the prescribed tool."}]
+    text = review_brief(store, task, branch="b", base="main", pr_title="T", pr_body="B", diff="+x",
+                        max_diff_chars=100, criteria_snapshot=["Use a nonexistent tool."],
+                        verified=[{"criterion": "The intended outcome works.", "evidence": "Inspected and passed"}])
+    assert "**The intended outcome works.** — Inspected and passed" in text
+    assert "author gave no evidence" not in text

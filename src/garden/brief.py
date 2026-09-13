@@ -511,7 +511,7 @@ def build_brief(
     frozen = criteria_snapshot if criteria_snapshot is not None else parse_criteria(task.body)
     if frozen:
         criteria_text = "# Criteria frozen for this dispatch\n\n" + "\n".join(f"- {item}" for item in frozen) + "\n"
-        sections.append(("criteria_ref", f"## Frozen contract\n\nUse `{snapshot('criteria.md', criteria_text)}`; it remains the contract if the live task later changes.\n"))
+        sections.append(("criteria_ref", f"## Frozen contract\n\nUse `{snapshot('criteria.md', criteria_text)}`; it records the original contract; explicit owner updates and justified criteria_amended replacements supersede the corresponding wording.\n"))
     if include_rules:
         sections.append(("pre_flight", preflight_section(
             cfg.capture_infrastructure_policy(), browser_enabled=cfg.browser_enabled(task.product)
@@ -540,7 +540,11 @@ def build_brief(
             frel = str(f.resolve().relative_to(source_root.resolve()))
             if frel in inlined:
                 continue
-            content = _read_at_base(f, source_root, base or "HEAD")
+            # Owner-authored context belongs to this dispatch, not a product Git ref.
+            # Product source remains pinned to its recorded base; both become immutable
+            # once copied into the run's context snapshot.
+            content = (_read(f) if source_root.resolve() == root.resolve()
+                       else _read_at_base(f, source_root, base or "HEAD"))
             if content is None:
                 missing.append(frel)
                 continue

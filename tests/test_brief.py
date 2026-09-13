@@ -395,3 +395,19 @@ def test_brief_gaps_flags_a_parent_escaping_reading_entry(garden):
     t = _task_with(store, body, reading=["../outside.md"])
     gaps = brief_gaps(store, t)
     assert any("../outside.md" in g for g in gaps)
+
+
+def test_owner_context_snapshot_does_not_use_product_branch_ref(garden):
+    import subprocess
+
+    context = garden / "docs" / "current-owner.md"
+    context.parent.mkdir(exist_ok=True)
+    context.write_text("Current owner guidance and actual diagnosis.")
+    subprocess.run(["git", "init", "-b", "context-main"], cwd=garden, check=True, capture_output=True)
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.reading = ["docs/current-owner.md"]
+    brief = build_brief(store, task, branch="feature", base="product-only-ref")
+    assert "Current owner guidance" in brief.files["context/reading/docs/current-owner.md"]
+    context.write_text("Later owner update.")
+    assert "Current owner guidance" in brief.files["context/reading/docs/current-owner.md"]

@@ -52,9 +52,11 @@ SCALABILITY_LOAD_KINDS = {"controlled", "real_model_harnesses"}
 
 def is_pending_external_gate(item: object) -> bool:
     """Whether a typed review item records a merge gate that is still waiting."""
-    return (isinstance(item, dict)
-            and item.get("failure_category") == PENDING_EXTERNAL_GATE
-            and item.get("gate_state") == "pending")
+    return (isinstance(item, dict) and (
+        item.get("failure_category") == "stale_check"
+        or (item.get("failure_category") == PENDING_EXTERNAL_GATE
+            and item.get("gate_state") in {"pending", "stale", "unavailable"})
+    ))
 
 # The walkthrough deliberately has a larger inventory than a normal PR needs.  Keep this
 # mapping here, beside the review policy, so the check runner and reviewer consume one plan.
@@ -513,8 +515,9 @@ only when the reviewed source owns a defect or unmet required outcome. Use `exte
 with `gate_state: "pending"` only for a source-bound merge requirement (such as exact-head
 CI) that has not finished yet: preserve that requirement, but approve source that is
 otherwise accepted because the controller independently enforces the gate before merge.
-The other categories identify conditions that can still block review but must not escalate
-the author's model. A failed external check is not pending; report the concrete failure. Use
+Stale check evidence is also a waiting gate, not a source rejection. Infrastructure,
+admission, unavailable-evidence and owner-input problems go to operator recovery and must
+not launch an unchanged author revision. A failed external check is not pending; report the concrete failure. Use
 `findings` with severity `blocking` for changes needed before merge and `nit` for optional
 improvements. A missing `fix` field does not invalidate an otherwise clear finding.
 Description feedback is always advisory and must not be the sole reason for
@@ -608,7 +611,11 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         )
     if criteria_note:
         parts.append(criteria_note)
-    verification = _verification_brief(task, verified, frozen)
+    effective_criteria = list(frozen)
+    for index, amendment in amendments.items():
+        if 0 <= index < len(effective_criteria):
+            effective_criteria[index] = str(amendment.get("text") or effective_criteria[index])
+    verification = _verification_brief(task, verified, effective_criteria)
     if verification:
         parts.append(verification)
     if isinstance(pre_flight, list):
@@ -618,8 +625,8 @@ def review_brief(store: Store, task: Task, *, branch: str, base: str, pr_title: 
         ) + "\n")
     current = parse_criteria(task.body)
     if current != frozen:
-        parts.append("## Criteria changed after dispatch\n\nThe worker was judged against the frozen criteria above. "
-                     "The task now has:\n\n" + "\n".join(f"- {item}" for item in current) + "\n")
+        parts.append("## Criteria changed after dispatch\n\nThe original dispatch wording is preserved above for provenance. "
+                     "Explicit owner updates and justified amendments supersede it; judge these current outcomes:\n\n" + "\n".join(f"- {item}" for item in current) + "\n")
     if captures:
         parts.append("## Rendered UI captures\n\nOpen these image paths before judging the UI:\n\n" +
                      "\n".join(f"- `{path}`" for path in captures) + "\n")
