@@ -536,7 +536,8 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
                        json={"host": "spoofed"}).status_code == 403
 
 
-def test_member_worker_lifecycle_requires_current_project_visibility(garden):
+@pytest.mark.parametrize("revocation", ["project", "member", "installation"])
+def test_member_worker_lifecycle_requires_current_authorization(garden, revocation):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
@@ -548,10 +549,12 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
+    source_head = "c" * 40
+    run.source_head = source_head
     run.env_snapshot = {
         "product": "demo",
         "remote_repo": "https://example.test/team/project.git",
-        "prepared_source_head": "c" * 40,
+        "prepared_source_head": source_head,
     }
     run.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
@@ -563,9 +566,16 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     assert claim.status_code == 200
     lease_token = claim.json()["lease_token"]
 
-    state = json.loads(registry.path.read_text())
-    state["members"]["bob"]["projects"] = []
-    registry.path.write_text(json.dumps(state))
+    bob = registry.authenticate(token)
+    assert bob is not None
+    if revocation == "project":
+        state = json.loads(registry.path.read_text())
+        state["members"]["bob"]["projects"] = []
+        registry.path.write_text(json.dumps(state))
+    elif revocation == "member":
+        registry.set_member_active(admin, "bob", False)
+    else:
+        registry.revoke_installation(bob, "bob-worker")
     heartbeat = client.post(
         "/api/runs/member-visible-run/heartbeat", headers=headers,
         json={"lease_token": lease_token, "transcript": "must not persist"},
@@ -581,9 +591,8 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     assert not run.process_finished()
 
 
-def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):
+def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
     enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
     enrollment.parent.mkdir(parents=True, mode=0o700)
     enrollment.write_text(json.dumps({"hosts": [{
@@ -592,15 +601,56 @@ def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden)
     enrollment.chmod(0o600)
     config.setdefault("workers", {})["enrollment_registry"] = str(enrollment)
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    runs = RunStore(garden / ".garden")
+    leased = runs.new_run("DM-001", "remote", mode="check", run_id="legacy-leased-run")
+    source_head = "c" * 40
+    leased.source_head = source_head
+    leased.env_snapshot = {
+        "product": "demo",
+        "remote_repo": "https://example.test/team/project.git",
+        "prepared_source_head": source_head,
+    }
+    leased.save()
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+    headers = {"Authorization": "Bearer legacy-secret"}
+    claim = client.post(
+        "/api/runs/claim", headers=headers,
+        json={"host": "legacy", "claim_request_id": "legacy-before-enable"},
+    )
+    assert claim.status_code == 200
+    lease_token = claim.json()["lease_token"]
+
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     _registry(garden)
+    queued = runs.new_run("DM-002", "remote", mode="check", run_id="legacy-queued-run")
+    queued.env_snapshot = {"product": "demo"}
+    queued.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
 
     response = client.post(
         "/api/runs/claim",
-        headers={"Authorization": "Bearer legacy-secret"},
-        json={"host": "legacy"},
+        headers=headers,
+        json={"host": "legacy", "claim_request_id": "legacy-after-enable"},
     )
-    assert response.status_code == 204
+    assert response.status_code == 403
+    assert response.json()["detail"] == "multiplayer workers require a member installation"
+    heartbeat = client.post(
+        "/api/runs/legacy-leased-run/heartbeat", headers=headers,
+        json={"lease_token": lease_token, "transcript": "must not persist"},
+    )
+    finish = client.post(
+        "/api/runs/legacy-leased-run/finish", headers=headers,
+        json={"lease_token": lease_token, "result": {}, "final_text": "must not persist"},
+    )
+    assert heartbeat.status_code == 403
+    assert finish.status_code == 403
+    saved_leased = RunStore(garden / ".garden").runs_for("DM-001")[0]
+    saved_queued = RunStore(garden / ".garden").runs_for("DM-002")[0]
+    assert not (saved_leased.path / "stdout.json").exists()
+    assert not (saved_leased.path / "final.md").exists()
+    assert not saved_leased.process_finished()
+    assert saved_queued.host == ""
 
 
 def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(garden):
