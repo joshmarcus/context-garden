@@ -43,9 +43,10 @@ def match_worker(
 ) -> WorkerMatch:
     """Select one authorized instance before considering soft preferences.
 
-    Ordering is stable: configuration preferences come first, then the least-selected
-    compatible instance and its id. Capacity is represented by the caller's busy set. A
-    pin is a hard constraint, never a way around authorization.
+    Ordering is stable and prefers the authored configuration order, then the
+    least-selected compatible instance and its id. Capacity/fairness is represented by
+    the caller's busy set: once an instance becomes busy the next stable candidate wins.
+    A pin is a hard constraint, never a way around authorization.
     """
     if held:
         return WorkerMatch(None, MatchReason.BUDGET_OR_DEADLINE_HOLD, "activity is held")

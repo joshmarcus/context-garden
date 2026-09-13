@@ -13,6 +13,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import TypeVar
 
 from .locking import file_lock
 from .models import (
@@ -35,6 +36,8 @@ from .provider import (
     ProvisioningUncertain,
     TransientProviderError,
 )
+
+LaunchResult = TypeVar("LaunchResult")
 
 
 class EnvironmentStop(RuntimeError):
@@ -760,7 +763,9 @@ class HostLifecycle:
                 assert admission is not None
                 reason = self._admission_rejection(admission, requirements, claim_time)
                 if reason:
-                    if admission.lease_id:
+                    # An ineligible response may describe the conflicting winner; it does
+                    # not transfer ownership of that lease to this acquisition.
+                    if admission.eligible and admission.lease_id:
                         try:
                             provider.release_admission(
                                 host.provider_id, lease_id=admission.lease_id
@@ -823,8 +828,35 @@ class HostLifecycle:
     def _validate_requirements(requirements: HostRequirements) -> None:
         if not requirements.activity or not requirements.host_class or not requirements.environment:
             raise ValueError("activity, host_class and environment are required for host admission")
-        if requirements.memory_mib < 0 or requirements.disk_gib < 0:
+        if any(value < 0 for value in (
+            requirements.memory_mib, requirements.vcpu, requirements.gpu_count,
+            requirements.gpu_device_memory_mib, requirements.disk_gib,
+            requirements.lease_generation,
+        )):
             raise ValueError("host resource requirements cannot be negative")
+        identity = (
+            requirements.effective_requirement_digest,
+            requirements.profile_revision,
+            requirements.worker_id,
+            requirements.run_id,
+            requirements.operating_user,
+            requirements.installation_id,
+        )
+        if any(identity) and not all(identity):
+            raise ValueError("host admission identity must be complete")
+        if any(identity) and requirements.lease_generation <= 0:
+            raise ValueError("host admission lease generation must be positive")
+        constrained = bool(
+            requirements.memory_mib or requirements.vcpu or requirements.gpu_count
+            or requirements.gpu_device_memory_mib
+        )
+        if constrained and not all(identity):
+            raise ValueError("constrained host admission requires a fenced workload identity")
+        if requirements.gpu_count == 0 and (
+            requirements.gpu_vendor or requirements.gpu_device_memory_mib
+            or requirements.gpu_features
+        ):
+            raise ValueError("GPU shape requires a positive GPU count")
         if requirements.probe_max_age_seconds <= 0 or requirements.lease_seconds <= 0:
             raise ValueError("probe and lease durations must be positive")
 
@@ -855,6 +887,59 @@ class HostLifecycle:
             )
         if admission.disk_free_gib < requirements.disk_gib:
             return f"host disk {admission.disk_free_gib} GiB is below {requirements.disk_gib} GiB"
+        bindings = {
+            "effective requirement digest": (
+                admission.effective_requirement_digest,
+                requirements.effective_requirement_digest,
+            ),
+            "profile revision": (admission.profile_revision, requirements.profile_revision),
+            "worker identity": (admission.worker_id, requirements.worker_id),
+            "run identity": (admission.run_id, requirements.run_id),
+            "activity identity": (admission.activity, requirements.activity),
+            "operating user": (admission.operating_user, requirements.operating_user),
+            "installation identity": (admission.installation_id, requirements.installation_id),
+            "lease generation": (admission.lease_generation, requirements.lease_generation),
+        }
+        for label, (actual, expected) in bindings.items():
+            if expected and actual != expected:
+                return f"host admission {label} does not match"
+        constrained = bool(
+            requirements.memory_mib or requirements.vcpu or requirements.gpu_count
+            or requirements.gpu_device_memory_mib
+        )
+        if constrained and not admission.resources_enforced:
+            return "host cannot enforce constrained resource reservations"
+        if requirements.memory_mib and admission.memory_limit_mib != requirements.memory_mib:
+            return "host memory ceiling does not match the reservation"
+        if requirements.vcpu and admission.vcpu_limit != requirements.vcpu:
+            return "host vCPU ceiling does not match the reservation"
+        if requirements.gpu_count:
+            if len(admission.gpu_devices) != requirements.gpu_count:
+                return "host GPU assignment does not match the reservation"
+            if len(set(admission.gpu_devices)) != len(admission.gpu_devices):
+                return "host GPU assignment is not exclusive"
+            if len(admission.gpu_device_memory_mib) != requirements.gpu_count:
+                return "host GPU device-memory evidence is incomplete"
+            if any(
+                memory < requirements.gpu_device_memory_mib
+                for memory in admission.gpu_device_memory_mib
+            ):
+                return "host GPU device memory is below the reservation"
+            if len(admission.gpu_device_vendors) != requirements.gpu_count:
+                return "host GPU vendor evidence is incomplete"
+            if any(
+                vendor.casefold() != requirements.gpu_vendor.casefold()
+                for vendor in admission.gpu_device_vendors
+            ):
+                return "host GPU vendor does not match the reservation"
+            if len(admission.gpu_device_features) != requirements.gpu_count:
+                return "host GPU feature evidence is incomplete"
+            required_features = set(requirements.gpu_features)
+            if any(
+                not required_features.issubset(features)
+                for features in map(set, admission.gpu_device_features)
+            ):
+                return "host GPU features do not match the reservation"
         if (
             not admission.lease_id
             or not math.isfinite(admission.lease_expires_at)
@@ -880,6 +965,7 @@ class HostLifecycle:
                 **{
                     **raw_requirements,
                     "capabilities": tuple(raw_requirements.get("capabilities", ())),
+                    "gpu_features": tuple(raw_requirements.get("gpu_features", ())),
                 }
             )
             self._validate_requirements(requirements)
@@ -903,6 +989,65 @@ class HostLifecycle:
         lease["admission"] = asdict(admission)
         self.state.write(data)
         return admission
+
+    def activate_admission(
+        self, pool: PoolDeclaration, provider_id: str, *, now: Callable[[], float] = time.time
+    ) -> HostAdmission:
+        """Atomically recheck and activate an admission immediately before process start."""
+        with self.state.locked():
+            data = self.state.read()
+            leases = data.get("leases", {})
+            lease = leases.get(provider_id) if isinstance(leases, dict) else None
+            raw = lease.get("admission") if isinstance(lease, dict) else None
+            raw_requirements = lease.get("requirements") if isinstance(lease, dict) else None
+            if not isinstance(raw, dict) or not isinstance(raw_requirements, dict):
+                raise EnvironmentStop("host admission lease is not recorded")
+            lease_id = str(raw.get("lease_id", ""))
+            try:
+                requirements = HostRequirements(
+                    **{
+                        **raw_requirements,
+                        "capabilities": tuple(raw_requirements.get("capabilities", ())),
+                        "gpu_features": tuple(raw_requirements.get("gpu_features", ())),
+                    }
+                )
+                self._validate_requirements(requirements)
+                admission = self._provider(pool).activate_admission(
+                    provider_id, lease_id=lease_id, requirements=requirements
+                )
+            except (TypeError, ValueError, ProviderError) as exc:
+                detail = f"host admission activation failed: {exc}"
+                self._record_environment_stop(pool, detail, data=data)
+                raise EnvironmentStop(detail) from exc
+            rejection = self._admission_rejection(admission, requirements, now())
+            if admission.lease_id != lease_id:
+                rejection = "host admission lease identity changed"
+            if rejection:
+                detail = f"host admission activation failed: {rejection}"
+                self._record_environment_stop(pool, detail, data=data)
+                raise EnvironmentStop(detail)
+            lease["admission"] = asdict(admission)
+            lease["activated_at"] = now()
+            self.state.write(data)
+            return admission
+
+    def launch_admitted(
+        self,
+        pool: PoolDeclaration,
+        provider_id: str,
+        launch: Callable[[HostAdmission], LaunchResult],
+        *,
+        now: Callable[[], float] = time.time,
+    ) -> LaunchResult:
+        """Activate the fenced reservation at the host-backed process launch boundary.
+
+        The callback is unreachable when the provider rejects the final resource,
+        requirement, profile, or lease-generation check. A successful activation stays
+        recorded for normal release/reconciliation even if process creation raises, so
+        cleanup never guesses that provider-side activation was rolled back.
+        """
+        admission = self.activate_admission(pool, provider_id, now=now)
+        return launch(admission)
 
     def _record_environment_stop(
         self,
@@ -939,6 +1084,13 @@ class HostLifecycle:
         lease = leases.get(provider_id)
         raw = lease.get("admission") if isinstance(lease, dict) else None
         lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        if lease_id and isinstance(lease, dict) and (
+            lease.get("activated_at") or lease.get("run_id")
+        ):
+            if pool is None:
+                raise ValueError("pool is required to cancel an active host-local admission lease")
+            self.release(pool, provider_id)
+            return
         if lease_id:
             if pool is None:
                 raise ValueError("pool is required to cancel a host-local admission lease")
@@ -959,6 +1111,21 @@ class HostLifecycle:
         lease = leases.get(provider_id)
         raw = lease.get("admission") if isinstance(lease, dict) else None
         lease_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
+        released = self._owned(pool, provider_id)
+        if released.state not in {HostState.STOPPED, HostState.TERMINATED}:
+            try:
+                released = self.stop(pool, provider_id)
+            except ProviderError as exc:
+                detail = f"host stop failed before admission lease release: {exc}"
+                self._record_environment_stop(pool, detail, data=data)
+                raise EnvironmentStop(detail) from exc
+        if released.state not in {HostState.STOPPED, HostState.TERMINATED}:
+            detail = (
+                "host stop did not prove termination before admission lease release: "
+                f"{released.state.value}"
+            )
+            self._record_environment_stop(pool, detail, data=data)
+            raise EnvironmentStop(detail)
         if lease_id:
             try:
                 self._provider(pool).release_admission(provider_id, lease_id=lease_id)
@@ -966,7 +1133,6 @@ class HostLifecycle:
                 detail = f"host admission lease release failed: {exc}"
                 self._record_environment_stop(pool, detail, data=data)
                 raise EnvironmentStop(detail) from exc
-        released = self.stop(pool, provider_id)
         if isinstance(lease, dict):
             lease["released"] = True
             lease["last_used_at"] = time.time()

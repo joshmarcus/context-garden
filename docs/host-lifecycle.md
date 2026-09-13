@@ -132,6 +132,14 @@ Garden independently rejects stale or future probes, mismatched routing, missing
 insufficient headroom, and missing or expired leases. Controller memory is never consulted for
 this decision. A rejected host is reported by its logical host alias.
 
+Managed pull workers cross the same barrier in their real launch path. A worker configuration
+running constrained claims supplies `host_admission.pool`, `host_admission.provider_id`, and
+`host_admission.state_path`; the pool's command-provider options identify the host-local
+authority. `execute_claim()` reconstructs that lifecycle from the persisted reservation, and
+the claim supervisor remains blocked on its launch gate until `activate-admission` succeeds.
+Missing configuration or rejected activation fails closed before the model or check command.
+Unconstrained and legacy claims do not require this optional managed-host integration.
+
 The wrapper's lease store is the cross-controller authority: all activities use the same
 host-local capacity and a repeated controller cannot manufacture another heavy slot.
 `renew-admission` receives the provider and lease IDs; an unknown, changed, or expired lease is
