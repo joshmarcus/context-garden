@@ -21,6 +21,17 @@ from garden.web.app import create_app, multiplayer_tls_files
 
 
 def _registry(tmp_path):
+    for project, phase in (("demo", "p1"), ("other", "p2")):
+        project_path = tmp_path / project
+        project_path.mkdir(exist_ok=True)
+        product_path = project_path / "product.md"
+        if not product_path.exists():
+            product_path.write_text(f"# {project}\n")
+        phase_path = project_path / phase
+        phase_path.mkdir(exist_ok=True)
+        goals_path = phase_path / "goals.md"
+        if not goals_path.exists():
+            goals_path.write_text(f"# {phase}\n")
     registry = MemberRegistry(tmp_path / ".garden")
     token = registry.enroll_administrator("garden-1", "alice", "alice-laptop")
     principal = registry.authenticate(token)
@@ -53,6 +64,10 @@ def test_temporary_username_installations_are_explicit_bound_and_revocable(tmp_p
 def test_coordinator_authentication_modes_do_not_downgrade_or_accept_username_input(
     tmp_path,
 ):
+    for project, phase in (("demo", "p1"), ("other", "p2")):
+        (tmp_path / project / phase).mkdir(parents=True)
+        (tmp_path / project / "product.md").write_text(f"# {project}\n")
+        (tmp_path / project / phase / "goals.md").write_text(f"# {phase}\n")
     garden_dir = tmp_path / ".garden"
     registry = MemberRegistry(garden_dir)
     admin_token = registry.enroll_administrator("garden", "admin", "admin-host")

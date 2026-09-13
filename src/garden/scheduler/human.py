@@ -1419,10 +1419,12 @@ class HumanMixin:
         self.state.save()
 
     # ---- closing a phase ---------------------------------------------------
-    def close_phase(self, phase: Phase, force: bool = False, date: str = "") -> str:
+    def close_phase(self, phase: Phase, force: bool = False, date: str = "",
+                    owner_generation: int | None = None) -> str:
         """Close a phase: it leaves the rail and joins the herbarium. Refuses while it has open
         tasks unless `force`. Returns the closing date written to goals.md ('' if it was
         already closed)."""
+        self.require_phase_authority(phase, expected_generation=owner_generation)
         with self.phase_effect(phase.product, phase.name, f"close-phase:{phase.key}"):
             return self._close_phase(phase, force, date)
 
@@ -1452,7 +1454,8 @@ class HumanMixin:
         self.log(f"{phase.key} closed ({date})")
         return date
 
-    def reopen_phase(self, phase: Phase) -> None:
+    def reopen_phase(self, phase: Phase, owner_generation: int | None = None) -> None:
+        self.require_phase_authority(phase, expected_generation=owner_generation)
         with self.phase_effect(phase.product, phase.name, f"reopen-phase:{phase.key}"):
             self._reopen_phase(phase)
 
