@@ -24,6 +24,7 @@ _LEGACY_CAPTURE_REQUIREMENT_RE = re.compile(
     r"^\s*(?:provide|attach|take|record|produce|create|generate)\b[^.]{0,80}\bcaptures?\b)",
     re.I,
 )
+ATTESTATION_MAX_CHARS = 1000
 
 
 def required_evidence(body: str, requires: Any = None) -> list[dict[str, str]]:
@@ -188,6 +189,40 @@ def _match(entries: list[dict[str, Any]], criterion: str, i: int) -> dict[str, A
 
 def _dicts(value: Any) -> list[dict[str, Any]]:
     return [e for e in value if isinstance(e, dict)] if isinstance(value, list) else []
+
+
+def normalize_verified(criteria: list[str], result: dict[str, Any]) -> list[Any] | None:
+    """Expand a completed worker's overall attestation into missing criterion rows.
+
+    A summary or notes field is a deliberately coarse attestation, not evidence that can
+    replace a worker's explicit statement about a criterion. Preserve every supplied row
+    and add a quoted row only where the normal reconciliation would otherwise find a gap.
+    The returned list is stable on replay, which lets a resumed scheduler persist it before
+    each downstream consumer sees the result.
+    """
+    if str(result.get("status") or "").lower() != "done":
+        return None
+    fields = [
+        (name, value.strip()) for name in ("summary", "notes")
+        if isinstance((value := result.get(name)), str) and value.strip()
+    ]
+    if not fields:
+        return None
+    evidence = "\n".join(f"{name}: {value}" for name, value in fields)[:ATTESTATION_MAX_CHARS]
+    provenance = ", ".join(name for name, _value in fields)
+    original = result.get("verified")
+    verified = list(original) if isinstance(original, list) else []
+    gaps = evidence_gaps(criteria, verified)
+    if not gaps:
+        return verified if isinstance(original, list) else None
+    return [*verified, *(
+        {
+            "criterion": criterion,
+            "evidence": evidence,
+            "provenance": f"normalized from worker {provenance} attestation",
+        }
+        for criterion in gaps
+    )]
 
 
 def reconcile(criteria: list[str], verified: Any = None, review_criteria: Any = None) -> list[dict[str, Any]]:
