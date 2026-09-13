@@ -20,7 +20,7 @@ ADMINISTRATOR_READ_PREFIXES = ("/design/",)
 # every row and aggregate through ``Site.allowed_projects``; admission alone is not a data
 # boundary. Garden-operational endpoints which cannot be attributed to a project stay admin.
 PROJECT_COLLECTION_PATHS = frozenset({
-    "/", "/api/decisions", "/api/tasks", "/board", "/costs", "/events", "/graph",
+    "/", "/api/decisions", "/api/defects", "/api/tasks", "/board", "/costs", "/events", "/graph",
     "/herbarium", "/inbox", "/now", "/now1", "/now2", "/now/stream", "/partials/board",
     "/runs", "/trellis",
 })
@@ -29,7 +29,7 @@ WORKER_PATHS = frozenset({
     "/api/runs/claim", "/api/runs/{run_id}/heartbeat", "/api/runs/{run_id}/finish",
 })
 OPERATOR_READ_PATHS = frozenset({
-    "/", "/api/control/status", "/api/decisions", "/api/events", "/api/maintenance",
+    "/", "/api/control/status", "/api/decisions", "/api/defects", "/api/events", "/api/maintenance",
     "/api/operations/{task_id}/{run_id}", "/api/tasks", "/api/workers", "/board", "/config",
     "/api/worker-diagnostics",
     "/costs", "/design", "/design/{path:path}", "/docs", "/docs/oauth2-redirect", "/events", "/graph", "/herbarium",
@@ -45,6 +45,7 @@ OPERATOR_READ_PATHS = frozenset({
 })
 OPERATOR_MUTATION_PATHS = frozenset({
     "/api/control/tasks/{task_id}/launch", "/api/tasks/{task_id}/manual-mode", "/config/accept-reload",
+    "/api/tasks/{task_id}/defects", "/api/tasks/{task_id}/defects/{defect_id}",
     "/config/max-parallel", "/config/observe-profile", "/config/operating-profile", "/config/save",
     "/decisions/{decision_id}/{action}", "/friction-report", "/investigations", "/maintenance/pause",
     "/maintenance/resume", "/pause", "/phases/{product}/{phase}/approve-all",
@@ -52,7 +53,7 @@ OPERATOR_MUTATION_PATHS = frozenset({
     "/phases/{product}/{phase}/kickoff", "/phases/{product}/{phase}/new-task",
     "/phases/{product}/{phase}/persona", "/phases/{product}/{phase}/plan",
     "/phases/{product}/{phase}/retro-decide", "/resume", "/tasks/{task_id}/brief",
-    "/tasks/{task_id}/{action}", "/tick", "/upgrade",
+    "/tasks/{task_id}/{action}", "/tasks/{task_id}/defects", "/tick", "/upgrade",
 })
 
 
@@ -65,6 +66,7 @@ def route_access(method: str, path: str) -> str:
         ("POST", WORKER_PATHS, WORKER_PROTOCOL),
         ("GET", OPERATOR_READ_PATHS, OPERATOR_READ),
         ("POST", OPERATOR_MUTATION_PATHS, OPERATOR_MUTATION),
+        ("PATCH", OPERATOR_MUTATION_PATHS, OPERATOR_MUTATION),
     )
     for expected_method, paths, access in policies:
         if method == expected_method and path in paths:

@@ -183,12 +183,16 @@ def register(app: FastAPI, site: Site) -> None:
         cancelled = sum(1 for t in ph.tasks if t.status.value == "cancelled")
         sched = hub.reader()
         spent = sched.spent_for(ph.key)
+        from ...defects import DefectStore
+        defect_store = DefectStore(s.config.garden_dir)
+        defects = defect_store.list(product=ph.product, phase=ph.name)
         return templates.TemplateResponse(request, "phase_retro.html", ctx(
             request, page="phase", phase_key=ph.key, phase=ph, summary=summary,
             runs=runs, cancelled=cancelled, spent=spent, has_retro=bool(recon),
             retro_html=render_md(recon.read_text()) if recon else "",
             operator_html=render_md(operator.read_text()) if operator else "",
             persona_heads=persona_heads, retro_tasks=retro_tasks,
+            defects=defects, defect_summary=defect_store.summary(product=ph.product, phase=ph.name),
             retro_verdict=_verdict_view(sched.retro_verdict(ph.key), tasks)))
 
     @app.get("/phases/{product}/{phase}/doc/{name:path}", response_class=HTMLResponse)
