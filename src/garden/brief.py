@@ -54,6 +54,11 @@ language the project-level purpose of the change and the resulting behavior; def
 domain terms needed to understand it. Use the target repository's current pull-request
 template when one is supplied below, preserving its sections and order. The product overview
 is durable project contribution guidance; it is not a substitute for the exact template.
+In the validation or test-plan section, name the concrete unit tests, test files, commands,
+or observed behavior that support the change, and briefly say what each one validates when
+that context helps the reader. Do not use “exact-head validation” or “exact-head checks” as
+the PR description's validation evidence; those are internal merge-gate terms, not a useful
+description of what was tested.
 """
 
 

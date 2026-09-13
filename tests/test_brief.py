@@ -156,6 +156,14 @@ def test_brief_keeps_pr_body_guidance_advisory(garden):
     assert '"friction": ["<short friction item>"]' in b.text
 
 
+def test_brief_requires_concrete_validation_evidence_in_pr_description(garden):
+    text = build_brief(Store(garden), Store(garden).task("DM-001"), branch="garden/x", base="main").text
+
+    assert "name the concrete unit tests, test files, commands" in text
+    assert "Do not use “exact-head validation” or “exact-head checks”" in text
+    assert "internal merge-gate terms" in text
+
+
 def test_brief_states_that_headless_runs_must_finish_before_reporting(garden):
     store = Store(garden)
     text = build_brief(store, store.task("DM-001"), branch="garden/x", base="main").text

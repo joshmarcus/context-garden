@@ -4,10 +4,17 @@ from garden.model import Status
 from garden.preflight import (
     capture_infrastructure_reason,
     mechanical_results,
+    preflight_section,
 )
 from garden.review import review_brief
 from garden.store import Store
 from tests.reference_context import agent_context
+
+
+def test_preflight_requires_concrete_validation_evidence_in_description():
+    text = preflight_section(browser_enabled=False)
+
+    assert "names concrete tests or observed behavior for validation" in text
 
 
 def test_mechanical_preflight_checks_pass_a_clean_diff(garden, monkeypatch):

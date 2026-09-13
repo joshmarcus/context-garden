@@ -665,8 +665,11 @@ GARDEN_RESULT: {"status": "done" | "needs_input" | "blocked" | "wont_do" | "no_c
   the diff, and `garden metrics` reports criteria met on the first review per tier. Without an
   explicit row or this attestation, a criterion with no evidence is a finding, not a pass.
 - `pre_flight` has one row for every item in the review rubric the brief gives the worker:
-  criterion evidence, lint, conflict markers, UI captures where relevant, PR description, and
-  criteria-by-name. Each row says `pass`, `not_applicable`, or `fail` and gives short evidence.
+  criterion evidence, lint, conflict markers, UI captures where relevant, PR description,
+  concrete validation tests or observed behavior, and criteria-by-name. Each row says `pass`,
+  `not_applicable`, or `fail` and gives short evidence. The PR description should name the
+  relevant unit tests, test files, commands, or observed behavior; internal exact-head gate
+  terminology alone is not reader-facing validation evidence.
   A missing row is mechanically sent back before a PR opens; conflict markers, Python syntax,
   missing UI PNGs for a UI diff, and an empty initial description are token-free pre-PR failures.
 - `friction` is a list of short items (missing context, a confusing spec, tooling pain). The

@@ -43,6 +43,18 @@ def test_briefs_invite_proportionate_attestation_without_a_required_schema(garde
     assert "Optional review pre-flight" in preflight_section()
 
 
+def test_review_description_guidance_rejects_gate_only_validation_evidence(garden):
+    text = review_brief(
+        Store(garden), Store(garden).task("DM-001"), branch="b", base="main", pr_title="T",
+        pr_body="Validation used exact-head checks.", diff="+x", max_diff_chars=1000,
+    )
+
+    assert "treat that as an editorial defect" in text
+    assert "Name the concrete tests, files, commands, or observed behavior" in text
+    assert "internal merge gate, not test evidence for" in text
+    assert "readers" in text
+
+
 def test_review_judgment_accepts_attestation_and_keeps_real_failures_blocking():
     attested = enforce_criteria_verdict({
         "verdict": "approve", "summary": "Source inspected", "attestation": "I ran parser tests.",

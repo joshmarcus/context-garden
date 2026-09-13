@@ -523,6 +523,15 @@ improvements. A missing `fix` field does not invalidate an otherwise clear findi
 Description feedback is always advisory and must not be the sole reason for
 `request_changes`.
 
+Review the validation or test-plan portion of the PR description as reader-facing evidence.
+It should name concrete unit tests, test files, commands, or observed behavior and briefly
+explain what they validate when useful. If the description uses “exact-head validation” or
+“exact-head checks” without concrete test evidence, treat that as an editorial defect: set
+`description_ok` to false and use this short plain-language correction in
+`description_feedback`: “Name the concrete tests, files, commands, or observed behavior that
+validate this change; exact-head checks are an internal merge gate, not test evidence for
+readers.” This does not change or weaken the scheduler's exact-head gate.
+
 End your final message with exactly one line. Only `verdict` is mechanically required;
 the other fields are optional and may be omitted when they add no value:
 
