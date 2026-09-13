@@ -260,7 +260,7 @@ def test_disconnect_longer_than_former_recovery_window_reconnects_without_human(
     assert not sched._finished_or_timed_out(run, runner)
     assert "needs_human" not in sched.state.get(task.id)
     assert sched.state.get(task.id)["ssh_reconnect"]["attempt"] >= 1
-    with pytest.raises(RuntimeError, match="remote worker outcome"):
+    with pytest.raises(RuntimeError, match="could not confirm worker .* stopped"):
         sched.retry(task)
     sched.reap_dead_runs(TickReport())
     assert Run.load(run.path).status == "running"

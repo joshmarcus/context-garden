@@ -604,6 +604,7 @@ def test_tick_reaps_operator_spec_commit_without_fencing_worker(garden):
 def test_tick_fence_failure_records_redirect_evidence_and_clean_retry_recovers(garden, monkeypatch):
     """A served tick records a transcript-proven redirect escape as a failed run, then a
     clean retry reaches review instead of inheriting the prior fence result."""
+    _init_garden_repo(garden)
     c = client(garden)
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "escape")
     monkeypatch.setenv("FAKE_CLAUDE_ESCAPE_DIR", str(garden))

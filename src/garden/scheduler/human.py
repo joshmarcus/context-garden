@@ -1104,15 +1104,26 @@ class HumanMixin:
             return False
 
     # ---- manual controls -----------------------------------------------------
-    def _cancel_active_run(self, task: Task) -> None:
-        """Confirm every active worker stopped before releasing its run ownership."""
+    def _cancel_active_run(self, task: Task, *, allow_pending_ssh: bool = False) -> None:
+        """Stop active workers without releasing ownership while their exit is uncertain.
+
+        SSH cancellation is delivered asynchronously by its reconnecting collector.  A
+        human cancel may record that intent while the host is unreachable, but retry must
+        still wait for the old worker to become terminal before replacing it.
+        """
         active = [run for run in self.runs.active() if run.task_id == task.id]
+        pending: set[str] = set()
         for run in active:
             if not run.process_finished() and not run.stop():
+                if allow_pending_ssh and (run.env_snapshot or {}).get("ssh_tmux_session"):
+                    pending.add(run.run_id)
+                    continue
                 raise RuntimeError(
                     f"could not confirm worker {run.run_id} stopped; refusing to release its run"
                 )
         for run in active:
+            if run.run_id in pending:
+                continue
             run.status = "cancelled"
             run.finished_at = now_iso()
             run.save()
@@ -1120,7 +1131,7 @@ class HumanMixin:
     @task_action("cancel")
     def cancel(self, task: Task, note: str = "cancelled") -> None:
         ensure_open(task)
-        self._cancel_active_run(task)
+        self._cancel_active_run(task, allow_pending_ssh=True)
         self._transition(task, Status.CANCELLED, note)
 
     @task_action("move")
