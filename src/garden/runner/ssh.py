@@ -18,6 +18,15 @@ garden.yaml:
           harness: claude                 # optional per-host override
       options: ["-o", "BatchMode=yes"]    # extra ssh args
       retain_runs: 5                      # acknowledged run directories kept per remote checkout
+      recovery_timeout_seconds: 300       # cap on the backoff interval between reconnect attempts
+      backoff_initial_seconds: 2          # first reconnect wait; defaults to poll_interval_seconds
+      backoff_multiplier: 2.0             # growth factor per consecutive failed attempt
+      max_concurrent_reconnects: 8        # global cap on runs simultaneously retrying transport
+      max_concurrent_reconnects_per_host: 3
+
+A run whose transport is lost keeps retrying forever with bounded, jittered backoff; it never
+asks a person to resume it. Only an authoritative remote refusal, an identity mismatch, or a
+proven-permanent transport failure ends collection and asks for `garden ssh-recover`.
 """
 
 from __future__ import annotations
@@ -33,7 +42,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import time
 from pathlib import Path
 from typing import Any
 
@@ -374,6 +382,7 @@ class SSHRunner(Runner):
         identity = hashlib.sha256(str(d.resolve()).encode()).hexdigest()
         request = {
             "identity": identity, "repo": str(repo), "task": run.task_id, "run_id": run.run_id,
+            "protocol_version": 2,
             "in_place": checkout.get("strategy") == "in_place", "script": script,
             "timeout_seconds": float(self.config.get("timeout_minutes", 90) or 90) * 60,
             # How many acknowledged run directories this checkout keeps on the remote host.
@@ -383,6 +392,7 @@ class SSHRunner(Runner):
                        for name in ("ssh_session.py", "proctree.py")},
         }
         recovery = self._positive_seconds("recovery_timeout_seconds", 300)
+        poll_interval = self._positive_seconds("poll_interval_seconds", 2)
         spec = {
             "request": request, "api_key_env": api_key_env,
             "ssh": [str(self.config.get("ssh_bin") or "ssh"),
@@ -390,9 +400,12 @@ class SSHRunner(Runner):
                     str(host["host"])],
             "python": str(self.config.get("python") or "python3"),
             "connect_timeout_seconds": self._positive_seconds("connect_timeout_seconds", 30),
+            # Cap on the backoff interval, not an overall give-up bound: reconnection retries
+            # indefinitely, growing the wait between attempts up to this ceiling.
             "recovery_timeout_seconds": recovery,
-            "poll_interval_seconds": self._positive_seconds("poll_interval_seconds", 2),
-            "deadline": time.time() + request["timeout_seconds"] + recovery,
+            "poll_interval_seconds": poll_interval,
+            "backoff_initial_seconds": self._positive_seconds("backoff_initial_seconds", poll_interval),
+            "backoff_multiplier": float(self.config.get("backoff_multiplier") or 2.0),
         }
         (d / "ssh-request.json").write_text(json.dumps(spec))
         (d / "ssh-request.json").chmod(0o600)
@@ -429,21 +442,68 @@ class SSHRunner(Runner):
         run.save()
         (run.path / "command.txt").write_text(shlex.join(command) + "\n")
 
-    def reconcile(self, run: Run) -> str:
-        """Return an operator hold, or restart collection of the same durable remote run."""
+    def _read_state(self, run: Run) -> dict[str, Any]:
+        path = run.path / "ssh-state.json"
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def reconcile(self, run: Run, active: list[Run] = ()) -> str:
+        """Return an operator hold, or restart collection of the same durable remote run.
+
+        Ordinary transport loss is never a hold: the collector itself retries forever with
+        backoff. `active` bounds how many sibling runs may be reconnecting at once (globally
+        and per host) — beyond that bound, restarting a dead collector is deferred to a later
+        tick rather than piling on more concurrent connection attempts."""
         from ..proctree import pid_alive
 
         if not (run.path / "ssh-request.json").exists():
             if (run.pid is None or run.process_finished()) and run.read_exit_code() != 0:
                 return "legacy SSH transport ended without remote completion; verify remote liveness before retry"
             return ""
-        path = run.path / "ssh-state.json"
-        state = json.loads(path.read_text()) if path.exists() else {}
+        state = self._read_state(run)
         if state.get("status") == "held":
             return str(state.get("reason") or "remote outcome uncertain")
         if not run.process_finished() and (run.pid is None or not pid_alive(run.pid)):
+            # Count only siblings with a live collector presently retrying, not everyone whose
+            # last-known state happened to say "recovering" — after a controller restart kills
+            # every collector at once, all of them share that stale status, and counting it
+            # would make each one see the others as already occupying the bound forever.
+            reconnecting = [
+                r for r in active
+                if r.run_id != run.run_id and r.runner == self.name
+                and r.pid and pid_alive(r.pid) and not r.process_finished()
+                and self._read_state(r).get("status") == "recovering"
+            ]
+            max_global = int(self.config.get("max_concurrent_reconnects") or 0)
+            max_per_host = int(self.config.get("max_concurrent_reconnects_per_host") or 0)
+            if max_global and len(reconnecting) >= max_global:
+                return ""
+            if max_per_host and sum(1 for r in reconnecting if r.host == run.host) >= max_per_host:
+                return ""
             self._start_collector(run)
         return ""
+
+    def held_kind(self, run: Run) -> str | None:
+        """Which deterministic terminal condition produced the current hold, if any.
+
+        `remote_artifacts_absent` is distinct from the others: nothing remote remains to
+        protect, so the scheduler slot and checkout ownership should be released rather than
+        held open pending `garden ssh-recover`.
+        """
+        return self._read_state(run).get("held_kind")
+
+    def reconnect_notice(self, run: Run) -> dict[str, Any] | None:
+        """Visibility for a run currently retrying transport, for projections that must show
+        prolonged unreachability as an operational notice rather than a decision."""
+        state = self._read_state(run)
+        if state.get("status") != "recovering":
+            return None
+        return {
+            "status": "recovering",
+            "attempt": state.get("attempt", 0),
+            "last_error": state.get("last_error") or state.get("reason"),
+            "last_success": state.get("lost_since"),
+            "next_retry_at": state.get("next_retry_at"),
+        }
 
     def collect(self, run: Run) -> dict[str, Any]:
         assert self.harness is not None

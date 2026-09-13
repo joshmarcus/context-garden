@@ -15,6 +15,7 @@
 
 {% if run.error %}<div class="warn"><b>Error:</b> {{ run.error }}</div>{% endif %}
 {% if recovery %}<div class="warn"><b>Reconnecting after a controller interruption.</b> The worker keeps its current authority and subprocess; it has {{ recovery.remaining }} seconds to reconnect before this lease can be reassigned.</div>{% endif %}
+{% if ssh_reconnect %}<div class="warn"><b>Reconnecting to the remote host</b> (attempt {{ ssh_reconnect.attempt }}{% if ssh_reconnect.next_retry_at %}, next retry {{ ssh_reconnect.next_retry_at }}{% endif %}){% if ssh_reconnect.last_error %}: {{ ssh_reconnect.last_error }}{% endif %}. The run and its checkout are retained; no action is needed.</div>{% endif %}
 {% if captures %}<div class="panel"><div class="eyebrow">Captures</div><ul>{% for f in captures %}<li><a href="{{ f.href }}">{{ f.name }}</a></li>{% endfor %}</ul></div>{% endif %}
 
 {% if mechanical %}

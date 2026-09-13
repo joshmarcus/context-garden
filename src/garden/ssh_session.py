@@ -59,8 +59,42 @@ def locations(request: dict) -> tuple[Path, Path, str]:
     return root, directory, f"garden-{label}-{run_key}"
 
 
+def _checkout_path(request: dict) -> Path:
+    repo = Path(request["repo"])
+    return repo if request["in_place"] else repo / ".garden-worktrees" / request["task"]
+
+
+def artifact_state(request: dict, directory: Path | None, session: str | None) -> dict:
+    """Independent, always-computed existence check for the three artifacts a durable run
+    depends on: the checkout worktree, its private run directory, and the tmux session.
+
+    Unlike the rest of `snapshot()`, this never raises: it is the one signal the controller
+    can trust even when the run's own directory (and thus its `state.json`) is itself gone,
+    which is exactly the case that needs distinguishing from an ordinary transport hiccup.
+    """
+    session_exists = False
+    if session:
+        probe = subprocess.run(["tmux", "has-session", "-t", session],
+                               capture_output=True, timeout=5)
+        session_exists = probe.returncode == 0
+    return {
+        "worktree_exists": _checkout_path(request).exists(),
+        "directory_exists": bool(directory and directory.exists()),
+        "session_exists": session_exists,
+    }
+
+
 def snapshot(request: dict) -> dict:
-    root, directory, session = locations(request)
+    try:
+        root, directory, session = locations(request)
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        # `locations()` needs the shared repository to run git in it. A repository that is
+        # itself gone (a replaced or rebuilt host, not merely a network hiccup) is exactly
+        # the authoritative signal a caller needs to tell transport loss from a vanished
+        # remote — report it structurally rather than crashing without a JSON reply.
+        return {"identity": request["identity"], "status": "unknown",
+                "reason": f"remote checkout is unreachable: {exc}",
+                "artifacts": artifact_state(request, None, None), "logs": {}, "more": False}
     result = {"identity": request["identity"], "session": session,
               "directory": str(directory), "status": "unknown"}
     for name in ("completion.json", "state.json"):
@@ -78,6 +112,12 @@ def snapshot(request: dict) -> dict:
                                 "#{pane_dead}"], capture_output=True, text=True, timeout=5)
         if probe.returncode or probe.stdout.strip() != "0":
             result.update(status="unknown", reason="tmux session vanished without completion")
+    result["artifacts"] = artifact_state(request, directory, session)
+    try:
+        result["process_exists"] = bool(result.get("pid") and pid_alive(int(result["pid"])))
+    except (TypeError, ValueError):
+        # A malformed saved PID cannot prove that a remote process is gone.
+        result["process_exists"] = None
     result["logs"] = {}
     result["more"] = False
     for name in ("stdout.json", "stderr.log"):
@@ -402,9 +442,12 @@ def main() -> None:
         result = acknowledge(request)
     else:
         if action == "cancel":
-            _root, directory, _session = locations(request)
-            if directory.is_dir():
-                (directory / "cancel").touch()
+            try:
+                _root, directory, _session = locations(request)
+                if directory.is_dir():
+                    (directory / "cancel").touch()
+            except (OSError, subprocess.SubprocessError, RuntimeError):
+                pass  # snapshot() below reports the same unreachable checkout structurally
         result = snapshot(request)
     print(json.dumps(result))
 

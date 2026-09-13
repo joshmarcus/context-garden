@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from pathlib import Path
 from typing import Any
 
@@ -114,11 +115,20 @@ def register(app: FastAPI, site: Site) -> None:
                                     - dt.datetime.now(dt.UTC)).total_seconds()))
             if run.lease_expires_at <= dt.datetime.now(dt.UTC).isoformat() and remaining:
                 recovery = {"remaining": remaining}
+        ssh_reconnect = None
+        state_path = run.path / "ssh-state.json"
+        if run.runner == "ssh" and state_path.exists():
+            state = json.loads(state_path.read_text())
+            if state.get("status") == "recovering":
+                ssh_reconnect = {"attempt": state.get("attempt", 0), "last_error": state.get("last_error"),
+                                 "next_retry_at": state.get("next_retry_at")}
         return templates.TemplateResponse(request, "run.html", ctx(
             request, page="runs", run=run, task=task, task_id=task_id, events=events,
             is_stream=is_stream, final_text=final_text, brief_text=brief_text,
             stderr_text=run.stderr_text(), mechanical=mechanical, check_result=check_result,
-            check_view=check_view, captures=captures, recovery=recovery))
+            check_view=check_view, captures=captures, recovery=recovery,
+            ssh_reconnect=ssh_reconnect,
+        ))
 
     @app.get("/runs/{task_id}/{run_id}/ui/{name}")
     def run_capture(task_id: str, run_id: str, name: str):

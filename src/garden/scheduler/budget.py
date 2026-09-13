@@ -161,17 +161,40 @@ class BudgetMixin:
     def maintenance_readiness(self) -> dict[str, Any]:
         """Report installation blockers without treating durable results as live work."""
         live: list[dict[str, str]] = []
+        dormant: list[str] = []
         for run in self.runs.active():
             if run.is_local_execution:
                 blocker = "local process may still depend on the installed runtime"
             elif run.status in {"requested", "preparing"}:
                 blocker = "preparation is incomplete; runtime dependency is not yet knowable"
+            elif run.runner == "ssh" and run.env_snapshot.get("ssh_tmux_session"):
+                import json
+
+                from ..proctree import pid_alive
+
+                state_path = run.path / "ssh-state.json"
+                try:
+                    state = json.loads(state_path.read_text())
+                except (OSError, ValueError):
+                    state = {}
+                artifacts = state.get("artifacts") or {}
+                collector_stopped = not run.pid or not pid_alive(run.pid)
+                remote_stopped = (
+                    state.get("held_kind") == "legacy_artifacts_present"
+                    and artifacts.get("session_exists") is False
+                    and state.get("process_exists") is False
+                )
+                if collector_stopped and remote_stopped:
+                    dormant.append(f"{run.task_id}/{run.run_id}")
+                    continue
+                blocker = "SSH collector or remote process may still depend on the installed runtime"
             else:
                 blocker = "remote/manual process dependency is unknown; verify its host before reinstalling"
             live.append({"task": run.task_id, "run": run.run_id, "mode": run.mode,
                          "state": run.status, "blocker": blocker})
         return {"requested": self.maintenance_requested(), "quiesced": self.maintenance_quiesced(),
-                "live": live, "finished_uncollected": sorted(self.unreaped_run_ids()),
+                "live": live, "dormant": dormant,
+                "finished_uncollected": sorted(self.unreaped_run_ids()),
                 "ready": self.maintenance_quiesced() and not live}
 
     # ---- live config overrides ----------------------------------------------

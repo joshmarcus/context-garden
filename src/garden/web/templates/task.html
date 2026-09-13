@@ -50,6 +50,9 @@
 {% if ssh_tmux_session %}
 <p class="muted">Watch on {{ latest_run.host }}: <code>tmux attach-session -r -t {{ ssh_tmux_session }}</code>. Detach with Ctrl-b d.</p>
 {% endif %}
+{% if state.ssh_reconnect %}
+<p class="muted">Reconnecting to the remote host (attempt {{ state.ssh_reconnect.attempt }}{% if state.ssh_reconnect.next_retry_at %}, next retry {{ state.ssh_reconnect.next_retry_at }}{% endif %}){% if state.ssh_reconnect.last_error %}: {{ state.ssh_reconnect.last_error }}{% endif %}. The run and its checkout are retained; no action is needed.</p>
+{% endif %}
 
 {% if brief_gaps %}
 <div id="brief-card" class="panel" style="border-color:var(--bad);margin-bottom:14px">

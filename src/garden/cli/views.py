@@ -86,6 +86,11 @@ def status(
             console.print(f"[yellow]{key} closing review: {pending['stage']}{source}{evidence}{detail}[/yellow]")
     for key in kickoff_missing:
         console.print(f"[yellow]{key}: tasks approved with no kickoff report — run `garden kickoff {key}`[/yellow]")
+    from ..observe import reconnecting_runs
+
+    for r in reconnecting_runs(store):
+        detail = f" — {r['last_error']}" if r.get("last_error") else ""
+        console.print(f"[yellow]{r['task']}: SSH reconnecting (attempt {r['attempt']}){detail}[/yellow]")
     for prod in store.products():
         if product and prod.name != product:
             continue

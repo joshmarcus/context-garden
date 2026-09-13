@@ -80,11 +80,18 @@ class WorkerContactStore:
 def _job(run: Run, now: dt.datetime) -> dict[str, Any]:
     lease = _parse(run.lease_expires_at)
     recovery = _parse(run.recovery_expires_at)
+    ssh_state: dict[str, Any] = {}
+    if run.runner == "ssh":
+        state_path = run.path / "ssh-state.json"
+        if state_path.exists():
+            ssh_state = json.loads(state_path.read_text())
     if run.runner == "remote" and run.host:
         if lease and lease <= now:
             lease_state = "recovering" if recovery and recovery > now else "expired"
         else:
             lease_state = "current" if lease else "unknown"
+    elif run.runner == "ssh" and ssh_state.get("status") == "recovering":
+        lease_state = "recovering"
     else:
         lease_state = "not applicable"
     return {
@@ -97,6 +104,7 @@ def _job(run: Run, now: dt.datetime) -> dict[str, Any]:
         "lease_state": lease_state,
         "lease_expires_at": run.lease_expires_at or None,
         "recovery_expires_at": run.recovery_expires_at or None,
+        "ssh_reconnect_attempt": ssh_state.get("attempt") if lease_state == "recovering" else None,
     }
 
 
