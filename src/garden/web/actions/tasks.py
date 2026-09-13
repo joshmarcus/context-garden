@@ -524,6 +524,10 @@ def register(app: FastAPI, site: Site) -> None:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)
+                try:
+                    sched.require_task_authority(t)
+                except PermissionError as exc:
+                    raise HTTPException(409, str(exc)) from exc
                 if action in {"retry", "done", "manual-mode"}:
                     warning = run_action(s, sched, t, note, applies_to, actor)  # type: ignore[call-arg]
                 else:
