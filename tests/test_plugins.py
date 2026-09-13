@@ -107,6 +107,25 @@ def test_manifest_supports_a_range_with_no_upper_bound() -> None:
     assert not parsed.core_range.contains("0.2.9")
 
 
+def test_manifest_default_config_schema_is_constructible_and_immutable() -> None:
+    parsed = PluginManifest(
+        name="example-hosting",
+        distribution="example-garden-plugin",
+        distribution_version="1.2.0",
+        api_version=API_VERSION,
+        core_range=CoreRange(minimum="0.3"),
+    )
+
+    assert parsed.config_schema == {}
+    with pytest.raises(TypeError):
+        parsed.config_schema["endpoint"] = {"type": "string"}
+
+
+def test_core_range_rejects_an_invalid_minimum_without_an_upper_bound() -> None:
+    with pytest.raises(ValueError, match="numeric release"):
+        CoreRange(minimum="not-a-version")
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

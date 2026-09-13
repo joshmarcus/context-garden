@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from types import MappingProxyType
 from typing import Any, TypeVar
 
@@ -122,7 +122,8 @@ class CoreRange:
     below: str = ""
 
     def __post_init__(self) -> None:
-        if self.below and release(self.below) <= release(self.minimum):
+        minimum = release(self.minimum)
+        if self.below and release(self.below) <= minimum:
             raise ValueError(f"supported core range {self} is empty: 'below' must exceed 'minimum'")
 
     def contains(self, version: str) -> bool:
@@ -216,7 +217,7 @@ class PluginManifest:
     api_version: str
     core_range: CoreRange
     capabilities: tuple[CapabilityDeclaration, ...] = ()
-    config_schema: Mapping[str, Any] = MappingProxyType({})
+    config_schema: Mapping[str, Any] = field(default_factory=dict)
     redacted_config_keys: tuple[str, ...] = ()
     resources: tuple[ResourceDeclaration, ...] = ()
     summary: str = ""
