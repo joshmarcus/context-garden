@@ -14,7 +14,7 @@ Everything on this page is what the code does today (`src/garden/`), not a plan.
 
 ## The shape of it
 
-Three kinds of process, one local audit filesystem, one external service. Pull-based remote
+Three kinds of process, one local audit filesystem, and Git remotes. Pull-based remote
 workers may share nothing with the scheduler except HTTPS and the product's git remote.
 
 ```mermaid
@@ -165,6 +165,7 @@ of the loop touch different files.
 | `hosts/__init__.py`, `hosts/config.py`, `hosts/core.py`, `hosts/models.py`, `hosts/provider.py`, `hosts/scale.py` | scheduler-independent declarative host lifecycle, resumable bounded scale operations, strict configuration and versioned provider/profile contracts |
 | `hosts/matching.py` | pure same-user capability/capacity selection shared by scheduler admission and pull claims; returns stable machine-readable non-match reasons |
 | `routing.py`, `cli/routing.py` | read-only, redacted task-to-worker routing explanations and their CLI commands; expose effective requirement layers, safe match reasons, selected profile/version readiness, capacity, reservations and recorded run provenance without claiming capacity or contacting workers |
+| `git_coordination.py` | service-free multiplayer authority: validates the dedicated Garden state-ref history and accepts atomic claims, permits, effects, and shared reservations only through exact-predecessor remote Git transactions |
 | `restricted_data.py` | host-owned restricted-data authorization: resolves trusted boundary policy, narrows dataset grants, validates model/tool egress and emits bounded evidence summaries without treating task-controlled fields as authority |
 | `hosts/ec2.py`, `hosts/command.py`, `hosts/fake.py` | the first infrastructure adapter, the vendor-neutral controller command adapter, and the local extension/contract fixture |
 | `hosts/enrollment.py`, `hosts/enrollment_clients.py`, `hosts/registry.py` | durable per-host enrollment journals, scoped provider clients, and the private controller authentication registry |
