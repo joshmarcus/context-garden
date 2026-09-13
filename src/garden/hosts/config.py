@@ -75,6 +75,11 @@ def worker_configuration_from_dict(name: str, value: dict[str, Any]) -> WorkerCo
     grants = data.get("grants", [])
     if not isinstance(ceilings, dict) or not isinstance(lifecycle, dict) or not isinstance(grants, list):
         raise ValueError(f"worker_configurations.{name} nested values have invalid types")
+    ceilings = dict(ceilings)
+    ceilings["gpu_features"] = _tuple_of_strings(
+        ceilings.get("gpu_features", []),
+        where=f"worker_configurations.{name}.resource_ceilings.gpu_features",
+    )
     data["resource_ceilings"] = _construct(ResourceCeilings, ceilings, where="resource ceilings")
     data["provider_capabilities"] = _construct(
         ProviderLifecycleCapabilities, lifecycle, where="provider capabilities"
@@ -88,8 +93,15 @@ def worker_configuration_from_dict(name: str, value: dict[str, Any]) -> WorkerCo
     result = _construct(WorkerConfiguration, data, where="worker configuration")
     if not result.version or result.generation < 1:
         raise ValueError(f"worker_configurations.{name} requires version and a positive generation")
-    if any(value < 0 for value in result.resource_ceilings.__dict__.values()):
+    numeric_ceilings = (
+        result.resource_ceilings.memory_mib, result.resource_ceilings.vcpu,
+        result.resource_ceilings.gpu_count, result.resource_ceilings.gpu_device_memory_mib,
+    )
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+           for value in numeric_ceilings):
         raise ValueError(f"worker_configurations.{name}.resource_ceilings cannot be negative")
+    if not isinstance(result.resource_ceilings.gpu_vendor, str):
+        raise ValueError(f"worker_configurations.{name}.resource_ceilings.gpu_vendor must be a string")
     return result
 
 

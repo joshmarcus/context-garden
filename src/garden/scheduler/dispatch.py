@@ -12,7 +12,16 @@ from ..canonical import configured_root
 from ..criteria import parse_criteria
 from ..github import is_git_remote_url
 from ..graph import blockers, ready, stack_parents
-from ..model import Phase, Status, Task, effective_owner, ensure_open, now_iso, phase_refusal
+from ..model import (
+    Phase,
+    Status,
+    Task,
+    effective_owner,
+    ensure_open,
+    now_iso,
+    parse_execution_requirements,
+    phase_refusal,
+)
 from ..notify import notify
 from ..review import validation_plan
 from ..runner.base import Runner
@@ -44,14 +53,27 @@ class DispatchMixin:
         from ..hosts import MatchReason, match_worker
 
         owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
-        busy = {run.host for run in self.runs.active() if run.host}
+        allocations: dict[str, list[Any]] = {}
+        for run in self.runs.active():
+            snapshot = run.env_snapshot or {}
+            instance_id = str(snapshot.get("worker_instance") or run.host or "")
+            raw = snapshot.get("execution_requirements")
+            if not instance_id or not raw:
+                continue
+            try:
+                reserved = parse_execution_requirements(
+                    raw, source=f"run:{run.run_id}"
+                ).resources
+            except ValueError:
+                continue
+            allocations.setdefault(instance_id, []).append(reserved)
         routing = self.state.get("_worker_routing")
         selection_counts = dict(routing.get("selection_counts") or {})
         activity = "work" if mode in {"work", "revise", "resume", "rebase"} else mode
         match = match_worker(
             requirements, activity=activity, project=task.product, owner=owner,
             configurations=self.cfg.worker_configurations(), instances=self.cfg.worker_instances(),
-            busy_instance_ids=busy,
+            allocations=allocations,
             selection_counts=selection_counts,
             pinned_instance_id=str(task.extra.get("worker_instance") or ""),
             held=self.budget_exceeded(task),

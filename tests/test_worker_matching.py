@@ -6,7 +6,7 @@ from garden.hosts import (
     WorkerInstance,
     match_worker,
 )
-from garden.model import ExecutionRequirements, ResourceReservation
+from garden.model import ExecutionRequirements, GpuReservation, ResourceReservation
 
 
 def profile(name="general"):
@@ -89,3 +89,47 @@ def test_preferences_rank_only_after_hard_requirements():
                    instance("preferred", configuration="preferred")), now=200,
     )
     assert match.instance and match.instance.instance_id == "preferred"
+
+
+def test_gpu_shape_is_attested_and_aggregate_capacity_is_reserved():
+    gpu_profile = profile()
+    gpu_profile = WorkerConfiguration(
+        **{
+            **gpu_profile.__dict__,
+            "resource_ceilings": ResourceCeilings(
+                memory_mib=4096, vcpu=2, gpu_count=2,
+                gpu_device_memory_mib=24576, gpu_vendor="nvidia",
+                gpu_features=("cuda", "tensor"),
+            ),
+        }
+    )
+    req = ExecutionRequirements(
+        capabilities=REQ.capabilities,
+        resources=ResourceReservation(
+            memory_mib=2048, vcpu=1,
+            gpu=GpuReservation(1, "nvidia", 16384, ("cuda",)),
+        ),
+    )
+    matched = match_worker(
+        req, activity="work", project="demo", owner="alice",
+        configurations={"general": gpu_profile}, instances=(instance("worker-a"),), now=200,
+    )
+    assert matched.reason is MatchReason.MATCHED
+
+    wrong_vendor = ExecutionRequirements(
+        capabilities=REQ.capabilities,
+        resources=ResourceReservation(gpu=GpuReservation(1, "amd", 0, ("cuda",))),
+    )
+    assert match_worker(
+        wrong_vendor, activity="work", project="demo", owner="alice",
+        configurations={"general": gpu_profile}, instances=(instance("worker-a"),), now=200,
+    ).reason is MatchReason.NO_COMPATIBLE_PROFILE
+
+    busy = match_worker(
+        req, activity="work", project="demo", owner="alice",
+        configurations={"general": gpu_profile}, instances=(instance("worker-a"),),
+        allocations={"worker-a": (ResourceReservation(
+            memory_mib=3072, vcpu=1, gpu=GpuReservation(2)
+        ),)}, now=200,
+    )
+    assert busy.reason is MatchReason.BUSY

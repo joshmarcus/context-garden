@@ -488,6 +488,22 @@ def register(app: FastAPI, site: Site) -> None:
                 and (leased(r) or recovering(r)) and not r.process_finished()
                 and not r.final_received_at
             }
+            allocations: dict[str, list[Any]] = {}
+            for active_run in runs:
+                if (not active_run.host or active_run.status != "running"
+                        or not (leased(active_run) or recovering(active_run))
+                        or active_run.process_finished() or active_run.final_received_at):
+                    continue
+                active_requirements = (active_run.env_snapshot or {}).get("execution_requirements")
+                if not active_requirements:
+                    continue
+                try:
+                    reservation = parse_execution_requirements(
+                        active_requirements, source=f"run:{active_run.run_id}"
+                    ).resources
+                except ValueError:
+                    continue
+                allocations.setdefault(active_run.host, []).append(reservation)
             for run in runs:
                 if (run.runner != "remote" or run.status != "running"
                         or run.process_finished() or run.final_received_at):
@@ -520,6 +536,7 @@ def register(app: FastAPI, site: Site) -> None:
                         configurations=hub.store.config.worker_configurations(),
                         instances=hub.store.config.worker_instances(),
                         busy_instance_ids=busy_workers - {str(body["host"])},
+                        allocations=allocations,
                         pinned_instance_id=str(run.env_snapshot.get("worker_instance") or ""),
                         held=deadline is not None and now >= deadline,
                         now=now.timestamp(),

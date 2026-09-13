@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
-from ..model import ExecutionRequirements
+from ..model import ExecutionRequirements, ResourceReservation
 from .models import WorkerConfiguration, WorkerInstance, verify_worker_configuration
 
 
@@ -36,6 +36,7 @@ def match_worker(
     configurations: Mapping[str, WorkerConfiguration],
     instances: Iterable[WorkerInstance],
     busy_instance_ids: Iterable[str] = (),
+    allocations: Mapping[str, Iterable[ResourceReservation]] | None = None,
     selection_counts: Mapping[str, int] | None = None,
     pinned_instance_id: str = "",
     held: bool = False,
@@ -44,18 +45,15 @@ def match_worker(
     """Select one authorized instance before considering soft preferences.
 
     Ordering is stable: configuration preferences come first, then the least-selected
-    compatible instance and its id. Capacity is represented by the caller's busy set. A
-    pin is a hard constraint, never a way around authorization.
+    compatible instance and its id. The caller supplies committed allocations from its
+    transactionally protected run store; a pin is a hard constraint, never a way around
+    authorization.
     """
     if held:
         return WorkerMatch(None, MatchReason.BUDGET_OR_DEADLINE_HOLD, "activity is held")
     if not activity or not project or not owner:
         return WorkerMatch(None, MatchReason.INVALID_REQUIREMENTS,
                            "activity, project, and authenticated task owner are required")
-    if requirements.resources.gpu and (
-            requirements.resources.gpu.vendor or requirements.resources.gpu.features):
-        return WorkerMatch(None, MatchReason.NO_COMPATIBLE_PROFILE,
-                           "configured workers cannot attest the required GPU shape")
     candidates = list(instances)
     if pinned_instance_id:
         candidates = [item for item in candidates if item.instance_id == pinned_instance_id]
@@ -88,6 +86,10 @@ def match_worker(
                 requirements.resources.gpu.min_device_memory_mib
                 if requirements.resources.gpu else 0
             ),
+            required_gpu_vendor=(requirements.resources.gpu.vendor
+                                 if requirements.resources.gpu else ""),
+            required_gpu_features=(requirements.resources.gpu.features
+                                   if requirements.resources.gpu else ()),
             now=now,
         )
         if instance.operating_user != owner:
@@ -96,7 +98,18 @@ def match_worker(
         if not admission.eligible:
             saw_stale |= "stale" in admission.detail
             continue
-        if instance.instance_id in busy:
+        reserved = tuple((allocations or {}).get(instance.instance_id, ()))
+        memory_used = sum(item.memory_mib for item in reserved)
+        vcpu_used = sum(item.vcpu for item in reserved)
+        gpu_used = sum(item.gpu.count for item in reserved if item.gpu)
+        requested_gpu = requirements.resources.gpu.count if requirements.resources.gpu else 0
+        ceilings = profile.resource_ceilings
+        insufficient_capacity = (
+            memory_used + requirements.resources.memory_mib > ceilings.memory_mib
+            or vcpu_used + requirements.resources.vcpu > ceilings.vcpu
+            or gpu_used + requested_gpu > ceilings.gpu_count
+        )
+        if instance.instance_id in busy or insufficient_capacity:
             saw_busy = True
             continue
         return WorkerMatch(instance, MatchReason.MATCHED)
