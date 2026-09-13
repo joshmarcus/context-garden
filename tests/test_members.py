@@ -453,6 +453,17 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
         registry.set_member_active(admin, "bob", False)
     else:
         registry.revoke_installation(bob, "bob-worker")
+    registry.set_assignment(admin, "bob", "demo", "p1", enabled=False,
+                            expected_generation=1)
+    replay = client.post(
+        "/api/runs/claim", headers=headers,
+        json={"host": "bob-worker", "claim_request_id": "visible-project-claim"},
+    )
+    assert replay.status_code == 403
+
+    state = json.loads(registry.path.read_text())
+    state["members"]["bob"]["projects"] = []
+    registry.path.write_text(json.dumps(state))
     heartbeat = client.post(
         "/api/runs/member-visible-run/heartbeat", headers=headers,
         json={"lease_token": lease_token, "transcript": "must not persist"},
@@ -469,6 +480,47 @@ def test_member_worker_lifecycle_requires_current_authorization(garden, revocati
 
 
 def test_enabling_multiplayer_fences_legacy_worker_claim_and_existing_lease(garden):
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        {"project": "demo", "phase": "p1", "enabled": False},
+        {"project": "private", "phase": "p1", "enabled": True},
+        {"project": "demo", "phase": "p2", "enabled": True},
+    ],
+    ids=["paused", "project-changed", "phase-advanced"],
+)
+def test_member_worker_claim_requires_current_matching_assignment(garden, assignment):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
+    registry, _admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo", "private"))
+    registry.set_assignment(admin, "bob", "demo", "p1")
+    token = registry.issue_installation(admin, "bob", "bob-worker")
+    run = RunStore(garden / ".garden").new_run(
+        "DM-001", "remote", mode="check", run_id="assignment-fenced-run"
+    )
+    run.env_snapshot = {"product": "demo"}
+    run.save()
+    registry.set_assignment(admin, "bob", assignment["project"], assignment["phase"],
+                            enabled=assignment["enabled"], expected_generation=1)
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    response = client.post(
+        "/api/runs/claim", headers={"Authorization": f"Bearer {token}"},
+        json={"host": "bob-worker", "claim_request_id": "assignment-fenced-claim"},
+    )
+
+    assert response.status_code == 204
+    unchanged = Run.load(run.path)
+    assert unchanged.host == ""
+    assert unchanged.execution_member_id == ""
+    assert unchanged.lease_token == ""
+
+
+def test_multiplayer_worker_protocol_keeps_legacy_enrollment_credentials(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     enrollment = garden / ".garden/hosts/enrollment/controller-hosts.json"
     enrollment.parent.mkdir(parents=True, mode=0o700)
