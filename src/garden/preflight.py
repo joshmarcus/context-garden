@@ -12,6 +12,7 @@ PREFLIGHT_ITEMS = (
     "No conflict markers remain",
     "UI changes have 1280px and 390px captures",
     "The PR description states the goal and outcome without process history",
+    "The PR description names concrete tests or observed behavior for validation",
     "Every acceptance criterion is addressed by name",
 )
 
