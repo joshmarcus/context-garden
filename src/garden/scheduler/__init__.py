@@ -342,7 +342,6 @@ class Scheduler(
             expected_version=int(row["version"]), effect_key=effect_key,
         ):
             yield
-
         """Refuse the legacy garden-wide controller in explicit multiplayer mode.
 
         Member-bound coordination and execution assignments arrive in CG-630--CG-633.
