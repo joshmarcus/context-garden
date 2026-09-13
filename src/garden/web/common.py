@@ -618,6 +618,76 @@ class Site:
                 if (event.get("task") in task_ids
                     or (event.get("product") in projects and event.get("product")))]
 
+    def inbox_items(self, request: Request, store: Store, sched: Scheduler, *,
+                    view: str = "mine", visible_tasks: dict[str, Any] | None = None,
+                    items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        """Project and recipient projection shared by the Inbox, rail, and badges."""
+        visible_tasks = visible_tasks if visible_tasks is not None else self.visible_tasks(request, store)
+        all_items = items if items is not None else build_inbox(store, sched)
+        principal = getattr(request.state, "principal", None)
+        if not isinstance(principal, Principal) or self.registry is None:
+            if not request.query_params.get("project") and not request.cookies.get("garden_project"):
+                return all_items
+        if items is not None:
+            items = all_items
+        else:
+            allowed = self.allowed_projects(request)
+            items = [item for item in all_items
+                     if item.get("task") in visible_tasks
+                     or (not item.get("task") and (
+                         not str(item.get("phase") or "").partition("/")[0]
+                         or allowed is None
+                         or str(item.get("phase") or "").partition("/")[0] in allowed))]
+        if not isinstance(principal, Principal) or self.registry is None:
+            return items
+        if view not in {"mine", "team", "admin"}:
+            from fastapi import HTTPException
+            raise HTTPException(400, "inbox view must be mine, team, or admin")
+        if view == "admin" and principal.role != "administrator":
+            from fastapi import HTTPException
+            raise HTTPException(403, "administrator role required")
+
+        projected: list[dict[str, Any]] = []
+        assignment = self.registry.assignment(principal.member_id)
+        for item in items:
+            recipient = self._inbox_recipient(store, visible_tasks, item)
+            is_global = not item.get("task") and not item.get("phase")
+            addressed = recipient == principal.member_id or (is_global and principal.role == "administrator")
+            if view == "mine" and not addressed:
+                continue
+            if view == "admin" and not is_global:
+                continue
+            actionable = addressed
+            if item.get("task"):
+                task = visible_tasks.get(str(item["task"]))
+                actionable = bool(task and assignment and assignment.enabled
+                                  and assignment.project == task.product
+                                  and assignment.phase == task.phase)
+            elif item.get("phase"):
+                product, separator, phase = str(item["phase"]).partition("/")
+                actionable = bool(separator and self.registry.authorize_phase_operation(
+                    principal, product, phase,
+                ))
+            projected.append({**item, "actions": item.get("actions", []) if actionable else [],
+                              "recipient": recipient, "read_only": not actionable})
+        return projected
+
+    def _inbox_recipient(self, store: Store, tasks: dict[str, Any],
+                         item: dict[str, Any]) -> str:
+        if item.get("task"):
+            task = tasks.get(str(item["task"]))
+            if task is None:
+                return ""
+            return self.registry.effective_task_owner(
+                task, store.phase(task.product, task.phase),
+            )[0] if self.registry else str(item.get("owner") or "")
+        phase_key = str(item.get("phase") or "")
+        product, separator, phase = phase_key.partition("/")
+        if separator and self.registry:
+            owner = self.registry.phase_owner(product, phase)
+            return owner.owner_id if owner else ""
+        return ""
+
     @staticmethod
     def dependency_labels(task: Any, tasks: dict[str, Any]) -> list[str]:
         """Name visible dependencies and collapse cross-scope references to one opaque fact."""
@@ -636,8 +706,11 @@ class Site:
         s = hub.fresh()
         sched = hub.reader()
         visible_tasks = self.visible_tasks(request, s)
-        items = [item for item in build_inbox(s, sched)
-                 if self.allowed_projects(request) is None or item.get("task") in visible_tasks]
+        if isinstance(getattr(request.state, "principal", None), Principal) and self.registry is not None:
+            items = self.inbox_items(request, s, sched, visible_tasks=visible_tasks)
+        else:
+            items = [item for item in build_inbox(s, sched)
+                     if self.allowed_projects(request) is None or item.get("task") in visible_tasks]
         ctrl = sched.control()
         stops = sched.operating_profile_stops()
         active = sched.operating_profile_name()
