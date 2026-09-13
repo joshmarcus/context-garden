@@ -1307,6 +1307,78 @@ def test_cancel_clears_needs_human_and_automerge_blocked(sched, fake_github):
     assert not st.get("automerge_blocked")
 
 
+@pytest.mark.parametrize("action", ["cancel", "retry"])
+def test_manual_run_replacement_refuses_unconfirmed_stop_without_mutation(sched, monkeypatch, action):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    task.attempts = 4
+    sched.store.save(task)
+    state = sched.state.get(task.id)
+    state["needs_human"] = {"kind": "stall", "reason": "retain this evidence"}
+    state["pending_feedback"] = "retain pending feedback"
+    sched.state.save()
+    run = sched.runs.new_run(task.id, "local")
+    monkeypatch.setattr(type(run), "process_finished", lambda self: False)
+    monkeypatch.setattr(type(run), "stop", lambda self: False)
+
+    with pytest.raises(RuntimeError, match="could not confirm worker .* stopped"):
+        getattr(sched, action)(task)
+
+    task = sched.store.task(task.id)
+    assert task.status == Status.RUNNING
+    assert task.attempts == 4
+    assert sched.runs.latest(task.id).status == "running"
+    assert sched.state.get(task.id)["needs_human"]["reason"] == "retain this evidence"
+    assert sched.state.get(task.id)["pending_feedback"] == "retain pending feedback"
+
+
+def test_retry_proceeds_after_confirmed_active_run_stop(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "local")
+    stopped = []
+    monkeypatch.setattr(type(run), "process_finished", lambda self: False)
+    monkeypatch.setattr(type(run), "stop", lambda self: stopped.append(self.run_id) or True)
+
+    sched.retry(task)
+
+    assert stopped == [run.run_id]
+    assert sched.runs.latest(task.id).status == "cancelled"
+    assert sched.store.task(task.id).status == Status.READY
+
+
+def test_cancel_accepts_terminal_evidence_without_stopping_again(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    run = sched.runs.new_run(task.id, "local")
+    monkeypatch.setattr(type(run), "process_finished", lambda self: True)
+    monkeypatch.setattr(
+        type(run), "stop", lambda self: pytest.fail("an already-finished run must not be stopped again")
+    )
+
+    sched.cancel(task, "cancelled after observed exit")
+
+    assert sched.runs.latest(task.id).status == "cancelled"
+    assert sched.store.task(task.id).status == Status.CANCELLED
+
+
+def test_retry_keeps_remote_run_active_until_stop_acknowledgement(sched, monkeypatch):
+    task = sched.store.task("DM-001")
+    task.status = Status.RUNNING
+    sched.store.save(task)
+    run = sched.runs.new_run(task.id, "ssh")
+    run.env_snapshot["ssh_tmux_session"] = "garden-DM-001"
+    run.save()
+    monkeypatch.setattr(type(run), "process_finished", lambda self: False)
+    monkeypatch.setattr(type(run), "stop", lambda self: False)
+
+    with pytest.raises(RuntimeError, match="refusing to release its run"):
+        sched.retry(task)
+
+    assert sched.runs.latest(task.id).status == "running"
+    assert sched.store.task(task.id).status == Status.RUNNING
+
+
 def test_wont_do_clears_needs_human_and_automerge_blocked(sched, fake_github):
     """CG-195: `wont_do` is terminal alongside done and cancelled, so it must clear the same
     stale stops on transition — it was missing from the CG-175 fix, which only checked

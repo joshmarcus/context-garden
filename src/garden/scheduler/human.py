@@ -1105,14 +1105,14 @@ class HumanMixin:
 
     # ---- manual controls -----------------------------------------------------
     def _cancel_active_run(self, task: Task) -> None:
-        """Kill the task's active run and mark it cancelled so it stops occupying a slot.
-        Used when a task is pulled out from under a live run (cancel, or a hand retry that
-        abandons the current run for a fresh one)."""
-        run = self.runs.latest(task.id)
-        if run and run.status == "running":
-            run.kill()
-            if run.env_snapshot.get("ssh_tmux_session") and not run.process_finished():
-                return  # retain remote ownership until cancellation is acknowledged and drained
+        """Confirm every active worker stopped before releasing its run ownership."""
+        active = [run for run in self.runs.active() if run.task_id == task.id]
+        for run in active:
+            if not run.process_finished() and not run.stop():
+                raise RuntimeError(
+                    f"could not confirm worker {run.run_id} stopped; refusing to release its run"
+                )
+        for run in active:
             run.status = "cancelled"
             run.finished_at = now_iso()
             run.save()
@@ -1294,12 +1294,7 @@ class HumanMixin:
                 self.principal, task, self.store.phase(task.product, task.phase),
                 expected_generation=assignment_generation,
             )
-        for active in self.runs.runs_for(task.id):
-            if active.runner == "ssh" and active.status == "running" and not active.process_finished():
-                raise RuntimeError(
-                    "remote worker outcome is not terminal; it is reconnecting automatically, or, "
-                    "if held, use garden ssh-recover before retry"
-                )
+        self._cancel_active_run(task)
         self.events.emit("retry", task.id, actor=self._validate_action_actor(actor), reason="continued loop")
         st = self.state.get(task.id)
         st.pop("ssh_recovery_hold", None)
@@ -1325,23 +1320,7 @@ class HumanMixin:
             self._transition(task, Status.CHANGES_REQUESTED, note)
             self.state.save()
             return
-        run = self.runs.latest(task.id)
-        if run and run.status == "running":
-            # The task is being reset out from under its own active run (e.g. a human
-            # retries a task whose worker already finished but the next tick has not
-            # reaped it yet). Close the run now — once the task leaves RUNNING, nothing
-            # else will reap it, and it would otherwise sit "active" and claim a worker
-            # slot forever.
-            run.kill()
-            run.status = "cancelled"
-            run.finished_at = now_iso()
-            run.save()
         task.attempts = 0
-        if task.status == Status.RUNNING:
-            # Abandoning a live run for a fresh one: cancel it so its slot frees up. A run
-            # that already finished on disk but has not been reaped is still "running" here
-            # and would otherwise hold a slot until the next reap, blocking the new dispatch.
-            self._cancel_active_run(task)
         self._transition(task, Status.READY, "reset to ready by hand")
         self.state.save()
 
