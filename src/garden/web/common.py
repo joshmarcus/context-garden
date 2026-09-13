@@ -655,6 +655,8 @@ class Site:
             addressed = recipient == principal.member_id
             if view == "mine" and not addressed:
                 continue
+            if view == "team" and is_global and principal.role != "administrator":
+                continue
             if view == "admin" and not is_global:
                 continue
             actionable = addressed or (view == "admin" and is_global)

@@ -409,6 +409,25 @@ def register(app: FastAPI, site: Site) -> None:
 
         return JSONResponse(worker_snapshot(fresh.config, RunStore(fresh.config.garden_dir)))
 
+    @app.get("/api/worker-configurations")
+    def api_worker_configurations():
+        from ...routing import worker_configuration_views
+
+        return JSONResponse(worker_configuration_views(hub.fresh()))
+
+    @app.get("/api/tasks/{task_id}/routing")
+    def api_task_routing(task_id: str, activity: str = "work"):
+        if activity not in {"work", "review", "check", "persona", "edit", "trial"}:
+            raise HTTPException(422, "unsupported routing activity")
+        fresh = hub.fresh()
+        try:
+            task = fresh.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        from ...routing import task_routing_view
+
+        return JSONResponse(task_routing_view(fresh, task, activity=activity))
+
     @app.get("/api/operations/{task_id}/{run_id}")
     def api_operation(task_id: str, run_id: str):
         """Read one durable launch identity directly; never scan run history."""
@@ -600,6 +619,9 @@ def register(app: FastAPI, site: Site) -> None:
                             or match.instance.instance_id != str(body["host"])):
                         run.save()
                         continue
+                    matched_instance = match.instance
+                else:
+                    matched_instance = None
                 # Checks execute the portable check payload and need no model harness.
                 # Every other remote mode is harness-backed: an empty offer means the
                 # host cannot execute it, rather than acting as a wildcard.
@@ -647,6 +669,7 @@ def register(app: FastAPI, site: Site) -> None:
                 harness = hub.store.config.harness(run.harness) if run.harness else None
                 run.host = str(body["host"])
                 claim_time = now.isoformat()
+                first_execution_claim = not run.execution_started_at
                 if not run.claimed_at:
                     run.claimed_at = claim_time
                 if not run.execution_started_at:
@@ -654,6 +677,12 @@ def register(app: FastAPI, site: Site) -> None:
                     # Preserve that first execution boundary across reclaim instead of
                     # resetting its execution deadline to the newest generation.
                     run.execution_started_at = run.claimed_at
+                if first_execution_claim and matched_instance is not None:
+                    run.env_snapshot["worker_readiness"] = {
+                        "status": "verified",
+                        "checked_at": matched_instance.readiness_checked_at,
+                        "expires_at": matched_instance.readiness_expires_at,
+                    }
                 renew(run, now)
                 run.lease_updated_at = claim_time
                 run.lease_token = secrets.token_urlsafe(32)
@@ -676,6 +705,7 @@ def register(app: FastAPI, site: Site) -> None:
                 setup = hub.store.config.product_setup(product) or {}
                 payload: dict[str, Any] = {
                     "id": run.run_id, "task_id": run.task_id, "mode": run.mode,
+                    "product": product,
                     "lease_token": run.lease_token,
                     "heartbeat_seconds": max(0.05, int(hub.store.config.get("workers.lease_seconds", 120)) / 3),
                     "execution_deadline_at": execution_deadline(run).isoformat()

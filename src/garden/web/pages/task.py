@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import shlex
+import uuid
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
@@ -83,6 +85,9 @@ def register(app: FastAPI, site: Site) -> None:
         from ...suggestions import APPLIES_TO, has_pending, parse_suggestions, spec_body
 
         friction_text = extract_friction(pr_body_for(t, rs))
+        from ...defects import DefectStore
+        defect_store = DefectStore(s.config.garden_dir)
+        defects = defect_store.list(task_id=t.id)
         suggestions = parse_suggestions(t.body)
         edit_diff = _edit_diff(runs)
         criteria_rows = reconcile(parse_criteria(t.body), worker_verified(runs),
@@ -135,6 +140,9 @@ def register(app: FastAPI, site: Site) -> None:
                 manual_take_reason = "This task reached its revision limit and needs an Inbox decision."
 
         decision_card = decision_card_view(t, st, rs)
+        from ...routing import task_routing_view
+
+        routing = task_routing_view(s, t)
         if decision_card is None and request.query_params.get("walkthrough") == "decision":
             decision_card = {
                 "type": "attention",
@@ -171,6 +179,9 @@ def register(app: FastAPI, site: Site) -> None:
             evidence_rows=evidence_rows,
             brief_gaps=gaps,
             acceptance_text=_acceptance_text(t.body),
+            requirements_text=(yaml.safe_dump(t.execution_requirements.to_dict(), sort_keys=False).strip()
+                               if not t.execution_requirements.empty else ""),
+            routing=routing,
             suggestions=suggestions, applies_to=APPLIES_TO, has_pending=has_pending(t.body),
             edit_running=bool(st.get("edit_run")), edit_diff=edit_diff,
             log_lines=log, rel=s.rel(t.path), events=list(reversed(evs))[:60],
@@ -191,6 +202,9 @@ def register(app: FastAPI, site: Site) -> None:
             return_to=_return_to(request, task_id),
             completion=completion,
             review_history=review_history,
+            defects=defects,
+            defect_summary=defect_store.summary(task_id=t.id),
+            defect_idempotency_key=uuid.uuid4().hex,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)

@@ -540,7 +540,11 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
 
     team = client.get("/inbox?view=team", headers=bob_headers).text
     assert "ALICE_PRIVATE_QUESTION" in team and "Addressed to alice · read-only" in team
+    assert "ADMINISTRATION_QUESTION" not in team
     assert client.get("/inbox?view=admin", headers=bob_headers).status_code == 403
+    assert "ADMINISTRATION_QUESTION" in client.get(
+        "/inbox?view=team", headers=alice_headers,
+    ).text
     admin_view = client.get("/inbox?view=admin", headers=alice_headers).text
     assert "ADMINISTRATION_QUESTION" in admin_view and "Answer" in admin_view
     assert client.post(
@@ -910,14 +914,6 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
-
-
-
-
-
-
-
-
 
 
 

@@ -47,7 +47,7 @@ def match_worker(
     Ordering is stable and prefers the authored configuration order, then the
     least-selected compatible instance and its id. Capacity/fairness is represented by
     the caller's busy set and committed allocations from its transactionally protected
-    run store: once an instance becomes busy or lacks capacity the next stable candidate
+    run store: once an instance becomes busy or lacks capacity, the next stable candidate
     wins.
     A pin is a hard constraint, never a way around authorization.
     """

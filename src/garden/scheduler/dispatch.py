@@ -105,7 +105,9 @@ class DispatchMixin:
         )
         if requirements.empty and not pinned_instance:
             return requirements, None
-        busy = {run.host for run in self.runs.active() if run.host}
+        from ..routing import active_worker_reservations
+
+        busy = active_worker_reservations(self.runs.active())
         allocations: dict[str, list[Any]] = {}
         for run in self.runs.active():
             snapshot = run.env_snapshot or {}
@@ -182,6 +184,16 @@ class DispatchMixin:
         encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
         source_envelope = source_snapshot.get("execution_envelope") or {}
+        source_requirements = source_snapshot.get("execution_requirements")
+        if source_requirements and source_requirements != requirement_data:
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.error = "source execution requirements changed; continuation fenced before launch"
+            run.save()
+            raise ResourcePressureError(
+                "source execution requirements changed; fenced recovery requires "
+                "the original authorized worker"
+            )
         instance = match.instance if match is not None else None
         source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
         source_instance = str(source_envelope.get("worker_instance")
@@ -196,6 +208,13 @@ class DispatchMixin:
                 "source execution owner or worker instance changed; fenced recovery requires "
                 "the original authorized worker"
             )
+        configuration = (self.cfg.worker_configurations().get(instance.configuration)
+                         if instance is not None else None)
+        readiness = ({
+            "status": "verified",
+            "checked_at": instance.readiness_checked_at,
+            "expires_at": instance.readiness_expires_at,
+        } if instance is not None else {})
         run.env_snapshot.update({
             "execution_requirements": requirement_data,
             "execution_owner": owner,
@@ -210,6 +229,10 @@ class DispatchMixin:
                 "worker_instance": instance.instance_id if instance is not None else "",
             },
             "worker_instance": instance.instance_id if instance is not None else "",
+            "worker_configuration": configuration.name if configuration is not None else "",
+            "worker_configuration_version": configuration.version if configuration is not None else "",
+            "worker_queue_readiness": readiness,
+            "worker_readiness": readiness,
         })
 
     def _execution_source_run(self, task: Task, current: Run | None = None) -> Run | None:
