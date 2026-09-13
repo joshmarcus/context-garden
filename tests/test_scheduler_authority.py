@@ -97,6 +97,17 @@ def test_task_effect_carries_current_generation_and_revision():
     }]
 
 
+def test_task_authority_rejects_stale_assignment_generation():
+    sched = scheduler(snapshot())
+
+    with pytest.raises(RuntimeError, match="stale assignment generation"):
+        sched._task_authority(task("A-1"), expected_assignment_generation=2)
+
+    assert sched._task_authority(
+        task("A-1"), expected_assignment_generation=3,
+    )["owner"] == "alice"
+
+
 def test_direct_task_action_denial_happens_before_its_first_side_effect():
     class Action:
         def __init__(self):
@@ -226,6 +237,7 @@ def test_two_installations_and_mixed_owners_cannot_exchange_lifecycle_effects():
         with pytest.raises(PermissionError):
             bob.task_effect(task("A-1"), f"{stage}:A-1").__enter__()
 
+    value["assignment"]["phase"] = "p2"
     with alice_laptop.phase_effect("demo", "p2", "retro-queue:demo/p2:source"):
         pass
     with pytest.raises(PermissionError):

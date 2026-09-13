@@ -756,14 +756,15 @@ class DispatchMixin:
                  pool_member: str = "", assignment_generation: int | None = None) -> Run:
         self.require_execution_authority()
         if self.coordinator is not None:
-            self._task_authority(task)
+            self._task_authority(
+                task, expected_assignment_generation=assignment_generation,
+            )
         elif self.cfg.get("multiplayer.enabled", False) or standalone_fence(self.store.root):
             assert self.principal is not None
             self.members.authorize_task_execution(
                 self.principal, task, self.store.phase(task.product, task.phase),
                 expected_generation=assignment_generation,
             )
-        self._task_authority(task)
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
