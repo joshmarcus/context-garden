@@ -105,6 +105,18 @@ def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
         changes={"reservations": {"workers:1": None}, "permits": {"run:1": None}},
     )
     assert not first.read()[1]["reservations"]
+    first.apply(
+        "reacquire",
+        actor="alice",
+        installation="one",
+        expected_versions={},
+        changes={
+            "reservations": {
+                "workers:2": {"pool": "workers", "units": 1, "spend_micros": 10}
+            }
+        },
+    )
+    assert "workers:2" in first.read()[1]["reservations"]
 
 
 def _compete(repo: str, installation: str, output: multiprocessing.Queue) -> None:
