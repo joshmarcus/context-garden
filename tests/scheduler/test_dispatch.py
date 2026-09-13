@@ -360,6 +360,18 @@ def test_revision_entrypoint_checkpoints_changed_unsupported_requirement(sched):
     assert len(sched.runs.runs_for(task.id)) == 2
 
 
+
+
+
+
+
+
+
+
+
+
+
+
 def test_continuation_stays_on_source_worker_when_an_equivalent_worker_is_idle(sched):
     task = sched.store.task("DM-001")
     _configure_capability_worker(sched, task, activities=["work", "review"])
@@ -418,18 +430,6 @@ def test_continuation_rejects_owner_handoff(sched):
 
     assert source.status == "done"
     assert len(sched.runs.runs_for(task.id)) == 1
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_duplicate_task_id_quarantined_the_tick_survives_and_dispatch_continues(sched, garden, fake_github):
