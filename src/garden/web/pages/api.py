@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from ... import gitops
 from ...events import DECISION_KINDS, EventLog, decision_notifications
 from ...github import is_git_remote_url
-from ...members import Principal, authorize
+from ...members import MemberRegistry, Principal, authorize
 from ...model import effective_owner
 from ...runs import Run, RunMutationConflict
 from ...worker_diagnostics import WorkerEventLog, safe_correlation_id
@@ -29,6 +29,8 @@ from ..common import Site
 
 def register(app: FastAPI, site: Site) -> None:
     hub = site.hub
+    member_registry = (MemberRegistry(hub.store.config.garden_dir)
+                       if hub.store.config.get("multiplayer.enabled", False) else None)
     controller_worker_log = WorkerEventLog(hub.store.config.garden_dir / "worker-events.jsonl")
 
     def record_worker_event(event: str, body: dict[str, Any], operation: str,
@@ -279,6 +281,10 @@ def register(app: FastAPI, site: Site) -> None:
                 or not authorize(principal, "mutate_work", owner_id=owner,
                                  project=task.product)):
             raise HTTPException(403, "scheduler is not authorized for this task")
+        assignment = member_registry.assignment(member_id) if member_registry else None
+        if (assignment is None or not assignment.enabled
+                or assignment.project != task.product or assignment.phase != task.phase):
+            raise HTTPException(403, "task is outside the member's current assignment")
 
     def execution_timeout_minutes(run: Any) -> float:
         """Return the snapshotted execution budget, keeping checks independently bounded."""
@@ -492,6 +498,7 @@ def register(app: FastAPI, site: Site) -> None:
                 if replay.claim_request_id != request_id or replay.host != body["host"] \
                         or not response_token:
                     raise HTTPException(409, "claim request identity cannot be replayed")
+                authorize_member_run(replay, host_cfg)
                 claimed_run(replay.run_id, host_cfg, response_token)
                 response = dict(replay.claim_response)
                 from ...reference_snapshot import read_reference_files
@@ -537,6 +544,12 @@ def register(app: FastAPI, site: Site) -> None:
                     if (task is None or principal is None
                             or not authorize(principal, "mutate_work", owner_id=owner,
                                              project=task.product)):
+                        continue
+                    assignment = (member_registry.assignment(str(host_cfg["member_id"]))
+                                  if member_registry else None)
+                    if (assignment is None or not assignment.enabled
+                            or assignment.project != task.product
+                            or assignment.phase != task.phase):
                         continue
                 weight = int((run.env_snapshot or {}).get("resource_weight") or 1)
                 if not in_place and used + weight > capacity:
