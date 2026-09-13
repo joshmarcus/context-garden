@@ -2035,7 +2035,9 @@ def test_inline_edit_clears_brief_gate(garden):
     task = Store(garden).task("DM-001")
     assert "## Acceptance criteria\n\n- [ ] The task page saves a repaired brief" in task.body
     assert task.reading == ["demo/p1/specs/spec.md"]
-    assert 'id="brief-card"' not in c.get("/tasks/DM-001").text
+    repaired_page = c.get("/tasks/DM-001").text
+    assert 'id="brief-card"' not in repaired_page
+    assert 'id="requirements-card"' in repaired_page
 
     c.post("/tasks/DM-001/approve")
     assert Store(garden).task("DM-001").status == Status.READY
