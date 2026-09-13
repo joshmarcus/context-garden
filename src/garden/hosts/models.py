@@ -46,6 +46,8 @@ class ResourceCeilings:
     vcpu: int = 0
     gpu_count: int = 0
     gpu_device_memory_mib: int = 0
+    gpu_vendor: str = ""
+    gpu_features: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,8 @@ def verify_worker_configuration(
     required_vcpu: int = 0,
     required_gpu_count: int = 0,
     required_gpu_device_memory_mib: int = 0,
+    required_gpu_vendor: str = "",
+    required_gpu_features: tuple[str, ...] = (),
     required_protocol_version: int = 0,
     now: float | None = None,
 ) -> WorkerConfigurationAdmission:
@@ -192,7 +196,8 @@ def verify_worker_configuration(
     checked_at = time.time() if now is None else now
     constrained = bool(
         required_capabilities or required_memory_mib or required_vcpu or required_gpu_count
-        or required_gpu_device_memory_mib or configuration.activities or configuration.projects
+        or required_gpu_device_memory_mib or required_gpu_vendor or required_gpu_features
+        or configuration.activities or configuration.projects
     )
     if configuration.contract_version != WORKER_CONFIGURATION_CONTRACT_VERSION:
         return WorkerConfigurationAdmission(False, detail="unsupported configuration contract")
@@ -233,6 +238,13 @@ def verify_worker_configuration(
             or required_gpu_count > ceilings.gpu_count
             or required_gpu_device_memory_mib > ceilings.gpu_device_memory_mib):
         return WorkerConfigurationAdmission(False, detail="resource requirement exceeds worker ceiling")
+    if required_gpu_vendor and required_gpu_vendor != ceilings.gpu_vendor:
+        return WorkerConfigurationAdmission(False, detail="GPU vendor does not match worker shape")
+    missing_gpu_features = sorted(set(required_gpu_features) - set(ceilings.gpu_features))
+    if missing_gpu_features:
+        return WorkerConfigurationAdmission(
+            False, detail=f"GPU features are unavailable: {', '.join(missing_gpu_features)}"
+        )
     granted = configuration.granted_capabilities(checked_at)
     missing = sorted(set(required_capabilities) - set(granted))
     if missing:
