@@ -31,6 +31,7 @@ from garden.remote_worker import (
     _persist_active_claim,
     _persist_pending_result,
     _process_birth_identity,
+    _TranscriptExporter,
     _validation_receipts,
     _wait_for_process,
     deliver_pending_results,
@@ -2309,6 +2310,57 @@ def test_heartbeat_retries_transient_failure_but_rejection_is_terminal(monkeypat
     with pytest.raises(WorkerRequestError, match="403"):
         _LeaseHeartbeat(run, RejectingClient()).ensure_current()
     assert time.monotonic() - started < 0.5
+
+
+def test_restricted_transcript_marker_split_across_chunks_never_uploads():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), ("RESTRICTED-ROW-42",))
+    exporter.add("safe prefix RESTRICTED-")
+    exporter.add("ROW-42 unsafe tail")
+
+    with pytest.raises(RuntimeError, match="restricted synthetic marker"):
+        exporter.finish()
+
+    assert uploads == []
+
+
+def test_restricted_clean_transcript_uploads_only_after_complete_validation():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), ("RESTRICTED-ROW-42",))
+    exporter.add("clean live output\n")
+    assert uploads == []
+    exporter.add("clean tail\n")
+    exporter.finish()
+
+    assert uploads == [(0, "clean live output\nclean tail\n")]
+
+
+def test_unrestricted_transcript_preserves_live_upload_offsets():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), ())
+    exporter.add("hé")
+    exporter.add("llo")
+    exporter.finish()
+
+    assert uploads == [(0, "hé"), (3, "llo")]
 
 
 def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):

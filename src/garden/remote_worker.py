@@ -733,6 +733,35 @@ class _LeaseHeartbeat:
         self.thread.join(timeout=5)
 
 
+class _TranscriptExporter:
+    """Keep restricted transcripts local until their complete contents are safe."""
+
+    def __init__(self, heartbeat: _LeaseHeartbeat, markers: tuple[str, ...]):
+        self.heartbeat = heartbeat
+        self.markers = markers
+        self.offset = 0
+        self.buffer: list[str] = []
+
+    def add(self, chunk: str) -> None:
+        if not chunk:
+            return
+        if self.markers:
+            # A marker may span any number of reads. Holding the complete restricted
+            # transcript prevents a safe-looking prefix from crossing the boundary.
+            self.buffer.append(chunk)
+            return
+        self.offset = self.heartbeat.upload(self.offset, chunk)
+
+    def finish(self) -> None:
+        if not self.buffer:
+            return
+        transcript = "".join(self.buffer)
+        from .restricted_data import validate_restricted_markers
+
+        validate_restricted_markers(transcript, self.markers)
+        self.offset = self.heartbeat.upload(self.offset, transcript)
+
+
 def _stop_obsolete_process(proc: subprocess.Popen[Any]) -> None:
     """Stop a supervised process tree after its remote authority is lost."""
     if proc.poll() is not None:
@@ -1287,7 +1316,10 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                     start_new_session=True,
                 )
                 transcript_read_offset = 0
-                transcript_upload_offset = 0
+                transcript_exporter = _TranscriptExporter(
+                    heartbeat,
+                    tuple(str(value) for value in run.get("restricted_export_markers") or []),
+                )
                 timeout_minutes = float(run.get("execution_timeout_minutes") or 0)
                 deadline = time.monotonic() + timeout_minutes * 60 if timeout_minutes else None
                 while proc.poll() is None:
@@ -1311,16 +1343,15 @@ def execute_claim(run: dict[str, Any], root: Path, client: WorkerClient, *, setu
                         transcript_file.seek(transcript_read_offset)
                         chunk = transcript_file.read()
                         transcript_read_offset = transcript_file.tell()
-                    if chunk:
-                        transcript_upload_offset = heartbeat.upload(transcript_upload_offset, chunk)
+                    transcript_exporter.add(chunk)
                 stdout_file.flush()
                 stdout_file.seek(0)
                 stderr_file.seek(0)
                 stdout, stderr = stdout_file.read(), stderr_file.read()
                 stdout_file.seek(transcript_read_offset)
                 tail = stdout_file.read()
-                if tail:
-                    transcript_upload_offset = heartbeat.upload(transcript_upload_offset, tail)
+                transcript_exporter.add(tail)
+                transcript_exporter.finish()
             collected = harness.parse(stdout, stderr, final_path, model=str(run.get("model") or ""))
             final = str(collected.get("final_text") or "")
             parsed = collected.get("result") or parse_result(final) or {}
