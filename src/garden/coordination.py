@@ -196,7 +196,6 @@ class Coordinator:
                 raise Conflict(f"stale {kind} version: expected {expected_version}, current {version}")
             if row and authority_generation <= int(row["authority_generation"]):
                 raise Conflict("stale authority generation")
-            self._reject_unresolved_effects(db, garden_id, kind, scope)
             new_version = version + 1
             db.execute("""INSERT INTO authority(garden,kind,scope,version,owner,authority_generation)
                 VALUES(?,?,?,?,?,?) ON CONFLICT(garden,kind,scope) DO UPDATE SET
