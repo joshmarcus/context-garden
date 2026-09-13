@@ -219,10 +219,13 @@ def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor:
     run = sched.runs.latest(t.id)
     if not sched.runner_for(t).detached and run is not None and run.status == "running":
         raise RuntimeError("finish the claimed manual session instead of marking this task done")
+    reason = note.strip()
+    if not reason:
+        raise RuntimeError("enter a completion reason before marking this task done")
     principal = current_principal() or sched.principal
     performed_by = principal.member_id if principal is not None else "local operator"
     sched.mark_done(
-        t, note.strip() or "completed outside Garden", force=True,
+        t, reason, force=True,
         actor="human_owner", performed_by=performed_by,
     )
 

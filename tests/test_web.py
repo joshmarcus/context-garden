@@ -1506,6 +1506,21 @@ def test_ready_task_can_be_marked_done_with_external_reason_and_attribution(gard
     assert "is done" in client(garden).get(repeated.headers["location"]).text
 
 
+def test_mark_done_rejects_blank_reason_without_saving_transition_or_event(garden):
+    events = EventLog(garden / ".garden/events.jsonl")
+    before = events.read(task_id="DM-001", kinds=("mark_done",))
+
+    response = client(garden).post(
+        "/tasks/DM-001/done", data={"note": "  \t "},
+        headers={"referer": "http://testserver/tasks/DM-001"}, follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "enter a completion reason" in client(garden).get(response.headers["location"]).text
+    assert Store(garden).task("DM-001").status == Status.READY
+    assert events.read(task_id="DM-001", kinds=("mark_done",)) == before
+
+
 def test_draft_and_open_pr_task_pages_offer_context_appropriate_mark_done(garden):
     store = Store(garden)
     draft = store.task("DM-001")
