@@ -218,7 +218,10 @@ def done(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str, actor:
     run = sched.runs.latest(t.id)
     if not sched.runner_for(t).detached and run is not None and run.status == "running":
         raise RuntimeError("finish the claimed manual session instead of marking this task done")
-    sched.mark_done(t, note or "marked done without merging (web)", force=True, actor=actor)
+    reason = note.strip()
+    if not reason:
+        raise RuntimeError("a completion reason is required")
+    sched.mark_done(t, reason, force=True, actor=actor)
 
 
 @action("review")

@@ -107,6 +107,13 @@
 </div>
 {% endif %}
 
+{% if mark_done_available and not (manual_runner and task.status.value == 'running') and (task.pr or task.status.value == 'running') %}
+<div class="panel" style="border-color:var(--warn);margin-bottom:14px">
+  <div class="eyebrow" style="color:var(--warn)">Manual completion</div>
+  <p style="margin:6px 0 0">Marking this task done records a forced status completion. It does not merge or close{% if task.pr %} its PR{% else %} external work{% endif %}{% if task.status.value == 'running' %}, and active work keeps its protected stop/fence boundary{% endif %}.</p>
+</div>
+{% endif %}
+
 <div class="actions" style="margin-bottom:14px">
   {% if not manual_reservation and not task.status.terminal %}<button class="quiet" data-toggle="manual-mode-form">Manual mode…</button>{% endif %}
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
@@ -133,7 +140,7 @@
   {% if not task.status.terminal and not state.investigation %}<button class="quiet" data-toggle="deep-dive-form">Deep dive…</button>{% endif %}
   {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
   {% if not phase_hold and ((task.status.value in ('ready','draft','failed') and not task.pr) or trial_again) %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
-  {% if task.status.value in ('running','in_review','awaiting_triage','changes_requested') and not (manual_runner and task.status.value == 'running') %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done" onsubmit="return confirm('Mark this task done without merging its PR?');"><button class="quiet">Mark done without merging</button></form>{% endif %}
+  {% if mark_done_available and not (manual_runner and task.status.value == 'running') %}<form class="inline mark-done-action" method="post" action="/tasks/{{ task.id }}/done"{% if task.pr or task.status.value == 'running' %} onsubmit="return confirm('Mark this task done? This does not merge or close a PR.');"{% endif %}><label for="mark-done-reason">Completion reason <input id="mark-done-reason" name="note" value="tested elsewhere" required maxlength="240"></label><button class="quiet">Mark done</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
 </div>
 {% if task.status.terminal %}<div id="defect-form" class="panel" hidden>

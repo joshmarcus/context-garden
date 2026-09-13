@@ -1547,6 +1547,62 @@ def test_review_action_bypasses_the_cap_when_one_was_reached(garden):
     assert st.get("review_run")
 
 
+def test_task_page_marks_ready_and_draft_work_done_with_a_recorded_reason(garden):
+    """A completed-outside-Garden task needs no PR or prior worker lifecycle."""
+    c = client(garden)
+    ready_page = c.get("/tasks/DM-001").text
+    assert 'action="/tasks/DM-001/done"' in ready_page
+    assert "Mark done" in ready_page
+    assert 'name="note" value="tested elsewhere" required' in ready_page
+    assert "onsubmit=\"return confirm" not in ready_page
+
+    completed = c.post("/tasks/DM-001/done", data={"note": "tested elsewhere"},
+                       headers={"referer": "http://testserver/tasks/DM-001"},
+                       follow_redirects=True)
+    assert completed.status_code == 200
+    assert Store(garden).task("DM-001").status == Status.DONE
+    assert "Forced completion by human owner" in completed.text
+    assert "tested elsewhere This is not recorded as base-branch acceptance" in completed.text
+    marked = Scheduler(Store(garden)).events.read(task_id="DM-001", kinds=("mark_done",))[-1]
+    assert marked["actor"] == "human_owner" and marked["reason"] == "tested elsewhere"
+    assert 'action="/tasks/DM-001/done"' not in completed.text
+    assert next(task for task in c.get("/api/tasks").json() if task["id"] == "DM-001")["status"] == "done"
+    assert 'class="state s-done"' in c.get("/phases/demo/p1").text
+
+    repeated = c.post("/tasks/DM-001/done", data={"note": "again"}, follow_redirects=True)
+    assert "DM-001 is done" in repeated.text
+
+    draft = Store(garden).task("DM-002")
+    draft.status = Status.DRAFT
+    Store(garden).save(draft)
+    draft_page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/done"' in draft_page
+    c.post("/tasks/DM-002/done", data={"note": "completed before approval"})
+    assert Store(garden).task("DM-002").status == Status.DONE
+
+
+def test_task_page_explains_forced_completion_of_active_unmerged_work(garden):
+    task = Store(garden).task("DM-001")
+    task.status = Status.RUNNING
+    task.pr = "https://github.com/test/demo/pull/71"
+    Store(garden).save(task)
+    run = RunStore(garden / ".garden").new_run(task.id, "local", "work")
+    run.status = "running"
+    run.save()
+
+    c = client(garden)
+    page = c.get("/tasks/DM-001").text
+    assert "Manual completion" in page
+    assert "does not merge or close its PR" in page
+    assert "active work keeps its protected stop/fence boundary" in page
+    assert 'action="/tasks/DM-001/done"' in page
+    assert "onsubmit=\"return confirm" in page
+
+    c.post("/tasks/DM-001/done", data={"note": "tested elsewhere"})
+    assert Store(garden).task("DM-001").status == Status.DONE
+    assert RunStore(garden / ".garden").latest("DM-001").status == "running"
+
+
 def test_task_actions_refuse_a_merged_done_task(garden, monkeypatch):
     """CG-142: automerge marks a task `done`; a stale page's triage-ready/review click that
     lands afterward must be refused, named with the state and reason, not silently reopen the

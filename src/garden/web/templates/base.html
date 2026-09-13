@@ -135,6 +135,10 @@ button.danger { color:var(--bad); border-color:var(--line-strong); }
 button.quiet, .btn.quiet { border-color:var(--line); background:transparent; color:var(--muted); }
 button.quiet:hover { color:var(--ink); background:var(--label); }
 form.inline { display:inline; }
+.mark-done-action { display:inline-flex; align-items:center; gap:6px; max-width:100%; }
+.mark-done-action label { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font:12px/1 var(--mono); }
+.mark-done-action input { width:18ch; max-width:42vw; }
+@media (max-width:600px) { .mark-done-action { flex-wrap:wrap; } .mark-done-action input { max-width:58vw; } }
 input[type=text], input:not([type]), textarea { font:13px/1.4 var(--mono); padding:8px 10px; border:1px solid var(--line-strong); background:var(--label); color:var(--ink); }
 textarea { width:100%; min-height:72px; resize:vertical; }
 label.check { display:inline-flex; gap:6px; align-items:center; color:var(--muted); font-size:13px; }

@@ -121,6 +121,10 @@ def register(app: FastAPI, site: Site) -> None:
         review_history = _review_history(runs) if completion else []
         manual_runner = (t.runner or s.config.product_runner(t.product)) == "manual"
         phase = s.phase(t.product, t.phase)
+        # The request boundary authorizes mutations too, but do not advertise a completion
+        # control to a member who can only view this task.  The action repeats this check
+        # through the scheduler just before it writes.
+        mark_done_available = not t.status.terminal and sched.task_is_authorized(t)
         phase_hold = sched.phase_admission_refusal(t)
         phase_hold_kind = ("closed phase" if phase.closed else "frozen phase" if phase.frozen
                            else "sequential phase order")
@@ -193,6 +197,7 @@ def register(app: FastAPI, site: Site) -> None:
             harness_choices=s.config.harness_choices(),
             default_harness=t.harness or s.config.product_harness(t.product),
             manual_runner=manual_runner, manual_take_reason=manual_take_reason,
+            mark_done_available=mark_done_available,
             phase_hold=phase_hold, phase_hold_kind=phase_hold_kind,
             move_phases=move_phases, later_deps=later_deps, approve_phases=approve_phases,
             prior_trials=prior_trials,

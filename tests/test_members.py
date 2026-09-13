@@ -384,6 +384,12 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
 
     assert client.get("/api/tasks").status_code == 401
     assert client.get("/api/tasks", headers={"Authorization": f"Bearer {viewer_token}"}).status_code == 200
+    viewer_page = client.get("/tasks/DM-001", headers={"Authorization": f"Bearer {viewer_token}"})
+    assert viewer_page.status_code == 200
+    assert 'action="/tasks/DM-001/done"' not in viewer_page.text
+    denied_done = client.post("/tasks/DM-001/done", data={"note": "tested elsewhere"},
+                              headers={"Authorization": f"Bearer {viewer_token}"})
+    assert denied_done.status_code == 403
     direct = client.post("/tick", headers={"Authorization": f"Bearer {viewer_token}"},
                          follow_redirects=False)
     assert direct.status_code == 403
