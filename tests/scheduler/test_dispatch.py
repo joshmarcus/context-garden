@@ -360,64 +360,6 @@ def test_revision_entrypoint_checkpoints_changed_unsupported_requirement(sched):
     assert len(sched.runs.runs_for(task.id)) == 2
 
 
-def test_continuation_stays_on_source_worker_when_an_equivalent_worker_is_idle(sched):
-    task = sched.store.task("DM-001")
-    _configure_capability_worker(sched, task, activities=["work", "review"])
-    second = dict(sched.cfg.data["worker_instances"][0])
-    second.update({"instance_id": "build-2", "installation_id": "install-b"})
-    sched.cfg.data["worker_instances"].append(second)
-    source = sched.runs.new_run(task.id, "remote", mode="work")
-    source.status = "done"
-    source.env_snapshot.update({
-        "execution_requirements": task.execution_requirements.to_dict(),
-        "execution_owner": "alice",
-        "worker_instance": "build-2",
-        "execution_envelope": {"owner": "alice", "worker_instance": "build-2"},
-    })
-    source.save()
-
-    _requirements, match = sched._execution_match(task, "review", source_run=source)
-
-    assert match.instance.instance_id == "build-2"
-
-
-def test_continuation_does_not_fallback_when_source_worker_is_unavailable(sched):
-    task = sched.store.task("DM-001")
-    _configure_capability_worker(sched, task, activities=["work", "review"])
-    source = sched.runs.new_run(task.id, "remote", mode="work")
-    source.status = "done"
-    source.env_snapshot.update({
-        "execution_requirements": task.execution_requirements.to_dict(),
-        "execution_owner": "alice",
-        "worker_instance": "retired-builder",
-        "execution_envelope": {"owner": "alice", "worker_instance": "retired-builder"},
-    })
-    source.save()
-
-    with pytest.raises(ResourcePressureError, match="pinned worker instance is not configured"):
-        sched._execution_match(task, "review", source_run=source)
-
-
-def test_continuation_rejects_owner_handoff(sched):
-    task = sched.store.task("DM-001")
-    _configure_capability_worker(sched, task, activities=["work", "review"])
-    source = sched.runs.new_run(task.id, "remote", mode="work")
-    source.status = "done"
-    source.env_snapshot.update({
-        "execution_requirements": task.execution_requirements.to_dict(),
-        "execution_owner": "alice",
-        "worker_instance": "build-1",
-        "execution_envelope": {"owner": "alice", "worker_instance": "build-1"},
-    })
-    source.save()
-    task.owner = "bob"
-    sched.store.save(task)
-
-    with pytest.raises(ResourcePressureError, match="source activity belongs.*current owner"):
-        sched._execution_match(task, "review", source_run=source)
-
-    assert source.status == "done"
-    assert len(sched.runs.runs_for(task.id)) == 1
 
 
 
@@ -428,68 +370,6 @@ def test_continuation_rejects_owner_handoff(sched):
 
 
 
-
-
-
-
-def test_continuation_stays_on_source_worker_when_an_equivalent_worker_is_idle(sched):
-    task = sched.store.task("DM-001")
-    _configure_capability_worker(sched, task, activities=["work", "review"])
-    second = dict(sched.cfg.data["worker_instances"][0])
-    second.update({"instance_id": "build-2", "installation_id": "install-b"})
-    sched.cfg.data["worker_instances"].append(second)
-    source = sched.runs.new_run(task.id, "remote", mode="work")
-    source.status = "done"
-    source.env_snapshot.update({
-        "execution_requirements": task.execution_requirements.to_dict(),
-        "execution_owner": "alice",
-        "worker_instance": "build-2",
-        "execution_envelope": {"owner": "alice", "worker_instance": "build-2"},
-    })
-    source.save()
-
-    _requirements, match = sched._execution_match(task, "review", source_run=source)
-
-    assert match.instance.instance_id == "build-2"
-
-
-def test_continuation_does_not_fallback_when_source_worker_is_unavailable(sched):
-    task = sched.store.task("DM-001")
-    _configure_capability_worker(sched, task, activities=["work", "review"])
-    source = sched.runs.new_run(task.id, "remote", mode="work")
-    source.status = "done"
-    source.env_snapshot.update({
-        "execution_requirements": task.execution_requirements.to_dict(),
-        "execution_owner": "alice",
-        "worker_instance": "retired-builder",
-        "execution_envelope": {"owner": "alice", "worker_instance": "retired-builder"},
-    })
-    source.save()
-
-    with pytest.raises(ResourcePressureError, match="pinned worker instance is not configured"):
-        sched._execution_match(task, "review", source_run=source)
-
-
-def test_continuation_rejects_owner_handoff(sched):
-    task = sched.store.task("DM-001")
-    _configure_capability_worker(sched, task, activities=["work", "review"])
-    source = sched.runs.new_run(task.id, "remote", mode="work")
-    source.status = "done"
-    source.env_snapshot.update({
-        "execution_requirements": task.execution_requirements.to_dict(),
-        "execution_owner": "alice",
-        "worker_instance": "build-1",
-        "execution_envelope": {"owner": "alice", "worker_instance": "build-1"},
-    })
-    source.save()
-    task.owner = "bob"
-    sched.store.save(task)
-
-    with pytest.raises(ResourcePressureError, match="source activity belongs.*current owner"):
-        sched._execution_match(task, "review", source_run=source)
-
-    assert source.status == "done"
-    assert len(sched.runs.runs_for(task.id)) == 1
 
 
 def test_continuation_stays_on_source_worker_when_an_equivalent_worker_is_idle(sched):
