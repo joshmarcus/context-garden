@@ -27,7 +27,7 @@ from ..events import EventLog, metrics, parse_since
 from ..github import PRInfo, RepositorySlug, is_safe_pr_url, pull_request_number
 from ..graph import validate
 from ..inbox import _last_log_line, build_inbox, decisions, needs_human_info, running_now
-from ..members import Principal
+from ..members import Principal, authorize
 from ..model import Status, dispatch_sort_key, now_iso
 from ..multiplayer_client import AuthoritativeView, MultiplayerClient, MultiplayerUnavailable
 from ..profiles import describe as describe_stop
@@ -720,6 +720,47 @@ class Site:
             return owner.owner_id if owner else ""
         return ""
 
+    def authority_context(self, request: Request, store: Store, *,
+                          task: Any | None = None, phase: Any | None = None) -> dict[str, Any]:
+        """Return presentation permissions derived from the authenticated principal.
+
+        This is intentionally only a rendering aid.  The request middleware remains the
+        authorization boundary for every mutation.
+        """
+        principal = getattr(request.state, "principal", None)
+        multiplayer = isinstance(principal, Principal) and self.registry is not None
+        if not multiplayer:
+            return {
+                "multiplayer": False, "member_id": "", "is_admin": True,
+                "can_mutate_task": True, "can_operate_phase": True, "members": (),
+            }
+        assert isinstance(principal, Principal)
+        assignment = self.registry.assignment(principal.member_id)
+        can_mutate_task = False
+        if task is not None:
+            owner = self.registry.effective_task_owner(
+                task, store.phase(task.product, task.phase),
+            )[0]
+            can_mutate_task = bool(
+                assignment and assignment.enabled
+                and (assignment.project, assignment.phase) == (task.product, task.phase)
+                and authorize(principal, "mutate_work", owner_id=owner, project=task.product)
+            )
+        can_operate_phase = bool(
+            phase is not None and self.registry.authorize_phase_operation(
+                principal, phase.product, phase.name,
+            )
+        )
+        project = task.product if task is not None else phase.product if phase is not None else ""
+        return {
+            "multiplayer": True,
+            "member_id": principal.member_id,
+            "is_admin": authorize(principal, "administer"),
+            "can_mutate_task": can_mutate_task,
+            "can_operate_phase": can_operate_phase,
+            "members": tuple(sorted(self.registry.active_execution_member_ids(project))) if project else (),
+        }
+
 
 
     @staticmethod
@@ -832,6 +873,9 @@ class Site:
             "coordinator_status": hub.coordinator_status(),
             "execution_status": hub.execution_status(),
             "identity_status": hub.identity_status(),
+            "assignment_administrators": (
+                tuple(sorted(self.registry.active_administrator_ids())) if self.registry else ()
+            ),
             "viewing_project": scope.selected or "All authorized projects",
             "viewing_project_value": scope.selected or "__all__",
             "viewing_project_source": scope.source,

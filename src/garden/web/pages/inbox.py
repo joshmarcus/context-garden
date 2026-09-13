@@ -116,9 +116,16 @@ def register(app: FastAPI, site: Site) -> None:
             items = [item for item in build_inbox(s, sched)
                      if site.allowed_projects(request) is None or item.get("task") in tasks]
         owner = request.query_params.get("owner")
+        if owner == "__all__":
+            owner = None
+        principal = getattr(request.state, "principal", None)
+        multiplayer = principal is not None and site.registry is not None
+        if multiplayer and inbox_view != "team":
+            owner = None
         if owner is not None:
             owner = "" if owner == "-" else owner
-            items = [item for item in items if not item.get("task") or item.get("owner", "") == owner]
+            items = [item for item in items if not item.get("task")
+                     or site._inbox_recipient(s, tasks, item) == owner]
         owner_task_items = [item for item in items if item.get("task")]
         evs = EventLog(s.config.garden_dir / "events.jsonl")
         all_events = site.visible_events(request, evs.read(), tasks)
@@ -149,6 +156,10 @@ def register(app: FastAPI, site: Site) -> None:
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, owner_filter=owner,
             inbox_view=inbox_view,
+            multiplayer=multiplayer,
+            inbox_members=(tuple(sorted(site.registry.active_execution_member_ids()))
+                           if multiplayer and inbox_view == "team" else ()),
+            inbox_is_admin=(bool(multiplayer and getattr(principal, "role", "") == "administrator")),
             owner_task_items=owner_task_items,
             inbox_count=len(site.actionable_decisions(items)), prs_open=prs_open,
             pr_destinations=pr_destinations,
