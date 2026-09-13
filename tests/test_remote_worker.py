@@ -32,6 +32,8 @@ from garden.remote_worker import (
     _persist_active_claim,
     _persist_pending_result,
     _process_birth_identity,
+    _publish_claim_result,
+    _TranscriptExporter,
     _validation_receipts,
     _wait_for_process,
     deliver_pending_results,
@@ -73,6 +75,191 @@ def isolated_execution_runtime(tmp_path, monkeypatch):
     runtime = tmp_path / "worker-runtime"
     runtime.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+
+def _restricted_publication_repo(tmp_path):
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True)
+    (repo / "baseline.txt").write_text("admitted\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "baseline"], cwd=repo, check=True, capture_output=True,
+    )
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return remote, repo, base
+
+
+class _PublicationHeartbeat:
+    def ensure_current(self):
+        pass
+
+    def finish(self, _payload):
+        pass
+
+
+def _publish_restricted(repo, root, base):
+    run = {
+        "id": "run-1", "task_id": "T-1", "lease_token": "lease",
+        "push_ref": "refs/heads/export", "publication_base_head": base,
+        "restricted_artifact_boundary": "private",
+        "restricted_export_markers": ["RESTRICTED-ROW-42"],
+        "restricted_data_authorized": True,
+        "restricted_evidence_exports": ["result", "transcript", "validation-state"],
+    }
+    _publish_claim_result(
+        run, root, repo, _PublicationHeartbeat(), final="done", parsed={}, usage={},
+        cost=None, error="", rc=0,
+    )
+
+
+@pytest.mark.parametrize("history", ["private", "marker", "marker_then_delete"])
+def test_restricted_publication_rejects_committed_history_before_transport(tmp_path, history):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    if history == "private":
+        target = repo / "private" / "derived.txt"
+        target.parent.mkdir()
+        target.write_text("derived\n")
+    else:
+        target = repo / "result.txt"
+        target.write_text("RESTRICTED-ROW-42\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "restricted"], cwd=repo, check=True, capture_output=True,
+    )
+    if history == "marker_then_delete":
+        target.unlink()
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+             "commit", "-m", "delete restricted"], cwd=repo, check=True,
+            capture_output=True,
+        )
+
+    with pytest.raises(RuntimeError, match="private artifact|restricted synthetic marker"):
+        _publish_restricted(repo, tmp_path / "host", base)
+
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/export"], cwd=remote,
+    ).returncode != 0
+
+
+def test_restricted_publication_pushes_clean_committed_and_uncommitted_changes(tmp_path):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    (repo / "committed.txt").write_text("safe committed\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "safe"], cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "untracked.txt").write_text("safe untracked\n")
+
+    _publish_restricted(repo, tmp_path / "host", base)
+
+    exported = subprocess.run(
+        ["git", "rev-parse", "refs/heads/export"], cwd=remote, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert exported == subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_restricted_finish_without_content_exports_persists_and_posts_only_insufficient_state(
+    tmp_path,
+):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    root = tmp_path / "host"
+    run = {
+        "id": "run-1", "task_id": "T-1", "lease_token": "lease",
+        "push_ref": "refs/heads/export", "publication_base_head": base,
+        "restricted_data_authorized": True,
+        "restricted_artifact_boundary": "private",
+        "restricted_export_markers": [],
+        "restricted_evidence_exports": [],
+    }
+
+    class InspectingHeartbeat:
+        def ensure_current(self):
+            pass
+
+        def finish(self, payload):
+            pending = json.loads((root / "pending-results" / "run-1.json").read_text())
+            assert pending == {"run_id": "run-1", "payload": payload}
+            assert payload["final_text"] == ""
+            assert payload["error"] == ""
+            assert "validation_receipts" not in payload
+            assert payload["result"] == {
+                "status": "insufficient_evidence",
+                "evidence": {
+                    "kind": "validation-state",
+                    "state": "insufficient",
+                    "summary": "Restricted result evidence was not exported.",
+                },
+            }
+            assert "PRIVATE-FINAL" not in json.dumps(payload)
+
+    execution_dir = root / "runs" / "run-1"
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "execution.json").write_text(json.dumps({"private": "PRIVATE-FINAL"}))
+    (execution_dir / "exit_code").write_text("0")
+    (execution_dir / "stderr.log").write_text("PRIVATE-FINAL")
+    _publish_claim_result(
+        run, root, repo, InspectingHeartbeat(), final="PRIVATE-FINAL",
+        parsed={"status": "done", "secret": "PRIVATE-FINAL"}, usage={"tokens": 1},
+        cost=0.01, error="PRIVATE-FINAL", rc=0, execution_dir=execution_dir,
+    )
+
+    assert not (root / "pending-results" / "run-1.json").exists()
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/export"], cwd=remote,
+    ).returncode == 0
+
+
+def test_recovered_restricted_publication_revalidates_committed_history(tmp_path, monkeypatch):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    (repo / "result.txt").write_text("RESTRICTED-ROW-42\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "restricted"], cwd=repo, check=True, capture_output=True,
+    )
+    root = tmp_path / "host"
+    execution_dir = root / "runs" / "recovered"
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "stdout.log").write_text("done")
+    (execution_dir / "stderr.log").write_text("")
+    (execution_dir / "exit_code").write_text("0")
+    final_path = execution_dir / "final.md"
+    run = {
+        "id": "run-1", "task_id": "T-1", "lease_token": "lease",
+        "heartbeat_seconds": 3600, "harness": "claude", "harness_config": {},
+        "model": "small", "push_ref": "refs/heads/export", "publication_base_head": base,
+        "restricted_artifact_boundary": "private",
+        "restricted_export_markers": ["RESTRICTED-ROW-42"],
+    }
+    _persist_active_claim(root, run, execution_dir, repo, final_path, os.getpid())
+    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
+        "final_text": "done", "result": {}, "usage": {}, "cost_usd": None, "error": "",
+    })
+
+    class Client:
+        events = None
+
+        def post(self, _path, _payload):
+            return 200, {}
+
+    with pytest.raises(RuntimeError, match="restricted synthetic marker"):
+        recover_active_claims(root, Client())
+
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/export"], cwd=remote,
+    ).returncode != 0
 
 
 @pytest.mark.parametrize("mode", ["work", "check"])
@@ -2572,6 +2759,94 @@ def test_heartbeat_retries_transient_failure_but_rejection_is_terminal(monkeypat
     assert time.monotonic() - started < 0.5
 
 
+def test_restricted_transcript_marker_split_across_chunks_never_uploads():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(
+        Heartbeat(), ("RESTRICTED-ROW-42",), restricted=True, export_allowed=True,
+    )
+    exporter.add("safe prefix RESTRICTED-")
+    exporter.add("ROW-42 unsafe tail")
+
+    with pytest.raises(RuntimeError, match="restricted synthetic marker"):
+        exporter.finish()
+
+    assert uploads == []
+
+
+def test_restricted_clean_transcript_uploads_only_after_complete_validation():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(
+        Heartbeat(), ("RESTRICTED-ROW-42",), restricted=True, export_allowed=True,
+    )
+    exporter.add("clean live output\n")
+    assert uploads == []
+    exporter.add("clean tail\n")
+    exporter.finish()
+
+    assert uploads == [(0, "clean live output\nclean tail\n")]
+
+
+def test_unrestricted_transcript_preserves_live_upload_offsets():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), (), restricted=False, export_allowed=False)
+    exporter.add("hé")
+    exporter.add("llo")
+    exporter.finish()
+
+    assert uploads == [(0, "hé"), (3, "llo")]
+
+
+def test_restricted_transcript_without_markers_or_permission_stays_local():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), (), restricted=True, export_allowed=False)
+    exporter.add("private live output\n")
+    exporter.add("private tail\n")
+    exporter.finish()
+
+    assert uploads == []
+
+
+def test_restricted_transcript_without_markers_exports_only_when_permitted():
+    uploads = []
+
+    class Heartbeat:
+        def upload(self, offset, chunk):
+            uploads.append((offset, chunk))
+            return offset + len(chunk.encode())
+
+    exporter = _TranscriptExporter(Heartbeat(), (), restricted=True, export_allowed=True)
+    exporter.add("sanitized live output\n")
+    assert uploads == []
+    exporter.add("sanitized tail\n")
+    exporter.finish()
+
+    assert uploads == [(0, "sanitized live output\nsanitized tail\n")]
+
+
 def test_heartbeat_uses_full_controller_recovery_window(monkeypatch):
     """The worker and controller fence the same generation at the 120 + 300 boundary."""
     now = 0.0
@@ -2702,9 +2977,21 @@ run.save()
     env_dump = tmp_path / "remote-worker.env"
     monkeypatch.setenv("FAKE_CLAUDE_ENV_DUMP", str(env_dump))
     payload["env_allowlist"] = [*payload.get("env_allowlist", []), "FAKE_CLAUDE_*", "PYTHONPATH"]
+    host_identity_config = identity_config("tests.test_workload_identity")
+    host_identity_config["restricted_data"] = {"boundaries": {"worker": {
+        "identity_reference": "packages/read",
+        "projects": [payload["product"]],
+        "activities": ["work"],
+        "datasets": {"synthetic-private": "read"},
+        "models": [payload["model"]],
+        "tools": [payload["harness"]],
+        "artifact_boundary": "private",
+        "evidence_exports": ["transcript", "result", "validation-state"],
+        "synthetic_markers": ["RESTRICTED-ROW-42"],
+    }}}
     execute_claim(
         payload, tmp_path / "independent-host", PostingClient(),
-        host_config=identity_config("tests.test_workload_identity"),
+        host_config=host_identity_config,
     )
     dumped_env = env_dump.read_text()
     assert "SERVICE_TOKEN=synthetic-secret-" in dumped_env
