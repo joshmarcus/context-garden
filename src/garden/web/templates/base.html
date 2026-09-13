@@ -56,7 +56,7 @@ html { background:var(--ground); }
 body { margin:0; background:var(--ground); color:var(--ink); font:14.5px/1.45 var(--body); font-variant-numeric: tabular-nums; }
 a { color:inherit; text-decoration:underline; text-decoration-color:var(--line-strong); text-underline-offset:2px; }
 a:hover { text-decoration-color:var(--ink); }
-a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible { outline:2px solid var(--stamp); outline-offset:2px; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline:2px solid var(--stamp); outline-offset:2px; }
 @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 
 /* ---- drawings: pressed specimens and growth-stage glyphs ------------------------ */
@@ -95,8 +95,10 @@ svg.bg-vine { position:fixed; right:-28px; bottom:-30px; width:min(500px, 40vw);
 .nav a.on { border-left-color:var(--ink); background:var(--label); }
 .nav .count { font:11px/1 var(--mono); color:var(--stamp); }
 .nav a.on .count.hot, .nav .count.hot { font-weight:700; }
-.project-picker { margin-left:auto; display:flex; align-items:center; gap:8px; font:12px var(--mono); }
-.project-picker select { max-width:18rem; }
+.project-switcher { display:flex; flex-direction:column; gap:5px; min-width:0; font:11px/1.2 var(--mono); }
+.project-switcher label, .project-switcher .project-label { color:var(--muted); letter-spacing:.08em; text-transform:uppercase; }
+.project-switcher select { width:100%; min-width:0; max-width:100%; padding:7px 8px; border:1px solid var(--line-strong); background:var(--label); color:var(--ink); font:12px/1.2 var(--mono); }
+.project-switcher .project-context { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); font-size:12.5px; }
 .rail h4 { margin:0 0 6px 8px; font:400 10.5px/1 var(--mono); letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
 .drawer { display:flex; gap:10px; align-items:center; padding:8px 10px; border:1px solid var(--line); border-left:3px solid transparent; background:var(--label); text-decoration:none; color:var(--ink); margin-bottom:8px; }
 .drawer:hover, .drawer.on { border-left-color:var(--ink); }
@@ -339,8 +341,11 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   .rail .nav { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:2px; padding-top:6px; border-top:1px solid var(--line); }
   .rail .nav a { min-height:36px; padding:0 6px; border-left:0; border-bottom:2px solid transparent; }
   .rail .nav a.on { border-bottom-color:var(--ink); }
+  .rail > .rail-phases { display:block; padding-top:8px; margin-top:6px; border-top:1px solid var(--line); }
+  .rail-phases > h4, .rail-phases > .phase-list { display:none; }
+  .rail-phases .project-switcher { gap:4px; }
+  .rail-phases .project-switcher select { min-height:36px; }
   main { padding:18px 14px 42px; }
-  .project-picker { margin:0 0 12px; justify-content:flex-end; }
   .page-head { margin-bottom:12px; gap:10px; }
   .page-head h1 { font-size:26px; }
   .task-heading { gap:2px; }
@@ -400,11 +405,25 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     {% if has_design %}<a href="/design" class="{{ 'on' if page == 'design' else '' }}">Design</a>{% endif %}
     <a href="/config" class="{{ 'on' if page == 'config' else '' }}">Config</a>
   </nav>
-  <div>
+  <div class="rail-phases">
     <h4>Phases</h4>
-    {% for p in products %}{% for ph in p.phases if not ph.closed %}<a class="drawer {{ 'on' if page == 'phase' and phase_key == ph.key else '' }}" href="/phases/{{ p.name }}/{{ ph.name }}"><span class="thumb">{% set th = plate(ph.plant, true) %}{% if th %}<img src="{{ th }}" alt="" width="38" height="58" loading="lazy">{% else %}{{ plant(ph.plant, 34, 52) }}{% endif %}</span><span class="k"><b>{{ ph.name }}{% if ph.frozen %} <span class="badge hot">frozen</span>{% endif %}</b><i>Plate {{ ph.plate }} · {{ ph.latin }}</i><span>{{ p.name }} · {{ ph.tasks|length }} tasks</span></span></a><a href="/phases/{{ p.name }}/{{ ph.name }}#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>{% endfor %}{% endfor %}
-    {% for p in products %}{% if p.phases and not (p.phases|rejectattr('closed')|list) %}<span style="display:block; padding:2px 8px 10px; font:11.5px/1.5 var(--mono); color:var(--muted)">{{ p.name }} has no open phase — <code>garden new-phase</code> starts the next one</span>{% endif %}{% endfor %}
-    {% if closed_count %}<a class="drawer {{ 'on' if page == 'herbarium' else '' }}" href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>{{ closed_count }} closed phase{{ 's' if closed_count != 1 else '' }}</span></span></a>{% endif %}
+    <div class="project-switcher" data-project-switcher data-project-value="{{ viewing_project_value }}">
+      {% if viewing_project_options|length > 1 %}
+      <label for="garden-project">Project</label>
+      <select id="garden-project" aria-label="Project view">
+        <option value="__all__" {% if viewing_project_value == '__all__' %}selected{% endif %}>All authorized projects</option>
+        {% for project_name in viewing_project_options %}<option value="{{ project_name }}" {% if viewing_project_value == project_name %}selected{% endif %}>{{ project_name }}</option>{% endfor %}
+      </select>
+      {% else %}
+      <span class="project-label">Project</span>
+      <span class="project-context" title="{{ viewing_project }}">{{ viewing_project }}</span>
+      {% endif %}
+    </div>
+    <div class="phase-list">
+      {% for p in products %}{% for ph in p.phases if not ph.closed %}<a class="drawer {{ 'on' if page == 'phase' and phase_key == ph.key else '' }}" href="/phases/{{ p.name }}/{{ ph.name }}"><span class="thumb">{% set th = plate(ph.plant, true) %}{% if th %}<img src="{{ th }}" alt="" width="38" height="58" loading="lazy">{% else %}{{ plant(ph.plant, 34, 52) }}{% endif %}</span><span class="k"><b>{{ ph.name }}{% if ph.frozen %} <span class="badge hot">frozen</span>{% endif %}</b><i>Plate {{ ph.plate }} · {{ ph.latin }}</i><span>{{ p.name }} · {{ ph.tasks|length }} tasks</span></span></a><a href="/phases/{{ p.name }}/{{ ph.name }}#new-task" style="display:block; margin:-5px 0 8px 12px; font:11px var(--mono); color:var(--muted); text-decoration:none">+ new task</a>{% endfor %}{% endfor %}
+      {% for p in products %}{% if p.phases and not (p.phases|rejectattr('closed')|list) %}<span style="display:block; padding:2px 8px 10px; font:11.5px/1.5 var(--mono); color:var(--muted)">{{ p.name }} has no open phase — <code>garden new-phase</code> starts the next one</span>{% endif %}{% endfor %}
+      {% if closed_count %}<a class="drawer {{ 'on' if page == 'herbarium' else '' }}" href="/herbarium"><span class="k"><b>Herbarium</b><i>closed phases, pressed and filed</i><span>{{ closed_count }} closed phase{{ 's' if closed_count != 1 else '' }}</span></span></a>{% endif %}
+    </div>
   </div>
   <div class="rail-running">
     <h4>Running now</h4>
@@ -460,13 +479,6 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 </aside>
 <main>
 {% if admin_surface %}<div class="warn" role="note"><b>Garden administration.</b> This restricted global surface is not filtered by the project view.</div>{% endif %}
-<div class="project-picker">
-  <label for="garden-project">Project</label>
-  <select id="garden-project" aria-label="Project view">
-    <option value="__all__" {% if viewing_project_value == '__all__' %}selected{% endif %}>All authorized projects</option>
-    {% for project_name in viewing_project_options %}<option value="{{ project_name }}" {% if viewing_project_value == project_name %}selected{% endif %}>{{ project_name }}</option>{% endfor %}
-  </select>
-</div>
 {% if coordinator_status.configured and coordinator_status.stale %}
 <div class="warn" role="status"><b>Shared garden is offline.</b> Showing the last authorized view; changes are disabled until authority refreshes.{% if coordinator_status.error %} {{ coordinator_status.error }}{% endif %}</div>
 {% elif coordinator_status.projection_lag %}
@@ -494,8 +506,9 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
 // navigation, HTMX/fetch links discovered after load, and browser back/forward history.
 (function () {
   var picker = document.getElementById("garden-project");
-  if (!picker) return;
-  var selected = picker.value;
+  var switcher = document.querySelector("[data-project-switcher]");
+  if (!switcher) return;
+  var selected = picker ? picker.value : switcher.dataset.projectValue;
   function scoped(raw) {
     var url = new URL(raw, location.href);
     if (url.origin === location.origin && !url.pathname.startsWith("/static/")) {
@@ -507,7 +520,7 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     var url = scoped(link.href);
     if (url.origin === location.origin) link.href = url.pathname + url.search + url.hash;
   });
-  picker.addEventListener("change", function () {
+  if (picker) picker.addEventListener("change", function () {
     document.cookie = "garden_project=" + encodeURIComponent(picker.value)
       + "; Path=/; SameSite=Lax" + (location.protocol === "https:" ? "; Secure" : "");
     var detail = /^\/(?:projects|phases|tasks|runs|investigations)\//.test(location.pathname);
