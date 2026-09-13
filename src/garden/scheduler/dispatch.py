@@ -17,7 +17,6 @@ from ..model import (
     Phase,
     Status,
     Task,
-    effective_owner,
     ensure_open,
     now_iso,
     parse_execution_requirements,
@@ -52,7 +51,7 @@ class DispatchMixin:
             raise ResourcePressureError(f"worker match invalid_requirements: {exc}") from None
         from ..hosts import MatchReason, match_worker
 
-        owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
+        owner, _source = self.effective_task_owner(task)
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
         source_envelope = source_snapshot.get("execution_envelope") or {}
         requirement_data = requirements.to_dict()
@@ -150,7 +149,7 @@ class DispatchMixin:
     def _fail_execution_continuation(self, task: Task, run: Run, mode: str,
                                      requirements: Any, source_run: Run, error: str) -> None:
         """Durably checkpoint a continuation rejected before worker launch."""
-        owner, owner_source = effective_owner(task, self.store.phase(task.product, task.phase))
+        owner, owner_source = self.effective_task_owner(task)
         requirement_data = requirements.to_dict()
         encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
         source_snapshot = source_run.env_snapshot or {}
@@ -179,7 +178,7 @@ class DispatchMixin:
                                    requirements: Any, match: Any,
                                    *, source_run: Run | None = None) -> None:
         """Persist the authorization contract used to admit one activity."""
-        owner, owner_source = effective_owner(task, self.store.phase(task.product, task.phase))
+        owner, owner_source = self.effective_task_owner(task)
         requirement_data = requirements.to_dict()
         encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
         source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
