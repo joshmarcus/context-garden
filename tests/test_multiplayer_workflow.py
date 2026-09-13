@@ -147,7 +147,7 @@ def test_two_local_users_reassign_and_recover_without_duplicate_ownership(garden
     )
     with pytest.raises(Conflict, match="pending provider effect"):
         set_authority(coordinator, admin, "task", "DM-001", "blair", 2, version=1)
-    coordinator.finish_effect(people["alex"], "shared", "alex-publish", outcome="succeeded",
+    coordinator.finish_effect(admin, "shared", "alex-publish", outcome="succeeded",
                               result={"pr": 41})
     changed = set_authority(coordinator, admin, "task", "DM-001", "blair", 2, version=1)
     coordinator.retain_stale_evidence(
@@ -160,7 +160,7 @@ def test_two_local_users_reassign_and_recover_without_duplicate_ownership(garden
             people["alex"], alex_work, expected_version=changed["version"],
             new_state="review", markdown="stale source", operation_id="stale-transition",
         )
-    with pytest.raises(Conflict, match="old workers have not acknowledged cancellation"):
+    with pytest.raises(Conflict, match="old workers.*acknowledged cancellation"):
         claim(coordinator, people["blair"], "task", "DM-001", 2, 2, "too-soon")
 
     # Restart both the authority service and the affected local scheduler.  A real

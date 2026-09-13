@@ -292,7 +292,9 @@ class Scheduler(
         row = next((value for value in snapshot.get("authority", [])
                     if value.get("kind") == "phase" and value.get("scope") == scope), None)
         if row is None or row.get("owner") != self.coordinator.member_id:
-            raise PermissionError(f"{scope} phase operation is not owned by the authenticated member")
+            raise PermissionError(
+                f"{scope} is not owned: no explicit active phase owner for this member"
+            )
         return row
 
     def require_phase_authority(
@@ -305,7 +307,7 @@ class Scheduler(
             product, phase_name = phase_or_product, phase
         if phase_name is None:
             raise TypeError("phase name is required")
-        if self.cfg.get("multiplayer.enabled", False) and hasattr(self, "principal"):
+        if self.coordinator is None and self.cfg.get("multiplayer.enabled", False):
             self.require_execution_authority()
             assert self.principal is not None
             self.members.require_phase_operation(
@@ -313,7 +315,10 @@ class Scheduler(
                 expected_generation=expected_generation,
             )
         if self.coordinator is not None:
-            self._phase_authority(product, phase_name)
+            row = self._phase_authority(product, phase_name)
+            if (expected_generation is not None
+                    and int(row.get("authority_generation", -1)) != expected_generation):
+                raise RuntimeError(f"stale phase owner generation for {product}/{phase_name}")
 
     @contextmanager
     def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
