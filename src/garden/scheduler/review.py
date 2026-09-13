@@ -708,6 +708,9 @@ class ReviewMixin:
         review_diff_hash = gitops.diff_hash(wt, review_base_head)
         changed = gitops.diff_names(wt, review_base_head)
         work_run = self._review_source_for_head(task, review_head, work_run)
+        execution_requirements, worker_match = self._execution_match(
+            task, "review", source_run=work_run, checkpoint_run=run
+        )
         source_run = work_run.run_id if work_run is not None else ""
         source_head = self._review_source_head(work_run) if work_run is not None else ""
         pr_title, pr_body, pr_comment, verified, pre_flight = task.title, "", "", None, None
@@ -881,11 +884,15 @@ class ReviewMixin:
         controller_evidence = bool(capture_paths or needs_interaction)
         runner_name = ("remote" if self.runner_for(task).name == "remote" and not controller_evidence
                        else "local")
+        self._require_capability_runner(execution_requirements, runner_name)
         runner = self.runner_for(task, runner_name, harness_name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         if run is None:
             run = (self.runs.new_run(task.id, "remote", mode="review")
                    if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
+        self._record_execution_envelope(
+            task, run, "review", execution_requirements, worker_match, source_run=work_run
+        )
         reference_files: dict[str, str] = {}
         text = review_brief(self.store, task, branch=branch, base=review_base_head,
                             pr_title=pr_title, pr_body=pr_body,

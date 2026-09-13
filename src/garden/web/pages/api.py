@@ -498,8 +498,10 @@ def register(app: FastAPI, site: Site) -> None:
                 deadline = execution_deadline(run)
                 if deadline is not None and now >= deadline:
                     continue
-                raw_requirements = (run.env_snapshot or {}).get("execution_requirements")
-                if raw_requirements:
+                snapshot = run.env_snapshot or {}
+                raw_requirements = snapshot.get("execution_requirements")
+                if (raw_requirements or snapshot.get("execution_owner")
+                        or snapshot.get("worker_instance")):
                     from ...hosts import MatchReason, match_worker
 
                     try:

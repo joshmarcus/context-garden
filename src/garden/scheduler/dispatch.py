@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,8 @@ MAX_SERIALIZED_PROMPT_BYTES = 1_000_000
 
 
 class DispatchMixin:
-    def _execution_match(self, task: Task, mode: str):
+    def _execution_match(self, task: Task, mode: str, *, source_run: Run | None = None,
+                         checkpoint_run: Run | None = None):
         """Use the shared worker matcher before creating a constrained execution run."""
         try:
             requirements = self.cfg.execution_requirements(
@@ -39,11 +41,61 @@ class DispatchMixin:
             }
             self.state.save()
             raise ResourcePressureError(f"worker match invalid_requirements: {exc}") from None
-        if requirements.empty:
-            return requirements, None
         from ..hosts import MatchReason, match_worker
 
         owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
+        source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
+        source_envelope = source_snapshot.get("execution_envelope") or {}
+        requirement_data = requirements.to_dict()
+        source_has_requirements = "execution_requirements" in source_snapshot
+        source_requirements = source_snapshot.get("execution_requirements")
+        requirements_changed = (
+            source_run is not None
+            and (
+                (source_has_requirements and source_requirements != requirement_data)
+                # Legacy activities have no trustworthy effective-requirements snapshot.
+                # They may continue unconstrained, but cannot authorize newly constrained
+                # work across an unknown execution boundary.
+                or (not source_has_requirements and not requirements.empty)
+            )
+        )
+        if requirements_changed:
+            run = checkpoint_run or next((
+                candidate for candidate in reversed(self.runs.runs_for(task.id))
+                if candidate.mode == mode
+                and candidate.status == "failed"
+                and candidate.env_snapshot.get("execution_requirements") == requirement_data
+                and (candidate.env_snapshot.get("execution_envelope") or {}).get(
+                    "source_run_id"
+                ) == source_run.run_id
+            ), None)
+            run = run or self.runs.new_run(task.id, source_run.runner or "remote", mode=mode)
+            self._fail_execution_continuation(
+                task, run, mode, requirements, source_run,
+                "execution requirements changed since the source activity; "
+                "continuation fenced before launch",
+            )
+            raise ResourcePressureError(
+                "execution requirements changed since the source activity; fenced recovery "
+                "requires a fresh author dispatch"
+            )
+        source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
+        if source_owner and source_owner != owner:
+            detail = (f"source activity belongs to operating user {source_owner!r}; "
+                      f"current owner is {owner!r}")
+            self.state.get(task.id)["worker_match"] = {
+                "reason": MatchReason.NO_COMPATIBLE_PROFILE.value, "detail": detail,
+            }
+            self.state.save()
+            raise ResourcePressureError(f"worker match {MatchReason.NO_COMPATIBLE_PROFILE.value}: {detail}")
+        pinned_instance = str(
+            source_envelope.get("worker_instance")
+            or source_snapshot.get("worker_instance")
+            or task.extra.get("worker_instance")
+            or ""
+        )
+        if requirements.empty and not pinned_instance:
+            return requirements, None
         busy = {run.host for run in self.runs.active() if run.host}
         routing = self.state.get("_worker_routing")
         selection_counts = dict(routing.get("selection_counts") or {})
@@ -53,7 +105,7 @@ class DispatchMixin:
             configurations=self.cfg.worker_configurations(), instances=self.cfg.worker_instances(),
             busy_instance_ids=busy,
             selection_counts=selection_counts,
-            pinned_instance_id=str(task.extra.get("worker_instance") or ""),
+            pinned_instance_id=pinned_instance,
             held=self.budget_exceeded(task),
         )
         state = self.state.get(task.id)
@@ -64,6 +116,91 @@ class DispatchMixin:
         if match.reason is not MatchReason.MATCHED:
             raise ResourcePressureError(f"worker match {match.reason.value}: {match.detail}")
         return requirements, match
+
+    @staticmethod
+    def _execution_activity(mode: str) -> str:
+        return "work" if mode in {"work", "revise", "resume", "rebase"} else mode
+
+    def _fail_execution_continuation(self, task: Task, run: Run, mode: str,
+                                     requirements: Any, source_run: Run, error: str) -> None:
+        """Durably checkpoint a continuation rejected before worker launch."""
+        owner, owner_source = effective_owner(task, self.store.phase(task.product, task.phase))
+        requirement_data = requirements.to_dict()
+        encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
+        source_snapshot = source_run.env_snapshot or {}
+        source_envelope = source_snapshot.get("execution_envelope") or {}
+        run.env_snapshot.update({
+            "execution_requirements": requirement_data,
+            "execution_owner": owner,
+            "execution_envelope": {
+                "version": "garden.execution-envelope/v1",
+                "activity": self._execution_activity(mode),
+                "project": task.product,
+                "owner": owner,
+                "owner_source": owner_source,
+                "requirements_sha256": hashlib.sha256(encoded).hexdigest(),
+                "source_run_id": source_run.run_id,
+                "worker_instance": str(source_envelope.get("worker_instance")
+                                       or source_snapshot.get("worker_instance") or ""),
+            },
+        })
+        run.status = "failed"
+        run.finished_at = now_iso()
+        run.error = error
+        run.save()
+
+    def _record_execution_envelope(self, task: Task, run: Run, mode: str,
+                                   requirements: Any, match: Any,
+                                   *, source_run: Run | None = None) -> None:
+        """Persist the authorization contract used to admit one activity."""
+        owner, owner_source = effective_owner(task, self.store.phase(task.product, task.phase))
+        requirement_data = requirements.to_dict()
+        encoded = json.dumps(requirement_data, sort_keys=True, separators=(",", ":")).encode()
+        source_snapshot = (source_run.env_snapshot or {}) if source_run is not None else {}
+        source_envelope = source_snapshot.get("execution_envelope") or {}
+        instance = match.instance if match is not None else None
+        source_owner = str(source_envelope.get("owner") or source_snapshot.get("execution_owner") or "")
+        source_instance = str(source_envelope.get("worker_instance")
+                              or source_snapshot.get("worker_instance") or "")
+        if ((source_owner and source_owner != owner)
+                or (source_instance and (instance is None or instance.instance_id != source_instance))):
+            run.status = "failed"
+            run.finished_at = now_iso()
+            run.error = "source execution identity changed; continuation fenced before launch"
+            run.save()
+            raise ResourcePressureError(
+                "source execution owner or worker instance changed; fenced recovery requires "
+                "the original authorized worker"
+            )
+        run.env_snapshot.update({
+            "execution_requirements": requirement_data,
+            "execution_owner": owner,
+            "execution_envelope": {
+                "version": "garden.execution-envelope/v1",
+                "activity": self._execution_activity(mode),
+                "project": task.product,
+                "owner": owner,
+                "owner_source": owner_source,
+                "requirements_sha256": hashlib.sha256(encoded).hexdigest(),
+                "source_run_id": source_run.run_id if source_run is not None else "",
+                "worker_instance": instance.instance_id if instance is not None else "",
+            },
+            "worker_instance": instance.instance_id if instance is not None else "",
+        })
+
+    def _execution_source_run(self, task: Task, current: Run | None = None) -> Run | None:
+        """Return the newest completed author activity that owns continuation policy."""
+        return next((candidate for candidate in reversed(self.runs.runs_for(task.id))
+                     if candidate is not current
+                     and candidate.mode in {"work", "revise", "resume"}
+                     and candidate.status == "done"), None)
+
+    @staticmethod
+    def _require_capability_runner(requirements: Any, runner_name: str) -> None:
+        if not requirements.empty and runner_name != "remote":
+            raise ResourcePressureError(
+                "constrained activities require an authenticated pull-worker claim"
+            )
 
     def _sweep_terminal_worktrees(self, rep: TickReport) -> None:
         """Reconcile terminal worktrees and their caches through the guarded storage sweep."""
@@ -600,7 +737,11 @@ class DispatchMixin:
                   pool_member: str = "") -> Run:
         self.require_maintenance_running()
         ensure_open(task)
-        execution_requirements, worker_match = self._execution_match(task, mode)
+        source_run = (self._execution_source_run(task)
+                      if mode in {"revise", "resume", "rebase"} else None)
+        execution_requirements, worker_match = self._execution_match(
+            task, mode, source_run=source_run, checkpoint_run=reserved_run
+        )
         # A read-only local diagnosis may explain work in a closed or frozen phase, but it
         # is still new phase-owned model work and therefore obeys sequential phase order.
         if mode == "investigation":
@@ -622,10 +763,7 @@ class DispatchMixin:
                 # harness to use its own default.  It is not a missing value to fall back from.
                 model_override = member["model"]
             pool_member = pool_member or str((member or {}).get("label") or "")
-        if not execution_requirements.empty and runner.name != "remote":
-            raise ResourcePressureError(
-                "constrained activities require an authenticated pull-worker claim"
-            )
+        self._require_capability_runner(execution_requirements, runner.name)
         self._raise_if_harness_paused(runner.harness.name if runner.harness else "")
         branch = branch_override or task.branch or task.default_branch()
         st = self.state.get(task.id)
@@ -940,13 +1078,10 @@ class DispatchMixin:
         run.env_snapshot["product"] = task.product
         run.env_snapshot["execution_timeout_minutes"] = self.cfg.product_timeout_minutes(task.product)
         run.env_snapshot.setdefault("resource_weight", self.cfg.product_resource_weight(task.product))
-        if not execution_requirements.empty:
-            owner, _source = effective_owner(task, self.store.phase(task.product, task.phase))
-            run.env_snapshot.update({
-                "execution_requirements": execution_requirements.to_dict(),
-                "execution_owner": owner,
-                "worker_instance": worker_match.instance.instance_id,
-            })
+        self._record_execution_envelope(
+            task, run, mode, execution_requirements, worker_match,
+            source_run=source_run,
+        )
         # The task can be edited while this run is in flight. Preserve exactly what this
         # worker was asked to meet, so review never silently moves its goalposts.
         run.env_snapshot["criteria"] = criteria_snapshot
