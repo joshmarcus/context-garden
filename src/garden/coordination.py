@@ -226,6 +226,45 @@ class Coordinator:
             self._record(db, principal, garden_id, operation_id, "set_authority", request, response)
             return response
 
+    def initialize_authority(self, principal: Principal, *, garden_id: str,
+                             rows: list[tuple[str, str, str]], operation_id: str,
+                             protocol_version: int = PROTOCOL_VERSION) -> None:
+        """Install migration authority atomically, only while coordination is quiescent."""
+        self._protocol(protocol_version)
+        self._garden(principal, garden_id)
+        if not authorize(principal, "administer"):
+            raise PermissionError("administrator role required")
+        request = {"rows": rows}
+        with self._transaction() as db:
+            if self._repeat(db, principal, garden_id, operation_id,
+                            "initialize_authority", request) is not None:
+                return
+            active = db.execute("SELECT 1 FROM claims WHERE garden=? LIMIT 1", (garden_id,)).fetchone()
+            pending = db.execute(
+                "SELECT 1 FROM outbox WHERE garden=? AND status!='done' LIMIT 1", (garden_id,)
+            ).fetchone()
+            effects = db.execute(
+                "SELECT 1 FROM effects WHERE garden=? AND status IN ('pending','unknown') LIMIT 1",
+                (garden_id,),
+            ).fetchone()
+            if active or pending or effects:
+                raise Conflict("claims and effects must be quiescent during migration")
+            for kind, scope, owner in rows:
+                if kind not in {"task", "phase"} or not scope:
+                    raise ValueError("authority requires a valid kind and scope")
+                existing = db.execute(
+                    "SELECT 1 FROM authority WHERE garden=? AND kind=? AND scope=?",
+                    (garden_id, kind, scope),
+                ).fetchone()
+                if existing:
+                    raise Conflict(f"authority already exists for {kind} {scope}")
+                db.execute(
+                    "INSERT INTO authority(garden,kind,scope,version,owner,authority_generation) "
+                    "VALUES(?,?,?,?,?,?)", (garden_id, kind, scope, 1, owner, 1),
+                )
+            self._record(db, principal, garden_id, operation_id,
+                         "initialize_authority", request, {"initialized": len(rows)})
+
     def claim(self, principal: Principal, *, garden_id: str, kind: Literal["task", "phase"],
               scope: str, expected_version: int, accepted_owner: str,
               authority_generation: int, operation_id: str, lease_seconds: int = 120,
