@@ -243,6 +243,27 @@ def test_collector_death_never_completes_run_and_reconnect_recovers_commits(sche
     reap_collector(run)
 
 
+def test_collect_exposes_only_exact_completion_identity(sched, tmp_path):
+    runner, run = start(sched, tmp_path)
+    wait_for(run.process_finished)
+    receipt_path = run.path / "ssh-completion.json"
+    receipt = json.loads(receipt_path.read_text())
+
+    publication = runner.collect(run)["ssh_publication"]
+    assert publication == {
+        "head": receipt["head"],
+        "identity_matches": True,
+        "branch_matches": True,
+        "run_matches": True,
+        "head_is_exact": True,
+    }
+
+    receipt["identity"] = "a different run"
+    receipt_path.write_text(json.dumps(receipt))
+    assert runner.collect(run)["ssh_publication"]["identity_matches"] is False
+    reap_collector(run)
+
+
 def test_disconnect_longer_than_former_recovery_window_reconnects_without_human(sched, tmp_path):
     """A cutoff that outlasts the old recovery window must never create a needs_human decision
     or require garden ssh-recover; the collector keeps retrying with growing backoff instead."""

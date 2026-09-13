@@ -11,10 +11,33 @@ from garden.github import Feedback, GitHubError, PRInfo
 from garden.model import Status, now_iso
 from garden.preflight import PREFLIGHT_ITEMS
 from garden.runner.manual import ManualRunner
+from garden.runner.ssh import SSHRunner
 from garden.scheduler import Scheduler, TickReport
 from garden.store import Store
 from tests.reference_context import agent_context
 from tests.scheduler.conftest import statuses
+
+
+class CompletedSSHRunner(SSHRunner):
+    """A deterministic SSH publication: launch performs the injected remote push."""
+
+    def __init__(self, publication, publish):
+        super().__init__({})
+        self.publication = publication
+        self.publish = publish
+
+    def assign(self, run, active):
+        pass
+
+    def start(self, run, worktree, brief_text):
+        self.publish()
+        (run.path / "exit_code").write_text("0")
+
+    def collect(self, run):
+        return {
+            "result": {"status": "done", "summary": "remote work completed"},
+            "ssh_publication": self.publication,
+        }
 
 
 def test_manual_reservation_is_retry_safe_and_suppresses_dispatch(sched):
@@ -1516,6 +1539,114 @@ def test_pushed_manual_completion_fetches_exact_head_and_enters_normal_review(sc
     assert sched.state.get(task.id)["head_sha"] == pushed_sha
     assert sched.store.task(task.id).status == Status.IN_REVIEW
     assert any(r.mode == "review" for r in sched.runs.runs_for(task.id))
+
+
+def _ssh_publication_clone(sched, tmp_path, branch):
+    clone = tmp_path / "ssh-publication-clone"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(clone)], check=True)
+    gitops.git("config", "user.email", "worker@example.com", cwd=clone)
+    gitops.git("config", "user.name", "Worker", cwd=clone)
+    gitops.git("checkout", "-q", "-b", branch, "origin/main", cwd=clone)
+    (clone / "remote.txt").write_text("completed remotely\n")
+    gitops.git("add", "remote.txt", cwd=clone)
+    gitops.git("commit", "-q", "-m", "remote result", cwd=clone)
+    return clone, gitops.git("rev-parse", "HEAD", cwd=clone).strip()
+
+
+def _exact_ssh_publication(head):
+    return {"head": head, "identity_matches": True, "branch_matches": True,
+            "run_matches": True, "head_is_exact": True}
+
+
+def test_lost_ssh_push_receipt_adopts_exact_branch_once_and_opens_pr(
+    sched, fake_github, tmp_path,
+):
+    task = sched.store.task("DM-001")
+    branch = task.default_branch()
+    clone, head = _ssh_publication_clone(sched, tmp_path, branch)
+
+    def publish():
+        gitops.git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=clone)
+
+    run = sched.dispatch(task, runner=CompletedSSHRunner(_exact_ssh_publication(head), publish),
+                         worktree=False)
+    sched.finalize(task, run, CompletedSSHRunner(_exact_ssh_publication(head), lambda: None),
+                   TickReport())
+
+    saved = sched.runs.latest(task.id)
+    assert saved.pushed_head == head
+    assert saved.env_snapshot["recovered_ref"] == f"refs/heads/{branch}"
+    assert saved.env_snapshot["recovered_head"] == head
+    assert sched.store.task(task.id).status == Status.IN_REVIEW
+    assert len(fake_github.created) == 1
+    assert len([event for event in sched.events.read() if event["kind"] == "remote_branch_recovered"]) == 1
+
+    sched.tick(dispatch=False)
+    assert len(fake_github.created) == 1
+    assert len([event for event in sched.events.read() if event["kind"] == "remote_branch_recovered"]) == 1
+
+    pr = fake_github.prs[branch]
+    pr.checks = "FAILURE"
+    pr.failed_checks = ["exact-head"]
+    report = sched.tick()
+    assert report.dispatched.count("DM-001(revise)") == 1
+    assert sched.state.get(task.id)["revisions"] == 1
+
+    sched.tick()
+    assert sched.state.get(task.id)["revisions"] == 1
+
+
+@pytest.mark.parametrize(
+    ("publication_update", "publish_mode", "error"),
+    [
+        ({"head": ""}, "none", "worker-reported commit is absent"),
+        ({"head_is_exact": False}, "exact", "unparseable or from a stale run identity"),
+        ({"identity_matches": False}, "exact", "unparseable or from a stale run identity"),
+        ({"branch_matches": False}, "exact", "unparseable or from a stale run identity"),
+        ({"run_matches": False}, "exact", "unparseable or from a stale run identity"),
+        ({}, "none", "without pushing the expected branch"),
+        ({}, "different", "does not match the head reported"),
+        ({}, "orphan", "violates the dispatch history fence"),
+        ({}, "conflict", "claimed by a conflicting pull request"),
+    ],
+)
+def test_lost_ssh_push_receipt_refuses_unsafe_remote_state(
+    sched, fake_github, tmp_path, publication_update, publish_mode, error,
+):
+    sched.cfg.data["max_attempts"] = 1
+    task = sched.store.task("DM-001")
+    branch = task.default_branch()
+    clone, head = _ssh_publication_clone(sched, tmp_path, branch)
+    publication = {**_exact_ssh_publication(head), **publication_update}
+
+    def publish():
+        if publish_mode == "none":
+            return
+        if publish_mode == "different":
+            (clone / "other.txt").write_text("different head\n")
+            gitops.git("add", "other.txt", cwd=clone)
+            gitops.git("commit", "-q", "-m", "different head", cwd=clone)
+        elif publish_mode == "orphan":
+            gitops.git("checkout", "-q", "--orphan", "unrelated", cwd=clone)
+            gitops.git("rm", "-q", "-rf", ".", cwd=clone)
+            (clone / "orphan.txt").write_text("unrelated\n")
+            gitops.git("add", "orphan.txt", cwd=clone)
+            gitops.git("commit", "-q", "-m", "unrelated head", cwd=clone)
+            publication["head"] = gitops.git("rev-parse", "HEAD", cwd=clone).strip()
+        gitops.git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=clone)
+        if publish_mode == "conflict":
+            fake_github.create_pr("test/demo", branch, "main", "existing", "")
+
+    runner = CompletedSSHRunner(publication, publish)
+    run = sched.dispatch(task, runner=runner, worktree=False)
+    report = TickReport()
+    sched.finalize(task, run, runner, report)
+
+    saved = sched.runs.latest(task.id)
+    assert saved.status == "failed"
+    assert error in saved.error
+    assert "remote_branch_recovered" not in saved.env_snapshot
+    assert sched.store.task(task.id).status == Status.FAILED
 
 
 def test_pushed_completion_waits_for_checkout_storage_then_resumes(
