@@ -1122,7 +1122,7 @@ def test_core_pages_do_not_access_the_product_checkout(garden, monkeypatch):
     assert status_page.status_code == inbox_page.status_code == 200
     # The base template stamps each response with the current time. Apart from that clock,
     # repeated task reads render the same stored content and no discovered design entries.
-    dynamic_utc = r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+\+00:00"
+    dynamic_utc = r"20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00"
     assert re.sub(dynamic_utc, "<now>", task_page.text) == re.sub(
         dynamic_utc, "<now>", repeated_task_page.text
     )
@@ -2032,7 +2032,9 @@ def test_inline_edit_clears_brief_gate(garden):
     task = Store(garden).task("DM-001")
     assert "## Acceptance criteria\n\n- [ ] The task page saves a repaired brief" in task.body
     assert task.reading == ["demo/p1/specs/spec.md"]
-    assert 'id="brief-card"' not in c.get("/tasks/DM-001").text
+    repaired_page = c.get("/tasks/DM-001").text
+    assert 'id="brief-card"' not in repaired_page
+    assert 'id="requirements-card"' in repaired_page
 
     c.post("/tasks/DM-001/approve")
     assert Store(garden).task("DM-001").status == Status.READY

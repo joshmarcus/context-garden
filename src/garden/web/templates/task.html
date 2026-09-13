@@ -52,7 +52,7 @@
 {% endif %}
 
 {% if task.status.value == 'draft' %}
-<div id="brief-card" class="panel" style="border-color:var(--bad);margin-bottom:14px">
+<div id="{{ 'brief-card' if brief_gaps else 'requirements-card' }}" class="panel" style="border-color:{{ 'var(--bad)' if brief_gaps else 'var(--line)' }};margin-bottom:14px">
   <div class="eyebrow" style="color:var(--bad)">{{ 'Fix the brief before approving' if brief_gaps else 'Edit draft requirements' }}</div>
   <p id="brief-card-status" style="margin:6px 0 10px">{% if brief_gaps %}{% for gap in brief_gaps %}{{ gap }}{% if not loop.last %}; {% endif %}{% endfor %}{% else %}Requirements are validated with inherited product and phase policy before they are saved.{% endif %}</p>
   <form id="brief-editor" method="post" action="/tasks/{{ task.id }}/brief" data-brief-editor>
