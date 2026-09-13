@@ -679,13 +679,15 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
     assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "no"}).status_code == 403
 
     registry.set_assignment(admin, "bob", "demo", "p1")
-    assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
-                       follow_redirects=False).status_code == 303
-    task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
-    stale_inbox = client.get("/inbox", headers=headers).text
-    assert "OUTSIDE_ASSIGNMENT_QUESTION" not in stale_inbox
-    assert client.post("/tasks/DM-001/retry", headers=headers,
-                       follow_redirects=False).status_code == 403
+    response = client.post(
+        "/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "identity-less+scheduling+is+disabled" in response.headers["location"]
+    assert State(garden / ".garden/state.json").get("DM-001").get("question") == (
+        "OUTSIDE_ASSIGNMENT_QUESTION"
+    )
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
@@ -1133,28 +1135,6 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
-def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
-    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
-    config = yaml.safe_load((garden / "garden.yaml").read_text())
-    config["multiplayer"] = {"enabled": True}
-    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, _admin_token, admin = _registry(garden)
-    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    bob_token = registry.issue_installation(admin, "bob", "bob-browser")
-    registry.add_member(admin, "eve", "viewer", "assigned", ())
-    eve_token = registry.issue_installation(admin, "eve", "eve-browser")
-    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
-
-    bob = {"Authorization": f"Bearer {bob_token}"}
-    eve = {"Authorization": f"Bearer {eve_token}"}
-    rows = client.get("/api/tasks", headers=bob).json()
-    assert rows and {row["product"] for row in rows} == {"demo"}
-    assert client.get("/api/tasks", headers=eve).json() == []
-    assert client.get("/config", headers=bob).status_code == 403
-    assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
 

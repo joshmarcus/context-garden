@@ -36,7 +36,7 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..members import MemberRegistry, Principal, current_principal
+from ..members import MemberRegistry, Principal
 from ..migration import standalone_fence
 from ..model import Phase, Status, Task, effective_owner, now_iso
 from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
@@ -396,7 +396,7 @@ class Scheduler(
         # that happened to construct a scheduler.  Request principals authorize HTTP
         # actions in OriginCheck; they must never select workers or phase authority.
         credential = os.environ.get("GARDEN_MEMBER_CREDENTIAL", "")
-        self.principal = principal or current_principal() or (
+        self.principal = principal or (
             self.coordinator.authenticate_local_session() if self.coordinator else None
         )
         if self.principal is None and credential:
