@@ -237,3 +237,25 @@ example-hosting = "example_garden_plugin:MANIFEST"
 Point it at the module-level `PluginManifest` the plugin defines. Keep that module cheap to
 import for when a later step does enable the plugin, and keep the manifest itself free of
 anything organization-specific: it is read by whoever installs the distribution.
+
+## Locking the enabled compatibility set
+
+An enabled plugin garden has a reviewed `garden.lock` beside `garden.yaml`. Run
+`garden plugins lock` after deliberately changing the core installation, enabled plugin
+configuration, or plugin installation. The command writes the file atomically and reports
+which plugin identities or digest fields changed. Startup, status, doctor, tick, and dispatch
+never rewrite it.
+
+The JSON document uses `garden.plugin-lock/v1` and stable key and plugin ordering. It records
+the exact core version and, for every enabled plugin, its name, distribution and version,
+plugin API version, an installed-file fingerprint, the digest of validated configuration,
+and the name/version/digest of every declared resource. Configuration values are never
+stored. The fingerprint hashes installed distribution file paths and bytes while excluding
+interpreter bytecode caches and installation-specific `RECORD` metadata.
+
+If the configured or installed set does not match, the scheduler enters a plugin compatibility
+hold before a tick or dispatch can perform external work. Diagnostics name missing or additional
+plugins and show expected and observed versions, fingerprints, or digests. `garden status` and
+`garden doctor` remain available and display the hold. Restoring the matching installation and
+lock clears it without changing task state. Gardens with no `plugins` setting do not require a
+lock and retain their existing behavior.

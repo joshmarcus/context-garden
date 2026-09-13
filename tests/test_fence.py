@@ -890,7 +890,7 @@ def test_fresh_scheduler_holds_a_worker_config_write_before_reap(sched, garden, 
 
 def test_fresh_scheduler_does_not_load_a_held_plugin_change(sched, garden, monkeypatch):
     """Startup restores the dispatch-time plugin selection before loading entry points."""
-    from garden.config import Config
+    from garden.plugins.loading import LoadedPlugins
     from garden.scheduler import Scheduler
     from garden.store import Store
 
@@ -908,18 +908,19 @@ def test_fresh_scheduler_does_not_load_a_held_plugin_change(sched, garden, monke
 
     loaded_from: list[object] = []
 
-    def load_plugins(config):
-        selected = config.get("plugins")
+    trusted_plugins = LoadedPlugins(())
+
+    def load_plugins(selected):
         loaded_from.append(selected)
         if selected:
             raise AssertionError("held plugin entry point was loaded")
-        return "trusted-plugin-registry"
+        return trusted_plugins
 
-    monkeypatch.setattr(Config, "load_plugins", load_plugins)
+    monkeypatch.setattr("garden.plugins.lock.load_configured_plugins", load_plugins)
     fresh = Scheduler(Store(garden))
 
     assert loaded_from == [None]
-    assert fresh.plugins == "trusted-plugin-registry"
+    assert fresh.plugins is trusted_plugins
     assert fresh.cfg.get("plugins") is None
     assert "plugins" in fresh.config_hold()["keys"]
 

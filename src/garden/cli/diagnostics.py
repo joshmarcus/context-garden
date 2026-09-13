@@ -427,6 +427,14 @@ def doctor():
         failures.append(name)
 
     console.print(f"root: {store.root}")
+    from ..plugins import inspect_lock
+
+    _, plugin_lock = inspect_lock(store.root, store.config.get("plugins"))
+    if plugin_lock.valid:
+        console.print("plugin lock: [green]matching[/green]")
+    else:
+        console.print(f"plugin lock: [red]{plugin_lock.hold_message}[/red]")
+        fail("plugin lock")
     self_products = [n for n in (store.config.data.get("products", {}) or {}) if store.config.product_self(n)]
     wd = store.config.work_dir
     inside = wd == store.config.garden_dir or store.root in wd.parents

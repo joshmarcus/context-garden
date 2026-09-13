@@ -762,6 +762,8 @@ class DispatchMixin:
                 expected_generation=assignment_generation,
             )
         self._task_authority(task)
+        if not self.plugin_lock.valid:
+            raise RuntimeError(self.plugin_lock.hold_message)
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         # Keep the run created by the inner method visible so every exception after
@@ -965,6 +967,7 @@ class DispatchMixin:
         run.base = self.base_for(task)
         run.completion_mode = completion_mode
         run.env_snapshot["product"] = task.product
+        run.plugin_identity = self.plugin_lock.identity
         if worktree and not runner.remote:
             run.worktree = str(worktree_override or self.worktree_for(task))
         elif worktree_override is not None:
