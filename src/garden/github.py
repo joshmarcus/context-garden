@@ -54,6 +54,23 @@ FINDING_MARKER_RE = re.compile(r"\[P\d+\]")
 GitHubError = SourceControlError
 
 
+def _head_repo_slug(head_repository: dict[str, Any] | None, head_repository_owner: dict[str, Any] | None) -> str:
+    """Return the head repository's ``owner/name``, reconstructing it if needed.
+
+    Some enterprise GraphQL responses return an empty ``headRepository.nameWithOwner``
+    while still supplying the repository name and owner login as separate fields.
+    Reconstruct the slug only from those two explicit, non-empty fields in the same
+    response; never fall back to any other signal (URL, task config, branch name).
+    """
+    repo = head_repository or {}
+    name_with_owner = str(repo.get("nameWithOwner") or "")
+    if name_with_owner:
+        return name_with_owner
+    name = str(repo.get("name") or "")
+    owner = str((head_repository_owner or {}).get("login") or "")
+    return f"{owner}/{name}" if name and owner else ""
+
+
 @dataclass
 class PRInfo:
     number: int
@@ -756,7 +773,9 @@ class GitHub:
         if self.gh:
             out = self._gh(
                 "pr", "view", str(number), "-R", self._repo(slug),
-                "--json", "number,url,state,title,body,author,headRefName,headRefOid,headRepository,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,statusCheckRollup,isDraft,id",
+                "--json", "number,url,state,title,body,author,headRefName,headRefOid,headRepository,"
+                "headRepositoryOwner,baseRefName,reviewDecision,mergeable,mergeCommit,updatedAt,"
+                "statusCheckRollup,isDraft,id",
             )
             p = json.loads(out)
             checks, failed_checks = self._checks_for_sha(slug, p.get("headRefOid") or "")
@@ -767,7 +786,7 @@ class GitHub:
                 checks=checks, failed_checks=failed_checks, updated_at=p.get("updatedAt", ""),
                 body=p.get("body") or "", head_sha=p.get("headRefOid") or "",
                 merge_commit_sha=(p.get("mergeCommit") or {}).get("oid", ""),
-                head_repo=str((p.get("headRepository") or {}).get("nameWithOwner") or ""),
+                head_repo=_head_repo_slug(p.get("headRepository"), p.get("headRepositoryOwner")),
                 is_draft=bool(p.get("isDraft")), node_id=str(p.get("id") or ""),
                 author=str((p.get("author") or {}).get("login") or ""),
             )

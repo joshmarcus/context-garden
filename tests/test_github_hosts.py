@@ -485,6 +485,78 @@ def test_gh_pr_fails_closed_when_a_later_status_page_cannot_be_read(monkeypatch)
     assert github._checks_for_sha("team/repo", "head-7") == ("UNAVAILABLE", [])
 
 
+def _gh_pr_view(monkeypatch, payload):
+    """Wire a `GitHub` with `use_gh=True` to return *payload* for `gh pr view`."""
+    github = GitHub(use_gh=True)
+    github.gh = "gh"
+    monkeypatch.setattr(github, "_gh", lambda *_a, **_kw: json.dumps(payload))
+    monkeypatch.setattr(github, "_checks_for_sha", lambda *_a: ("", []))
+    return github
+
+
+def test_gh_pr_uses_nameWithOwner_when_populated(monkeypatch):
+    """The ordinary provider shape is used as-is; reconstruction never overrides it."""
+    github = _gh_pr_view(monkeypatch, {
+        "number": 7, "url": "https://github.com/team/repo/pull/7", "state": "OPEN",
+        "headRefName": "operator/work", "headRefOid": "head-7", "baseRefName": "main",
+        "headRepository": {"name": "other-repo", "nameWithOwner": "team/repo"},
+        "headRepositoryOwner": {"login": "someone-else"},
+    })
+
+    assert github.get_pr("team/repo", 7).head_repo == "team/repo"
+
+
+def test_gh_pr_reconstructs_head_repo_when_nameWithOwner_is_empty(monkeypatch):
+    """An enterprise response with an empty `nameWithOwner` still yields a same-repo head
+    when the repository name and owner login are both present in the response."""
+    github = _gh_pr_view(monkeypatch, {
+        "number": 7, "url": "https://forge-one.test/team/repo/pull/7", "state": "OPEN",
+        "headRefName": "operator/work", "headRefOid": "head-7", "baseRefName": "main",
+        "headRepository": {"name": "repo", "nameWithOwner": ""},
+        "headRepositoryOwner": {"login": "team"},
+    })
+
+    pr = github.get_pr("team/repo", 7)
+    assert pr.head_repo == "team/repo"
+    assert pr.head == "operator/work" and pr.head_sha == "head-7"
+
+
+def test_gh_pr_reconstructs_a_fork_head_that_still_differs_from_the_configured_repo(monkeypatch):
+    """The reconstructed shape identifies a fork head just as clearly as `nameWithOwner`
+    would, so the caller's same-repository comparison still rejects it."""
+    github = _gh_pr_view(monkeypatch, {
+        "number": 7, "url": "https://forge-one.test/team/repo/pull/7", "state": "OPEN",
+        "headRefName": "contributor-fix", "headRefOid": "head-7", "baseRefName": "main",
+        "headRepository": {"name": "repo", "nameWithOwner": ""},
+        "headRepositoryOwner": {"login": "someone-elses-fork"},
+    })
+
+    assert github.get_pr("team/repo", 7).head_repo == "someone-elses-fork/repo"
+
+
+@pytest.mark.parametrize("head_repository, head_repository_owner", [
+    ({"name": "repo"}, {}),
+    ({}, {"login": "team"}),
+    ({"name": ""}, {"login": "team"}),
+    ({"name": "repo"}, {"login": ""}),
+    (None, {"login": "team"}),
+    ({"name": "repo"}, None),
+])
+def test_gh_pr_leaves_head_repo_empty_when_reconstruction_fields_are_missing(
+    monkeypatch, head_repository, head_repository_owner,
+):
+    """Partial or malformed provider metadata must fail closed, never guessing a repository
+    from anything outside this same response."""
+    github = _gh_pr_view(monkeypatch, {
+        "number": 7, "url": "https://forge-one.test/team/repo/pull/7", "state": "OPEN",
+        "headRefName": "operator/work", "headRefOid": "head-7", "baseRefName": "main",
+        "headRepository": head_repository,
+        "headRepositoryOwner": head_repository_owner,
+    })
+
+    assert github.get_pr("team/repo", 7).head_repo == ""
+
+
 @pytest.mark.parametrize("status, expected", [(403, "PERMISSION"), (503, "UNAVAILABLE")])
 def test_rest_pr_preserves_check_rollup_fetch_errors(monkeypatch, status, expected):
     github = GitHub(use_gh=False, token="scoped-token")
