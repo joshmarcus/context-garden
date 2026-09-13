@@ -10,6 +10,8 @@ beside the code.
   relationships, lifecycles, authority boundaries, and representation-evolution rules.
 - [Implementation architecture](../docs/architecture.md) records current source boundaries.
 - [Worker protocol](../docs/worker-protocol.md) defines dispatch, evidence, and recovery.
+- [True multiplayer gardens](multiplayer.md) defines shared authority, local execution,
+  handoff recovery, phase ownership, and the public projection boundary.
 - [Specification audit](audit-2026-09-10.md) inventories both repositories, with status,
   ownership, and audited source revisions.
 
