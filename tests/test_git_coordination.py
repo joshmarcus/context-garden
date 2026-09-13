@@ -494,6 +494,182 @@ def test_admitted_records_keep_identity_and_recovery_evidence(clones):
         )
 
 
+@pytest.mark.parametrize(
+    ("kind", "scope", "outcome", "atomic"),
+    [
+        ("task", "CG-1", "pending", False),
+        ("task", "CG-1", "unknown", True),
+        ("phase", "demo/p1", "pending", True),
+        ("phase", "demo/p1", "unknown", False),
+    ],
+)
+def test_claim_identity_cannot_be_replaced_to_orphan_unresolved_work(
+    clones, kind, scope, outcome, atomic
+):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    key = f"{kind}:{scope}"
+    if kind == "phase":
+        store.transact(
+            "seed-phase",
+            {"actor": "alice", "installation": "one"},
+            lambda state: (
+                state["entities"].update({key: {
+                    "kind": kind, "scope": scope, "owner": "alice",
+                    "authority_generation": 1, "version": 0,
+                }}),
+                {},
+            )[-1],
+        )
+    claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind=kind, scope=scope, owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    effect_key = f"run:{kind}:{outcome}:{atomic}"
+    changes = {"permits": {effect_key: {"claim": claim["operation_id"]}}}
+    if outcome == "unknown":
+        changes["effects"] = {effect_key: {
+            "claim": claim["operation_id"], "provider": "scheduler",
+            "scope": key, "effect_key": effect_key, "outcome": "unknown",
+        }}
+    store.apply(
+        f"admit:{effect_key}", actor="alice", installation="one",
+        expected_versions={}, changes=changes,
+    )
+    replacement = {**claim, "operation_id": f"replacement:{kind}"}
+    replacement_changes = {"claims": {key: replacement}}
+    if atomic:
+        replacement_changes["entities"] = {
+            key: {"owner": "bob", "authority_generation": 2}
+        }
+    with pytest.raises(GitCoordinationError, match="claim operation_id is immutable"):
+        store.apply(
+            f"replace:{effect_key}", actor="alice", installation="one",
+            expected_versions={key: 0}, changes=replacement_changes,
+        )
+
+    with pytest.raises(GitCoordinationError, match="unresolved permits or effects"):
+        store.apply(
+            f"release:{effect_key}", actor="alice", installation="one",
+            expected_versions={key: 0}, changes={"claims": {key: None}},
+        )
+    state = store.read()[1]
+    assert state["claims"][key]["operation_id"] == claim["operation_id"]
+    assert state["entities"][key]["owner"] == "alice"
+
+
+def test_claim_identity_requires_complete_authenticated_values(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    valid = {
+        "kind": "task", "scope": "CG-1", "owner_id": "alice",
+        "authority_generation": 1, "operation_id": "claim-original",
+    }
+    for index, patch in enumerate((
+        {"operation_id": ""},
+        {"actor": "bob"},
+        {"installation": "two"},
+    )):
+        with pytest.raises((GitCoordinationError, PermissionError)):
+            store.apply(
+                f"invalid-claim-{index}", actor="alice", installation="one",
+                expected_versions={"task:CG-1": 0},
+                changes={"claims": {"task:CG-1": {**valid, **patch}}},
+            )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("operation_id", "claim-replacement"),
+        ("kind", "phase"),
+        ("scope", "other/p1"),
+        ("owner_id", "bob"),
+        ("authority_generation", 2),
+        ("actor", "bob"),
+        ("installation", "two"),
+    ],
+)
+def test_every_admitted_claim_identity_field_is_immutable(clones, field, value):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    _, state = store.read()
+    admitted = state["claims"]["task:CG-1"]
+    with pytest.raises((GitCoordinationError, PermissionError)):
+        store.apply(
+            f"replace-claim-{field}", actor="alice", installation="one",
+            expected_versions={"task:CG-1": 0},
+            changes={"claims": {"task:CG-1": {**admitted, field: value}}},
+        )
+    assert store.read()[1]["claims"]["task:CG-1"]["operation_id"] == claim["operation_id"]
+
+
+def test_unrecognized_effect_outcome_does_not_release_claim(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    with pytest.raises(GitCoordinationError, match="unrecognized effect outcome"):
+        store.apply(
+            "invalid-terminal", actor="alice", installation="one", expected_versions={},
+            changes={"effects": {"run:invalid": {
+                "claim": claim["operation_id"], "provider": "scheduler",
+                "scope": "task:CG-1", "effect_key": "run:invalid", "outcome": "banana",
+            }}},
+        )
+
+
+@pytest.mark.parametrize(("kind", "scope"), [("task", "CG-1"), ("phase", "demo/p1")])
+def test_terminal_obligation_allows_claim_release_and_handoff(clones, kind, scope):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    key = f"{kind}:{scope}"
+    if kind == "phase":
+        store.transact(
+            "seed-terminal-phase",
+            {"actor": "alice", "installation": "one"},
+            lambda state: (
+                state["entities"].update({key: {
+                    "kind": kind, "scope": scope, "owner": "alice",
+                    "authority_generation": 1, "version": 0,
+                }}),
+                {},
+            )[-1],
+        )
+    claim = GitMultiplayerClient(store, "alice", "one").claim(
+        kind=kind, scope=scope, owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    effect_key = f"run:terminal:{kind}"
+    store.apply(
+        f"terminal:{kind}", actor="alice", installation="one", expected_versions={},
+        changes={
+            "permits": {effect_key: {"claim": claim["operation_id"]}},
+            "effects": {effect_key: {
+                "claim": claim["operation_id"], "provider": "scheduler", "scope": key,
+                "effect_key": effect_key, "outcome": "succeeded",
+            }},
+        },
+    )
+    store.apply(
+        f"handoff-terminal:{kind}", actor="alice", installation="one",
+        expected_versions={key: 0},
+        changes={
+            "claims": {key: None},
+            "entities": {key: {"owner": "bob", "authority_generation": 2}},
+        },
+    )
+    state = store.read()[1]
+    assert key not in state["claims"]
+    assert state["entities"][key]["owner"] == "bob"
+
+
 @pytest.mark.parametrize("enabled", ["false", 1, []])
 def test_multiplayer_enabled_is_strict_boolean(tmp_path: Path, enabled):
     (tmp_path / "garden.yaml").write_text(f"multiplayer:\n  enabled: {enabled!r}\n")

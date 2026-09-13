@@ -15,6 +15,16 @@ from typing import Any
 
 PROTOCOL = "context-garden/git-coordination"
 VERSION = 1
+CLAIM_IDENTITY_FIELDS = (
+    "operation_id",
+    "kind",
+    "scope",
+    "owner_id",
+    "authority_generation",
+    "actor",
+    "installation",
+)
+EFFECT_OUTCOMES = {"pending", "unknown", "succeeded", "failed"}
 
 
 class GitCoordinationError(RuntimeError):
@@ -356,6 +366,20 @@ class GitStateStore:
                         row.setdefault("actor", actor)
                         row.setdefault("installation", installation)
                         if table == "claims":
+                            if row.get("actor") != actor or row.get("installation") != installation:
+                                raise PermissionError(
+                                    "claim identity must match the authenticated installation"
+                                )
+                            if not row.get("operation_id"):
+                                raise GitCoordinationError(
+                                    "claim operation_id must be non-empty"
+                                )
+                            if current:
+                                for field in CLAIM_IDENTITY_FIELDS:
+                                    if row.get(field) != current.get(field):
+                                        raise GitContention(
+                                            f"claim {field} is immutable after admission"
+                                        )
                             entity = state["entities"].get(key)
                             if not entity:
                                 raise GitCoordinationError(f"claim has no authoritative entity: {key}")
@@ -393,6 +417,8 @@ class GitStateStore:
                                         f"effect {field} is immutable after admission"
                                     )
                             row = {**current, **row}
+                        if table == "effects" and row.get("outcome", "pending") not in EFFECT_OUTCOMES:
+                            raise GitCoordinationError("unrecognized effect outcome")
                         if current and (current.get("actor"), current.get("installation")) != (
                             actor,
                             installation,
