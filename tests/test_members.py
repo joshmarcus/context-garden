@@ -350,6 +350,8 @@ updated: '2026-01-01T00:00:00+00:00'
     overview = client.get("/api/tasks?project=__all__", headers=headers).json()
     assert {row["product"] for row in overview} == {"demo", "private"}
     assert client.get("/board?project=missing", headers=headers).status_code == 403
+    assert client.get("/board?project=", headers=headers).status_code == 403
+    assert client.get("/api/tasks?project=", headers=headers).status_code == 403
 
     state = json.loads(registry.path.read_text())
     state["members"]["bob"]["projects"] = ["demo"]
