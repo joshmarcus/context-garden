@@ -126,3 +126,35 @@ def test_phase_authority_is_distinct_from_task_and_admin_visibility():
     assert sched.phase_is_authorized("demo", "p2")
     with pytest.raises(PermissionError, match="not owned"):
         sched.require_phase_authority("demo", "p1")
+
+
+def test_two_installations_and_mixed_owners_cannot_exchange_lifecycle_effects():
+    value = snapshot()
+    value["authority"].append({
+        "kind": "phase", "scope": "demo/p2", "owner": "alice", "version": 3,
+        "authority_generation": 6,
+    })
+    alice_laptop = scheduler(value)
+    alice_desktop = scheduler(value)
+    alice_desktop.coordinator.installation_id = "alice-desktop"
+    bob = scheduler(value, "bob")
+    bob.store.phase = lambda _product, _phase: SimpleNamespace(default_owner="bob")
+
+    lifecycle = ("dispatch", "result", "revision", "ci", "merge")
+    for stage in lifecycle:
+        with alice_laptop.task_effect(task("A-1"), f"{stage}:A-1"):
+            pass
+        with alice_desktop.task_effect(task("A-1"), f"{stage}:A-1:retry"):
+            pass
+        with pytest.raises(PermissionError):
+            bob.task_effect(task("A-1"), f"{stage}:A-1").__enter__()
+
+    with alice_laptop.phase_effect("demo", "p2", "retro-queue:demo/p2:source"):
+        pass
+    with pytest.raises(PermissionError):
+        bob.phase_effect("demo", "p2", "retro-queue:demo/p2:source").__enter__()
+
+    assert [effect["effect_key"] for effect in alice_laptop.coordinator.effects] == [
+        *(f"{stage}:A-1" for stage in lifecycle),
+        "retro-queue:demo/p2:source",
+    ]
