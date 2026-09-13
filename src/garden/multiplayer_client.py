@@ -17,6 +17,7 @@ import httpx
 
 from .config import Config
 from .coordination import PROTOCOL_VERSION
+from .members import ROLES, VISIBILITIES, Principal
 
 
 class MultiplayerUnavailable(RuntimeError):
@@ -184,6 +185,22 @@ class MultiplayerClient:
             raise MultiplayerUnavailable(
                 f"authoritative coordinator unavailable: {_connection_diagnostic(exc)}"
             ) from exc
+
+    def authenticate_local_session(self) -> Principal | None:
+        """Resolve this checkout's browser principal from fresh coordinator authority."""
+        try:
+            snapshot = self.refresh(allow_stale=False).snapshot
+            role = snapshot.get("role")
+            visibility = snapshot.get("project_visibility")
+            projects = snapshot.get("projects", [])
+            if role not in ROLES or visibility not in VISIBILITIES or not isinstance(projects, list):
+                return None
+            return Principal(
+                self.garden_id, self.member_id, self.installation_id, role, visibility,
+                frozenset(str(project) for project in projects),
+            )
+        except (MultiplayerUnavailable, TypeError, ValueError):
+            return None
 
     def command(self, path: str, body: dict[str, Any], *, kind: str, scope: str,
                 expected_version: int) -> dict[str, Any]:

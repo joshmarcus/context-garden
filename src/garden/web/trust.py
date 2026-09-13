@@ -230,6 +230,7 @@ class OriginCheck:
                  worker_authenticator: Callable[[str], Any | None] | None = None, operator_token: str = "",
                  require_operator_auth: bool = False,
                  member_authenticator: Callable[[str], Any | None] | None = None,
+                 local_session_authenticator: Callable[[], Any | None] | None = None,
                  member_authorizer: Callable[[Any, str, str], bool] | None = None,
                  viewer_only: bool = False):
         self.app = app
@@ -239,6 +240,7 @@ class OriginCheck:
         self.operator_token = operator_token
         self.require_operator_auth = require_operator_auth
         self.member_authenticator = member_authenticator
+        self.local_session_authenticator = local_session_authenticator
         self.member_authorizer = member_authorizer
         self.viewer_only = viewer_only
 
@@ -283,6 +285,8 @@ class OriginCheck:
                 )(scope, receive, send)
                 return
             principal = self.member_authenticator(supplied) if supplied and self.member_authenticator else None
+            if principal is None and not supplied and self.local_session_authenticator:
+                principal = self.local_session_authenticator()
             if worker_identity is not None:
                 scope.setdefault("state", {})["worker_identity"] = worker_identity
             if principal is not None:

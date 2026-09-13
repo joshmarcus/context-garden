@@ -321,7 +321,8 @@ class Coordinator:
                 "WHERE garden=? ORDER BY kind,scope", (garden_id,))]
         return {"protocol_version": PROTOCOL_VERSION, "garden_id": garden_id,
                 "member_id": principal.member_id, "installation_id": principal.installation_id,
-                "role": principal.role,
+                "role": principal.role, "project_visibility": principal.project_visibility,
+                "projects": sorted(principal.projects),
                 "authority": authority, "active_claims": claims, "projections": projections,
                 "pending_outbox": pending, "blocking_effects": effects,
                 "handoffs": handoffs, "cancellation_requests": cancellations,
