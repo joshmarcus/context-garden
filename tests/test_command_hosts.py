@@ -34,6 +34,7 @@ class Wrapper:
         self.stop_state = "stopped"
         self.release_error = False
         self.acquire_response = DEFAULT_ACQUIRE
+        self.before_action = {}
         self.inspect_response = DEFAULT_INSPECT
         self.admissions = {}
         self.admission = {
@@ -49,6 +50,9 @@ class Wrapper:
         action = argv[-1]
         request = json.loads(stdin)
         self.calls.append((tuple(argv), request, timeout_seconds))
+        callback = self.before_action.pop(action, None)
+        if callback is not None:
+            callback()
         if action == "inspect":
             value = (
                 self.hosts
@@ -1049,3 +1053,222 @@ def test_expired_controller_reservation_does_not_reuse_live_host_capacity(tmp_pa
     clock[0] += 11
     with pytest.raises(EnvironmentStop, match="heavy-check capacity is full"):
         lifecycle.acquire_ready(now=lambda: clock[0], **kwargs)
+
+
+def _record_unrelated_lease(store, provider_id):
+    with store.locked():
+        data = store.read()
+        leases = data.setdefault("leases", {})
+        leases[provider_id] = {"run_id": "other-run", "released": False}
+        store.write(data)
+
+
+def test_renew_admission_preserves_concurrent_state_update(tmp_path):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    wrapper.before_action["renew-admission"] = lambda: _record_unrelated_lease(
+        store, "unrelated-provider"
+    )
+
+    lifecycle.renew_admission(command_pool(), host.provider_id)
+
+    assert store.read()["leases"]["unrelated-provider"]["run_id"] == "other-run"
+
+
+def test_release_preserves_concurrent_state_update(tmp_path):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    wrapper.before_action["release-admission"] = lambda: _record_unrelated_lease(
+        store, "unrelated-provider"
+    )
+
+    lifecycle.release(command_pool(), host.provider_id)
+
+    data = store.read()
+    assert data["leases"]["unrelated-provider"]["run_id"] == "other-run"
+    assert data["leases"][host.provider_id]["released"] is True
+
+@pytest.mark.parametrize("operation", ["cancel", "activate"])
+def test_admission_operations_preserve_other_controller_updates(tmp_path, operation):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    action = "release-admission" if operation == "cancel" else "activate-admission"
+    wrapper.before_action[action] = lambda: _record_unrelated_lease(
+        JsonStateStore(store.path), "unrelated-provider"
+    )
+
+    if operation == "cancel":
+        lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+    else:
+        lifecycle.activate_admission(command_pool(), host.provider_id)
+
+    assert store.read()["leases"]["unrelated-provider"]["run_id"] == "other-run"
+
+
+@pytest.mark.parametrize("operation", ["cancel", "release"])
+@pytest.mark.parametrize("update", ["attach_run", "activate"])
+def test_retirement_preserves_concurrent_same_lease_update(tmp_path, update, operation):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    lease_id = store.read()["leases"][host.provider_id]["admission"]["lease_id"]
+
+    def update_lease():
+        other = HostLifecycle(
+            {"command": CommandProvider(wrapper)}, JsonStateStore(store.path)
+        )
+        if update == "attach_run":
+            other.attach_run(host.provider_id, "concurrent-run")
+        else:
+            with other.state.locked():
+                data = other.state.read()
+                data["leases"][host.provider_id]["activated_at"] = 123.0
+                other.state.write(data)
+
+    wrapper.before_action["release-admission"] = update_lease
+
+    with pytest.raises(EnvironmentStop, match="changed during"):
+        if operation == "cancel":
+            lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+        else:
+            lifecycle.release(command_pool(), host.provider_id)
+
+    current = store.read()["leases"][host.provider_id]
+    assert current["admission"]["lease_id"] == lease_id
+    assert current["released"] is False
+    if update == "attach_run":
+        assert current["run_id"] == "concurrent-run"
+    else:
+        assert current["activated_at"] == 123.0
+
+
+@pytest.mark.parametrize("operation", ["renew", "activate", "cancel", "release"])
+def test_admission_completion_preserves_a_replaced_lease(tmp_path, operation):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+
+    def replace_lease():
+        other = JsonStateStore(store.path)
+        with other.locked():
+            data = other.read()
+            data["leases"][host.provider_id]["admission"]["lease_id"] = "replacement"
+            data["leases"][host.provider_id]["run_id"] = "new-run"
+            other.write(data)
+
+    action = {
+        "renew": "renew-admission", "activate": "activate-admission",
+        "cancel": "release-admission", "release": "release-admission",
+    }[operation]
+    wrapper.before_action[action] = replace_lease
+
+    with pytest.raises(EnvironmentStop, match="recorded lease"):
+        if operation == "renew":
+            lifecycle.renew_admission(command_pool(), host.provider_id)
+        elif operation == "activate":
+            lifecycle.activate_admission(command_pool(), host.provider_id)
+        elif operation == "cancel":
+            lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+        else:
+            lifecycle.release(command_pool(), host.provider_id)
+
+    current = store.read()["leases"][host.provider_id]
+    assert current["admission"]["lease_id"] == "replacement"
+    assert current["run_id"] == "new-run"
+    assert current["released"] is False
+
+
+@pytest.mark.parametrize("operation", ["renew", "activate"])
+def test_failed_provider_call_records_stop_without_losing_concurrent_state(tmp_path, operation):
+    from garden.hosts.provider import ProviderError
+
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+
+    def fail_after_other_update():
+        _record_unrelated_lease(JsonStateStore(store.path), "unrelated-provider")
+        raise ProviderError("provider unavailable")
+
+    wrapper.before_action[operation + "-admission"] = fail_after_other_update
+    with pytest.raises(EnvironmentStop, match="provider unavailable"):
+        if operation == "renew":
+            lifecycle.renew_admission(command_pool(), host.provider_id)
+        else:
+            lifecycle.activate_admission(command_pool(), host.provider_id)
+
+    current = store.read()
+    assert current["leases"]["unrelated-provider"]["run_id"] == "other-run"
+    assert "provider unavailable" in current["environment_stops"]["workers"]["detail"]
+
+
+@pytest.mark.parametrize("operation", ["renew", "activate"])
+def test_admission_completion_rejects_changed_requirements(tmp_path, operation):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+
+    def change_requirements():
+        other = JsonStateStore(store.path)
+        with other.locked():
+            data = other.read()
+            data["leases"][host.provider_id]["requirements"]["memory_bytes"] = 999999999999
+            other.write(data)
+
+    wrapper.before_action[operation + "-admission"] = change_requirements
+    with pytest.raises(EnvironmentStop, match="requirements changed"):
+        getattr(lifecycle, operation + "_admission")(command_pool(), host.provider_id)
+    current = store.read()["leases"][host.provider_id]
+    assert current["requirements"]["memory_bytes"] == 999999999999
+    assert "activated_at" not in current
+
+
+def test_release_without_recorded_lease_preserves_other_controller_state(tmp_path):
+    wrapper = Wrapper()
+    store = JsonStateStore(tmp_path / "hosts.json")
+    lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
+    host = lifecycle.acquire_ready(
+        command_pool(), workspace="/work", revision="abc", harness="codex",
+        process_terminal=lambda _: True, requirements=_requirements(),
+    )
+    with store.locked():
+        data = store.read()
+        data["leases"].pop(host.provider_id)
+        store.write(data)
+    wrapper.before_action["inspect"] = lambda: _record_unrelated_lease(
+        JsonStateStore(store.path), "unrelated-provider"
+    )
+    result = lifecycle.release(command_pool(), "provider-1")
+    assert result.state.value == "stopped"
+    assert store.read()["leases"]["unrelated-provider"]["run_id"] == "other-run"
