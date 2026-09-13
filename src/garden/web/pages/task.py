@@ -198,6 +198,7 @@ def register(app: FastAPI, site: Site) -> None:
             trial_view=trial_view,
             owner=sched.effective_task_owner(t)[0],
             owner_source=sched.effective_task_owner(t)[1],
+            authority=site.authority_context(request, s, task=t),
             return_to=_return_to(request, task_id),
             completion=completion,
             review_history=review_history,

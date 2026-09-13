@@ -206,6 +206,9 @@ def create_app(
         current_store = hub.fresh()
         task_id = ""
         parts = path.split("/")
+        if ((path.startswith("/tasks/") and path.endswith("/owner"))
+                or (path.startswith("/phases/") and path.endswith("/owner"))):
+            return authorize(principal, "administer")
         if len(parts) > 4 and parts[1] == "phases":
             return registry.authorize_phase_operation(principal, parts[2], parts[3])
         if len(parts) > 4 and parts[1] == "phases":

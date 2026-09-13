@@ -678,6 +678,7 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
 
     alice_mine = client.get("/inbox", headers=alice_headers).text
     bob_mine = client.get("/inbox", headers=bob_headers).text
+    assert "My work" in alice_mine and "logical owner id" not in alice_mine
     assert "ALICE_PRIVATE_QUESTION" in alice_mine and "BOB_PRIVATE_QUESTION" not in alice_mine
     assert "PHASE_OWNER_QUESTION" in alice_mine
     assert "ADMINISTRATION_QUESTION" not in alice_mine
@@ -686,6 +687,8 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
 
     team = client.get("/inbox?view=team", headers=bob_headers).text
     assert "ALICE_PRIVATE_QUESTION" in team and "Addressed to alice · read-only" in team
+    assert '<label class="muted" for="owner-filter">Person</label>' in team
+    assert '<option value="alice">alice</option>' in team
     assert "ADMINISTRATION_QUESTION" not in team
     assert client.get("/inbox?view=admin", headers=bob_headers).status_code == 403
     assert "ADMINISTRATION_QUESTION" in client.get(
@@ -703,6 +706,13 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     ).status_code == 303
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
     assert "phase owner alice" in phase and "tasks inherit this owner unless overridden" in phase
+    assert "Assign phase" not in phase
+
+    alice_task_for_bob = client.get("/tasks/DM-002", headers=bob_headers).text
+    assert "Only alice can change or run this task." in alice_task_for_bob
+    assert "Dispatch now" not in alice_task_for_bob
+    admin_task_for_bob = client.get("/tasks/DM-001", headers=alice_headers).text
+    assert "Assignment" in admin_task_for_bob and "logical owner" not in admin_task_for_bob
 
     registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
     assert "PHASE_OWNER_QUESTION" in client.get("/inbox", headers=alice_headers).text

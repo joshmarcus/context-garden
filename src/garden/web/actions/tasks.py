@@ -544,7 +544,29 @@ def register(app: FastAPI, site: Site) -> None:
                         sched.require_task_authority(t)
                     except PermissionError as exc:
                         raise HTTPException(409, str(exc)) from exc
-                if action == "retry":
+                if action == "owner" and hub.coordinator is not None:
+                    view = hub.coordinator.prepare(mutation=True)
+                    entity = next((row for row in view.snapshot.get("authority", [])
+                                   if row.get("kind") == "task" and row.get("scope") == t.id), None)
+                    requested = note.strip()
+                    if requested == "inherit":
+                        phase_owner = sched.members.phase_owner(t.product, t.phase)
+                        requested = phase_owner.owner_id if phase_owner else ""
+                    elif requested in {"", "-"}:
+                        requested = ""
+                    if entity and str(entity.get("owner", "")) != requested:
+                        result = hub.coordinator.begin_handoff(
+                            kind="task", scope=t.id, pending_owner=requested,
+                            expected_version=int(entity["version"]),
+                        )
+                        warning = (
+                            f"Transferring {result.get('effective_owner') or 'unassigned'} → "
+                            f"{result.get('pending_owner') or 'unassigned'}; waiting for the "
+                            "current worker to stop."
+                        )
+                    else:
+                        warning = None
+                elif action == "retry":
                     warning = run_action(  # type: ignore[call-arg]
                         s, sched, t, note, applies_to, actor, assignment_generation,
                     )
