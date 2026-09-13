@@ -126,8 +126,21 @@ def authorize(principal: Principal, operation: str, *, owner_id: str = "",
 class MemberRegistry:
     """Process-safe, host-private identity state for one garden coordinator."""
 
-    def __init__(self, garden_dir: Path):
+    def __init__(self, garden_dir: Path, coordinator: Any | None = None):
         self.path = garden_dir / "members.json"
+        self.coordinator = coordinator
+
+    def _fence_member_claims(self, actor: Principal, state: dict, member_id: str, *,
+                             mutation: str, generation: int,
+                             installation_id: str = "") -> None:
+        """Fence claims invalidated by a membership mutation before acknowledging it."""
+        if self.coordinator is None:
+            return
+        self.coordinator.fence_member_claims(
+            actor, garden_id=actor.garden_id, member_id=member_id,
+            installation_id=installation_id,
+            operation_id=f"membership:{mutation}:{member_id}:{generation}",
+        )
 
     @staticmethod
     def _valid_id(value: str, label: str) -> str:
@@ -234,6 +247,8 @@ class MemberRegistry:
         row = {"project": project, "phase": phase, "generation": generation + 1,
                "enabled": bool(enabled), "advance": bool(advance),
                "changed_by": actor.member_id}
+        self._fence_member_claims(actor, state, member_id, mutation="assignment",
+                                  generation=generation + 1)
         rows[member_id] = row
         generations[member_id] = generation + 1
         self._write(state)
@@ -251,6 +266,8 @@ class MemberRegistry:
         if not current or int(current.get("generation", 0)) != expected_generation:
             raise RuntimeError("stale assignment generation")
         generation = int(current["generation"]) + 1
+        self._fence_member_claims(actor, state, member_id, mutation="assignment",
+                                  generation=generation)
         del rows[member_id]
         state.setdefault("assignment_generations", {})[member_id] = generation
         self._write(state)
@@ -437,7 +454,13 @@ class MemberRegistry:
             raise KeyError(installation_id)
         if row["member_id"] != actor.member_id and not authorize(actor, "administer"):
             raise PermissionError("cannot rotate another member's installation")
+        generation = int(row.get("credential_generation", 0)) + 1
+        self._fence_member_claims(
+            actor, state, str(row["member_id"]), mutation=f"credential:{installation_id}",
+            generation=generation, installation_id=installation_id,
+        )
         token = self._set_secret(state, installation_id)
+        row["credential_generation"] = generation
         self._write(state)
         return token
 
@@ -449,7 +472,13 @@ class MemberRegistry:
             raise KeyError(installation_id)
         if row["member_id"] != actor.member_id and not authorize(actor, "administer"):
             raise PermissionError("cannot revoke another member's installation")
+        generation = int(row.get("credential_generation", 0)) + 1
+        self._fence_member_claims(
+            actor, state, str(row["member_id"]), mutation=f"credential:{installation_id}",
+            generation=generation, installation_id=installation_id,
+        )
         row["revoked"] = True
+        row["credential_generation"] = generation
         self._write(state)
 
     @_locked_mutation
@@ -459,7 +488,13 @@ class MemberRegistry:
             raise PermissionError("administrator role required")
         if member_id not in state["members"]:
             raise KeyError(member_id)
-        state["members"][member_id]["active"] = bool(active)
+        row = state["members"][member_id]
+        generation = int(row.get("active_generation", 0)) + 1
+        if not active:
+            self._fence_member_claims(actor, state, member_id, mutation="disable",
+                                      generation=generation)
+        row["active"] = bool(active)
+        row["active_generation"] = generation
         self._write(state)
 
     def authenticate(self, token: str) -> Principal | None:
