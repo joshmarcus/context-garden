@@ -140,7 +140,11 @@ def test_config_supports_multiple_user_owned_instances_and_redacts_identity_refs
                 "version": "1", "generation": 2,
                 "activities": ["work"], "projects": ["demo"],
                 "identity_references": ["identity.reader"],
-                "resource_ceilings": {"memory_mib": 8192, "vcpu": 4},
+                "resource_ceilings": {
+                    "memory_mib": 8192, "vcpu": 4, "gpu_count": 1,
+                    "gpu_device_memory_mib": 24576, "gpu_vendor": "nvidia",
+                    "gpu_features": ["cuda"],
+                },
                 "grants": [{"capability": "data.analytics", "approved_by": "operator",
                             "approved_at": 10, "profile_generation": 2}],
             },
@@ -161,6 +165,8 @@ def test_config_supports_multiple_user_owned_instances_and_redacts_identity_refs
     assert len(config.worker_instances()) == 2
     public = config.worker_configurations()["restricted"].public_dict()
     assert public["identity_references"] == ["<redacted>"]
+    assert public["resource_ceilings"]["gpu_vendor"] == "nvidia"
+    assert public["resource_ceilings"]["gpu_features"] == ("cuda",)
     assert "identity.reader" not in str(public)
     assert executable_diff({}, data) == ["worker_configurations", "worker_instances"]
 
