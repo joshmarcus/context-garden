@@ -62,6 +62,36 @@ def test_pages_render(garden):
     assert '<div class="v">$0.00</div><div class="l">total cost</div>' in runs_page
 
 
+def test_task_page_leads_with_goal_and_discloses_secondary_controls(garden):
+    page = client(garden).get("/tasks/DM-001").text
+    assert page.index('class="panel prose task-goal"') < page.index('id="routing"')
+    assert page.index("task-primary-actions") < page.index("More actions and settings")
+    assert page.index("task-primary-actions") < page.index('id="routing"')
+    assert "Details · worker routing" in page
+    assert '<details class="panel task-details" id="routing" style="margin-bottom:14px" open>' not in page
+
+
+def test_mobile_styles_compact_navigation_and_phase_task_rows(garden):
+    task_page = client(garden).get("/tasks/DM-001").text
+    phase_page = client(garden).get("/phases/demo/p1").text
+    assert "@media (max-width:600px)" in task_page
+    assert ".rail .nav { display:grid" in task_page
+    assert 'class="scroll phase-tasks"' in phase_page
+    assert ".phase-tasks td:nth-child(3)" in phase_page
+
+
+def test_actionable_attention_excludes_other_viewers_and_automatic_waits():
+    from garden.web.common import Site
+
+    items = [
+        {"group": "question", "task": "DM-001"},
+        {"group": "decision", "task": "DM-002", "read_only": True},
+        {"group": "deferred", "task": "DM-003"},
+        {"group": "automated_review", "task": "DM-004"},
+    ]
+    assert Site.actionable_decisions(items) == [items[0]]
+
+
 def test_routing_api_and_task_edit_are_read_only_validated_and_redacted(garden):
     cfg_path = garden / "garden.yaml"
     cfg = yaml.safe_load(cfg_path.read_text())
@@ -933,8 +963,7 @@ def test_initial_pages_stay_bounded_with_large_run_history(garden, history_size)
     assert rs.read_count - reads == history_size + 3
 
 
-def test_now_partial_fanout_shares_one_snapshot_and_skips_global_context(garden, monkeypatch):
-    from garden.web import common
+def test_now_partial_fanout_shares_one_snapshot(garden, monkeypatch):
     from garden.web.pages import now1 as now_page
 
     original = now_page.now1.snapshot
@@ -947,11 +976,7 @@ def test_now_partial_fanout_shares_one_snapshot_and_skips_global_context(garden,
             calls += 1
         return original(*args, **kwargs)
 
-    def global_context_work(*_args, **_kwargs):
-        raise AssertionError("a Now partial rebuilt the global Inbox/sidebar context")
-
     monkeypatch.setattr(now_page.now1, "snapshot", counted)
-    monkeypatch.setattr(common, "build_inbox", global_context_work)
     c = client(garden)
     urls = [f"/partials/now/{region}?burst=event-1"
             for region in ("head", "now", "next", "where", "period")]

@@ -18,6 +18,7 @@ from starlette.requests import ClientDisconnect
 
 from ... import now1
 from ...charts import cost_stack_svg, sparkline_svg
+from ...members import Principal
 from ...runs import RunStore
 from ...workers import snapshot as worker_snapshot
 from ..common import Site
@@ -72,8 +73,21 @@ def register(app: FastAPI, site: Site) -> None:
     def snap(request: Request, window: str) -> dict[str, Any]:
         s = hub.fresh()
         projects = site.allowed_projects(request)
-        return now1.snapshot(s, hub.reader(), window=window if window in WINDOW_KEYS else "hour",
-                             tick=hub.tick_state(), projects=projects)
+        sched = hub.reader()
+        items = site.inbox_items(request, s, sched, visible_tasks=site.visible_tasks(request, s))
+        attention_cards = [
+            {
+                "kind": "needs_you", "state": "needs_you",
+                "task": str(item.get("task") or ""),
+                "title": str(item.get("title") or item.get("task") or item.get("phase") or "Garden decision"),
+                "reason": str(item.get("why") or item.get("reason") or item.get("blurb") or "Open the Inbox to decide."),
+                "glyph": "waiting_human", "dot": "waiting_human",
+            }
+            for item in site.actionable_decisions(items)
+        ]
+        return now1.snapshot(s, sched, window=window if window in WINDOW_KEYS else "hour",
+                             tick=hub.tick_state(), projects=projects,
+                             attention_cards=attention_cards)
 
     def page_ctx(request: Request, window: str, **kw: Any) -> dict[str, Any]:
         return ctx(request, page="now", f=FORMAT, snap=snap(request, window), **kw)
@@ -85,7 +99,8 @@ def register(app: FastAPI, site: Site) -> None:
             # instead of serving the earlier event's completed-at cache entry.
             signatures = []
             for path in (hub.store.config.garden_dir / "events.jsonl",
-                         hub.store.config.garden_dir / "state.json"):
+                         hub.store.config.garden_dir / "state.json",
+                         hub.store.config.garden_dir / "members.json"):
                 try:
                     stat = path.stat()
                     signatures.extend((stat.st_mtime_ns, stat.st_size))
@@ -97,7 +112,13 @@ def register(app: FastAPI, site: Site) -> None:
             # schedule their requests inside the fallback TTL, while a later event cannot
             # reuse it merely because it arrived quickly.
             allowed = site.allowed_projects(request)
-            key = (selected, burst, tuple(sorted(allowed)) if allowed is not None else None, *signatures)
+            principal = getattr(request.state, "principal", None)
+            viewer = (
+                principal.garden_id, principal.member_id, principal.installation_id,
+                principal.role, principal.project_visibility, tuple(sorted(principal.projects)),
+            ) if isinstance(principal, Principal) else None
+            key = (selected, burst, viewer,
+                   tuple(sorted(allowed)) if allowed is not None else None, *signatures)
             cached = partial_cache.get(key)
             if cached is not None and (bool(burst) or cached[0] >= _monotonic()):
                 return cached[1]

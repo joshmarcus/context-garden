@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from ...charts import burnup_svg, tier_bars_svg
 from ...events import EventLog, digest, parse_since
 from ...github import pull_request_number
-from ...inbox import build_inbox, decisions, merge_queue_view
+from ...inbox import build_inbox, merge_queue_view
 from ...model import Task, effective_owner
 from ...store import Store
 from ..common import Site, tier_rows
@@ -147,7 +147,8 @@ def register(app: FastAPI, site: Site) -> None:
         return templates.TemplateResponse(request, "inbox.html", ctx(
             request, page="inbox", items=items, groups=GROUPS, owner_filter=owner,
             inbox_view=inbox_view,
-            owner_task_items=owner_task_items, inbox_count=len(decisions(items)), prs_open=prs_open,
+            owner_task_items=owner_task_items,
+            inbox_count=len(site.actionable_decisions(items)), prs_open=prs_open,
             pr_destinations=pr_destinations,
             tool_build=sched.upgrade_status(),
             spent_24h=spent_24h, suggestions_pending=suggestions_pending, merge_queue=merge_queue,

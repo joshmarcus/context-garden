@@ -5,7 +5,7 @@
     links to. Attention leads only when the garden has explicitly asked for it. -#}
 {%- set g = snap.garden -%}
 {%- set runs = snap.now | selectattr("kind", "equalto", "run") | list -%}
-{%- set hands = snap.now | rejectattr("kind", "equalto", "run") | list -%}
+{%- set hands = snap.now | rejectattr("kind", "equalto", "run") | rejectattr("kind", "equalto", "notice") | list -%}
 {%- set p = snap.where.primary -%}
 <section class="now-summary{% if g.dispatch_paused or hands %} has-attention{% endif %}" id="now-summary" aria-labelledby="now-summary-title">
   <h2 id="now-summary-title">Garden at a glance</h2>
