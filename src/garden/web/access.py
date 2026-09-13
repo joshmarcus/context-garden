@@ -51,6 +51,7 @@ OPERATOR_MUTATION_PATHS = frozenset({
     "/decisions/{decision_id}/{action}", "/friction-report", "/investigations", "/maintenance/pause",
     "/maintenance/resume", "/pause", "/phases/{product}/{phase}/approve-all",
     "/phases/{product}/{phase}/budget", "/phases/{product}/{phase}/close",
+    "/phases/{product}/{phase}/owner",
     "/phases/{product}/{phase}/kickoff", "/phases/{product}/{phase}/new-task",
     "/phases/{product}/{phase}/persona", "/phases/{product}/{phase}/plan",
     "/phases/{product}/{phase}/retro-decide", "/resume", "/tasks/{task_id}/brief",
