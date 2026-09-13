@@ -981,7 +981,6 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")

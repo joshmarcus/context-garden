@@ -354,8 +354,10 @@ class Coordinator:
             authority = [dict(row) for row in db.execute(
                 "SELECT * FROM authority WHERE garden=? ORDER BY kind,scope", (garden_id,))]
             claims = [dict(row) for row in db.execute(
-                "SELECT kind,scope,owner,authority_generation,installation,fence,lease_expires_at "
-                "FROM claims WHERE garden=? ORDER BY kind,scope", (garden_id,))]
+                "SELECT garden AS garden_id,kind,scope,owner AS owner_id,"
+                "authority_generation,installation AS installation_id,operation_id,fence,"
+                "lease_expires_at FROM claims WHERE garden=? AND lease_expires_at>? "
+                "ORDER BY kind,scope", (garden_id, _iso(self.clock())))]
             pending = [dict(row) for row in db.execute(
                 "SELECT effect_kind,scope,status,last_error FROM outbox WHERE garden=? AND status!='done'",
                 (garden_id,))]
