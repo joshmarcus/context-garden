@@ -761,6 +761,36 @@ def test_vendor_agnostic_gpu_admission_keeps_honest_vendor_evidence(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("admission_change", "reason"),
+    [
+        ({"gpu_devices": [""]}, "GPU device identity evidence is incomplete"),
+        ({"gpu_devices": ["  "]}, "GPU device identity evidence is incomplete"),
+        ({"gpu_device_vendors": [""]}, "GPU vendor evidence is incomplete"),
+        ({"gpu_device_vendors": ["\t"]}, "GPU vendor evidence is incomplete"),
+    ],
+)
+def test_vendor_agnostic_gpu_admission_rejects_blank_identity_evidence(
+    tmp_path, admission_change, reason
+):
+    wrapper = Wrapper()
+    wrapper.admission.update(
+        {"gpu_device_vendors": ["nvidia"], **admission_change}
+    )
+    lifecycle = HostLifecycle(
+        {"command": CommandProvider(wrapper)}, JsonStateStore(tmp_path / "hosts.json")
+    )
+
+    with pytest.raises(EnvironmentStop, match=reason):
+        lifecycle.acquire_ready(
+            command_pool(), workspace="/work", revision="abc", harness="codex",
+            process_terminal=lambda _: True,
+            requirements=_requirements(gpu_count=1, gpu_device_memory_mib=12_000),
+        )
+
+    assert not wrapper.admissions
+
+
+@pytest.mark.parametrize(
     ("vendors", "reason"),
     [
         ([], "GPU vendor evidence is incomplete"),
@@ -952,19 +982,34 @@ def test_host_backed_launch_activates_immediately_before_process_start(tmp_path)
     assert saved["admission"]["lease_id"] == launched[0]
 
 
-def test_activation_failure_prevents_host_backed_process_launch(tmp_path):
+@pytest.mark.parametrize(
+    ("admission_change", "reason"),
+    [
+        (
+            {"effective_requirement_digest": "changed"},
+            "requirement digest does not match",
+        ),
+        ({"gpu_devices": [" "]}, "GPU device identity evidence is incomplete"),
+        ({"gpu_device_vendors": [""]}, "GPU vendor evidence is incomplete"),
+    ],
+)
+def test_activation_failure_prevents_host_backed_process_launch(
+    tmp_path, admission_change, reason
+):
     wrapper = Wrapper()
+    wrapper.admission["gpu_device_vendors"] = ["nvidia"]
     path = tmp_path / "hosts.json"
     lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, JsonStateStore(path))
     host = lifecycle.acquire_ready(
         command_pool(), workspace="/work", revision="abc", harness="codex",
-        process_terminal=lambda _: True, requirements=_requirements(vcpu=2),
+        process_terminal=lambda _: True,
+        requirements=_requirements(vcpu=2, gpu_count=1, gpu_device_memory_mib=12_000),
     )
     lease_id = next(iter(wrapper.admissions))
-    wrapper.admissions[lease_id]["effective_requirement_digest"] = "changed"
+    wrapper.admissions[lease_id].update(admission_change)
     launched = []
 
-    with pytest.raises(EnvironmentStop, match="requirement digest does not match"):
+    with pytest.raises(EnvironmentStop, match=reason):
         lifecycle.launch_admitted(
             command_pool(), host.provider_id,
             lambda admission: launched.append(admission.lease_id),

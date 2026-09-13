@@ -916,6 +916,8 @@ class HostLifecycle:
         if requirements.gpu_count:
             if len(admission.gpu_devices) != requirements.gpu_count:
                 return "host GPU assignment does not match the reservation"
+            if any(not device.strip() for device in admission.gpu_devices):
+                return "host GPU device identity evidence is incomplete"
             if len(set(admission.gpu_devices)) != len(admission.gpu_devices):
                 return "host GPU assignment is not exclusive"
             if len(admission.gpu_device_memory_mib) != requirements.gpu_count:
@@ -926,6 +928,8 @@ class HostLifecycle:
             ):
                 return "host GPU device memory is below the reservation"
             if len(admission.gpu_device_vendors) != requirements.gpu_count:
+                return "host GPU vendor evidence is incomplete"
+            if any(not vendor.strip() for vendor in admission.gpu_device_vendors):
                 return "host GPU vendor evidence is incomplete"
             if requirements.gpu_vendor and any(
                 vendor.casefold() != requirements.gpu_vendor.casefold()
