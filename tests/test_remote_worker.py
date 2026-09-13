@@ -31,6 +31,7 @@ from garden.remote_worker import (
     _persist_active_claim,
     _persist_pending_result,
     _process_birth_identity,
+    _publish_claim_result,
     _TranscriptExporter,
     _validation_receipts,
     _wait_for_process,
@@ -73,6 +74,138 @@ def isolated_execution_runtime(tmp_path, monkeypatch):
     runtime = tmp_path / "worker-runtime"
     runtime.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+
+
+def _restricted_publication_repo(tmp_path):
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", str(remote), str(repo)], check=True, capture_output=True)
+    (repo / "baseline.txt").write_text("admitted\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "baseline"], cwd=repo, check=True, capture_output=True,
+    )
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    return remote, repo, base
+
+
+class _PublicationHeartbeat:
+    def ensure_current(self):
+        pass
+
+    def finish(self, _payload):
+        pass
+
+
+def _publish_restricted(repo, root, base):
+    run = {
+        "id": "run-1", "task_id": "T-1", "lease_token": "lease",
+        "push_ref": "refs/heads/export", "publication_base_head": base,
+        "restricted_artifact_boundary": "private",
+        "restricted_export_markers": ["RESTRICTED-ROW-42"],
+    }
+    _publish_claim_result(
+        run, root, repo, _PublicationHeartbeat(), final="done", parsed={}, usage={},
+        cost=None, error="", rc=0,
+    )
+
+
+@pytest.mark.parametrize("history", ["private", "marker", "marker_then_delete"])
+def test_restricted_publication_rejects_committed_history_before_transport(tmp_path, history):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    if history == "private":
+        target = repo / "private" / "derived.txt"
+        target.parent.mkdir()
+        target.write_text("derived\n")
+    else:
+        target = repo / "result.txt"
+        target.write_text("RESTRICTED-ROW-42\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "restricted"], cwd=repo, check=True, capture_output=True,
+    )
+    if history == "marker_then_delete":
+        target.unlink()
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+             "commit", "-m", "delete restricted"], cwd=repo, check=True,
+            capture_output=True,
+        )
+
+    with pytest.raises(RuntimeError, match="private artifact|restricted synthetic marker"):
+        _publish_restricted(repo, tmp_path / "host", base)
+
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/export"], cwd=remote,
+    ).returncode != 0
+
+
+def test_restricted_publication_pushes_clean_committed_and_uncommitted_changes(tmp_path):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    (repo / "committed.txt").write_text("safe committed\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "safe"], cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "untracked.txt").write_text("safe untracked\n")
+
+    _publish_restricted(repo, tmp_path / "host", base)
+
+    exported = subprocess.run(
+        ["git", "rev-parse", "refs/heads/export"], cwd=remote, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert exported == subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_recovered_restricted_publication_revalidates_committed_history(tmp_path, monkeypatch):
+    remote, repo, base = _restricted_publication_repo(tmp_path)
+    (repo / "result.txt").write_text("RESTRICTED-ROW-42\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "restricted"], cwd=repo, check=True, capture_output=True,
+    )
+    root = tmp_path / "host"
+    execution_dir = root / "runs" / "recovered"
+    execution_dir.mkdir(parents=True)
+    (execution_dir / "stdout.log").write_text("done")
+    (execution_dir / "stderr.log").write_text("")
+    (execution_dir / "exit_code").write_text("0")
+    final_path = execution_dir / "final.md"
+    run = {
+        "id": "run-1", "task_id": "T-1", "lease_token": "lease",
+        "heartbeat_seconds": 3600, "harness": "claude", "harness_config": {},
+        "model": "small", "push_ref": "refs/heads/export", "publication_base_head": base,
+        "restricted_artifact_boundary": "private",
+        "restricted_export_markers": ["RESTRICTED-ROW-42"],
+    }
+    _persist_active_claim(root, run, execution_dir, repo, final_path, os.getpid())
+    monkeypatch.setattr(Harness, "parse", lambda *_args, **_kwargs: {
+        "final_text": "done", "result": {}, "usage": {}, "cost_usd": None, "error": "",
+    })
+
+    class Client:
+        events = None
+
+        def post(self, _path, _payload):
+            return 200, {}
+
+    with pytest.raises(RuntimeError, match="restricted synthetic marker"):
+        recover_active_claims(root, Client())
+
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/export"], cwd=remote,
+    ).returncode != 0
 
 
 @pytest.mark.parametrize("mode", ["work", "check"])

@@ -935,6 +935,13 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
                 ["git", "checkout", "-B", branch, f"origin/{branch if remote_branch else base}"],
                 cwd=repo, check=True, pass_fds=(lock_fd,),
             )
+        # Keep the exact admitted object boundary in the durable claim. Publication uses
+        # this rather than the working-tree state, so authored commits remain inspectable
+        # after a daemon restart (including files committed and later deleted).
+        run["publication_base_head"] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
+            check=True, pass_fds=(lock_fd,),
+        ).stdout.strip()
         stage = "configuration"
         try:
             env = _env(list(run.get("env_allowlist") or []), repo, run)
@@ -967,6 +974,53 @@ def _prepare_claim_repo(run: dict[str, Any], root: Path, heartbeat: _LeaseHeartb
         ) from exc
 
 
+def _validate_restricted_publication(run: dict[str, Any], repo: Path) -> None:
+    """Validate every path and blob crossing the admitted Git boundary."""
+    from .restricted_data import RestrictedDataError
+
+    base_head = str(run.get("publication_base_head") or run.get("source_head") or "")
+    if not base_head:
+        raise RestrictedDataError("restricted publication has no admitted source head")
+    revision_range = f"{base_head}..HEAD"
+    artifact_boundary = str(run.get("restricted_artifact_boundary") or "").strip("/")
+    commits = subprocess.run(
+        ["git", "rev-list", revision_range], cwd=repo, capture_output=True, text=True,
+        check=True,
+    ).stdout.splitlines()
+    for commit in commits:
+        paths = subprocess.run(
+            ["git", "diff-tree", "--root", "-m", "--no-commit-id", "--name-only", "-r",
+             "-z", commit],
+            cwd=repo, capture_output=True, check=True,
+        ).stdout.split(b"\0")
+        for raw_path in paths:
+            relative = raw_path.decode("utf-8", errors="surrogateescape")
+            if artifact_boundary and (
+                relative == artifact_boundary or relative.startswith(artifact_boundary + "/")
+            ):
+                raise RestrictedDataError("private artifact cannot leave its boundary")
+
+    markers = tuple(str(value) for value in run.get("restricted_export_markers") or [])
+    if not markers:
+        return
+    objects = subprocess.run(
+        ["git", "rev-list", "--objects", revision_range], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    for entry in objects:
+        object_id = entry.split(" ", 1)[0]
+        if subprocess.run(
+            ["git", "cat-file", "-t", object_id], cwd=repo, capture_output=True,
+            text=True, check=True,
+        ).stdout.strip() != "blob":
+            continue
+        content = subprocess.run(
+            ["git", "cat-file", "blob", object_id], cwd=repo, capture_output=True, check=True,
+        ).stdout
+        if any(marker and marker.encode() in content for marker in markers):
+            raise RestrictedDataError("evidence contains a restricted synthetic marker")
+
+
 def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
                           heartbeat: _LeaseHeartbeat, *, final: str,
                           parsed: dict[str, Any], usage: dict[str, Any],
@@ -974,27 +1028,6 @@ def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
                           execution_dir: Path | None = None) -> None:
     markers = tuple(str(value) for value in run.get("restricted_export_markers") or [])
     artifact_boundary = str(run.get("restricted_artifact_boundary") or "")
-    if markers or artifact_boundary:
-        from .restricted_data import RestrictedDataError, validate_restricted_markers
-
-        changed = subprocess.run(
-            ["git", "status", "--porcelain", "-z"], cwd=repo,
-            capture_output=True, text=True, check=True,
-        ).stdout.split("\0")
-        for entry in changed:
-            relative = entry[3:] if len(entry) >= 4 else ""
-            if artifact_boundary and (
-                relative == artifact_boundary or relative.startswith(artifact_boundary + "/")
-            ):
-                raise RestrictedDataError("private artifact cannot leave its boundary")
-            path = repo / relative
-            if markers and path.is_file():
-                try:
-                    validate_restricted_markers(path.read_text(), markers)
-                except UnicodeDecodeError:
-                    # Binary artifacts are not evidence text; marker tests use textual
-                    # canaries and private binary outputs must stay under their boundary.
-                    pass
     if subprocess.run(
         ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
     ).stdout.strip():
@@ -1004,6 +1037,8 @@ def _publish_claim_result(run: dict[str, Any], root: Path, repo: Path,
              "commit", "-m", f"{run['task_id']}: remote worker changes"],
             cwd=repo, check=False,
         )
+    if markers or artifact_boundary:
+        _validate_restricted_publication(run, repo)
     heartbeat.ensure_current()
     subprocess.run(
         ["git", "push", "--force", "origin", f"HEAD:{run['push_ref']}"],
