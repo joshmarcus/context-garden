@@ -11,6 +11,12 @@ from garden.scheduler import Scheduler
 
 
 def _registry(tmp_path: Path):
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo" / "product.md").write_text("# Demo\n")
+    for phase in ("p1", "p2", "p3"):
+        path = tmp_path / "demo" / phase
+        path.mkdir()
+        (path / "goals.md").write_text(f"# {phase}\n")
     registry = MemberRegistry(tmp_path / ".garden")
     token = registry.enroll_administrator("garden", "admin", "admin-machine")
     admin = registry.authenticate(token)
@@ -91,6 +97,30 @@ def test_assignment_is_single_versioned_cursor_and_new_members_have_none(tmp_pat
     recreated = registry.set_assignment(admin, "alice", "demo", "p3",
                                          expected_generation=3)
     assert recreated.generation == 4
+
+
+def test_assignment_mutations_reject_scopes_outside_the_garden_catalog(tmp_path):
+    registry, admin, _alice = _registry(tmp_path)
+
+    with pytest.raises(ValueError, match="unknown project/phase target: missing/p1"):
+        registry.set_assignment(admin, "alice", "missing", "p1")
+    with pytest.raises(ValueError, match="unknown project/phase target: demo/missing"):
+        registry.set_assignment(admin, "alice", "demo", "missing")
+    assert registry.assignment("alice") is None
+
+    assigned = registry.set_assignment(admin, "alice", "demo", "p1", advance=True)
+    with pytest.raises(ValueError, match="unknown project/phase target: demo/missing"):
+        registry.advance_assignment(
+            admin, "alice", "missing", {}, expected_generation=assigned.generation,
+        )
+    assert registry.assignment("alice") == assigned
+
+    with pytest.raises(ValueError, match="unknown project/phase target: missing/p1"):
+        registry.set_phase_owner(admin, "missing", "p1", "alice")
+    with pytest.raises(ValueError, match="unknown project/phase target: demo/missing"):
+        registry.set_phase_owner(admin, "demo", "missing", "alice")
+    assert registry.phase_owner("missing", "p1") is None
+    assert registry.phase_owner("demo", "missing") is None
 
 
 def test_phase_owner_is_explicit_distinct_versioned_and_attributed(tmp_path):
@@ -208,6 +238,9 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
         bound.retry(task, assignment_generation=paused.generation)
     assert task.status == Status.FAILED
 
+    other_phase = sched.store.root / task.product / "p2"
+    other_phase.mkdir()
+    (other_phase / "goals.md").write_text("# P2\n")
     wrong_phase = registry.set_assignment(
         alice, "alice", task.product, "p2", expected_generation=paused.generation,
     )
