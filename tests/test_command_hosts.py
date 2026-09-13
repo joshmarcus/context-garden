@@ -1120,8 +1120,9 @@ def test_admission_operations_preserve_other_controller_updates(tmp_path, operat
     assert store.read()["leases"]["unrelated-provider"]["run_id"] == "other-run"
 
 
+@pytest.mark.parametrize("operation", ["cancel", "release"])
 @pytest.mark.parametrize("update", ["attach_run", "activate"])
-def test_cancel_preserves_concurrent_same_lease_update(tmp_path, update):
+def test_retirement_preserves_concurrent_same_lease_update(tmp_path, update, operation):
     wrapper = Wrapper()
     store = JsonStateStore(tmp_path / "hosts.json")
     lifecycle = HostLifecycle({"command": CommandProvider(wrapper)}, store)
@@ -1145,11 +1146,15 @@ def test_cancel_preserves_concurrent_same_lease_update(tmp_path, update):
 
     wrapper.before_action["release-admission"] = update_lease
 
-    with pytest.raises(EnvironmentStop, match="changed during cancellation"):
-        lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+    with pytest.raises(EnvironmentStop, match="changed during"):
+        if operation == "cancel":
+            lifecycle.cancel_acquisition(host.provider_id, pool=command_pool())
+        else:
+            lifecycle.release(command_pool(), host.provider_id)
 
     current = store.read()["leases"][host.provider_id]
     assert current["admission"]["lease_id"] == lease_id
+    assert current["released"] is False
     if update == "attach_run":
         assert current["run_id"] == "concurrent-run"
     else:

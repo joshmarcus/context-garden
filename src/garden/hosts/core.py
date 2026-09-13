@@ -1182,12 +1182,9 @@ class HostLifecycle:
             leases = data.setdefault("leases", {})
             assert isinstance(leases, dict)
             lease = leases.get(provider_id)
-            raw = lease.get("admission") if isinstance(lease, dict) else None
-            current_id = str(raw.get("lease_id", "")) if isinstance(raw, dict) else ""
             if lease is None and original_lease is None:
                 return released
-            if (isinstance(lease, dict) and current_id == lease_id
-                    and (lease_id or lease == original_lease)):
+            if isinstance(lease, dict) and lease == original_lease:
                 lease["released"] = True
                 lease["last_used_at"] = time.time()
                 lease.pop("admission", None)
