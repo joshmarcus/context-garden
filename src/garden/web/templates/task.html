@@ -96,8 +96,10 @@
 </div>
 {% endif %}
 
+{% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
 <section class="task-actions" aria-label="Task actions">
 <div class="actions task-primary-actions" style="margin-bottom:10px">
+  {% if authority.can_mutate_task %}
   {% if task.status.value == 'draft' %}{% if brief_gaps %}<a class="btn primary" href="#brief-card">Fix the brief before approving</a>{% endif %}<form class="inline" method="post" action="/tasks/{{ task.id }}/approve" style="display:inline-flex;gap:6px;align-items:center">
     <button{% if not brief_gaps %} class="primary"{% else %} class="quiet" disabled title="Fix the brief before approving"{% endif %}>Approve into <span data-approve-label>{{ task.phase }}</span></button>
     <select name="note" onchange="this.form.querySelector('[data-approve-label]').textContent = this.options[this.selectedIndex].dataset.name">
@@ -117,7 +119,7 @@
   {% if not phase_hold and (task.pr or task.branch) %}<button class="quiet" data-toggle="persona-form">Persona review…</button>{% endif %}
   <form class="inline" method="post" action="/tasks/{{ task.id }}/difficulty" style="display:inline-flex;gap:6px;align-items:center" title="Model tier at dispatch" data-autosave><label class="muted" for="difficulty">tier</label><select id="difficulty" name="note" onchange="this.form.requestSubmit()">{% for d in ('easy', 'medium', 'hard') %}<option value="{{ d }}"{% if task.difficulty == d %} selected{% endif %}>{{ d }}</option>{% endfor %}</select><span class="autosave-mark" aria-live="polite"></span></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/priority" style="display:inline-flex;gap:6px;align-items:center" title="Lower dispatches first" data-autosave><label class="muted" for="priority">priority</label><select id="priority" name="note" onchange="this.form.requestSubmit()">{% set scale_values = PRIORITY_SCALE|map(attribute=1)|list %}{% for word, n in PRIORITY_SCALE %}<option value="{{ n }}"{% if task.priority == n %} selected{% endif %}>{{ word }} · {{ n }}</option>{% endfor %}{% if task.priority not in scale_values %}<option value="{{ task.priority }}" selected>{{ task.priority }}</option>{% endif %}</select><span class="autosave-mark" aria-live="polite"></span></form>
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/owner" style="display:inline-flex;gap:6px;align-items:center" title="Planning metadata only; it does not grant access or approve work"><label class="muted" for="owner">owner</label><input id="owner" name="note" value="{{ task.owner }}" placeholder="blank unassigns; inherit uses phase default" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"><button class="quiet">Save</button></form>
+  {% if not authority.multiplayer %}<form class="inline" method="post" action="/tasks/{{ task.id }}/owner" style="display:inline-flex;gap:6px;align-items:center"><label class="muted" for="owner">owner</label><input id="owner" name="note" value="{{ task.owner }}" placeholder="blank unassigns; inherit uses phase default" pattern="[A-Za-z0-9][A-Za-z0-9._-]*"><button class="quiet">Save</button></form>{% endif %}
   {% if task.status.value != 'draft' and move_phases|length > 1 %}<form class="inline" method="post" action="/tasks/{{ task.id }}/move" style="display:inline-flex;gap:6px;align-items:center" title="Move to another phase (keeps the id, history and state)"><label class="muted" for="phase">phase</label><select id="phase" name="note" onchange="this.form.submit()">{% for ph in move_phases %}<option value="{{ task.product }}/{{ ph }}"{% if task.phase == ph %} selected{% endif %}>{{ ph }}</option>{% endfor %}</select></form>{% endif %}
 
   <button class="quiet" data-toggle="suggest-form">Suggest a change…</button>
@@ -125,10 +127,15 @@
   <button class="quiet" data-toggle="friction-form">Report friction…</button>
   {% if task.status.terminal %}<button class="quiet" data-toggle="defect-form">Record defect…</button>{% endif %}
   {% if not task.status.terminal and not state.investigation %}<button class="quiet" data-toggle="deep-dive-form">Deep dive…</button>{% endif %}
-  {% set trial_again = task.pr and state.trial and state.trial.status in ('done', 'inconclusive') %}
   {% if not phase_hold and ((task.status.value in ('ready','draft','failed') and not task.pr) or trial_again) %}<button class="quiet" data-toggle="trial-form">{{ 'Model trial again…' if trial_again else 'Model trial…' }}</button>{% endif %}
   {% if can_mark_done %}<form class="inline" method="post" action="/tasks/{{ task.id }}/done"{% if mark_done_warning %} onsubmit="return confirm('Mark this task done? Garden will leave any external PR and active worker unchanged; fenced late results cannot replace the completed status.');"{% endif %} style="display:inline-flex;gap:6px;align-items:center"><label class="muted" for="done-reason">completion reason</label><input id="done-reason" name="note" required maxlength="240" placeholder="Tested elsewhere"><button class="quiet">Mark done</button></form>{% endif %}
   {% if not task.status.terminal %}<form class="inline" method="post" action="/tasks/{{ task.id }}/cancel"><button class="quiet danger">Cancel</button></form>{% endif %}
+  {% endif %}
+  {% if authority.multiplayer and authority.is_admin %}
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/owner" style="display:inline-flex;gap:6px;align-items:center"><label class="muted" for="owner">Assignment</label><select id="owner" name="note"><option value="inherit"{% if owner_source == 'phase' %} selected{% endif %}>Inherit phase owner</option><option value="-"{% if owner_source == 'unassigned' %} selected{% endif %}>Explicitly unassigned</option>{% for member in authority.members %}<option value="{{ member }}"{% if owner_source == 'task' and owner == member %} selected{% endif %}>{{ member }}</option>{% endfor %}</select><button class="primary">Assign</button></form>
+  {% elif not authority.can_mutate_task %}
+  <span class="muted">Only {{ owner or 'an administrator' }} can change or run this task.</span>
+  {% endif %}
 </div>
 </details>
 </section>

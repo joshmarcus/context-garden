@@ -5,16 +5,17 @@
 {% if closing_review %}<div class="panel"><h3>Closing review</h3><p><b>{{ closing_review.stage.replace('_', ' ') }}</b>{% if closing_review.personas %} · roles {{ closing_review.personas|join(', ') }}{% endif %}{% if closing_review.source %} · source <code>{{ closing_review.source }}</code>{% endif %}{% if closing_review.evidence %} · evidence <code>{{ closing_review.evidence[:12] }}</code>{% endif %}{% if closing_review.reason %}<br><span class="muted">{{ closing_review.reason }}</span>{% endif %}</p></div>{% endif %}
 <div class="page-head">
   <div><span class="eyebrow">{{ phase.product }}</span><h1>{{ phase.name }}{% if phase.frozen %} <span class="badge hot">frozen</span>{% endif %}</h1>
-    <p>Owner {{ phase_operation_owner.owner_id if phase_operation_owner else phase.owner or 'unassigned' }} · spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · tasks inherit this owner unless overridden · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals){% if retro_pending %} · <span style="color:var(--warn)">retro: waiting for personas ({{ retro_pending.done }} of {{ retro_pending.total }})</span>{% endif %}</p>
+    <p>Owner {{ phase_operation_owner.owner_id if phase_operation_owner and phase_operation_owner.owner_id else phase.owner or 'unassigned' }} · spent ${{ '%.2f' % spent }}{% if budget %} of ${{ '%.2f' % budget }}{% if spent >= budget %} · <b style="color:var(--bad)">budget exceeded, dispatch paused</b>{% endif %}{% endif %} · tasks inherit this owner unless overridden · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens (head + rules + digest + product + goals){% if retro_pending %} · <span style="color:var(--warn)">retro: waiting for personas ({{ retro_pending.done }} of {{ retro_pending.total }})</span>{% endif %}</p>
     <details style="margin-top:8px"><summary>Details</summary><p class="metadata">phase owner {{ phase_operation_owner.owner_id if phase_operation_owner else 'unassigned' }}{% if phase_operation_owner is not none %} · authority generation {{ phase_operation_owner.generation }}{% endif %} · task default owner {{ phase.owner or 'unassigned' }} · {{ rows|selectattr('0.pr')|list|length }} PR(s) tracked · fixed brief cost ~{{ '{:,}'.format(fixed_tokens) }} tokens.</p></details>
-    <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/budget" style="display:inline-flex; gap:6px; align-items:center" data-autosave>
+    <div class="actions"><span class="muted">phase owner {{ phase_operation_owner.owner_id if phase_operation_owner and phase_operation_owner.owner_id else 'unassigned' }} · tasks inherit this owner unless overridden ({{ phase_inherited_count }} inherited); explicit unassignment stays unchanged.</span>{% if authority.multiplayer and authority.is_admin %}<form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/owner"><select name="member_id" aria-label="Phase owner"><option value="-">Unassigned</option>{% for member in authority.members %}<option value="{{ member }}"{% if phase_operation_owner and phase_operation_owner.owner_id == member %} selected{% endif %}>{{ member }}</option>{% endfor %}</select><input type="hidden" name="generation" value="{{ phase_operation_owner.generation if phase_operation_owner else 0 }}"><button class="primary">Assign phase</button></form>{% endif %}</div>
+    {% if authority.can_operate_phase %}<form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/budget" style="display:inline-flex; gap:6px; align-items:center" data-autosave>
       <span class="muted">Budget $</span>
       <input type="number" name="amount" step="1" min="0" value="{{ '%.0f' % budget if budget else '' }}" placeholder="no cap" style="width:90px" onblur="this.form.requestSubmit()">
       <span class="autosave-mark" aria-live="polite"></span>
-    </form></div>
+    </form>{% endif %}</div>
   <div class="tools">{% if has_retro %}<a class="btn" href="/phases/{{ phase.product }}/{{ phase.name }}/retro">Retro</a>{% endif %}<a class="btn" href="/board?product={{ phase.product }}&phase={{ phase.name }}">Board</a><a class="btn" href="/trellis?product={{ phase.product }}&phase={{ phase.name }}">Trellis</a></div>
 </div>
-{% if not has_approved %}{% include "_kickoff.html" %}{% endif %}
+{% if not has_approved and authority.can_operate_phase %}{% include "_kickoff.html" %}{% endif %}
 <div class="grid2">
   <div class="stack">
     {% include "_retro_verdict.html" %}
@@ -45,7 +46,7 @@
         <td class="mono">{% if u.runs %}${{ '%.2f' % u.cost_usd }}{% endif %}</td></tr>
       {% else %}<tr><td colspan="14" class="faint">{% if hide_done and hidden_count %}all {{ hidden_count }} tasks are done{% else %}no tasks yet{% endif %}</td></tr>{% endfor %}
       </table></div>
-      <div class="actions" style="margin-top:12px">
+      {% if authority.can_operate_phase %}<div class="actions" style="margin-top:12px">
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/approve-all"><button>Approve all drafts</button></form>
         <form class="inline" method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/plan" style="display:inline-flex; gap:6px; align-items:center">
           <input type="text" name="guidance" placeholder="optional guidance for the planner" style="min-width:260px">
@@ -60,9 +61,9 @@
         <label class="check"><input type="checkbox" name="file_tasks" value="1"> file high findings as tasks</label>
         <button>Run personas</button>
       </form>
-      {% if has_approved %}{% include "_kickoff.html" %}{% endif %}
+      {% if has_approved %}{% include "_kickoff.html" %}{% endif %}{% endif %}
     </div>
-    <details class="panel" id="new-task"{% if new_task.title or new_task.goal or new_task.context %} open{% endif %}>
+    {% if authority.can_operate_phase %}<details class="panel" id="new-task"{% if new_task.title or new_task.goal or new_task.context %} open{% endif %}>
       <summary>New task</summary>
       <form method="post" action="/phases/{{ phase.product }}/{{ phase.name }}/new-task" style="margin-top:10px; display:flex; flex-direction:column; gap:10px">
         <label style="display:block">Title<br><input type="text" name="title" value="{{ new_task.title }}" placeholder="one line" required style="width:100%; box-sizing:border-box"></label>
@@ -88,7 +89,7 @@
           <button class="primary">Create task</button>
         </div>
       </form>
-    </details>
+    </details>{% endif %}
     <div class="panel prose"><div class="eyebrow">Goals</div>{{ goals_html|safe }}</div>
   </div>
   <div class="stack">

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import re
@@ -553,7 +555,47 @@ def register(app: FastAPI, site: Site) -> None:
                         sched.require_task_authority(t)
                     except PermissionError as exc:
                         raise HTTPException(409, str(exc)) from exc
-                if action == "retry":
+                if action == "owner" and hub.coordinator is not None:
+                    view = hub.coordinator.prepare(mutation=True)
+                    entity = next((row for row in view.snapshot.get("authority", [])
+                                   if row.get("kind") == "task" and row.get("scope") == t.id), None)
+                    selected = note.strip()
+                    requested = selected
+                    if selected == "inherit":
+                        phase_owner = sched.members.phase_owner(t.product, t.phase)
+                        requested = phase_owner.owner_id if phase_owner else ""
+                    elif requested in {"", "-"}:
+                        requested = ""
+                    local_mode_matches = (
+                        (selected == "inherit" and not t.owner and not t.owner_unassigned)
+                        or (selected in {"", "-"} and t.owner_unassigned)
+                        or (selected not in {"inherit", "", "-"} and t.owner == selected)
+                    )
+                    if entity and (str(entity.get("owner", "")) != requested
+                                   or not local_mode_matches):
+                        proposed = copy.deepcopy(t)
+                        proposed.owner = "" if selected in {"inherit", "", "-"} else selected
+                        proposed.owner_unassigned = selected in {"", "-"}
+                        current = t.path.read_text()
+                        result = hub.coordinator.begin_handoff(
+                            kind="task", scope=t.id, pending_owner=requested,
+                            expected_version=int(entity["version"]),
+                            projection={
+                                "kind": "task", "scope": t.id,
+                                "path": str(t.path.resolve().relative_to(s.root.resolve())),
+                                "markdown": proposed.render(),
+                                "base_revision": hashlib.sha256(current.encode()).hexdigest(),
+                                "version": int(entity["version"]) + 2,
+                            },
+                        )
+                        warning = None if result.get("status") == "complete" else (
+                            f"Transferring {result.get('effective_owner') or 'unassigned'} → "
+                            f"{result.get('pending_owner') or 'unassigned'}; waiting for the "
+                            "current worker to stop."
+                        )
+                    else:
+                        warning = None
+                elif action == "retry":
                     warning = run_action(  # type: ignore[call-arg]
                         s, sched, t, note, applies_to, actor, assignment_generation,
                     )

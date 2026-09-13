@@ -94,6 +94,38 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
     return remote, paths[0], paths[1]
 
 
+def test_client_starts_phase_handoff_from_one_assignment_intent(clones):
+    _, one, _ = clones
+    client = GitMultiplayerClient(GitStateStore(one, garden_id="garden"), "admin", "admin")
+
+    result = client.begin_handoff(
+        kind="phase", scope="demo/p1", pending_owner="bob", expected_version=0,
+    )
+
+    assert result == {"status": "complete", "owner": "bob", "authority_generation": 2}
+    snapshot = client.refresh(allow_stale=False).snapshot
+    assert "phase:demo/p1" not in snapshot["handoffs"]
+    assert snapshot["entities"]["phase:demo/p1"]["owner"] == "bob"
+
+
+def test_client_automatically_stops_and_completes_claimed_handoff(clones):
+    _, one, _ = clones
+    client = GitMultiplayerClient(GitStateStore(one, garden_id="garden"), "alice", "one")
+    client.claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    client.begin_handoff(
+        kind="task", scope="CG-1", pending_owner="bob", expected_version=0,
+    )
+
+    snapshot = client.refresh(allow_stale=False).snapshot
+    assert client.acknowledge_cancellations(snapshot, lambda kind, scope: True) == ["task:CG-1"]
+    final = client.refresh(allow_stale=False).snapshot
+    assert final["entities"]["task:CG-1"]["owner"] == "bob"
+    assert "task:CG-1" not in final["handoffs"]
+
+
 def test_atomic_claim_permit_and_reservation_and_owned_release(clones):
     _, one, two = clones
     first = GitStateStore(one, garden_id="garden")

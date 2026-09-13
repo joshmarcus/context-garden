@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from garden.coordination_api import create_coordination_app
 from garden.events import DECISION_KINDS, EventLog
-from garden.git_coordination import GitStateStore
+from garden.git_coordination import GitMultiplayerClient, GitStateStore
 from garden.members import MemberRegistry, Principal, authorize
 from garden.multiplayer_client import MultiplayerClient
 from garden.runs import Run, RunStore
@@ -99,7 +99,11 @@ def _git_enrolled_app(garden, *, watch=False, host="testserver", port=None):
         }
     def enroll(state):
         state["members"].update(members)
-        state["installations"].update(registry_state["installations"])
+        state["installations"].update({
+            key: str(row["member_id"])
+            for key, row in registry_state["installations"].items()
+            if not row.get("revoked")
+        })
         state["entities"].update(entities)
         return {}
 
@@ -385,16 +389,17 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     viewer_token = registry.issue_installation(admin, "viewer", "viewer-browser")
     client = TestClient(_git_enrolled_app(garden))
 
-    assert client.get("/api/tasks").status_code == 401
+    # Normal local startup binds the configured installation automatically.
+    assert client.get("/api/tasks").status_code == 200
     assert client.get("/api/tasks", headers={"Authorization": f"Bearer {viewer_token}"}).status_code == 200
     direct = client.post("/tick", headers={"Authorization": f"Bearer {viewer_token}"},
                          follow_redirects=False)
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    # The authenticated browser cannot replace this installation's execution
-    # principal, which has no assignment in this fixture.
-    assert accepted.status_code == 409
+    # Browser credentials cannot replace the installation principal; the configured
+    # administrator installation remains the principal used for this successful tick.
+    assert accepted.status_code == 303
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -547,7 +552,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         "/tick", headers={**auth, "Origin": "https://garden.example:8765"},
         follow_redirects=False,
     )
-    assert response.status_code == 409
+    assert response.status_code == 303
     for origin in (
         "http://garden.example:8765",
         "https://garden.example:8766",
@@ -681,6 +686,7 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
 
     alice_mine = client.get("/inbox", headers=alice_headers).text
     bob_mine = client.get("/inbox", headers=bob_headers).text
+    assert "My work" in alice_mine and "logical owner id" not in alice_mine
     assert "ALICE_PRIVATE_QUESTION" in alice_mine and "BOB_PRIVATE_QUESTION" not in alice_mine
     assert "PHASE_OWNER_QUESTION" in alice_mine
     assert "ADMINISTRATION_QUESTION" not in alice_mine
@@ -700,6 +706,8 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
 
     team = client.get("/inbox?view=team", headers=bob_headers).text
     assert "ALICE_PRIVATE_QUESTION" in team and "Addressed to alice · read-only" in team
+    assert '<label class="muted" for="owner-filter">Person</label>' in team
+    assert '<option value="alice">alice</option>' in team
     assert "ADMINISTRATION_QUESTION" not in team
     assert client.get("/inbox?view=admin", headers=bob_headers).status_code == 403
     assert "ADMINISTRATION_QUESTION" in client.get(
@@ -717,6 +725,13 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     ).status_code == 303
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
     assert "phase owner alice" in phase and "tasks inherit this owner unless overridden" in phase
+    assert "Assign phase" not in phase
+
+    alice_task_for_bob = client.get("/tasks/DM-002", headers=bob_headers).text
+    assert "Only alice can change or run this task." in alice_task_for_bob
+    assert "Dispatch now" not in alice_task_for_bob
+    admin_task_for_bob = client.get("/tasks/DM-001", headers=alice_headers).text
+    assert "Assignment" in admin_task_for_bob and "logical owner" not in admin_task_for_bob
 
     registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
     assert "PHASE_OWNER_QUESTION" in client.get("/inbox", headers=alice_headers).text
@@ -732,16 +747,47 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     assert len(client.get("/api/decisions", headers=alice_headers).json()) == 1
     assert client.get("/api/decisions", headers=bob_headers).json() == []
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
-    assert "phase owner bob" in phase and "tasks inherit this owner unless overridden" in phase
+    # Local registry edits are only a projection in Git mode; accepted authority remains alice.
+    assert "phase owner alice" in phase and "tasks inherit this owner unless overridden" in phase
 
 
-def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
+def test_multiplayer_assignment_action_converges_authority_projection_and_cursor(garden):
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_phase_owner(admin, "demo", "p1", "alice")
+    client = TestClient(_git_enrolled_app(garden))
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(
+        "/phases/demo/p1/owner", headers=headers,
+        data={"member_id": "bob", "generation": 1}, follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    assert "phase owner bob" in client.get("/phases/demo/p1", headers=headers).text
+    coordinator = GitMultiplayerClient.from_config(Store(garden).config)
+    assert coordinator is not None
+    snapshot = coordinator.refresh(allow_stale=False).snapshot
+    assert snapshot["members"]["bob"]["assignment"]["phase"] == "p1"
+
+    response = client.post(
+        "/tasks/DM-001/owner", headers=headers,
+        data={"note": "-"}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+    client.get("/tasks/DM-001", headers=headers)
+    assert Store(garden).task("DM-001").owner_unassigned
+
+
+def test_inbox_keeps_owned_out_of_scope_work_without_changing_execution_principal(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    registry, _admin_token, admin = _registry(garden)
+    registry, admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
     token = registry.issue_installation(admin, "bob", "bob-browser")
     state = State(garden / ".garden/state.json")
@@ -761,16 +807,25 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
         follow_redirects=False,
     ).status_code == 403
 
-    registry.set_assignment(admin, "bob", "demo", "p1")
-    assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
-                       follow_redirects=False).status_code == 303
+    assigned = client.post(
+        "/phases/demo/p1/owner",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        data={"member_id": "bob", "generation": 0},
+        follow_redirects=False,
+    )
+    assert assigned.status_code == 303, assigned.text
+    answer = client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
+                         follow_redirects=False)
+    assert answer.status_code == 403
+    assert answer.text == "operator authentication required"
     task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
     stale_inbox = client.get("/inbox", headers=headers).text
     assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
-    # Authorization still reaches the accepted owner; the action itself conflicts with the
-    # task's waiting state instead of being rejected at the ownership boundary.
-    assert client.post("/tasks/DM-001/retry", headers=headers,
-                       follow_redirects=False).status_code == 409
+    task_contents = task_path.read_bytes()
+    retry = client.post("/tasks/DM-001/retry", headers=headers, follow_redirects=False)
+    assert retry.status_code == 403
+    assert retry.text == "operator authentication required"
+    assert task_path.read_bytes() == task_contents
 
 
 def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner(garden):
@@ -855,15 +910,14 @@ def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner
         json={"host": "bob-worker", "claim_request_id": "bob-after-handoff"},
     ).status_code == 200
 
+    # Completing task authority does not let Bob's browser credentials turn Alice's local
+    # server into Bob's phase operator; execution identity remains installation-bound.
     created = client.post(
         "/phases/demo/p1/new-task", headers=bob_headers,
         data={"title": "Inherited later", "goal": "Later"}, follow_redirects=False,
     )
-    assert created.status_code == 303
-    created_id = created.headers["location"].split("/tasks/", 1)[1].split("?", 1)[0]
-    accepted = authority.read()[1]
-    assert accepted["entities"][f"task:{created_id}"]["owner"] == "bob"
-    assert f"task:{created_id}" not in accepted["handoffs"]
+    assert created.status_code == 403
+    assert created.text == "operator authentication required"
 
 
 def test_project_neutral_pages_do_not_disclose_another_project(garden):
