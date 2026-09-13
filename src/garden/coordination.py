@@ -584,7 +584,7 @@ class Coordinator:
         cancellations = db.execute("""SELECT COUNT(*) FROM cancellations
             WHERE garden=? AND kind=? AND scope=? AND status='requested'""", key).fetchone()[0]
         effects = db.execute("""SELECT COUNT(*) FROM effects
-            WHERE garden=? AND kind=? AND scope=? AND authority_generation<=?
+            WHERE garden=? AND claim_kind=? AND claim_scope=? AND authority_generation<=?
               AND status IN ('pending','unknown')""", (*key, handoff["from_generation"])).fetchone()[0]
         outbox = db.execute("""SELECT COUNT(*) FROM outbox
             WHERE garden=? AND scope=? AND authority_version<? AND status='pending'""",
