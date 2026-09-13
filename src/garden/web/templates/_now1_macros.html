@@ -53,7 +53,7 @@
       <span class="clock"><span data-elapsed>{{ f.clock(s.elapsed_s) }}</span></span>
     {% endif %}
     {% if finished %}<span class="verdict">{{ s.verdict }}</span>
-    {% elif s.lifecycle_detail %}<span class="spend faint">{{ s.lifecycle_detail }}</span>
+    {% elif s.lifecycle_detail %}<span class="spend faint">{{ s.lifecycle_detail }}{% if s.assigned_worker %} · assigned worker: <a href="{{ s.assigned_worker.href }}">{{ s.assigned_worker.id }}</a>{% endif %}</span>
     {% elif s.spend_usd is not none %}<span class="spend" data-spend>{{ f.money(s.spend_usd) }} so far</span>
     {% elif s.tokens_so_far | default(0) %}<span class="spend" data-spend>{{ f.ktok(s.tokens_so_far) }} tokens so far</span>
     {% elif not s.harness %}<span class="spend faint" data-spend>token-free</span>

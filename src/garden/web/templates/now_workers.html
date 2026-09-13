@@ -59,7 +59,7 @@
   <p class="fleet-note">{{ fleet.explanation }} This view uses recorded telemetry as of <time datetime="{{ fleet.observed_at }}">{{ fleet.observed_at[11:19] }}Z</time>; it does not contact hosts.</p>
   <div class="worker-list">
   {% for worker in fleet.workers %}
-    <article class="worker-card">
+    <article class="worker-card" id="{{ worker.fragment }}">
       <div class="worker-head"><h2>{{ worker.id }}</h2><span class="placement">{{ worker.placement }}</span><span class="worker-state {{ worker.status }}">{{ worker.status }}</span></div>
       <p class="worker-meta"><span>{{ worker.available_capacity }}/{{ worker.capacity }} capacity available</span><span>last contact: {{ worker.last_contact or "unknown" }}</span><span>evidence: {{ worker.evidence_at or "unknown" }}{% if worker.evidence_stale %} · stale/unknown{% endif %}</span></p>
       {% if worker.probe %}<p class="worker-reason">probe: {{ "reachable" if worker.probe.ok else "failed" }} · {{ worker.probe.latency_ms }} ms · checked {{ worker.probe.checked_at or "never" }} · last success {{ worker.probe.last_success_at or "never" }}{% if worker.probe.stale %} · stale{% endif %}</p>{% endif %}

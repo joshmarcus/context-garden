@@ -393,7 +393,19 @@ def test_remote_and_manual_lifecycle_labels_do_not_invent_local_processes(garden
 
     assert by_run[queued.run_id]["lifecycle_detail"] == "queued; waiting for a remote worker to claim it"
     assert by_run[queued.run_id]["state"] == "running" and "verdict" not in by_run[queued.run_id]
-    assert "worker liveness is not known" in by_run[claimed.run_id]["lifecycle_detail"]
+    claimed.host = "worker.alpha/2"
+    claimed.save()
+    snap = now1.snapshot(store, sched)
+    by_run = {strip["run"]: strip for strip in snap["now"] if strip["kind"] == "run"}
+    assert by_run[claimed.run_id]["assigned_worker"] == {
+        "id": "worker.alpha/2", "href": "/now/workers#worker-worker.alpha%2F2"
+    }
+    assert by_run[claimed.run_id]["lifecycle_detail"] == (
+        "remote claim recorded; lease deadline 2026-09-09T15:10:00+00:00")
+    page = _client(garden).get("/now").text
+    assert 'href="/now/workers#worker-worker.alpha%2F2">worker.alpha/2</a>' in page
+    assert "worker liveness is not known" not in page
+    assert "assigned worker worker.alpha/2" in now1.render_text(snap)
     assert by_run[manual.run_id]["lifecycle_detail"] == "manual reservation; waiting for operator completion"
     assert all(not by_run[run.run_id]["no_process"] for run in (queued, claimed, manual))
     assert snap["garden"]["worker_busy"] == len(sched.worker_runs_active()) == 1
@@ -524,7 +536,12 @@ def test_review_wait_reason_describes_remote_queue_and_claim_without_liveness_cl
     queued.lease_expires_at = "2099-01-01T00:00:00+00:00"
     queued.save()
     assert sched.review_wait_reason(task) == (
-        "worker", "waits for its revise remote run; a claim is recorded but liveness is not known")
+        "worker", "waits for its revise remote run; a claim is recorded")
+
+    queued.host = "worker.alpha/2"
+    queued.save()
+    assert sched.review_wait_reason(task) == (
+        "worker", "waits for its revise remote run; a claim is recorded; assigned worker worker.alpha/2")
 
     (queued.path / "remote_result.json").write_text("{}")
     assert sched.review_wait_reason(task) == (
