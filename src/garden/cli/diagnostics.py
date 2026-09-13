@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -275,9 +276,6 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         err.print("no runs")
         raise typer.Exit(1) from None
     console.print(f"[bold]{r.run_id}[/bold] status={r.status} dir={r.dir}")
-    session = r.env_snapshot.get("ssh_tmux_session")
-    if session:
-        console.print(f"On remote host {r.host}: tmux attach-session -r -t {session}")
     state_path = r.path / "ssh-state.json"
     if state_path.exists():
         state = json.loads(state_path.read_text())
@@ -295,6 +293,49 @@ def log_(task_id: str, lines: int = typer.Option(60, "-n")):
         print("\n".join(stderr.splitlines()[-lines:]))
     if r.error:
         console.print(f"[red]error:[/red] {r.error}")
+
+
+@app.command("attach", rich_help_panel=PANEL_BOARD)
+def attach(
+    task_id: str,
+    run_id: str = typer.Option("", "--run", help="Attach to this exact run ID."),
+):
+    """Attach this task's one live SSH worker session."""
+    from ..runs import RunStore
+    from ..ssh_attach import SSHAttachmentError, attachment_argv, attachment_problem
+
+    store = _store()
+    try:
+        store.task(task_id)
+    except KeyError:
+        err.print(f"[red]unknown task {task_id!r}[/red]")
+        raise typer.Exit(1) from None
+    runs_for_task = RunStore(store.config.garden_dir).runs_for(task_id)
+    if run_id:
+        run = next((item for item in runs_for_task if item.run_id == run_id), None)
+        if run is None:
+            err.print(f"[red]unknown run {run_id!r} for task {task_id!r}[/red]")
+            raise typer.Exit(1) from None
+        candidates = [run]
+    else:
+        candidates = [item for item in runs_for_task if attachment_problem(item) is None]
+    if not candidates:
+        if run_id:
+            problem = attachment_problem(run)
+            err.print(f"[red]cannot attach to {run_id}: {problem}[/red]")
+        else:
+            err.print(f"[red]task {task_id!r} has no confirmed live SSH session[/red]")
+        raise typer.Exit(1) from None
+    if len(candidates) != 1:
+        err.print(f"[red]task {task_id!r} has multiple live SSH sessions; select one with --run[/red]")
+        raise typer.Exit(1) from None
+    try:
+        argv = attachment_argv(candidates[0], dict(store.config.get("ssh") or {}))
+        completed = subprocess.run(argv, check=False)
+    except (OSError, SSHAttachmentError) as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    raise typer.Exit(completed.returncode)
 
 
 @app.command("ssh-recover", rich_help_panel=PANEL_DIAG)

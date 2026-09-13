@@ -26,6 +26,7 @@ from ...reference_snapshot import REFERENCE_DIR
 from ...review import review_to_markdown
 from ...runs import RunStore
 from ...scheduler import State
+from ...ssh_attach import attach_command, attachment_problem
 from ...trials import TrialLog, ranking_markdown
 from ..common import Site, render_md
 
@@ -69,6 +70,8 @@ def register(app: FastAPI, site: Site) -> None:
         rs = RunStore(s.config.garden_dir)
         runs = rs.runs_for(t.id)
         latest_run = rs.latest(t.id)
+        attachable_runs = [run for run in reversed(runs) if attachment_problem(run) is None]
+        attachable_run = attachable_runs[0] if attachable_runs else None
         st = State(s.config.garden_dir / "state.json").historical(t.id)
         manual_return_guard = hub.reader().manual_return_guard(t)
         _, log = split_log(t.body)
@@ -149,6 +152,10 @@ def register(app: FastAPI, site: Site) -> None:
             task=t, eff=sched.task_effective_status(t, tasks), blockers=sched.task_blockers(t, tasks), usage=usage,
             dependency_after=lambda dep: dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
+            attach_command=(
+                attach_command(attachable_run, exact=len(attachable_runs) > 1)
+                if attachable_run else ""
+            ),
             manual_reservation=(st.get("manual_reservation") if isinstance(st.get("manual_reservation"), dict) else None),
             manual_return_guard=manual_return_guard,
             body_html=render_md(spec_body(t.body)),
