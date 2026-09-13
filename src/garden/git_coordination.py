@@ -506,6 +506,8 @@ class GitStateStore:
             for key, permit in state["permits"].items()
             if permit.get("claim") in claim_operations
             and permit.get("status", "pending") not in {"terminal", "fenced"}
+            and (state["effects"].get(key) or {}).get("outcome", "pending")
+            in {"pending", "unknown"}
         ]
         blockers.extend(
             key
@@ -529,24 +531,30 @@ class GitStateStore:
             entity = state["entities"].get(entity_key)
             if not entity or int(entity.get("version", 0)) != expected_version:
                 raise GitContention(f"stale entity version for {entity_key}")
-            if entity.get("owner") != actor or state["installations"].get(installation) != actor:
-                raise PermissionError("only the effective owner's installation may begin handoff")
+            member = state["members"].get(actor) or {}
+            if state["installations"].get(installation) != actor:
+                raise PermissionError("handoff installation is not enrolled")
+            effective_owner = str(entity.get("owner", ""))
+            administrator = member.get("role") in {"owner", "admin", "administrator"}
+            if actor != effective_owner and not administrator:
+                raise PermissionError("only the effective owner or an administrator may begin handoff")
             if entity_key in state["handoffs"]:
                 raise GitCoordinationError("authority already has a pending handoff")
             entity["draining"] = True
             entity["pending_owner"] = pending_owner
             entity["version"] = expected_version + 1
+            prior_claim = state["claims"].get(entity_key) or {}
             state["handoffs"][entity_key] = {
-                "from_owner": actor,
+                "from_owner": effective_owner,
                 "from_generation": int(entity.get("authority_generation", 0)),
-                "from_installation": installation,
+                "from_installation": str(prior_claim.get("installation", "")),
                 "pending_owner": pending_owner,
                 "status": "blocked",
                 "stop_acknowledged": False,
                 "external_fence": None,
             }
             return {
-                "status": "blocked", "effective_owner": actor,
+                "status": "blocked", "effective_owner": effective_owner,
                 "pending_owner": pending_owner, "blockers": self._handoff_blockers(state, entity_key),
             }
 
