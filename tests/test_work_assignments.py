@@ -245,7 +245,6 @@ def test_real_dispatch_enforces_authenticated_owner_cursor_and_generation(sched)
     assert run.task_id == task.id
 
 
-<<<<<<< HEAD
 def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutation(sched):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
@@ -297,8 +296,6 @@ def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutatio
     assert task.status == Status.READY
 
 
-=======
->>>>>>> a06aabd6 (Enforce member authority in scheduler workflows)
 def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)
