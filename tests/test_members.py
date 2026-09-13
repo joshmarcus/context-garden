@@ -820,10 +820,11 @@ def test_inbox_keeps_owned_out_of_scope_work_without_changing_execution_principa
     task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
     stale_inbox = client.get("/inbox", headers=headers).text
     assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
-    # Authorization still reaches the accepted owner; the action itself conflicts with the
-    # task's waiting state instead of being rejected at the ownership boundary.
-    assert client.post("/tasks/DM-001/retry", headers=headers,
-                       follow_redirects=False).status_code == 409
+    task_contents = task_path.read_bytes()
+    retry = client.post("/tasks/DM-001/retry", headers=headers, follow_redirects=False)
+    assert retry.status_code == 403
+    assert retry.text == "operator authentication required"
+    assert task_path.read_bytes() == task_contents
 
 
 def test_pending_owner_handoff_keeps_web_and_worker_boundaries_on_accepted_owner(garden):
