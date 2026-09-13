@@ -349,6 +349,70 @@ def test_pending_execution_permit_blocks_owner_handoff(clones):
     assert "run:pending" in state["permits"]
 
 
+def test_pending_execution_permit_survives_claim_release_handoff_attempts(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    client = GitMultiplayerClient(store, "alice", "one")
+    claim = client.claim(
+        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    store.apply(
+        "admit-before-release",
+        actor="alice",
+        installation="one",
+        expected_versions={"task:CG-1": 0},
+        changes={"permits": {"run:pending": {"claim": claim["operation_id"]}}},
+    )
+
+    for operation, changes in (
+        ("release-claim", {"claims": {"task:CG-1": None}}),
+        ("release-and-handoff", {
+            "claims": {"task:CG-1": None},
+            "entities": {"task:CG-1": {"owner": "bob", "authority_generation": 2}},
+        }),
+    ):
+        with pytest.raises(GitCoordinationError, match="unresolved permits or effects"):
+            store.apply(
+                operation,
+                actor="alice",
+                installation="one",
+                expected_versions={"task:CG-1": 0},
+                changes=changes,
+            )
+
+    state = store.read()[1]
+    assert state["claims"]["task:CG-1"]["operation_id"] == claim["operation_id"]
+    assert state["entities"]["task:CG-1"]["owner"] == "alice"
+
+    store.apply(
+        "acknowledge-terminal",
+        actor="alice",
+        installation="one",
+        expected_versions={},
+        changes={"effects": {"run:pending": {
+            "claim": claim["operation_id"],
+            "provider": "scheduler",
+            "scope": "task:CG-1",
+            "effect_key": "run:pending",
+            "outcome": "succeeded",
+        }}},
+    )
+    store.apply(
+        "release-and-handoff-after-terminal",
+        actor="alice",
+        installation="one",
+        expected_versions={"task:CG-1": 0},
+        changes={
+            "claims": {"task:CG-1": None},
+            "entities": {"task:CG-1": {"owner": "bob", "authority_generation": 2}},
+        },
+    )
+    state = store.read()[1]
+    assert "task:CG-1" not in state["claims"]
+    assert state["entities"]["task:CG-1"]["owner"] == "bob"
+
+
 @pytest.mark.parametrize("enabled", ["false", 1, []])
 def test_multiplayer_enabled_is_strict_boolean(tmp_path: Path, enabled):
     (tmp_path / "garden.yaml").write_text(f"multiplayer:\n  enabled: {enabled!r}\n")
