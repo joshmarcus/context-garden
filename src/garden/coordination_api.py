@@ -184,5 +184,15 @@ def create_coordination_app(garden_dir: Path, *, authentication: str = "credenti
         except (PermissionError, ValueError, TypeError) as exc:
             raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
 
+    @app.put("/v1/gardens/{garden_id}/reservation-pools/{pool:path}")
+    def set_reservation_pool(garden_id: str, pool: str, body: dict[str, Any],
+                             actor: Principal = Depends(principal)):
+        try:
+            return coordinator.set_reservation_pool(
+                actor, garden_id=garden_id, pool=pool, **body,
+            )
+        except (PermissionError, ValueError, TypeError) as exc:
+            raise HTTPException(403 if isinstance(exc, PermissionError) else 422, str(exc)) from None
+
     app.state.coordinator = coordinator
     return app
