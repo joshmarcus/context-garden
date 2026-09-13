@@ -542,7 +542,10 @@ document.querySelectorAll("[data-poll]").forEach(el => {
   const update = async () => {
     if (document.hidden) return;
     try {
-      const r = await fetch(el.dataset.poll, {cache: "no-store"});
+      const pollUrl = window.gardenScopedUrl
+        ? window.gardenScopedUrl(el.dataset.poll)
+        : el.dataset.poll;
+      const r = await fetch(pollUrl, {cache: "no-store"});
       if (r.ok) {
         const content = await r.text();
         const preserveScroll = el.hasAttribute("data-preserve-scroll");
@@ -886,7 +889,11 @@ document.querySelectorAll("[data-trial-filter]").forEach(form => {
     let since = localStorage.getItem(SEEN);
     if (!since) { since = nowIso(); localStorage.setItem(SEEN, since); }
     try {
-      const r = await fetch("/api/decisions?since=" + encodeURIComponent(since), { cache: "no-store" });
+      const decisionsUrl = "/api/decisions?since=" + encodeURIComponent(since);
+      const r = await fetch(
+        window.gardenScopedUrl ? window.gardenScopedUrl(decisionsUrl) : decisionsUrl,
+        { cache: "no-store" },
+      );
       if (!r.ok) return;
       const items = await r.json();
       if (!items.length) return;
