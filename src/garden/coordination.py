@@ -274,6 +274,7 @@ class Coordinator:
                 db.execute("UPDATE handoffs SET status='ready',completed_at=? "
                            "WHERE garden=? AND kind=? AND scope=? AND to_generation=?",
                            (_iso(now), garden_id, kind, scope, handoff["to_generation"]))
+            self._reject_unresolved_effects(db, garden_id, kind, scope)
             active = db.execute("SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
                                 (garden_id, kind, scope)).fetchone()
             if active and dt.datetime.fromisoformat(active["lease_expires_at"]) > now:
@@ -430,8 +431,8 @@ class Coordinator:
             db.execute("""INSERT INTO effects
                 (garden,provider,effect_key,operation_id,actor,installation,fence,
                  credential_scope,precondition_value,request_json,status,result_json,updated_at,
-                 kind,scope,authority_generation)
-                VALUES(?,?,?,?,?,?,?,?,?,?,'pending','{}',?,?,?,?)
+                 claim_kind,claim_scope,kind,scope,authority_generation)
+                VALUES(?,?,?,?,?,?,?,?,?,?,'pending','{}',?,?,?,?,?,?)
                 ON CONFLICT(garden,provider,effect_key) DO UPDATE SET
                 operation_id=excluded.operation_id,actor=excluded.actor,installation=excluded.installation,
                 claim_kind=excluded.claim_kind,claim_scope=excluded.claim_scope,
@@ -443,8 +444,8 @@ class Coordinator:
                 authority_generation=excluded.authority_generation""",
                 (claim.garden_id, provider, effect_key, operation_id, principal.member_id,
                  principal.installation_id, claim.fence, credential_scope,
-                 precondition, json.dumps(request, sort_keys=True), now, claim.kind, claim.scope,
-                 claim.authority_generation))
+                 precondition, json.dumps(request, sort_keys=True), now,
+                 claim.kind, claim.scope, claim.kind, claim.scope, claim.authority_generation))
             response = {"status": "pending", "operation_id": operation_id}
             self._record(db, principal, claim.garden_id, operation_id, "effect", payload, response)
             return response
@@ -625,7 +626,11 @@ class Coordinator:
         row = db.execute("SELECT * FROM claims WHERE garden=? AND kind=? AND scope=?",
                          (claim.garden_id, claim.kind, claim.scope)).fetchone()
         now = self.clock()
-        if (not row or row["operation_id"] != claim.operation_id or int(row["fence"]) != claim.fence
+        if (not row or row["owner"] != claim.owner_id
+                or int(row["authority_generation"]) != claim.authority_generation
+                or row["installation"] != claim.installation_id
+                or row["operation_id"] != claim.operation_id or int(row["fence"]) != claim.fence
+                or row["lease_expires_at"] != claim.lease_expires_at
                 or row["installation"] != principal.installation_id
                 or dt.datetime.fromisoformat(row["lease_expires_at"]) <= now):
             raise Conflict("stale or expired fencing lease")
