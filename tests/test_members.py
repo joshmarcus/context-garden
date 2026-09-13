@@ -870,15 +870,37 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
                        json={"host": "spoofed"}).status_code == 403
 
 
+def test_inherited_phase_owner_drives_inbox_item_and_owner_filter(garden):
+    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
+    task_path.write_text(task_path.read_text().replace("status: ready", "status: waiting_human"))
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": True}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    registry, admin_token, admin = _registry(garden)
+    registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_assignment(admin, "bob", "demo", "p1")
+    registry.set_phase_owner(admin, "demo", "p1", "bob")
+    state = State(garden / ".garden/state.json")
+    state.get("DM-001")["question"] = "INHERITED_OWNER_QUESTION"
+    state.save()
+    client = TestClient(_git_enrolled_app(garden))
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    bob_page = client.get("/inbox?view=team&owner=bob", headers=headers).text
+    assert "INHERITED_OWNER_QUESTION" in bob_page
+    assert "INHERITED_OWNER_QUESTION" not in client.get(
+        "/inbox?view=team&owner=alice", headers=headers,
+    ).text
+
+
 @pytest.mark.parametrize("revocation", ["project", "member", "installation"])
 def test_member_worker_lifecycle_requires_current_authorization(garden, revocation):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
-    task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
-    task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
+    registry.set_phase_owner(admin, "demo", "p1", "bob")
     registry.set_assignment(admin, "bob", "demo", "p1")
     token = registry.issue_installation(admin, "bob", "bob-worker")
     other_token = registry.issue_installation(admin, "bob", "bob-desktop")

@@ -68,14 +68,16 @@ def open_pr_destinations(tasks: list[Task], store: Store) -> list[dict[str, str 
     return destinations
 
 
-def owner_scoped_tasks(tasks: list[Task], store: Store, owner: str | None) -> list[Task]:
+def owner_scoped_tasks(tasks: list[Task], store: Store, owner: str | None,
+                       sched: object | None = None) -> list[Task]:
     """Return tasks matching the Inbox owner filter, including inherited ownership."""
     if owner is None:
         return tasks
-    return [
-        task for task in tasks
-        if effective_owner(task, store.phase(task.product, task.phase))[0] == owner
-    ]
+    resolver = getattr(sched, "effective_task_owner", None)
+    return [task for task in tasks if (
+        resolver(task)[0] if callable(resolver)
+        else effective_owner(task, store.phase(task.product, task.phase))[0]
+    ) == owner]
 
 
 def _pr_destination(prefix: str, base: str, heads: list[str], host: str, slug: str) -> dict[str, str | int]:
@@ -121,7 +123,7 @@ def register(app: FastAPI, site: Site) -> None:
         evs = EventLog(s.config.garden_dir / "events.jsonl")
         all_events = site.visible_events(request, evs.read(), tasks)
         open_tasks = [t for t in tasks.values() if not t.status.terminal and t.status.value != "cancelled"]
-        open_tasks = owner_scoped_tasks(open_tasks, s, owner)
+        open_tasks = owner_scoped_tasks(open_tasks, s, owner, sched)
         pr_destinations = open_pr_destinations(open_tasks, s)
         prs_open = sum(int(destination["count"]) for destination in pr_destinations)
         in_scope = [t for t in tasks.values() if t.status.value != "cancelled"]
