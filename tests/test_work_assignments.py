@@ -245,6 +245,41 @@ def test_real_dispatch_enforces_authenticated_owner_cursor_and_generation(sched)
     assert run.task_id == task.id
 
 
+def test_scheduler_transition_commits_authority_before_local_projection(sched, monkeypatch):
+    sched.cfg.data["multiplayer"] = {"enabled": True}
+    registry = MemberRegistry(sched.cfg.garden_dir)
+    token = registry.enroll_administrator("garden", "alice", "alice-machine")
+    alice = registry.authenticate(token)
+    assert alice is not None
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    sched.store.save(task)
+    assignment = registry.set_assignment(alice, "alice", task.product, task.phase)
+    bound, coordinator = _coordinated_scheduler(sched, alice, token)
+    coordinator.set_authority(
+        alice, garden_id="garden", kind="task", scope=task.id, owner_id="alice",
+        authority_generation=assignment.generation, expected_version=0,
+        operation_id="transition-authority",
+    )
+    original = task.path.read_text()
+    authoritative_transition = bound.coordinator.transition
+
+    def rejected(**_kwargs):
+        raise RuntimeError("coordinator rejected transition")
+
+    monkeypatch.setattr(bound.coordinator, "transition", rejected)
+    with pytest.raises(RuntimeError, match="coordinator rejected"):
+        bound._transition(task, Status.RUNNING, "starting")
+    assert task.path.read_text() == original
+
+    monkeypatch.setattr(bound.coordinator, "transition", authoritative_transition)
+    bound._transition(task, Status.RUNNING, "starting")
+    snapshot = coordinator.snapshot(alice, "garden")
+    authority = next(row for row in snapshot["authority"] if row["scope"] == task.id)
+    assert authority["version"] == 2
+    assert bound.store.task(task.id).status == Status.RUNNING
+
+
 def test_retry_enforces_authenticated_owner_cursor_and_generation_before_mutation(sched):
     sched.cfg.data["multiplayer"] = {"enabled": True}
     registry = MemberRegistry(sched.cfg.garden_dir)

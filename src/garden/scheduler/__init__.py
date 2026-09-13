@@ -14,7 +14,9 @@ State that isn't in task files lives in .garden/state.json; history in .garden/e
 
 from __future__ import annotations
 
+import copy
 import fcntl
+import hashlib
 import os
 import re
 import threading
@@ -304,16 +306,15 @@ class Scheduler(
             product, phase_name = phase_or_product, phase
         if phase_name is None:
             raise TypeError("phase name is required")
-        if self.coordinator is not None:
-            self._phase_authority(product, phase_name)
-            return
-        if self.cfg.get("multiplayer.enabled", False):
+        if self.cfg.get("multiplayer.enabled", False) and hasattr(self, "principal"):
             self.require_execution_authority()
             assert self.principal is not None
             self.members.require_phase_operation(
                 self.principal, product, phase_name,
                 expected_generation=expected_generation,
             )
+        if self.coordinator is not None:
+            self._phase_authority(product, phase_name)
 
     @contextmanager
     def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
@@ -950,8 +951,23 @@ class Scheduler(
         # final common boundary still rejects stale ownership before their durable write.
         self._task_authority(task)
         old = task.status.value
-        task.status = status
-        task.log(note)
+        if self.coordinator is not None:
+            self.require_execution_authority()
+            current = task.path.read_text() if task.path.exists() else ""
+            proposed = copy.deepcopy(task)
+            proposed.status = status
+            proposed.log(note)
+            proposed.touch()
+            self.coordinator.transition(
+                kind="task", scope=task.id, new_state=status.value, markdown=proposed.render(),
+                path=str(task.path.resolve().relative_to(self.cfg.root.resolve())),
+                canonical_revision=hashlib.sha256(current.encode()).hexdigest(),
+            )
+            self._authority_snapshot = None
+            task.__dict__.update(proposed.__dict__)
+        else:
+            task.status = status
+            task.log(note)
         self.store.save(task)
         st = self.state.get(task.id)
         changed = False
