@@ -50,7 +50,7 @@ _RELEASE = re.compile(r"(\d+(?:\.\d+){0,3})")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _CONFIG_KEY = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
 _DOTTED_NAME = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
-_ENTRY_POINT = re.compile(rf"{_DOTTED_NAME}(?::{_DOTTED_NAME})?")
+_ENTRY_POINT = re.compile(rf"{_DOTTED_NAME}:{_DOTTED_NAME}")
 
 T = TypeVar("T")
 
@@ -273,7 +273,20 @@ class PluginManifest:
                     f"plugin {self.name!r} redacted config key must be a dotted lowercase "
                     f"path such as 'credentials.token'; got {key!r}"
                 )
-            if text.split(".", 1)[0] not in self.config_schema:
+            schema: Mapping[str, Any] = self.config_schema
+            declared = True
+            for segment in text.split("."):
+                if segment not in schema:
+                    declared = False
+                    break
+                declaration = schema[segment]
+                properties = (
+                    declaration.get("properties", {})
+                    if isinstance(declaration, Mapping)
+                    else {}
+                )
+                schema = properties if isinstance(properties, Mapping) else {}
+            if not declared:
                 raise ValueError(
                     f"plugin {self.name!r} redacts {text!r}, which its configuration schema "
                     "does not declare"

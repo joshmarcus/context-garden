@@ -184,6 +184,18 @@ def test_manifest_rejects_an_unloadable_entry_point_string() -> None:
                                 "entry_point": "rm -rf /; import pkg"}])
 
 
+def test_manifest_rejects_an_entry_point_without_an_attribute() -> None:
+    with pytest.raises(ValueError, match="entry_point must be 'module:attribute'"):
+        manifest(capabilities=[{"name": "example-hosting/host-provider",
+                                "kind": "host_provider",
+                                "entry_point": "module_only"}])
+
+
+def test_manifest_rejects_a_misspelled_nested_redaction_path() -> None:
+    with pytest.raises(ValueError, match="configuration schema does not declare"):
+        manifest(redacted_config_keys=["credentials.misspelled"])
+
+
 def test_registry_indexes_manifests_and_resolves_declared_references() -> None:
     registry = PluginRegistry([manifest()], core_version="0.3.1")
 
