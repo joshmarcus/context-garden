@@ -341,6 +341,7 @@ def test_real_phase_operations_require_current_explicit_versioned_owner(sched):
     alice_token = registry.issue_installation(admin, "alice", "alice-machine")
     alice = registry.authenticate(alice_token)
     assert alice is not None
+    registry.set_assignment(admin, "alice", "demo", "p1")
     phase = sched.store.phase("demo", "p1")
     sched.store.set_phase_closed(phase, "2026-09-12")
     sched.store.invalidate()
@@ -371,6 +372,7 @@ def test_phase_persona_dispatch_requires_current_explicit_owner_before_preparati
     alice_token = registry.issue_installation(admin, "alice", "alice-machine")
     alice = registry.authenticate(alice_token)
     assert alice is not None
+    registry.set_assignment(admin, "alice", "demo", "p1")
     phase = sched.store.phase("demo", "p1")
     bound, coordinator = _coordinated_scheduler(sched, alice, alice_token)
     run = object()
