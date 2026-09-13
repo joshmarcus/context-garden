@@ -616,7 +616,8 @@ class Site:
         projects = self.allowed_projects(request) or frozenset()
         return [event for event in events
                 if (event.get("task") in task_ids
-                    or (event.get("product") in projects and event.get("product")))]
+                    or (event.get("product") in projects and event.get("product"))
+                    or str(event.get("phase") or "").partition("/")[0] in projects)]
 
     def inbox_items(self, request: Request, store: Store, sched: Scheduler, *,
                     view: str = "mine", visible_tasks: dict[str, Any] | None = None,
@@ -652,17 +653,20 @@ class Site:
         for item in items:
             recipient = self._inbox_recipient(store, visible_tasks, item)
             is_global = not item.get("task") and not item.get("phase")
-            addressed = recipient == principal.member_id or (is_global and principal.role == "administrator")
+            addressed = recipient == principal.member_id
             if view == "mine" and not addressed:
                 continue
             if view == "admin" and not is_global:
                 continue
-            actionable = addressed
+            actionable = addressed or (view == "admin" and is_global)
             if item.get("task"):
                 task = visible_tasks.get(str(item["task"]))
                 actionable = bool(task and assignment and assignment.enabled
                                   and assignment.project == task.product
-                                  and assignment.phase == task.phase)
+                                  and assignment.phase == task.phase
+                                  and self.registry.effective_task_owner(
+                                      task, store.phase(task.product, task.phase),
+                                  )[0] == principal.member_id)
             elif item.get("phase"):
                 product, separator, phase = str(item["phase"]).partition("/")
                 actionable = bool(separator and self.registry.authorize_phase_operation(
@@ -674,6 +678,9 @@ class Site:
 
     def _inbox_recipient(self, store: Store, tasks: dict[str, Any],
                          item: dict[str, Any]) -> str:
+        recipient = str(item.get("recipient") or "")
+        if recipient:
+            return recipient
         if item.get("task"):
             task = tasks.get(str(item["task"]))
             if task is None:
