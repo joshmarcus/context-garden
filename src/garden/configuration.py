@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import Any
 
 from .profiles import PROFILE_KEYS
-from .profiles import stops as profile_stops
+from .profiles import resolve as resolve_profile
 
 
 class ConfigScope(StrEnum):
@@ -237,7 +237,7 @@ def resolve_saved_effective_value(data: dict[str, Any], key: str,
     if profile_key:
         profile_name = (str(data.get("operating_profile") or "")
                         if active_profile is None else active_profile)
-        profile = profile_stops(data).get(profile_name) or {}
+        profile = resolve_profile(data, profile_name)
         if profile_key in profile:
             value = profile[profile_key]
     if product is not None:

@@ -110,7 +110,7 @@ def status(
         mp_line += f" (live override; garden.yaml: {store.config.get('max_parallel')})"
     mp_line += f"  reviews: {len(sched.review_runs_active())}/{sched.review_parallel_limit()}"
     active_profile = sched.operating_profile_name()
-    mp_line += f"  operating profile: {active_profile or '(none)'}"
+    mp_line += f"  operating profile: {active_profile or 'default'}"
     console.print(mp_line)
     for line in fleet_lines(store.config):
         console.print(f"[yellow]{line}[/yellow]" if "action required" in line else line)

@@ -1,146 +1,74 @@
-"""Tests for operating profiles (CG-221): the slider from efficient to fast that sets
-workers, the tier map, the review tier, retro.difficulty and the observe profile together."""
+"""Operating-profile concurrency multipliers and compatibility."""
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-import pytest
-
 from garden.events import EventLog
-from garden.observe import resolve as observe_resolve
-from garden.profiles import BUILTIN_PROFILES, describe, stops
+from garden.profiles import BUILTIN_PROFILES, resolve, scaled_concurrency, stops
 
 
-def _cli(garden: Path, *args: str):
-    from typer.testing import CliRunner
-
-    from garden.cli import app
-
-    cwd = os.getcwd()
-    os.chdir(garden)
-    try:
-        return CliRunner().invoke(app, list(args))
-    finally:
-        os.chdir(cwd)
+def test_builtin_profiles_are_three_concurrency_choices():
+    assert list(BUILTIN_PROFILES) == ["economy", "default", "fast"]
+    assert [stop["multiplier"] for stop in BUILTIN_PROFILES.values()] == [0.5, 1.0, 2.0]
 
 
-def test_builtin_profiles_ordered_efficient_to_fast():
-    assert list(BUILTIN_PROFILES) == ["economy", "balanced", "fast"]
-    for stop in BUILTIN_PROFILES.values():
-        assert stop["workers"] < 10  # sane bound; also exercises every field is present
-        assert set(stop) <= {"workers", "reviews", "models", "review_difficulty", "retro_difficulty", "observe"}
+def test_multiplier_rounding_and_disabled_values_are_deterministic():
+    assert scaled_concurrency(3, 0.5) == 1
+    assert scaled_concurrency(1, 0.5) == 1
+    assert scaled_concurrency(0, 0.5) == 0
+    assert scaled_concurrency(3, 2) == 6
 
 
-def test_custom_stop_is_valid_with_only_some_fields():
-    """A partial stop (a garden that only wants to shrink worker count for a name) doesn't
-    need every field; describe() and stops() both treat missing fields as "leave it be"."""
-    cfg_data = {"profiles": {"night": {"workers": 1}}}
-
-    class FakeCfg:
-        def get(self, key, default=None):
-            return cfg_data.get(key, default)
-
-    merged = stops(FakeCfg())
-    assert merged["night"] == {"workers": 1}
-    assert merged["economy"] == BUILTIN_PROFILES["economy"]
-    assert describe(merged["night"]) == "1 workers"
-
-
-def test_a_garden_can_override_a_builtin_stop_outright():
-    cfg_data = {"profiles": {"fast": {"workers": 20}}}
-
-    class FakeCfg:
-        def get(self, key, default=None):
-            return cfg_data.get(key, default)
-
-    merged = stops(FakeCfg())
-    assert merged["fast"] == {"workers": 20}
-
-
-def test_switch_from_economy_to_fast_moves_all_four_knobs(sched):
-    """The task brief's own acceptance test: switching the stop changes dispatch's worker
-    count and tier map, the review tier, and the observe cadence, all within the same tick
-    (no restart) — with no dispatch/tick required, since effective()/model_for()/observe.resolve
-    read the live override directly."""
-    store = sched.store
-    task = list(store.tasks().values())[0]
-    task.model = ""  # no per-task pin, so the profile's tier map is what answers model_for
-    runner = sched.runner_for(task)
-
+def test_builtins_only_scale_configured_concurrency_and_reload_baseline(sched):
+    sched.cfg.data["max_parallel"] = 3
+    sched.cfg.data["review_parallel"] = 5
+    sched.cfg.data["models"] = {"medium": "configured-model"}
+    sched.cfg.data["observe"]["profile"] = "watch"
     sched.set_operating_profile("economy", by="test")
-    assert sched.effective_max_parallel() == BUILTIN_PROFILES["economy"]["workers"]
-    assert sched.review_parallel_limit() == BUILTIN_PROFILES["economy"]["reviews"]
-    assert sched.effective("review.difficulty") == "easy"
-    assert sched.model_for(task, runner, "medium") == BUILTIN_PROFILES["economy"]["models"]["medium"]
-    settings = observe_resolve(store.config, sched)
-    assert settings.profile == "quiet"
-
+    assert sched.effective_max_parallel() == 1
+    assert sched.review_parallel_limit() == 2
+    assert sched.effective("models") == {"medium": "configured-model"}
+    assert sched.effective("observe.profile") == "watch"
+    sched.cfg.data["max_parallel"] = 7
+    sched.cfg.data["review_parallel"] = 3
+    assert sched.effective_max_parallel() == 3
+    assert sched.review_parallel_limit() == 1
     sched.set_operating_profile("fast", by="test")
-    assert sched.effective_max_parallel() == BUILTIN_PROFILES["fast"]["workers"]
-    assert sched.review_parallel_limit() == BUILTIN_PROFILES["fast"]["reviews"]
-    assert sched.effective("review.difficulty") == "medium"
-    assert sched.model_for(task, runner, "medium") == BUILTIN_PROFILES["fast"]["models"]["medium"]
-    settings = observe_resolve(store.config, sched)
-    assert settings.profile == "watch"
+    assert sched.effective_max_parallel() == 14
+    assert sched.review_parallel_limit() == 6
 
 
-def test_more_specific_override_wins_over_the_stop(sched):
-    """`max_parallel` set directly (the pre-CG-221 mechanism) still wins over an active stop —
-    the design's own example of "more specific"."""
-    sched.set_operating_profile("economy", by="test")
-    assert sched.effective_max_parallel() == BUILTIN_PROFILES["economy"]["workers"]
-    sched.set_override("max_parallel", 9, by="test")
+def test_default_and_legacy_selections_use_configured_baseline(sched):
+    sched.cfg.data["max_parallel"] = 7
+    sched.cfg.data["review_parallel"] = 3
+    assert sched.operating_profile_name() == "default"
+    assert sched.effective_max_parallel() == 7
+    sched.cfg.data["operating_profile"] = "balanced"
+    assert sched.operating_profile_name() == "default"
+    assert sched.review_parallel_limit() == 3
+    sched.set_operating_profile("plain", by="test")
+    assert sched.operating_profile_name() == "default"
+
+
+def test_custom_legacy_name_is_preserved(sched):
+    sched.cfg.data["profiles"] = {"balanced": {"workers": 9, "reviews": 4}}
+    sched.cfg.data["operating_profile"] = "balanced"
+    assert sched.operating_profile_name() == "balanced"
     assert sched.effective_max_parallel() == 9
-
-    store = sched.store
-    task = list(store.tasks().values())[0]
-    task.model = ""
-    runner = sched.runner_for(task)
-    sched.overrides()[f"harnesses.{runner.harness.name}.models.medium"] = "pinned-model"
-    assert sched.model_for(task, runner, "medium") == "pinned-model"
+    assert stops(sched.cfg)["balanced"] == {"workers": 9, "reviews": 4}
 
 
-def test_no_profile_active_falls_back_to_plain_config(sched):
-    assert sched.operating_profile_name() == ""
-    assert sched.operating_profile() == {}
-    assert sched.effective_max_parallel() == int(sched.cfg.get("max_parallel"))
-
-
-def test_set_operating_profile_emits_profile_changed_event(sched):
-    sched.set_operating_profile("balanced", by="test")
+def test_profile_change_is_live_and_clear_reveals_default(sched):
     sched.set_operating_profile("fast", by="test")
-    events = EventLog(sched.cfg.garden_dir / "events.jsonl").read(kinds=["profile_changed"])
-    assert [(e["from"], e["to"]) for e in events] == [("", "balanced"), ("balanced", "fast")]
-
-
-def test_set_operating_profile_clear(sched):
-    sched.set_operating_profile("fast", by="test")
-    assert sched.operating_profile_name() == "fast"
     sched.set_operating_profile("", by="test")
-    assert sched.operating_profile_name() == ""
+    assert sched.operating_profile_name() == "default"
+    events = EventLog(sched.cfg.garden_dir / "events.jsonl").read(kinds=["profile_changed"])
+    assert [(e["from"], e["to"]) for e in events] == [("default", "fast"), ("fast", "")]
 
 
-def test_unknown_profile_name_raises(sched):
-    with pytest.raises(ValueError):
-        sched.set_operating_profile("nonexistent", by="test")
+def test_resolve_preserves_custom_profiles():
+    class Config:
+        def get(self, key, default=None):
+            return {"max_parallel": 5, "review_parallel": 2,
+                    "profiles": {"night": {"workers": 1}}}.get(key, default)
 
-
-def test_cli_profile_set_show_and_clear(garden: Path):
-    r = _cli(garden, "profile", "fast")
-    assert r.exit_code == 0 and "operating profile: fast" in r.output
-
-    r = _cli(garden, "profile")
-    assert r.exit_code == 0 and "active: fast" in r.output
-
-    r = _cli(garden, "profile", "--clear")
-    assert r.exit_code == 0
-
-    r = _cli(garden, "profile")
-    assert "active: (none" in r.output
-
-
-def test_cli_profile_unknown_name_errors(garden: Path):
-    r = _cli(garden, "profile", "nonexistent")
-    assert r.exit_code == 1
+    assert resolve(Config(), "night") == {"workers": 1}

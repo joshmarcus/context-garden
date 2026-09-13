@@ -400,14 +400,14 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     {% set selected_index = profile_option_values.index(operating_profile) if operating_profile in profile_option_values else 0 %}
     <form method="post" action="/config/operating-profile" class="profile-slider" data-profile-slider data-selected="{{ operating_profile }}" data-profile-source="{{ operating_profile_source }}" data-profile-options='{{ operating_profile_options|tojson }}' style="--profile-stops:{{ operating_profile_options|length }}">
       <div class="profile-current"><span>Selected</span><output for="operating-profile-slider">{{ operating_profile_label }}</output></div>
-      <input id="operating-profile-slider" type="range" min="0" max="{{ operating_profile_options|length - 1 }}" step="1" value="{{ selected_index }}" aria-label="{{ operating_profile_label ~ ' operating profile' if operating_profile else 'No operating profile; plain garden.yaml values' }}" aria-valuetext="{{ operating_profile_label ~ ' operating profile' if operating_profile else 'No operating profile; plain garden.yaml values' }}">
+      <input id="operating-profile-slider" type="range" min="0" max="{{ operating_profile_options|length - 1 }}" step="1" value="{{ selected_index }}" aria-label="{{ operating_profile_label }} operating profile" aria-valuetext="{{ operating_profile_label }} operating profile">
       <input type="hidden" name="value" value="{{ operating_profile }}">
       <div class="profile-stops" aria-hidden="true">{% for option in operating_profile_options %}<span>{{ option.stop_label|default(option.label) }}</span>{% endfor %}</div>
       <noscript><select name="value" aria-label="Operating profile">{% for option in operating_profile_options %}<option value="{{ option.value }}" {% if option.value == operating_profile %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select><button type="submit" class="quiet">Switch</button></noscript>
       <span class="autosave-mark" aria-live="polite"></span>
     </form>
     <span class="profile-note" data-profile-tradeoff>{{ operating_profile_tradeoff }}</span>
-    <span class="profile-note" data-profile-meaning>{% if operating_profile_meaning %}{{ operating_profile_source }} requests {{ operating_profile_meaning }}.{% elif operating_profile %}{{ operating_profile_source }} names an unavailable profile; using plain garden.yaml values.{% else %}No profile requested; using plain garden.yaml values.{% endif %}</span>
+    <span class="profile-note" data-profile-meaning>{% if operating_profile_meaning %}{{ operating_profile_source }} uses {{ operating_profile_meaning }}.{% else %}{{ operating_profile_source }} names an unavailable profile; using configured values.{% endif %}</span>
     {% if operating_profile_overrides %}<span class="profile-note">Specific overrides still apply: {{ operating_profile_overrides|join(', ') }}.</span>{% endif %}
     <span class="profile-note">Profile changes do not resume dispatch or raise resource caps.</span>
     {% if operating_profile_spend_rate %}<span class="faint" style="display:block">${{ '%.2f' % operating_profile_spend_rate }}/hr last hour</span>{% endif %}

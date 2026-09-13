@@ -85,21 +85,19 @@ def budget(
 
 @app.command(rich_help_panel=PANEL_LOOP)
 def profile(
-    name: str = typer.Argument("", help="economy | balanced | fast, or a name from garden.yaml profiles:; omit to show the active one"),
-    clear_: bool = typer.Option(False, "--clear", help="Drop the live override, back to plain garden.yaml values"),
+    name: str = typer.Argument("", help="economy | default | fast, or a name from garden.yaml profiles:; omit to show the active one"),
+    clear_: bool = typer.Option(False, "--clear", help="Drop the live override and use configured Default"),
 ):
-    """Switch the operating profile live: one named stop sets workers, reviews, the
-    model tier map, the review and retro tiers and the observation feed together, in effect
-    within one tick, no restart."""
+    """Switch worker and review concurrency live: Economy is 0.5×, Default 1×, Fast 2×."""
     store = _store()
     sched = _scheduler(store)
     if clear_:
         sched.set_operating_profile("", by="cli")
-        console.print("[green]operating profile cleared[/green] (back to plain garden.yaml values)")
+        console.print("[green]operating profile cleared[/green] (using configured Default)")
         return
     if not name:
         active = sched.operating_profile_name()
-        console.print(f"active: {active or '(none — plain garden.yaml values)'}")
+        console.print(f"active: {active or 'default'}")
         console.print(f"choices: {', '.join(sorted(sched.operating_profile_stops()))}")
         return
     try:

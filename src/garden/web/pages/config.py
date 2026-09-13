@@ -10,6 +10,7 @@ from ...config import RESTART_KEYS, Config
 from ...configuration import CONFIG_FIELDS, ConfigScope, product_configuration, revision
 from ...observe import BUILTIN_PROFILES
 from ...profiles import describe as describe_stop
+from ...profiles import resolve as resolve_profile
 from ...scheduler import WORKER_MODES, State
 from ..common import Site
 
@@ -59,7 +60,7 @@ def register(app: FastAPI, site: Site) -> None:
 
         worker_profiles = worker_configuration_views(s)
         stop_rows = [{"name": name, "active": name == active, "meaning": describe_stop(stop),
-                     **{f: stop.get(f) for f in ("workers", "reviews", "review_difficulty", "retro_difficulty", "observe")}}
+                     **{f: resolve_profile(cfg, name).get(f) for f in ("workers", "reviews", "review_difficulty", "retro_difficulty", "observe")}}
                     for name, stop in stops.items()]
         selected_product = request.query_params.get("product", "")
         products = sorted((saved_cfg.data.get("products") or {}).keys())
