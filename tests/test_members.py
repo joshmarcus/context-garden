@@ -7,6 +7,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from garden.events import DECISION_KINDS, EventLog
 from garden.members import MemberRegistry, Principal, authorize
 from garden.runs import RunStore
 from garden.scheduler import (
@@ -384,6 +385,11 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     state.get("_decisions")["kickoff-q1"] = {
         "id": "kickoff-q1", "kind": "question", "status": "pending", "target": "",
         "phase": "demo/p1", "question": "PHASE_OWNER_QUESTION", "source": "kickoff:demo/p1",
+        "recipient": "alice",
+    }
+    state.get("_decisions")["global-q1"] = {
+        "id": "global-q1", "kind": "question", "status": "pending", "target": "",
+        "phase": "", "question": "ADMINISTRATION_QUESTION", "source": "operator",
     }
     state.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
@@ -394,14 +400,31 @@ def test_multiplayer_inbox_is_personal_with_read_only_team_and_phase_owner(garde
     bob_mine = client.get("/inbox", headers=bob_headers).text
     assert "ALICE_PRIVATE_QUESTION" in alice_mine and "BOB_PRIVATE_QUESTION" not in alice_mine
     assert "PHASE_OWNER_QUESTION" in alice_mine
+    assert "ADMINISTRATION_QUESTION" not in alice_mine
     assert "BOB_PRIVATE_QUESTION" in bob_mine and "ALICE_PRIVATE_QUESTION" not in bob_mine
     assert "PHASE_OWNER_QUESTION" not in bob_mine
 
     team = client.get("/inbox?view=team", headers=bob_headers).text
     assert "ALICE_PRIVATE_QUESTION" in team and "Addressed to alice · read-only" in team
     assert client.get("/inbox?view=admin", headers=bob_headers).status_code == 403
+    admin_view = client.get("/inbox?view=admin", headers=alice_headers).text
+    assert "ADMINISTRATION_QUESTION" in admin_view and "Answer" in admin_view
     phase = client.get("/phases/demo/p1", headers=bob_headers).text
     assert "phase owner alice" in phase and "task default owner" in phase
+
+    registry.set_phase_owner(alice, "demo", "p1", "bob", expected_generation=1)
+    assert "PHASE_OWNER_QUESTION" in client.get("/inbox", headers=alice_headers).text
+    assert "PHASE_OWNER_QUESTION" not in client.get("/inbox", headers=bob_headers).text
+
+    events = garden / ".garden" / "events.jsonl"
+    events.write_text(json.dumps({
+        "at": "2026-01-02T00:00:00+00:00", "kind": "decision", "task": "",
+        "phase": "demo/p1", "decision": "kickoff-q1", "decision_kind": "question",
+        "recipient": "alice",
+    }) + "\n")
+    assert len(EventLog(events).read(kinds=DECISION_KINDS)) == 1
+    assert len(client.get("/api/decisions", headers=alice_headers).json()) == 1
+    assert client.get("/api/decisions", headers=bob_headers).json() == []
 
 
 def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_assignment(garden):
@@ -415,6 +438,7 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
     token = registry.issue_installation(admin, "bob", "bob-browser")
     state = State(garden / ".garden/state.json")
     state.get("DM-001")["question"] = "OUTSIDE_ASSIGNMENT_QUESTION"
+    state.get("DM-001")["question_recipient"] = "bob"
     state.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     headers = {"Authorization": f"Bearer {token}"}
@@ -427,6 +451,9 @@ def test_inbox_keeps_owned_out_of_scope_work_but_direct_actions_require_current_
     assert client.post("/tasks/DM-001/answer", headers=headers, data={"note": "yes"},
                        follow_redirects=False).status_code == 303
     task_path.write_text(task_path.read_text().replace("owner: bob", "owner: alice"))
+    stale_inbox = client.get("/inbox", headers=headers).text
+    assert "OUTSIDE_ASSIGNMENT_QUESTION" in stale_inbox
+    assert "Addressed to bob · read-only" in stale_inbox
     assert client.post("/tasks/DM-001/retry", headers=headers,
                        follow_redirects=False).status_code == 403
 
