@@ -293,8 +293,9 @@ def evidence_gap_diagnosis(criteria: list[str], verified: Any, run_id: str = "")
 def verification_markdown(rows: list[dict[str, Any]], unmatched: list[dict[str, Any]] | None = None) -> str:
     """A `## Verification` section built from reconciled rows, or '' when there is nothing to
     say. One bullet per criterion: ✅ with evidence, 🚧 for a criterion the worker did not do,
-    ⚠️ for one with no evidence. `unmatched` (from `unmatched_worker_entries`), when given and
-    non-empty, adds a Reconciliation notes section instead of letting the evidence vanish."""
+    ⚠️ for one with no evidence. Unmatched worker entries are retained separately for review and
+    diagnostics, but are intentionally not included in the public PR description."""
+    del unmatched
     if not rows:
         return ""
     lines = ["## Verification", ""]
@@ -305,18 +306,6 @@ def verification_markdown(rows: list[dict[str, Any]], unmatched: list[dict[str, 
             lines.append(f"- ✅ **{row['criterion']}** — {row['evidence']}")
         else:
             lines.append(f"- ⚠️ **{row['criterion']}** — no evidence given")
-    if unmatched:
-        lines.append("")
-        lines.append("### Reconciliation notes")
-        lines.append("")
-        for e in unmatched:
-            text = str(e.get("criterion") or "").strip()
-            detail = str(e.get("evidence") or e.get("reason") or "").strip()
-            lines.append(
-                f"- Evidence was given for \"{text}\", which does not match any acceptance "
-                f"criterion verbatim: {detail or 'no further detail given'}. Check whether this "
-                "covers one of the ⚠️ rows above before treating it as missing."
-            )
     return "\n".join(lines) + "\n"
 
 
@@ -338,7 +327,7 @@ def apply_verification(body: str, criteria: list[str], verified: Any) -> str:
     criteria (and older results) are unaffected."""
     if not _dicts(verified):
         return body
-    section = verification_markdown(reconcile(criteria, verified), unmatched_worker_entries(criteria, verified))
+    section = verification_markdown(reconcile(criteria, verified))
     if not section:
         return body
     stripped = _strip_verification(body).rstrip()

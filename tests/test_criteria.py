@@ -248,7 +248,7 @@ def test_normalize_verified_rejects_empty_malformed_or_non_done_attestations_and
     assert len(normalized[0]["evidence"]) == 1000
 
 
-def test_verification_markdown_surfaces_reconciliation_notes():
+def test_verification_markdown_keeps_unmatched_evidence_out_of_public_body():
     criteria = ["A renders.", "B returns 200."]
     verified = [{"criterion": "A renders.", "evidence": "test_a"},
                 {"criterion": "B returns two hundred.", "evidence": "test_b"}]
@@ -256,10 +256,12 @@ def test_verification_markdown_surfaces_reconciliation_notes():
     unmatched = unmatched_worker_entries(criteria, verified)
     md = verification_markdown(rows, unmatched)
     assert "- ⚠️ **B returns 200.** — no evidence given" in md
-    assert "### Reconciliation notes" in md
-    assert "test_b" in md
-    # default (no unmatched passed) stays exactly as before
-    assert "### Reconciliation notes" not in verification_markdown(rows)
+    assert "Reconciliation notes" not in md
+    assert "test_b" not in md
+    # Passing diagnostics is intentionally equivalent to omitting them from the public body.
+    assert md == verification_markdown(rows)
+    body = apply_verification("## What\n\nA change.\n", criteria, verified)
+    assert "Reconciliation notes" not in body and "test_b" not in body
 
 
 def test_criteria_counts():
@@ -301,7 +303,7 @@ def test_review_brief_shows_the_authors_verification(garden):
     assert "The API returns 200 for a valid request.** — author gave no evidence" in text
 
 
-def test_review_brief_surfaces_reconciliation_notes_for_wording_drift(garden):
+def test_review_brief_surfaces_equivalent_evidence_guidance_for_wording_drift(garden):
     store = Store(garden)
     t = store.task("DM-001")
     t.body = CRITERIA_BODY
@@ -314,7 +316,10 @@ def test_review_brief_surfaces_reconciliation_notes_for_wording_drift(garden):
     text = review_brief(store, store.task("DM-001"), branch="b", base="main", pr_title="T",
                         pr_body="B", diff="+a", max_diff_chars=1000, verified=verified)
     assert "The widget renders on the home page.** — author gave no evidence" in text
-    assert "### Reconciliation notes" in text
+    assert "### Evidence with different wording" in text
+    assert "Judge whether it provides equivalent evidence" in text
+    assert "do not require the author to repeat criterion text verbatim" in text
+    assert "Reconciliation" not in text
     assert "The widget shows up on the home page." in text and "test_widget" in text
 
 
