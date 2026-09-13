@@ -121,9 +121,12 @@ def register(app: FastAPI, site: Site) -> None:
     def herbarium(request: Request):
         s = hub.fresh()
         all_events = EventLog(s.config.garden_dir / "events.jsonl").read()
+        allowed = site.allowed_projects(request)
         sched = hub.reader()
         entries = []
         for p in s.products():
+            if allowed is not None and p.name not in allowed:
+                continue
             for ph in p.phases:
                 if not ph.closed:
                     continue

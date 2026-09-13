@@ -35,7 +35,17 @@ from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .access import OPERATOR_MUTATION, OPERATOR_READ, WORKER_PROTOCOL, request_access
+from .access import (
+    OPERATOR_MUTATION,
+    OPERATOR_READ,
+    WORKER_PROTOCOL,
+    request_access,
+)
+
+VIEWER_DISABLED_READ_PATHS = frozenset({
+    "/api/control/status", "/api/maintenance", "/api/worker-diagnostics", "/api/workers",
+    "/now/workers",
+})
 
 
 def safe_relative_path(value: str) -> str:
@@ -179,8 +189,8 @@ def _origin_of(url: str) -> str:
 _LOOPBACK_BINDS = frozenset({"", "0.0.0.0", "::", "[::]", "*", "localhost", "127.0.0.1", "::1", "[::1]"})
 
 
-def server_origins(host: str, port: int | None = None) -> list[str]:
-    """The http origins that address `garden serve` itself, for the origin allowlist.
+def server_origins(host: str, port: int | None = None, scheme: str = "http") -> list[str]:
+    """The origins that address `garden serve` itself, for the origin allowlist.
 
     A loopback or wildcard bind is reached as localhost, 127.0.0.1 or [::1]; a specific host
     is reached as itself. The request's own `Host` header is deliberately not used to derive
@@ -189,7 +199,7 @@ def server_origins(host: str, port: int | None = None) -> list[str]:
     h = (host or "").strip().lower()
     hosts = ["localhost", "127.0.0.1", "[::1]"] if h in _LOOPBACK_BINDS else [h]
     suffix = f":{port}" if port else ""
-    return [f"http://{name}{suffix}" for name in hosts]
+    return [f"{scheme}://{name}{suffix}" for name in hosts]
 
 
 def origin_problem(headers: Headers, allowed: Iterable[str] = ()) -> str:
@@ -217,34 +227,49 @@ class OriginCheck:
     """ASGI middleware: refuse a POST (or any unsafe method) whose Origin/Referer is not an allowed origin."""
 
     def __init__(self, app: ASGIApp, allowed_origins: Iterable[str] = (), worker_tokens: Iterable[str] = (),
-                 worker_authenticator: Callable[[str], bool] | None = None, operator_token: str = "",
-                 require_operator_auth: bool = False):
+                 worker_authenticator: Callable[[str], Any | None] | None = None, operator_token: str = "",
+                 require_operator_auth: bool = False,
+                 member_authenticator: Callable[[str], Any | None] | None = None,
+                 local_session_authenticator: Callable[[], Any | None] | None = None,
+                 member_authorizer: Callable[[Any, str, str], bool] | None = None,
+                 viewer_only: bool = False):
         self.app = app
         self.allowed = [str(o) for o in allowed_origins]
         self.worker_tokens = {str(t) for t in worker_tokens if t}
         self.worker_authenticator = worker_authenticator
         self.operator_token = operator_token
         self.require_operator_auth = require_operator_auth
+        self.member_authenticator = member_authenticator
+        self.local_session_authenticator = local_session_authenticator
+        self.member_authorizer = member_authorizer
+        self.viewer_only = viewer_only
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http":
             method = str(scope.get("method", "GET")).upper()
             path = str(scope.get("path", ""))
+            access = request_access(method, path)
+            if self.viewer_only and (
+                access in {WORKER_PROTOCOL, OPERATOR_MUTATION} or path in VIEWER_DISABLED_READ_PATHS
+            ):
+                await PlainTextResponse("Not Found", status_code=404)(scope, receive, send)
+                return
             headers = Headers(scope=scope)
             auth = headers.get("authorization") or ""
             supplied = auth[7:] if auth.startswith("Bearer ") else ""
+            worker_identity: Any | None = None
             worker_ok = bool(supplied) and any(
                 secrets.compare_digest(supplied, token) for token in self.worker_tokens
             )
             if (not worker_ok and supplied and self.worker_authenticator and path.startswith("/api/runs/")):
                 try:
-                    worker_ok = self.worker_authenticator(supplied)
+                    worker_identity = self.worker_authenticator(supplied)
+                    worker_ok = bool(worker_identity)
                 except (OSError, TypeError, ValueError):
                     worker_ok = False
             operator_ok = bool(supplied and self.operator_token) and secrets.compare_digest(
                 supplied, self.operator_token
             )
-            access = request_access(method, path)
             if access == WORKER_PROTOCOL and not worker_ok:
                 # Preserve browser CSRF diagnostics at worker ingress too. A real worker
                 # has no Origin and must still authenticate; an untrusted browser origin
@@ -259,7 +284,18 @@ class OriginCheck:
                     "worker authentication required", status_code=status, headers=response_headers
                 )(scope, receive, send)
                 return
-            if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth and not operator_ok:
+            principal = self.member_authenticator(supplied) if supplied and self.member_authenticator else None
+            if principal is None and not supplied and self.local_session_authenticator:
+                principal = self.local_session_authenticator()
+            if worker_identity is not None:
+                scope.setdefault("state", {})["worker_identity"] = worker_identity
+            if principal is not None:
+                scope.setdefault("state", {})["principal"] = principal
+            member_ok = bool(principal) and (
+                self.member_authorizer(principal, method, path) if self.member_authorizer else True
+            )
+            if access in {OPERATOR_READ, OPERATOR_MUTATION} and self.require_operator_auth \
+                    and not operator_ok and not member_ok:
                 status = 401 if not auth else 403
                 response_headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
                 await PlainTextResponse(

@@ -233,6 +233,21 @@ DEFAULTS: dict[str, Any] = {
     },
     "doctor": {"min_free_mb": 2048},
     "name": "garden",
+    # Membership records and credential verifiers live in .garden/members.json, never here.
+    "multiplayer": {
+        "enabled": False,
+        # Enrollment belongs in garden.local.yaml. The secret itself stays in the named
+        # environment variable, outside both shared context and Config.
+        "garden_id": "",
+        "coordinator_url": "",
+        "member_id": "",
+        "installation_id": "",
+        "credential_env": "",
+        "transport": "",
+        # TLS material remains host-private; these are paths relative to the garden root.
+        "tls_certfile": "",
+        "tls_keyfile": "",
+    },
     "principles_digest": "principles/00-index.md",
     "principles_dir": "principles",
     "runner": "local",

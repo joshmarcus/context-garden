@@ -33,7 +33,8 @@ from ..github import (
     is_safe_pr_url,
 )
 from ..harness import DIFFICULTIES
-from ..model import Status, Task, now_iso
+from ..model import Status, Task, effective_owner, now_iso
+from ..multiplayer_client import MultiplayerClient, MultiplayerUnavailable
 from ..notify import notify, retry_pending, should_notify
 from ..runner import get_runner
 from ..runner.base import Runner
@@ -87,13 +88,22 @@ def _tick_thread_lock(path: Path) -> Iterator[None]:
         yield
 
 __all__ = [
-    "REVIEW_MODES", "WORKER_MODES", "Scheduler", "State", "StateCorruptionError",
+    "REVIEW_MODES", "WORKER_MODES", "MultiplayerExecutionUnavailable", "Scheduler", "State", "StateCorruptionError",
     "TickReport", "_TaskState",
 ]
 
 WORKER_MODES = frozenset({"work", "revise", "resume", "trial", "rebase", "investigation"})  # count against max_parallel
 REVIEW_MODES = frozenset({"review", "persona", "compare"})       # count against review_parallel
 CHECK_MODES = frozenset({"check"})  # detached pre-PR/base-probe/pre-merge checks; no worker slot
+MULTIPLAYER_EXECUTION_UNAVAILABLE = (
+    "multiplayer execution is waiting for an authenticated operator assignment and "
+    "scoped coordinator; identity-less scheduling is disabled"
+)
+NO_WORK_ASSIGNMENT = "No work assignment"
+
+
+class MultiplayerExecutionUnavailable(RuntimeError):
+    """The legacy scheduler has no authenticated multiplayer execution principal."""
 
 
 class Scheduler(
@@ -127,6 +137,158 @@ class Scheduler(
     `_transition()`; everything else lives in the mixin whose phase it belongs to, so two
     features in different parts of the loop edit different files."""
 
+    def require_execution_authority(self) -> None:
+        """Require an authenticated coordinator client in explicit multiplayer mode."""
+        if self.cfg.get("multiplayer.enabled", False) and self.coordinator is None:
+            raise MultiplayerExecutionUnavailable(MULTIPLAYER_EXECUTION_UNAVAILABLE)
+
+    def execution_status(self) -> dict[str, str]:
+        """Describe this installation's execution boundary without starting work."""
+        if not self.cfg.get("multiplayer.enabled", False):
+            return {"state": "legacy", "label": "Single-user execution"}
+        if self.coordinator is None:
+            return {"state": "unavailable", "label": MULTIPLAYER_EXECUTION_UNAVAILABLE}
+        try:
+            view = self.coordinator.refresh()
+        except MultiplayerUnavailable as exc:
+            return {"state": "unavailable", "label": str(exc)}
+        snapshot = view.snapshot
+        if snapshot.get("role") == "viewer":
+            return {"state": "viewer", "label": "Viewer session — execution is disabled"}
+        assignment = snapshot.get("assignment")
+        if not assignment:
+            return {"state": "unassigned", "label": NO_WORK_ASSIGNMENT}
+        if not assignment.get("enabled"):
+            return {"state": "paused", "label": "Work assignment is paused"}
+        return {"state": "assigned", "label": (
+            f"Executing {assignment.get('project', '')}/{assignment.get('phase', '')}"
+        )}
+
+    def _refresh_execution_authority(self) -> bool:
+        """Load the current member cursor; an unassigned installation is safely idle."""
+        self.require_execution_authority()
+        if self.coordinator is None:
+            self._authority_snapshot = None
+            return True
+        view = self.coordinator.refresh(allow_stale=False)
+        snapshot = view.snapshot
+        assignment = snapshot.get("assignment")
+        self._authority_snapshot = snapshot
+        acknowledge = getattr(self.coordinator, "acknowledge_cancellations", None)
+        if acknowledge is not None:
+            acknowledge(snapshot, self._cancel_fenced_scope)
+        return bool(assignment and assignment.get("enabled"))
+
+    def _cancel_fenced_scope(self, kind: str, scope: str) -> bool:
+        """Stop this installation's old-generation workers without adopting their result."""
+        if kind == "task":
+            runs = [run for run in self.runs.active() if run.task_id == scope]
+        elif kind == "phase":
+            product, separator, phase = scope.partition("/")
+            if not separator:
+                return False
+            tasks = self.store.tasks()
+            runs = [run for run in self.runs.active()
+                    if (task := tasks.get(run.task_id)) is not None
+                    and task.product == product and task.phase == phase]
+        else:
+            return False
+        for run in runs:
+            run.kill()
+        if any(not run.process_finished() for run in runs):
+            return False
+        for run in runs:
+            run.status = "cancelled"
+            run.finished_at = now_iso()
+            run.error = "fenced by multiplayer ownership handoff"
+            run.save()
+        return True
+
+    def _task_authority(self, task: Task) -> dict[str, Any] | None:
+        """Return current authority only inside this operator's assigned project/phase."""
+        if self.coordinator is None:
+            return None
+        snapshot = getattr(self, "_authority_snapshot", None) or self.coordinator.refresh(
+            allow_stale=False
+        ).snapshot
+        assignment = snapshot.get("assignment") or {}
+        if (not assignment.get("enabled") or assignment.get("member_id") != self.coordinator.member_id
+                or assignment.get("project") != task.product
+                or assignment.get("phase") != task.phase):
+            raise PermissionError(f"{task.id} is outside the authenticated member's assignment")
+        row = next((value for value in snapshot.get("authority", [])
+                    if value.get("kind") == "task" and value.get("scope") == task.id), None)
+        if row is None or row.get("owner") != self.coordinator.member_id:
+            raise PermissionError(f"{task.id} is not owned by the authenticated member")
+        local_owner = effective_owner(task, self.store.phase(task.product, task.phase))[0]
+        if local_owner != self.coordinator.member_id:
+            raise PermissionError(f"{task.id} local effective owner disagrees with authority")
+        return row
+
+    def task_is_authorized(self, task: Task) -> bool:
+        if self.coordinator is None:
+            return True
+        try:
+            self._task_authority(task)
+        except (PermissionError, MultiplayerUnavailable):
+            return False
+        return True
+
+    def phase_is_authorized(self, product: str, phase: str) -> bool:
+        """Phase-wide work belongs only to its explicit owner, never to an administrator."""
+        if self.coordinator is None:
+            return True
+        snapshot = getattr(self, "_authority_snapshot", None) or self.coordinator.refresh(
+            allow_stale=False
+        ).snapshot
+        scope = f"{product}/{phase}"
+        return any(row.get("kind") == "phase" and row.get("scope") == scope
+                   and row.get("owner") == self.coordinator.member_id
+                   for row in snapshot.get("authority", []))
+
+    def _phase_authority(self, product: str, phase: str) -> dict[str, Any]:
+        if self.coordinator is None:
+            return {}
+        snapshot = getattr(self, "_authority_snapshot", None) or self.coordinator.refresh(
+            allow_stale=False
+        ).snapshot
+        scope = f"{product}/{phase}"
+        row = next((value for value in snapshot.get("authority", [])
+                    if value.get("kind") == "phase" and value.get("scope") == scope), None)
+        if row is None or row.get("owner") != self.coordinator.member_id:
+            raise PermissionError(f"{scope} phase operation is not owned by the authenticated member")
+        return row
+
+    def require_phase_authority(self, product: str, phase: str) -> None:
+        self._phase_authority(product, phase)
+
+    @contextmanager
+    def phase_effect(self, product: str, phase: str, effect_key: str) -> Iterator[None]:
+        row = self._phase_authority(product, phase)
+        if self.coordinator is None:
+            yield
+            return
+        with self.coordinator.effect(
+            kind="phase", scope=f"{product}/{phase}", owner_id=self.coordinator.member_id,
+            authority_generation=int(row["authority_generation"]),
+            expected_version=int(row["version"]), effect_key=effect_key,
+        ):
+            yield
+
+    @contextmanager
+    def task_effect(self, task: Task, effect_key: str) -> Iterator[None]:
+        """Validate current ownership/generation and fence a scheduler mutation."""
+        row = self._task_authority(task)
+        if self.coordinator is None or row is None:
+            yield
+            return
+        with self.coordinator.effect(
+            kind="task", scope=task.id, owner_id=self.coordinator.member_id,
+            authority_generation=int(row["authority_generation"]),
+            expected_version=int(row["version"]), effect_key=effect_key,
+        ):
+            yield
+
     def _restore_operational_history(self) -> None:
         """Terminal history becomes ordinary state again before a task can run."""
         operational = {task.id for task in self.store.tasks().values() if not task.status.terminal}
@@ -146,6 +308,12 @@ class Scheduler(
     ):
         self.store = store
         self.cfg = store.config
+        try:
+            self.coordinator = MultiplayerClient.from_config(self.cfg)
+        except MultiplayerUnavailable:
+            # Existing multiplayer startup remains fail-closed and can render its setup
+            # diagnostic even when enrollment is incomplete.
+            self.coordinator = None
         # Scheduler-owned location for the delivery ledger; never comes from garden.yaml.
         self.cfg.data["_notification_delivery_path"] = str(self.cfg.garden_dir / "notifications.json")
         self.runs = RunStore(self.cfg.garden_dir)
@@ -223,6 +391,7 @@ class Scheduler(
                 ),
             )
         self._runner_factory = runner_factory
+        self._authority_snapshot: dict[str, Any] | None = None
         if upgrader is None:
             from ..upgrade import Upgrader
 
@@ -715,6 +884,9 @@ class Scheduler(
 
     def _transition(self, task: Task, status: Status, note: str, needs_human: bool = False,
                     notify_now: bool = True, base_merged: bool | None = None) -> None:
+        # Direct CLI/HTTP lifecycle actions do not necessarily originate in tick(). This
+        # final common boundary still rejects stale ownership before their durable write.
+        self._task_authority(task)
         old = task.status.value
         task.status = status
         task.log(note)
@@ -824,30 +996,28 @@ class Scheduler(
             rep.errors.append(f"retro reap failed: {e}")
         tasks = self.store.tasks()
         for t in list(tasks.values()):
+            if not self.task_is_authorized(t):
+                continue
             try:
-                review_pending = bool(self.state.get(t.id).get("review_run"))
-                if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
-                    rep.reaped.append(t.id)
-                    continue
-                if self.state.get(t.id).get("check_run"):
-                    # A check run in flight owns this task's continuation: reap it when it
-                    # finishes, and never let the worker reaper touch the task meanwhile.
-                    if self.reap_check(t, rep):
+                with self.task_effect(t, f"reap:{t.id}"):
+                    review_pending = bool(self.state.get(t.id).get("review_run"))
+                    if self.state.get(t.id).get("edit_run") and self.reap_edit(t, rep):
                         rep.reaped.append(t.id)
-                    continue
-                if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in (
-                    "running", "comparing", "comparison_deferred",
-                ):
-                    if self.reap_trial(t, rep):
+                        continue
+                    if self.state.get(t.id).get("check_run"):
+                        if self.reap_check(t, rep):
+                            rep.reaped.append(t.id)
+                        continue
+                    if t.status == Status.RUNNING and self.state.get(t.id).get("trial", {}).get("status") in (
+                        "running", "comparing", "comparison_deferred",
+                    ):
+                        if self.reap_trial(t, rep):
+                            rep.reaped.append(t.id)
+                        continue
+                    if t.status == Status.RUNNING and self.reap(t, rep):
                         rep.reaped.append(t.id)
-                    continue
-                if t.status == Status.RUNNING and self.reap(t, rep):
-                    rep.reaped.append(t.id)
-                # A review is its own run, not part of the task's status machine. A
-                # failed rebase can put the task back in READY before its already-finished
-                # review is collected.
-                if review_pending and self.reap_review(t, rep):
-                    rep.reaped.append(t.id)
+                    if review_pending and self.reap_review(t, rep):
+                        rep.reaped.append(t.id)
             except Exception as e:  # noqa: BLE001 - keep the loop alive
                 rep.errors.append(f"{t.id}: reap failed: {e}")
                 self.log(f"{t.id}: reap failed: {e}")
@@ -869,6 +1039,9 @@ class Scheduler(
         work (a review the old process reaped in its last tick but died before persisting) nor
         re-runs it, and only then does the caller tick. Safe to call more than once: an
         already-reaped run is skipped (CG-198)."""
+        self.require_execution_authority()
+        if not self._refresh_execution_authority():
+            return TickReport()
         with self._controller_lock():
             return self._reap_on_start_locked()
 
@@ -885,6 +1058,7 @@ class Scheduler(
         self.confirm_restarted_upgrade()
         with self._step(rep, "reap"):
             self._reload_config_if_safe()  # CG-192 / CG-242: see tick()
+            self.require_execution_authority()
             self._reap_all(rep)
         # Resume the same durable reconciliation generation the previous controller left,
         # rather than waiting a whole cadence for the first ordinary pass.
@@ -899,6 +1073,12 @@ class Scheduler(
 
     def tick(self, dispatch: bool | None = None) -> TickReport:
         """Run one controller-owned pass, serialised across processes for this garden."""
+        self.require_execution_authority()
+        # Check the authenticated cursor before even opening scheduler state. This makes
+        # starting an unassigned watcher observational: no recovery, cleanup, upgrade,
+        # phase, resource, run, provider, or task write can escape through an idle pass.
+        if not self._refresh_execution_authority():
+            return TickReport()
         self._closing_review_claims.clear()
         with self._controller_lock():
             rep = self._tick_locked(dispatch)
@@ -939,6 +1119,10 @@ class Scheduler(
             # change against an in-flight run's fence manifest until it's safe or an operator
             # confirms it (CG-242) — before anything else in this pass can act on it.
             self._reload_config_if_safe()
+            # Enabling multiplayer is live-reloadable. Re-check the adopted config so a
+            # legacy watcher cannot execute one final unbound pass after that switch.
+            if not self._refresh_execution_authority():
+                return rep
             retry_pending(self.cfg.data)
             with gitops.tick_read_cache(), ci_status.tick_query_cache():
                 self._tick_body(rep, dispatch)
@@ -975,6 +1159,8 @@ class Scheduler(
                 self.refresh_open_prs(tasks, rep) if self.github.available else ({}, set())
             )
             for t in list(tasks.values()):
+                if not self.task_is_authorized(t):
+                    continue
                 if self.state.get(t.id).get("check_run"):
                     continue  # a check run in flight owns this task; don't re-poll it (CG-182)
                 if t.pr and t.status.pr_pending:
@@ -982,19 +1168,23 @@ class Scheduler(
                         continue
                     try:
                         number = self._pr_number(t)
-                        self.poll(t, rep, observed.get((t.product, number)) if number else None)
+                        with self.task_effect(t, f"poll:{t.id}"):
+                            self.poll(t, rep, observed.get((t.product, number)) if number else None)
                         rep.polled.append(t.id)
                     except Exception as e:  # noqa: BLE001
                         rep.errors.append(f"{t.id}: poll failed: {e}")
                         self.log(f"{t.id}: poll failed: {e}")
         with self._step(rep, "base_reprobe"):
             for t in list(tasks.values()):
+                if not self.task_is_authorized(t):
+                    continue
                 # A task parked because its base branch was broken re-probes the base and continues
                 # on its own once it goes green — a mechanical rebase and re-check, no worker.
                 if self._manual_reserved(t):
                     continue
                 try:
-                    self._reprobe_base_broken(t, rep)
+                    with self.task_effect(t, f"base-reprobe:{t.id}"):
+                        self._reprobe_base_broken(t, rep)
                 except Exception as e:  # noqa: BLE001
                     rep.errors.append(f"{t.id}: base re-probe failed: {e}")
                     self.log(f"{t.id}: base re-probe failed: {e}")

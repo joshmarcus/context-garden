@@ -121,6 +121,7 @@ class CheckRunMixin:
         reap resumes. The task shows it on its page, but it does not consume a worker slot.
         `extra` adds
         keys to the job payload (e.g. a CI check's flaky-rerun budget)."""
+        self.require_execution_authority()
         if self._manual_reserved(task):
             raise RuntimeError(f"{task.id} is reserved in Manual mode")
         self.require_maintenance_running()

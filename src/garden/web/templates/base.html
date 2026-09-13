@@ -415,6 +415,13 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
     <span class="notify-state faint" id="notify-state"></span>
   </div>
   <div class="foot">
+    {% if identity_status %}
+    <span>identity: {{ identity_status }}</span>
+    <span>viewing: {{ viewing_project }}</span>
+    {% endif %}
+    {% if execution_status.state != 'legacy' %}
+    <span>execution: {{ execution_status.label }}</span>
+    {% endif %}
     {% set sh = scheduler_status.effective %}{% set se = scheduler_status.standalone.records[0] if scheduler_status.standalone.records else {} %}
     {% if dispatch_paused %}
     <span style="color:var(--warn)">dispatch paused{% if pause_ctrl.by %} · by {{ pause_ctrl.by }}{% endif %}{% if pause_ctrl.at %} at {{ pause_ctrl.at[11:16] }}{% endif %}{% if pause_ctrl.reason %} · {{ pause_ctrl.reason }}{% endif %} · scheduler: {{ sh.label }} · embedded watch {{ scheduler_status.embedded }}</span>
@@ -427,6 +434,14 @@ pre.log { margin:0; max-height:70vh; overflow:auto; background:var(--surface-2);
   </div>
 </aside>
 <main>
+{% if coordinator_status.configured and coordinator_status.stale %}
+<div class="warn" role="status"><b>Shared garden is offline.</b> Showing the last authorized view; changes are disabled until authority refreshes.{% if coordinator_status.error %} {{ coordinator_status.error }}{% endif %}</div>
+{% elif coordinator_status.projection_lag %}
+<div class="warn" role="status"><b>Local projection is behind shared authority.</b> {{ coordinator_status.projection_lag|join(', ') }}</div>
+{% endif %}
+{% if execution_status.state == 'unassigned' %}
+<div class="warn" role="status"><b>No work assignment.</b> This member can inspect authorized work, but the local scheduler is idle until an administrator assigns a project and phase.</div>
+{% endif %}
 {% if flash %}
 <div class="warn flash">
   <b>{{ flash }}</b>

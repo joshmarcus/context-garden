@@ -340,6 +340,11 @@ def scrubbed_env(config: dict[str, Any] | None, setup: dict[str, Any] | None = N
     credentials."""
     patterns = pass_env_patterns(config)
     env = {k: v for k, v in os.environ.items() if any(fnmatch.fnmatchcase(k, p) for p in patterns)}
+    # Coordinator membership authorizes the local operator process, never a spawned worker.
+    # Keep it out even when an overly broad worker_env glob would otherwise pass it through.
+    coordinator_credential = str(((config or {}).get("multiplayer") or {}).get("credential_env") or "")
+    if coordinator_credential:
+        env.pop(coordinator_credential, None)
     env.pop("CLAUDECODE", None)
     if "HOME" not in env:  # dropped from PASS_ENV; give an isolated scratch home, not the operator's
         env["HOME"] = worker_home(worktree)
