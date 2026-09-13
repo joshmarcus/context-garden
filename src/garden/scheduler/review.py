@@ -13,7 +13,7 @@ from typing import Any
 
 from .. import gitops
 from ..criteria import criteria_counts, parse_criteria, required_evidence
-from ..github import GitHubError, mark_garden_comment
+from ..github import GitHubError, is_git_remote_url, mark_garden_comment
 from ..harness import DIFFICULTIES
 from ..model import Status, Task, dispatch_sort_key, ensure_open, now_iso
 from ..notify import notify
@@ -940,6 +940,14 @@ class ReviewMixin:
         run.env_snapshot.update({"product": task.product,
                                  "execution_timeout_minutes": self.cfg.product_timeout_minutes(task.product),
                                  "resource_weight": self.cfg.product_resource_weight(task.product)})
+        if runner.remote:
+            run.source_head = review_head
+            configured_repo = str(task.repo or self.cfg.product_repo(task.product))
+            run.env_snapshot["remote_repo"] = (
+                configured_repo if is_git_remote_url(configured_repo) else gitops.git(
+                    "remote", "get-url", "origin", cwd=wt
+                ).strip()
+            )
         review_difficulty = str(self.effective("review.difficulty", None, task.product) or task.difficulty or "medium")
         if review_difficulty not in DIFFICULTIES:
             review_difficulty = "medium"

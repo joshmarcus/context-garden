@@ -10,6 +10,7 @@ from .. import gitops
 from ..brief import build_brief
 from ..canonical import configured_root
 from ..criteria import parse_criteria
+from ..github import is_git_remote_url
 from ..graph import blockers, ready, stack_parents
 from ..model import Phase, Status, Task, ensure_open, now_iso, phase_refusal
 from ..notify import notify
@@ -806,7 +807,35 @@ class DispatchMixin:
         # empty for a branch never pushed to origin yet (a fresh `work`/`trial` round), in which
         # case the push falls back to its previous, non-leased behaviour.
         start_head = gitops.remote_head(wt, branch) if wt is not None else ""
-        if completion_mode == "pushed" and not start_head:
+        if runner.remote:
+            # A remote worker has no scheduler-prepared worktree of its own to read a head
+            # from. Resolve the controller checkout and the branch's current remote head here,
+            # at dispatch time, while this run is still "preparing" and not yet claimable — a
+            # claim itself must never clone, fetch, or otherwise resolve a checkout (CG-035).
+            try:
+                repo = self.repo_for(task)
+                if not gitops.fetch(repo):
+                    raise gitops.GitError(f"could not fetch controller checkout {repo}")
+                # A new task branch has no remote ref yet. Its worker will start from the
+                # base branch, so bind that exact base revision rather than leave the claim
+                # without an immutable checkout identity.
+                start_head = gitops.remote_head(repo, branch)
+                prepared_source_head = start_head or gitops.remote_head(repo, base)
+                if not prepared_source_head:
+                    raise gitops.GitError(f"could not resolve {branch} or base {base} in {repo}")
+                run.env_snapshot["prepared_source_head"] = prepared_source_head
+                # The independent host needs the checkout's clone URL, but resolving a
+                # configured local path is controller work. Save it with the head so claims
+                # need only bind already-prepared data.
+                configured_repo = str(task.repo or self.cfg.product_repo(task.product))
+                run.env_snapshot["remote_repo"] = (
+                    configured_repo if is_git_remote_url(configured_repo) else gitops.git(
+                        "remote", "get-url", "origin", cwd=repo
+                    ).strip()
+                )
+            except gitops.GitError:
+                raise
+        elif completion_mode == "pushed" and not start_head:
             repo = self.repo_for(task)
             gitops.fetch(repo)
             start_head = gitops.remote_head(repo, branch)
