@@ -196,6 +196,67 @@ def test_legacy_unconstrained_source_can_continue_unconstrained(sched):
     assert len(sched.runs.runs_for(task.id)) == 1
 
 
+def test_empty_envelope_continuation_rejects_owner_handoff(sched):
+    task = sched.store.task("DM-001")
+    task.owner = "bob"
+    sched.store.save(task)
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": {},
+        "execution_owner": "alice",
+        "execution_envelope": {"owner": "alice", "worker_instance": ""},
+    })
+    source.save()
+
+    with pytest.raises(ResourcePressureError, match="source activity belongs.*current owner"):
+        sched._execution_match(task, "review", source_run=source)
+
+    assert source.status == "done"
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
+def test_empty_envelope_continuation_accepts_same_owner(sched):
+    task = sched.store.task("DM-001")
+    task.owner = "alice"
+    sched.store.save(task)
+    source = sched.runs.new_run(task.id, "local", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": {},
+        "execution_owner": "alice",
+        "execution_envelope": {"owner": "alice", "worker_instance": ""},
+    })
+    source.save()
+
+    requirements, match = sched._execution_match(task, "review", source_run=source)
+
+    assert requirements.empty
+    assert match is None
+
+
+def test_empty_envelope_continuation_enforces_pinned_instance(sched):
+    task = sched.store.task("DM-001")
+    _configure_capability_worker(sched, task, activities=["work", "review"])
+    task.execution_requirements = parse_execution_requirements({})
+    sched.store.save(task)
+    source = sched.runs.new_run(task.id, "remote", mode="work")
+    source.status = "done"
+    source.env_snapshot.update({
+        "execution_requirements": {},
+        "execution_owner": "alice",
+        "worker_instance": "retired-builder",
+        "execution_envelope": {"owner": "alice", "worker_instance": "retired-builder"},
+    })
+    source.save()
+
+    with pytest.raises(ResourcePressureError, match="pinned worker instance is not configured"):
+        sched._execution_match(task, "review", source_run=source)
+
+    assert source.status == "done"
+    assert len(sched.runs.runs_for(task.id)) == 1
+
+
 def test_revision_entrypoint_checkpoints_first_added_requirement(sched):
     task = sched.store.task("DM-001")
     source = sched.runs.new_run(task.id, "local", mode="work")
