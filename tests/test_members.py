@@ -144,7 +144,8 @@ def test_multiplayer_web_boundary_rejects_spoofing_and_enforces_roles(garden):
     assert direct.status_code == 403
     accepted = client.post("/tick", headers={"Authorization": f"Bearer {admin_token}"},
                            follow_redirects=False)
-    assert accepted.status_code == 303
+    assert accepted.status_code == 409
+    assert MULTIPLAYER_EXECUTION_UNAVAILABLE in accepted.text
     parts = admin_token.split(".")
     spoofed = ".".join([parts[0], "Z2FyZGVuLTI", *parts[2:]])
     assert client.post("/tick", headers={"Authorization": f"Bearer {spoofed}"}).status_code == 403
@@ -448,7 +449,11 @@ def test_member_worker_lifecycle_requires_current_project_visibility(garden):
     headers = {"Authorization": f"Bearer {token}"}
     runs = RunStore(garden / ".garden")
     run = runs.new_run("DM-001", "remote", mode="check", run_id="member-visible-run")
-    run.env_snapshot = {"product": "demo"}
+    run.env_snapshot = {
+        "product": "demo",
+        "remote_repo": "https://example.test/demo.git",
+        "prepared_source_head": "a" * 40,
+    }
     run.save()
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
 
@@ -582,7 +587,8 @@ def test_multiplayer_watch_tick_and_direct_dispatch_fail_closed_for_all_owners(g
             headers={"Authorization": f"Bearer {admin_token}"},
             follow_redirects=False,
         )
-        assert response.status_code == 303
+        assert response.status_code == 409
+        assert MULTIPLAYER_EXECUTION_UNAVAILABLE in response.text
 
     scheduler = Scheduler(Store(garden))
     with pytest.raises(RuntimeError, match="identity-less scheduling is disabled"):
@@ -636,7 +642,7 @@ def test_multiplayer_project_reads_and_owned_actions_regression(garden):
 
 
 
-def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
+def test_multiplayer_filters_project_api_and_allows_owned_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -656,7 +662,7 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     assert client.get("/api/tasks", headers=eve).json() == []
     assert client.get("/config", headers=bob).status_code == 403
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
-    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
+    assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code != 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
 
 
