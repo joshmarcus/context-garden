@@ -50,7 +50,14 @@ def scaled_concurrency(value: Any, multiplier: float) -> int:
 
 def resolve(cfg: Any, name: str | None) -> dict[str, Any]:
     """Resolve a profile's effective facets against this configuration."""
-    stop = dict(stops(cfg).get(normalized_name(cfg, name)) or {})
+    resolved_name = normalized_name(cfg, name)
+    custom_profiles = cfg.get("profiles") or {}
+    # Built-in Default is the absence of a profile layer.  Keeping it empty preserves
+    # configuration provenance and late-bound fallbacks such as review_parallel=None.
+    # A garden-authored profile named default remains an intentional explicit override.
+    if resolved_name == "default" and resolved_name not in custom_profiles:
+        return {}
+    stop = dict(stops(cfg).get(resolved_name) or {})
     multiplier = stop.pop("multiplier", None)
     if multiplier is None:
         return stop

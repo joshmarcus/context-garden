@@ -45,6 +45,7 @@ def test_default_and_legacy_selections_use_configured_baseline(sched):
     sched.cfg.data["review_parallel"] = 3
     assert sched.operating_profile_name() == "default"
     assert sched.effective_max_parallel() == 7
+    assert sched.operating_profile() == {}
     sched.cfg.data["operating_profile"] = "balanced"
     assert sched.operating_profile_name() == "default"
     assert sched.review_parallel_limit() == 3
@@ -77,6 +78,14 @@ def test_resolve_preserves_custom_profiles():
                     "profiles": {"night": {"workers": 1}}}.get(key, default)
 
     assert resolve(Config(), "night") == {"workers": 1}
+
+
+def test_custom_default_profile_remains_an_explicit_override():
+    class Config:
+        def get(self, key, default=None):
+            return {"profiles": {"default": {"workers": 4, "reviews": 2}}}.get(key, default)
+
+    assert resolve(Config(), "default") == {"workers": 4, "reviews": 2}
 
 
 def test_cli_reports_default_and_accepts_fast(garden: Path):
