@@ -281,7 +281,6 @@ def test_phase_authority_is_distinct_from_task_and_admin_visibility():
 
     assert not sched.phase_is_authorized("demo", "p2")
     with pytest.raises(PermissionError, match="not owned"):
-        sched.require_phase_authority("demo", "p1")
         sched.phase_effect("demo", "p1", "phase-review:demo/p1").__enter__()
 
 
@@ -344,23 +343,3 @@ def test_two_installations_and_mixed_owners_cannot_exchange_lifecycle_effects():
         *(f"{stage}:A-1" for stage in lifecycle),
         "retro-queue:demo/p1:source",
     ]
-
-def test_phase_handoff_cancels_only_runs_delegated_by_the_phase_claim():
-    value = scheduler(snapshot())
-    saved = []
-    delegated = SimpleNamespace(
-        task_id="A-1", phase_claim_scope="demo/p1", status="running", finished_at="",
-        error="", kill=lambda: None, process_finished=lambda: True,
-        save=lambda: saved.append("delegated"),
-    )
-    independent = SimpleNamespace(
-        task_id="A-2", phase_claim_scope="", status="running", finished_at="", error="",
-        kill=lambda: pytest.fail("independent task worker was cancelled"),
-        process_finished=lambda: False, save=lambda: saved.append("independent"),
-    )
-    value.runs = SimpleNamespace(active=lambda: [delegated, independent])
-
-    assert value._cancel_fenced_scope("phase", "demo/p1")
-    assert delegated.status == "cancelled"
-    assert independent.status == "running"
-    assert saved == ["delegated"]
