@@ -956,6 +956,7 @@ def test_multiplayer_filters_project_reads_and_allows_owned_api_actions(garden):
 
 
  
+ 
 def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": True}
@@ -971,6 +972,21 @@ def test_multiplayer_worker_protocol_uses_member_bound_installation(garden):
 
 
  
+ 
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
  
 def test_legacy_loopback_behavior_is_unchanged(garden):
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
