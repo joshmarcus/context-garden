@@ -525,6 +525,36 @@ class GitStateStore:
         )
         return sorted(set(blockers))
 
+    @staticmethod
+    def _require_active_installation(
+        state: dict[str, Any], actor: str, installation: str
+    ) -> dict[str, Any]:
+        member = state["members"].get(actor) or {}
+        if state["installations"].get(installation) != actor or not member.get("active"):
+            raise PermissionError("handoff installation is not bound to an active member")
+        return member
+
+    @staticmethod
+    def _require_authorized_owner(
+        state: dict[str, Any], entity: dict[str, Any], owner: str
+    ) -> None:
+        """Require a nonempty handoff target that may own work in this project."""
+        if not owner:
+            return
+        member = state["members"].get(owner) or {}
+        if not member.get("active") or member.get("role", "member") not in {
+            "owner", "admin", "administrator", "member",
+        }:
+            raise PermissionError("handoff target is not an active execution member")
+        project = str(entity.get("project", ""))
+        if not project and entity.get("kind") == "phase":
+            project = str(entity.get("scope", "")).split("/", 1)[0]
+        visibility = member.get("project_visibility", member.get("visibility", "assigned"))
+        if not project or (
+            visibility != "all" and project not in (member.get("projects") or ())
+        ):
+            raise PermissionError("handoff target is not authorized for the entity project")
+
     def begin_handoff(
         self, operation_id: str, *, actor: str, installation: str,
         entity_key: str, expected_version: int, pending_owner: str,
@@ -539,15 +569,14 @@ class GitStateStore:
             entity = state["entities"].get(entity_key)
             if not entity or int(entity.get("version", 0)) != expected_version:
                 raise GitContention(f"stale entity version for {entity_key}")
-            member = state["members"].get(actor) or {}
-            if state["installations"].get(installation) != actor:
-                raise PermissionError("handoff installation is not enrolled")
+            member = self._require_active_installation(state, actor, installation)
             effective_owner = str(entity.get("owner", ""))
             administrator = member.get("role") in {"owner", "admin", "administrator"}
             if actor != effective_owner and not administrator:
                 raise PermissionError("only the effective owner or an administrator may begin handoff")
             if entity_key in state["handoffs"]:
                 raise GitCoordinationError("authority already has a pending handoff")
+            self._require_authorized_owner(state, entity, pending_owner)
             entity["draining"] = True
             entity["pending_owner"] = pending_owner
             entity["version"] = expected_version + 1
@@ -694,17 +723,20 @@ class GitStateStore:
         inputs = {"actor": actor, "installation": installation, "entity": entity_key}
 
         def mutate(state: dict[str, Any]) -> dict[str, Any]:
-            if state["installations"].get(installation) != actor:
-                raise PermissionError("handoff installation is not enrolled")
+            member = self._require_active_installation(state, actor, installation)
             handoff = state["handoffs"].get(entity_key)
             if not handoff:
                 raise GitCoordinationError("no pending handoff")
+            administrator = member.get("role") in {"owner", "admin", "administrator"}
+            if actor not in {handoff["from_owner"], handoff["pending_owner"]} and not administrator:
+                raise PermissionError("handoff completion requires a participating owner or administrator")
             blockers = self._handoff_blockers(state, entity_key)
             if blockers:
                 raise GitCoordinationError("handoff remains blocked by: " + ", ".join(blockers))
             if not handoff.get("stop_acknowledged") and not handoff.get("external_fence"):
                 raise GitCoordinationError("handoff requires bound stop acknowledgement or external fence")
             entity = state["entities"][entity_key]
+            self._require_authorized_owner(state, entity, handoff["pending_owner"])
             state["claims"].pop(entity_key, None)
             entity.update({
                 "owner": handoff["pending_owner"],

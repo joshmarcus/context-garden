@@ -55,13 +55,13 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
                 {
                     "admin": {"active": True, "role": "administrator"},
                     "alice": {
-                        "active": True,
+                        "active": True, "role": "member", "project_visibility": "all",
                         "assignment": {
                             "member_id": "alice", "project": "demo", "phase": "p1",
                             "enabled": True, "generation": 1,
                         },
                     },
-                    "bob": {"active": True},
+                    "bob": {"active": True, "role": "member", "project_visibility": "all"},
                 }
             ),
             state["installations"].update(
@@ -72,17 +72,18 @@ def clones(tmp_path: Path) -> tuple[Path, Path, Path]:
                 {
                     "task:CG-1": {
                         "kind": "task",
+                        "project": "demo",
                         "scope": "CG-1",
                         "owner": "alice",
                         "authority_generation": 1,
                         "version": 0,
                     },
                     "task:CG-2": {
-                        "kind": "task", "scope": "CG-2", "owner": "-",
+                        "kind": "task", "project": "demo", "scope": "CG-2", "owner": "-",
                         "authority_generation": 1, "version": 0,
                     },
                     "phase:demo/p1": {
-                        "kind": "phase", "scope": "demo/p1", "owner": "alice",
+                        "kind": "phase", "project": "demo", "scope": "demo/p1", "owner": "alice",
                         "authority_generation": 1, "version": 0,
                     },
                 }
@@ -826,32 +827,139 @@ def test_acknowledged_handoff_blocks_new_work_then_advances_generation(clones, e
     assert entity_key not in final["claims"]
 
 
-def test_external_fence_requires_provider_reconciliation_and_preserves_late_evidence(clones):
+@pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
+@pytest.mark.parametrize(
+    ("target", "member"),
+    [
+        ("typo", None),
+        ("disabled", {"active": False, "role": "member", "project_visibility": "all"}),
+        ("viewer", {"active": True, "role": "viewer", "project_visibility": "all"}),
+        (
+            "elsewhere",
+            {
+                "active": True,
+                "role": "member",
+                "project_visibility": "assigned",
+                "projects": ["other"],
+            },
+        ),
+    ],
+)
+def test_handoff_rejects_ineligible_destination_without_changing_authority(
+    clones, entity_key, target, member
+):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    if member is not None:
+        store.transact(
+            f"enroll:{target}", {},
+            lambda state: (state["members"].__setitem__(target, member), {})[-1],
+        )
+    before = store.read()[1]
+
+    with pytest.raises(PermissionError, match="handoff target"):
+        store.begin_handoff(
+            f"reject:{entity_key}:{target}", actor="alice", installation="one",
+            entity_key=entity_key, expected_version=0, pending_owner=target,
+        )
+
+    after = store.read()[1]
+    assert after["entities"][entity_key] == before["entities"][entity_key]
+    assert entity_key not in after["handoffs"]
+    assert after["recovery"] == before["recovery"]
+
+
+@pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
+def test_handoff_revalidates_destination_at_completion(clones, entity_key):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    kind, scope = entity_key.split(":", 1)
+    GitMultiplayerClient(store, "alice", "one").claim(
+        kind=kind, scope=scope, owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    store.begin_handoff(
+        f"drain-before-revocation:{entity_key}", actor="alice", installation="one",
+        entity_key=entity_key, expected_version=0, pending_owner="bob",
+    )
+    store.acknowledge_stop(
+        f"stop-before-revocation:{entity_key}", actor="alice", installation="one",
+        entity_key=entity_key,
+    )
+    store.transact(
+        f"disable-bob:{entity_key}", {},
+        lambda state: (state["members"]["bob"].__setitem__("active", False), {})[-1],
+    )
+    before = store.read()[1]
+
+    with pytest.raises(PermissionError, match="handoff target"):
+        store.complete_handoff(
+            f"reject-completion:{entity_key}", actor="admin", installation="admin",
+            entity_key=entity_key,
+        )
+
+    after = store.read()[1]
+    assert after["entities"][entity_key] == before["entities"][entity_key]
+    assert after["handoffs"][entity_key] == before["handoffs"][entity_key]
+    assert after["recovery"] == before["recovery"]
+
+
+@pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
+def test_handoff_supports_explicit_unassignment(clones, entity_key):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    kind, scope = entity_key.split(":", 1)
+    GitMultiplayerClient(store, "alice", "one").claim(
+        kind=kind, scope=scope, owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    store.begin_handoff(
+        f"drain-to-unassigned:{entity_key}", actor="alice", installation="one",
+        entity_key=entity_key, expected_version=0, pending_owner="",
+    )
+    store.acknowledge_stop(
+        f"stop-to-unassigned:{entity_key}", actor="alice", installation="one",
+        entity_key=entity_key,
+    )
+    completed = store.complete_handoff(
+        f"complete-unassigned:{entity_key}", actor="alice", installation="one",
+        entity_key=entity_key,
+    )
+
+    assert completed.result == {"status": "complete", "owner": "", "authority_generation": 2}
+    assert store.read()[1]["entities"][entity_key]["owner"] == ""
+
+
+@pytest.mark.parametrize("entity_key", ["task:CG-1", "phase:demo/p1"])
+def test_external_fence_requires_provider_reconciliation_and_preserves_late_evidence(
+    clones, entity_key
+):
     _, one, two = clones
     first = GitStateStore(one, garden_id="garden")
+    kind, scope = entity_key.split(":", 1)
     claim = GitMultiplayerClient(first, "alice", "one").claim(
-        kind="task", scope="CG-1", owner_id="alice", authority_generation=1,
+        kind=kind, scope=scope, owner_id="alice", authority_generation=1,
         expected_version=0,
     )
     effect_id = "effect:provider-original"
     first.apply(
         "accepted-before-partition", actor="alice", installation="one",
-        expected_versions={"task:CG-1": 0}, changes={
+        expected_versions={entity_key: 0}, changes={
             "permits": {effect_id: {"claim": claim["operation_id"]}},
             "effects": {effect_id: {
                 "claim": claim["operation_id"], "provider": "source-host",
-                "scope": "task:CG-1", "effect_key": "publish", "outcome": "unknown",
+                "scope": entity_key, "effect_key": "publish", "outcome": "unknown",
             }},
         },
     )
     first.begin_handoff(
         "drain-partitioned", actor="admin", installation="admin",
-        entity_key="task:CG-1", expected_version=0, pending_owner="bob",
+        entity_key=entity_key, expected_version=0, pending_owner="bob",
     )
     recovery = GitStateStore(two, garden_id="garden")
     with pytest.raises(GitCoordinationError, match="unresolved effects"):
         recovery.record_external_fence(
-            "fence-too-soon", actor="admin", installation="admin", entity_key="task:CG-1",
+            "fence-too-soon", actor="admin", installation="admin", entity_key=entity_key,
             proof={"execution": "process tree stopped", "publication": "credential revoked"},
         )
     recovery.reconcile_effect(
@@ -860,19 +968,19 @@ def test_external_fence_requires_provider_reconciliation_and_preserves_late_evid
         evidence={"provider_operation_id": "provider-7", "observed": "not published"},
     )
     recovery.record_external_fence(
-        "fence-partitioned", actor="admin", installation="admin", entity_key="task:CG-1",
+        "fence-partitioned", actor="admin", installation="admin", entity_key=entity_key,
         proof={"execution": "process tree stopped", "publication": "credential revoked"},
     )
     recovery.complete_handoff(
-        "complete-partitioned", actor="bob", installation="bob", entity_key="task:CG-1",
+        "complete-partitioned", actor="bob", installation="bob", entity_key=entity_key,
     )
     evidence = first.retain_late_evidence(
-        "late-result", actor="alice", installation="one", entity_key="task:CG-1",
+        "late-result", actor="alice", installation="one", entity_key=entity_key,
         prior_generation=1, evidence_id="run-old-result", payload={"commit": "abc123"},
     )
     assert evidence.result == {"retained": "run-old-result", "applied": False}
     state = recovery.read()[1]
-    assert state["entities"]["task:CG-1"]["owner"] == "bob"
+    assert state["entities"][entity_key]["owner"] == "bob"
     assert state["effects"][effect_id]["evidence"]["provider_operation_id"] == "provider-7"
     assert state["recovery"][-1]["payload"] == {"commit": "abc123"}
 
