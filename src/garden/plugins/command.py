@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -132,7 +134,7 @@ class JsonLinesCommand:
         try:
             process = subprocess.Popen(
                 self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.PIPE, start_new_session=True,
             )
         except OSError as exc:
             raise TransportLost(f"plugin command could not start: {exc}") from exc
@@ -185,14 +187,9 @@ class JsonLinesCommand:
                 break
             time.sleep(0.01)
         if failure is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            self._terminate_process_group(process)
         for worker in workers:
-            worker.join()
+            worker.join(timeout=1)
         if failure is not None:
             raise failure
         return (
@@ -200,6 +197,28 @@ class JsonLinesCommand:
             stdout.decode("utf-8", errors="replace"),
             bytes(stderr).decode("utf-8", errors="replace"),
         )
+
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+        """Bound cleanup after timeout/cancellation, including pipe-owning descendants."""
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+        # The group may outlive its leader, and descendants may ignore SIGTERM.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
     def _audit(self, operation: str, key: str, status: str, error: str) -> None:
         """Append a secret-scrubbed recovery record when the caller supplies durable storage."""

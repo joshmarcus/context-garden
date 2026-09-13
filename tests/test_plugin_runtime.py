@@ -157,3 +157,21 @@ def test_json_lines_command_observes_cancellation_during_execution() -> None:
         ).invoke("start", {})
 
     assert time.monotonic() - started < 2
+
+
+def test_json_lines_command_cancellation_terminates_descendants_with_inherited_pipes() -> None:
+    script = """
+import subprocess, sys, time
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+time.sleep(30)
+"""
+    started = time.monotonic()
+
+    with pytest.raises(CommandCancelled):
+        JsonLinesCommand(
+            [sys.executable, "-c", script],
+            capability="runner_transport", timeout_seconds=10,
+            cancelled=lambda: time.monotonic() - started > 0.05,
+        ).invoke("start", {})
+
+    assert time.monotonic() - started < 2
