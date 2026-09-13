@@ -797,8 +797,10 @@ class HumanMixin:
         # them, so a quota env_error on this very resume run can put them back (see
         # reap._handle_quota_env_error's "resume" branch) instead of losing the question and
         # sending the task to ready, which would also lose whatever PR/feedback led to it.
-        snapshot = {"question": question, "session_id": sid}
+        snapshot = {"question": question, "question_recipient": st.get("question_recipient", ""),
+                    "session_id": sid}
         st["question"] = ""
+        st["question_recipient"] = ""
         st["session_id"] = ""
         if sid and runner.harness is not None and runner.harness.can_resume:
             run = self.dispatch(task, mode="resume", runner=runner, session_id=sid, prompt_override=resume_prompt(question, text))
