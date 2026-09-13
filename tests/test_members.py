@@ -494,7 +494,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         assert response.status_code == 403
 
 
-def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_actions(garden):
+def test_multiplayer_allows_owned_project_pages_and_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -982,7 +982,6 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
     registry, _admin_token, admin = _registry(garden)
     registry.add_member(admin, "bob", "member", "assigned", ("demo",))
-    registry.set_assignment(admin, "bob", "demo", "p1")
     bob_token = registry.issue_installation(admin, "bob", "bob-browser")
     registry.add_member(admin, "eve", "viewer", "assigned", ())
     eve_token = registry.issue_installation(admin, "eve", "eve-browser")
