@@ -424,7 +424,7 @@ def test_multiplayer_https_accepts_only_its_same_origin_mutations(garden, monkey
         assert response.status_code == 403
 
 
-def test_multiplayer_allows_owned_project_pages_and_api_actions(garden):
+def test_multiplayer_filters_project_reads_and_allows_owned_pages_and_api_actions(garden):
     task_path = next((garden / "demo" / "p1" / "tasks").glob("DM-001-*.md"))
     task_path.write_text(task_path.read_text().replace("status: ready", "status: ready\nowner: bob"))
     config = yaml.safe_load((garden / "garden.yaml").read_text())
@@ -899,6 +899,7 @@ def test_multiplayer_owned_api_actions_require_phase_assignment(garden):
     assert client.get("/tasks/DM-001", headers=bob).status_code == 200
     assert client.post("/api/tasks/DM-001/manual-mode", headers=bob).status_code == 403
     assert client.post("/api/tasks/DM-001/manual-mode", headers=eve).status_code == 403
+
 def test_legacy_loopback_behavior_is_unchanged(garden):
     client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
     assert client.get("/api/tasks").status_code == 200
