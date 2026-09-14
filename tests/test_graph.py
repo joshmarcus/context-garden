@@ -130,6 +130,24 @@ def test_svg():
     assert 'href="#st-fruit"' in out and 'href="#st-sprout"' in out and 'href="#st-seed"' in out
 
 
+def test_svg_status_agrees_with_ready_for_project_dependency_default():
+    from garden.graph import svg
+
+    parent = T("A", status="in_review")
+    parent.kind = "design"
+    parent.branch, parent.pr = "branch", "https://example.test/pull/1"
+    child = T("B", ["A"])
+    tasks = {t.id: t for t in (parent, child)}
+
+    def project_default(_):
+        return "stack"
+
+    assert [task.id for task in ready(tasks, stack=True, default_after=project_default)] == ["B"]
+    out = svg(tasks, stack=True, default_after=project_default)
+    assert "B: task B — ready (sprout)" in out
+    assert "B: task B — blocked" not in out
+
+
 def test_visible_ids_hides_done_and_cancelled():
     from garden.graph import visible_ids
 

@@ -310,7 +310,9 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = Fals
     parts.append("<g class=\"vine\">" + "".join(vine) + "</g>")
     for tid, (x, y) in pos.items():
         t = tasks[tid]
-        st = effective_status(t, tasks, stack_for(t) if stack_for else stack)
+        st = effective_status(
+            t, tasks, stack_for(t) if stack_for else stack, default_after
+        )
         title = _esc(t.title)
         short = title if len(title) <= 26 else title[:24] + "…"
         hidden_deps = [d for d in t.depends_on if d in tasks and d not in vis]
