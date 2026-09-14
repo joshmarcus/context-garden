@@ -66,6 +66,40 @@ def test_unenrolled_multiplayer_web_request_fails_closed(garden):
     assert response.json() == {"detail": "multiplayer Git enrollment is incomplete"}
 
 
+def test_local_multiplayer_session_requires_a_configured_host(garden, monkeypatch):
+    """A rebinding Host cannot turn the local installation identity into private reads."""
+    store = _multiplayer_store(garden)
+    coordinator = _Coordinator("member")
+    monkeypatch.setattr("garden.web.app.MultiplayerClient.from_config", lambda _config: coordinator)
+    monkeypatch.setattr("garden.web.common.MultiplayerClient.from_config", lambda _config: coordinator)
+    client = TestClient(create_app(store, watch=False, host="127.0.0.1", port=8765))
+
+    for method in ("get", "head"):
+        response = getattr(client, method)("/api/tasks", headers={"Host": "evil.example"})
+        assert response.status_code == 400
+        if method == "get":
+            assert "not configured" in response.text
+    # The configured local aliases retain the zero-login startup path.
+    assert client.get("/api/tasks", headers={"Host": "localhost:8765"}).status_code == 200
+    assert client.get("/api/tasks", headers={"Host": "127.0.0.1:8765"}).status_code == 200
+    assert client.get("/api/tasks", headers={"Host": "[::1]:8765"}).status_code == 200
+    # Forwarded host data is untrusted and cannot widen the local-session boundary.
+    assert client.get("/api/tasks", headers={
+        "Host": "evil.example", "X-Forwarded-Host": "localhost",
+    }).status_code == 400
+
+
+def test_local_multiplayer_session_allows_explicitly_configured_host(garden, monkeypatch):
+    store = _multiplayer_store(garden)
+    store.config.data["web"] = {"trusted_hosts": ["garden.local"]}
+    coordinator = _Coordinator("member")
+    monkeypatch.setattr("garden.web.app.MultiplayerClient.from_config", lambda _config: coordinator)
+    monkeypatch.setattr("garden.web.common.MultiplayerClient.from_config", lambda _config: coordinator)
+    client = TestClient(create_app(store, watch=False, host="127.0.0.1"))
+
+    assert client.get("/api/tasks", headers={"Host": "garden.local"}).status_code == 200
+
+
 def test_unassigned_member_tick_does_not_create_scheduler_state(garden, monkeypatch):
     store = _multiplayer_store(garden)
     client = _Coordinator("member")
@@ -102,7 +136,7 @@ def test_viewer_serve_rejects_worker_ingress_and_controller_helpers(garden, monk
         "garden.hosts.registry.authenticate_worker",
         lambda *_args: (_ for _ in ()).throw(AssertionError("viewer authenticated a worker")),
     )
-    client = TestClient(create_app(store, watch=True))
+    client = TestClient(create_app(store, watch=True), base_url="http://127.0.0.1")
 
     for method, path in (
         ("post", "/api/runs/claim"),

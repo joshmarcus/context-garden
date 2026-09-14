@@ -50,7 +50,7 @@ from .access import (
     route_access,
 )
 from .common import COLUMNS, LIST_ORDER, LOGGER, PLATES_DIR, TEMPLATES, Hub, Site, render_md
-from .trust import OriginCheck, safe_json, server_origins
+from .trust import OriginCheck, safe_json, server_hosts, server_origins
 
 __all__ = ["Hub", "Site", "create_app", "render_md"]
 
@@ -129,6 +129,7 @@ def create_app(
     multiplayer = bool(store.config.get("multiplayer.enabled", False))
     registry = MemberRegistry(store.config.garden_dir) if multiplayer else None
     local_session_authenticator = None
+    local_session_hosts: list[str] = []
     if multiplayer and loopback_listener(host):
         try:
             connected_client = MultiplayerClient.from_config(store.config)
@@ -136,6 +137,10 @@ def create_app(
             connected_client = None
         if connected_client is not None:
             local_session_authenticator = connected_client.authenticate_local_session
+            # Names here are listener configuration, never request-derived values.
+            local_session_hosts = server_hosts(host) + [
+                str(name) for name in (store.config.get("web.trusted_hosts") or [])
+            ]
     multiplayer_tls_files(store, host)
     require_operator_auth = (
         multiplayer
@@ -276,6 +281,7 @@ def create_app(
         require_operator_auth=require_operator_auth,
         member_authenticator=registry.authenticate if registry else None,
         local_session_authenticator=local_session_authenticator,
+        local_session_hosts=local_session_hosts,
         member_authorizer=member_authorizer if registry else None,
         viewer_only=viewer_only,
     )
