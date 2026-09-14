@@ -322,6 +322,27 @@ def investigate(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str)
     sched.pause_for_investigation(t, note, owner=applies_to.strip() or "operator")
 
 
+@action("explain-pr")
+def explain_pr(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    """Generate a source-versioned explanation without changing the PR workflow."""
+    if not t.pr and not t.branch:
+        raise RuntimeError("this task has no pull request or branch to explain")
+    from ...pr_explanations import generate
+
+    state = sched.state.get(t.id)
+    state["pr_explanation"] = {"status": "generating"}
+    sched.state.save()
+    try:
+        explanation = generate(t, garden_dir=s.config.garden_dir, repo=sched.repo_for(t), base=sched.base_for(t))
+    except Exception as exc:
+        state["pr_explanation"] = {"status": "failed", "error": str(exc)}
+        sched.state.save()
+        raise RuntimeError(f"explanation failed: {exc}") from exc
+    state["pr_explanation"] = explanation
+    sched.state.save()
+    return "PR explanation ready"
+
+
 @action("investigation-report")
 def investigation_report(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     try:
