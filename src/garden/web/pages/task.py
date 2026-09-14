@@ -354,11 +354,11 @@ def _completion_view(task: Any, events: list[dict[str, Any]]) -> dict[str, str] 
 
 
 def _review_history(runs: list[Any]) -> list[dict[str, Any]]:
-    """Return dated, source-specific automated review findings for a completed task."""
+    """Return dated automated review attempts, including ones without a verdict."""
     history = []
     for run in reversed(runs):
         review = run.result if run.mode == "review" and isinstance(run.result, dict) else None
-        if not review or not review.get("verdict"):
+        if not review:
             continue
         snapshot = run.env_snapshot or {}
         history.append({"run_id": run.run_id, "at": run.finished_at or run.started_at,
