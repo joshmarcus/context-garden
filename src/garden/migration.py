@@ -357,7 +357,7 @@ class GardenMigration:
             }
             if member_id in assignments:
                 assignment = assignments[member_id]
-                member["assignment"] = {
+                member["assignment"] = {"member_id": member_id} | {
                     key: assignment[key]
                     for key in ("project", "phase", "generation", "enabled", "advance")
                     if key in assignment
