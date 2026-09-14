@@ -312,17 +312,18 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
         refs[f"context/specs/{spec.name}"] = read_optional_text(spec) + "\n"
     from .walkthrough import walkthrough_section
 
-    section = walkthrough_section(phase)
+    section = walkthrough_section(phase, refs)
     if section:
         parts.append(section)
     lines = []
     for pr in prs:
         lines.append(f"### {pr['id']} — {pr['title']} [{pr['status']}]\n\nPR: {pr.get('pr') or '(none)'}\n\n{pr.get('body') or '(no description)'}\n")
     refs["evidence/pull-requests.md"] = ("\n".join(lines) if lines else "(no PRs yet)") + "\n"
-    parts.append("## Explore the phase\n\nStart with `$GARDEN_CONTEXT_DIR/context/phase-goals.md` and "
-                 "`$GARDEN_CONTEXT_DIR/evidence/pull-requests.md`. The reference snapshot also contains "
-                 "principles, product context, and phase specifications; inspect additional checkout history "
-                 "and evidence relevant to this persona's questions.\n")
+    available = "\n".join(f"- [available] `$GARDEN_CONTEXT_DIR/{path}`" for path in sorted(refs))
+    parts.append("## Explore the phase\n\nStart with the phase goals and pull-request evidence below. "
+                 "All listed context is in this worker's immutable reference snapshot; inspect additional "
+                 "checkout history and evidence relevant to this persona's questions.\n\n"
+                 "### Reference availability\n\n" + available + "\n")
     return "\n\n".join(parts) + "\n"
 
 

@@ -739,19 +739,40 @@ def test_persona_phase_brief_includes_newest_walkthrough(garden):
     # No walkthrough yet: the brief does not mention one.
     assert "Walkthrough of the live web app" not in phase_brief(store, ph, "designer", "main", prs)
 
-    # Two dated captures: the brief points at (and inlines) the newest.
+    # Two dated captures: the brief names worker-visible snapshot paths for the newest.
     root = ph.path / "docs" / "walkthrough"
     (root / "2026-09-04").mkdir(parents=True)
     (root / "2026-09-04" / "index.md").write_text("# old walkthrough\n")
     (root / "2026-09-05").mkdir(parents=True)
     (root / "2026-09-05" / "index.md").write_text("# new walkthrough\n\nboard etc.\n")
+    (root / "2026-09-05" / "board.html").write_text("<main>new board</main>")
+    (root / "2026-09-05" / "board.txt").write_text("new board")
     assert newest_walkthrough(ph).name == "2026-09-05"
 
-    brief = phase_brief(store, ph, "designer", "main", prs)
+    references: dict[str, str] = {}
+    brief = phase_brief(store, ph, "designer", "main", prs, references)
     assert "Walkthrough of the live web app" in brief
     assert "new walkthrough" in brief
     assert "old walkthrough" not in brief
-    assert str(root / "2026-09-05") in brief
+    assert "$GARDEN_CONTEXT_DIR/context/walkthrough/2026-09-05/board.html" in brief
+    assert "[available] `$GARDEN_CONTEXT_DIR/context/phase-goals.md`" in brief
+    assert str(root / "2026-09-05") not in brief
+    assert {key: references[key] for key in references if "/walkthrough/" in key} == {
+        "context/walkthrough/2026-09-05/index.md": "# new walkthrough\n\nboard etc.\n",
+        "context/walkthrough/2026-09-05/board.html": "<main>new board</main>",
+        "context/walkthrough/2026-09-05/board.txt": "new board",
+    }
+
+
+def test_persona_phase_brief_refuses_an_incomplete_walkthrough(garden):
+    store = Store(garden)
+    ph = store.phase("demo", "p1")
+    root = ph.path / "docs" / "walkthrough" / "2026-09-05"
+    root.mkdir(parents=True)
+    (root / "index.md").write_text("# incomplete walkthrough\n")
+
+    with pytest.raises(ValueError, match=r"\[missing\] HTML and plain-text page captures"):
+        phase_brief(store, ph, "designer", "main", [])
 
 
 def test_capture_includes_a_run_page_when_a_task_has_run(garden):

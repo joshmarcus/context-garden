@@ -597,6 +597,20 @@ def test_phase_persona_reference_snapshot_scrubs_controller_secrets(sched):
     assert "build-a" in snapshot and "token=<redacted>" in snapshot
 
 
+def test_phase_persona_does_not_launch_for_incomplete_walkthrough(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    capture = phase.path / "docs" / "walkthrough" / "2026-09-05"
+    capture.mkdir(parents=True)
+    (capture / "index.md").write_text("# Incomplete\n")
+    launched = []
+    monkeypatch.setattr(sched, "_launch_prepared_aux", lambda prepared: launched.append(prepared))
+
+    with pytest.raises(ValueError, match="walkthrough reference snapshot is incomplete"):
+        sched.dispatch_persona_phase(phase, "designer")
+
+    assert not launched
+
+
 def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_PERSONA_SEVERITY", "high")
     sched.tick()
