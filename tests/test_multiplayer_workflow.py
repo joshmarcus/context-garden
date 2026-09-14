@@ -1,4 +1,9 @@
-"""Integrated two-person journeys across multiplayer authority boundaries."""
+"""Legacy HTTP/SQLite compatibility journeys across multiplayer boundaries.
+
+The supported Git acceptance journey lives in ``test_git_multiplayer_workflow.py``.
+These tests remain useful for compatibility at the retired coordinator boundary, but
+must not be read as evidence that the production Git configuration works end to end.
+"""
 
 from __future__ import annotations
 
