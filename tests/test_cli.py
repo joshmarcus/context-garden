@@ -182,6 +182,41 @@ def test_status_ls_graph_validate(garden):
     assert run(garden, "validate").exit_code == 0
 
 
+def test_dependency_mode_sets_explicit_rules_and_can_inherit_project_default(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"]["demo"]["configuration"] = {
+        "overrides": {"dependencies.default_after": "merge"},
+    }
+    config_path.write_text(yaml.safe_dump(config))
+
+    stacked = run(garden, "dependency-mode", "DM-002", "DM-001", "stack")
+    assert stacked.exit_code == 0, stacked.output
+    assert "stack (effective stack)" in stacked.output
+    assert Store(garden).task("DM-002").dependency_after == {"DM-001": "stack"}
+
+    merged = run(garden, "dependency-mode", "DM-002", "DM-001", "merge")
+    assert merged.exit_code == 0, merged.output
+    assert "merge (effective merge)" in merged.output
+
+    inherited = run(garden, "dependency-mode", "DM-002", "DM-001", "default")
+    assert inherited.exit_code == 0, inherited.output
+    saved = Store(garden).task("DM-002")
+    assert "project default (effective merge)" in inherited.output
+    assert saved.depends_on == ["DM-001"]
+    assert saved.dependency_after == {}
+
+    before = (garden / "demo" / "p1" / "tasks" / "DM-002-second.md").read_text()
+    invalid = run(garden, "dependency-mode", "DM-002", "DM-404", "stack")
+    assert invalid.exit_code == 1
+    assert "not an existing dependency" in invalid.output
+    assert (garden / "demo" / "p1" / "tasks" / "DM-002-second.md").read_text() == before
+
+    bad_mode = run(garden, "dependency-mode", "DM-002", "DM-001", "later")
+    assert bad_mode.exit_code == 1
+    assert "must be stack, merge, or default" in bad_mode.output
+
+
 def test_route_explain_is_a_side_effect_free_json_command(garden):
     before = list((garden / ".garden" / "runs").glob("**/*"))
     result = run(garden, "route-explain", "DM-001")

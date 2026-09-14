@@ -91,6 +91,24 @@ def priority(task_id: str, value: int = typer.Argument(..., help="lower dispatch
     console.print(f"{t.id} priority {priority_label(old)} -> {priority_label(t.priority)}")
 
 
+@app.command("dependency-mode", rich_help_panel=PANEL_PLAN)
+def dependency_mode(
+    task_id: str,
+    dependency_id: str,
+    mode: str = typer.Argument(..., help="stack | merge | default (inherit the project default)"),
+):
+    """Set an existing dependency to Stack, Merge, or the project default."""
+    store = _store()
+    task = _task(store, task_id)
+    try:
+        explicit, effective = _scheduler(store).set_dependency_mode(task, dependency_id, mode)
+    except (PermissionError, ValueError) as exc:
+        err.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    rule = explicit or "project default"
+    console.print(f"{task.id} dependency {dependency_id}: {rule} (effective {effective})")
+
+
 @app.command(rich_help_panel=PANEL_PLAN)
 def difficulty(
     task_id: str,

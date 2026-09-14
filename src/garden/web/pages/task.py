@@ -167,6 +167,7 @@ def register(app: FastAPI, site: Site) -> None:
             task=t, eff=sched.task_effective_status(t, tasks), blockers=blocker_labels, usage=usage,
             dependency_labels=site.dependency_labels(t, tasks),
             dependency_after=lambda dep: sched.dependency_after(t, dep, tasks),
+            dependency_explicit=lambda dep: t.dependency_after.get(dep, ""),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             attach_command=(
                 attach_command(attachable_run, exact=len(attachable_runs) > 1)
