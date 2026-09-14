@@ -202,6 +202,50 @@ def server_origins(host: str, port: int | None = None, scheme: str = "http") -> 
     return [f"{scheme}://{name}{suffix}" for name in hosts]
 
 
+def _host_name(value: str) -> str:
+    """Normalize an HTTP Host value to a lower-case hostname, or return ``""``.
+
+    Host is deliberately parsed independently of forwarded headers.  Bracketed IPv6
+    literals may carry a port; other hostnames may carry one too.  Malformed values
+    are not names this server was configured to answer.
+    """
+    value = (value or "").strip().lower()
+    if not value or any(char.isspace() for char in value):
+        return ""
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing < 0 or value[closing + 1:] and not value[closing + 1:].startswith(":"):
+            return ""
+        return value[:closing + 1]
+    if value.count(":") == 1:
+        name, port = value.rsplit(":", 1)
+        if not name or not port.isdigit():
+            return ""
+        return name
+    return value if ":" not in value else ""
+
+
+def server_hosts(host: str) -> list[str]:
+    """Host names that may receive automatic local-session authentication.
+
+    The listener configuration, rather than a request or proxy header, fixes this
+    boundary.  Loopback and wildcard binds intentionally support the conventional
+    loopback aliases users use to reach one local listener.
+    """
+    h = _host_name(host)
+    return ["localhost", "127.0.0.1", "[::1]"] if h in _LOOPBACK_BINDS else [h]
+
+
+def host_problem(headers: Headers, allowed: Iterable[str] = ()) -> str:
+    """Why a Host must not receive automatic local-session authentication, or ``""``."""
+    allowed_set = {_host_name(str(host)) for host in allowed}
+    allowed_set.discard("")
+    host = _host_name(headers.get("host") or "")
+    if host in allowed_set:
+        return ""
+    return "request refused: Host is not configured for this server"
+
+
 def origin_problem(headers: Headers, allowed: Iterable[str] = ()) -> str:
     """Why a state-changing request must be refused, or '' when its source is an allowed origin.
 
@@ -231,6 +275,7 @@ class OriginCheck:
                  require_operator_auth: bool = False,
                  member_authenticator: Callable[[str], Any | None] | None = None,
                  local_session_authenticator: Callable[[], Any | None] | None = None,
+                 local_session_hosts: Iterable[str] = (),
                  member_authorizer: Callable[[Any, str, str], bool] | None = None,
                  viewer_only: bool = False):
         self.app = app
@@ -241,6 +286,7 @@ class OriginCheck:
         self.require_operator_auth = require_operator_auth
         self.member_authenticator = member_authenticator
         self.local_session_authenticator = local_session_authenticator
+        self.local_session_hosts = [str(host) for host in local_session_hosts]
         self.member_authorizer = member_authorizer
         self.viewer_only = viewer_only
 
@@ -286,6 +332,10 @@ class OriginCheck:
                 return
             principal = self.member_authenticator(supplied) if supplied and self.member_authenticator else None
             if principal is None and not supplied and self.local_session_authenticator:
+                problem = host_problem(headers, self.local_session_hosts)
+                if problem:
+                    await PlainTextResponse(problem, status_code=400)(scope, receive, send)
+                    return
                 principal = self.local_session_authenticator()
             if worker_identity is not None:
                 scope.setdefault("state", {})["worker_identity"] = worker_identity
