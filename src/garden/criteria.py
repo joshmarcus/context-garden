@@ -293,11 +293,13 @@ def evidence_gap_diagnosis(criteria: list[str], verified: Any, run_id: str = "")
 def verification_markdown(rows: list[dict[str, Any]], unmatched: list[dict[str, Any]] | None = None) -> str:
     """A `## Verification` section built from reconciled rows, or '' when there is nothing to
     say. One bullet per criterion: ✅ with evidence, 🚧 for a criterion the worker did not do,
-    ⚠️ for one with no evidence. Unmatched worker entries are retained separately for review and
-    diagnostics, but are intentionally not included in the public PR description."""
-    del unmatched
+    ⚠️ for one with no mapped evidence. Evidence reported against different criterion wording is
+    retained in a separate, explicitly unmapped section: it is useful narrative context, but
+    never inferred to verify a frozen criterion."""
     if not rows:
         return ""
+    entries = _dicts(unmatched)
+    missing_detail = "no mapped evidence given" if entries else "no evidence given"
     lines = ["## Verification", ""]
     for row in rows:
         if row["not_done"]:
@@ -305,7 +307,18 @@ def verification_markdown(rows: list[dict[str, Any]], unmatched: list[dict[str, 
         elif row["evidence"]:
             lines.append(f"- ✅ **{row['criterion']}** — {row['evidence']}")
         else:
-            lines.append(f"- ⚠️ **{row['criterion']}** — no evidence given")
+            lines.append(f"- ⚠️ **{row['criterion']}** — {missing_detail}")
+    if entries:
+        lines.extend(["", "### Reported evidence not mapped to an acceptance row", "",
+                      "This evidence is retained as reported; it does not verify a criterion until its "
+                      "relationship is explicit.", ""])
+        for entry in entries:
+            criterion = str(entry.get("criterion") or "unlabelled criterion").strip()
+            if entry.get("not_done"):
+                detail = "not done: " + str(entry.get("reason") or "no reason given").strip()
+            else:
+                detail = str(entry.get("evidence") or "no evidence given").strip()
+            lines.append(f"- **{criterion}** — {detail}")
     return "\n".join(lines) + "\n"
 
 
@@ -327,7 +340,9 @@ def apply_verification(body: str, criteria: list[str], verified: Any) -> str:
     criteria (and older results) are unaffected."""
     if not _dicts(verified):
         return body
-    section = verification_markdown(reconcile(criteria, verified))
+    section = verification_markdown(
+        reconcile(criteria, verified), unmatched_worker_entries(criteria, verified)
+    )
     if not section:
         return body
     stripped = _strip_verification(body).rstrip()
