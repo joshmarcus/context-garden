@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import uuid
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -29,6 +30,7 @@ from ...runs import RunStore
 from ...scheduler import State
 from ...ssh_attach import attach_command, attachment_problem
 from ...trials import TrialLog, ranking_markdown
+from ..artifacts import artifact_response
 from ..common import Site, render_md
 
 
@@ -75,6 +77,7 @@ def register(app: FastAPI, site: Site) -> None:
         attachable_runs = [run for run in reversed(runs) if attachment_problem(run) is None]
         attachable_run = attachable_runs[0] if attachable_runs else None
         st = State(s.config.garden_dir / "state.json").historical(t.id)
+        pr_explanation = st.get("pr_explanation") if isinstance(st.get("pr_explanation"), dict) else None
         manual_return_guard = hub.reader().manual_return_guard(t)
         _, log = split_log(t.body)
         evs = EventLog(s.config.garden_dir / "events.jsonl").read(task_id=t.id)
@@ -213,6 +216,7 @@ def register(app: FastAPI, site: Site) -> None:
             defects=defects,
             defect_summary=defect_store.summary(task_id=t.id),
             defect_idempotency_key=uuid.uuid4().hex,
+            pr_explanation=pr_explanation,
         ))
 
     @app.get("/partials/tasks/{task_id}/runs", response_class=HTMLResponse)
@@ -294,6 +298,32 @@ def register(app: FastAPI, site: Site) -> None:
         media = "text/html" if name.endswith(".html") else "text/markdown"
         headers = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"} if media == "text/html" else {}
         return Response(data, media_type=media, headers=headers)
+
+    @app.get("/tasks/{task_id}/pr-explanation")
+    def pr_explanation(task_id: str, download: bool = False):
+        s = hub.fresh()
+        try:
+            s.task(task_id)
+        except KeyError:
+            raise HTTPException(404) from None
+        record = State(s.config.garden_dir / "state.json").historical(task_id).get("pr_explanation")
+        if not isinstance(record, dict) or record.get("status") != "ready":
+            raise HTTPException(404, "no completed PR explanation")
+        path = Path(str(record.get("path") or ""))
+        root = (s.config.garden_dir / "pr-explanations").resolve()
+        try:
+            path = path.resolve()
+            path.relative_to(root)
+            data = path.read_bytes()
+        except (ValueError, OSError):
+            raise HTTPException(404) from None
+        if download:
+            from fastapi.responses import Response as FastAPIResponse
+            return FastAPIResponse(data, media_type="application/octet-stream", headers={
+                "Content-Disposition": f'attachment; filename="{task_id}-pr-explanation.html"',
+                "X-Content-Type-Options": "nosniff",
+            })
+        return artifact_response(data, path.name, allow_inline_styles=True)
 
 
 def _edit_diff(runs: list[Any]) -> str:

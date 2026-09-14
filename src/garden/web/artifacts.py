@@ -31,7 +31,7 @@ def _disposition(filename: str, *, attachment: bool) -> str:
     return f"{kind}; filename=\"artifact\"; filename*=UTF-8''{encoded}"
 
 
-def artifact_response(data: bytes, filename: str) -> Response:
+def artifact_response(data: bytes, filename: str, *, allow_inline_styles: bool = False) -> Response:
     """Render a known preview type inertly; download every other byte sequence.
 
     Filename extensions are an allowlist, not a trust signal: ``nosniff`` ensures a payload
@@ -47,13 +47,14 @@ def artifact_response(data: bytes, filename: str) -> Response:
     media_type = SAFE_PREVIEW_TYPES.get(suffix)
     if media_type is None:
         return _download(data, filename)
-    return Response(data, media_type=media_type, headers=_preview_headers(filename))
+    return Response(data, media_type=media_type, headers=_preview_headers(filename, allow_inline_styles=allow_inline_styles))
 
 
-def _preview_headers(filename: str) -> dict[str, str]:
+def _preview_headers(filename: str, *, allow_inline_styles: bool = False) -> dict[str, str]:
     return {
         "Content-Disposition": _disposition(filename, attachment=False),
-        "Content-Security-Policy": PREVIEW_CSP,
+        "Content-Security-Policy": (PREVIEW_CSP if not allow_inline_styles
+                                    else "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "no-referrer",
     }

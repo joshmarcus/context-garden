@@ -42,7 +42,7 @@ OPERATOR_READ_PATHS = frozenset({
     "/phases/{product}/{phase}/doc/{name:path}", "/phases/{product}/{phase}/retro", "/redoc", "/runs",
     "/runs/{task_id}/{run_id}", "/runs/{task_id}/{run_id}/captures/{path:path}",
     "/runs/{task_id}/{run_id}/ui/{name}", "/tasks/{task_id}", "/tasks/{task_id}/brief",
-    "/tasks/{task_id}/log", "/tasks/{task_id}/packet", "/trellis", "/trials",
+    "/tasks/{task_id}/log", "/tasks/{task_id}/packet", "/tasks/{task_id}/pr-explanation", "/trellis", "/trials",
 })
 OPERATOR_MUTATION_PATHS = frozenset({
     "/api/control/tasks/{task_id}/launch", "/api/tasks/{task_id}/manual-mode", "/config/accept-reload",

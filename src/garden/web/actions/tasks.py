@@ -14,6 +14,7 @@ import yaml
 from fastapi import BackgroundTasks, Body, FastAPI, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from ... import gitops
 from ...brief import brief_gaps
 from ...github import GitHubError
 from ...gitops import GitError
@@ -320,6 +321,38 @@ def troubled_continue(s: Store, sched: Scheduler, t: Task, note: str, applies_to
 @action("investigate")
 def investigate(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     sched.pause_for_investigation(t, note, owner=applies_to.strip() or "operator")
+
+
+@action("explain-pr")
+def explain_pr(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    """Generate a source-versioned explanation without changing the PR workflow."""
+    if not t.pr and not t.branch:
+        raise RuntimeError("this task has no pull request or branch to explain")
+    from ...pr_explanations import generate
+
+    state = sched.state.get(t.id)
+    state["pr_explanation"] = {"status": "generating"}
+    sched.state.save()
+    try:
+        branch = t.branch or t.default_branch()
+        base = sched.base_for(t)
+        expected_head = str(state.get("head_sha") or "")
+        repo = sched.repo_for(t)
+        worktree = (
+            gitops.prepare_review_worktree(repo, sched.worktree_for(t), branch, base, expected_head)
+            if expected_head
+            else gitops.prepare_worktree(repo, sched.worktree_for(t), branch, base)
+        )
+        base_head = gitops.rev_parse(worktree, gitops.base_ref(worktree, base))
+        explanation = generate(t, garden_dir=s.config.garden_dir, repo=worktree, base=base_head,
+                               expected_head=expected_head)
+    except Exception as exc:
+        state["pr_explanation"] = {"status": "failed", "error": str(exc)}
+        sched.state.save()
+        raise RuntimeError(f"explanation failed: {exc}") from exc
+    state["pr_explanation"] = explanation
+    sched.state.save()
+    return "PR explanation ready"
 
 
 @action("investigation-report")
