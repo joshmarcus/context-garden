@@ -574,19 +574,34 @@ class Scheduler(
     def stack_enabled_for(self, task: Task) -> bool:
         return bool(self.effective("stack", True, task.product)) and not self.external_stack_owner(task)
 
+    def dependency_default_after(self, task: Task) -> str | None:
+        """Configured default for an unspecified dependency of ``task``'s project."""
+        return self.cfg.setting("dependencies.default_after", task.product).value
+
+    def dependency_after(self, task: Task, dependency_id: str,
+                         tasks: dict[str, Task] | None = None) -> str:
+        """Resolve an edge exactly as dispatch and project-aware views do."""
+        from ..graph import dependency_after
+
+        return dependency_after(task, dependency_id,
+                                self.store.tasks() if tasks is None else tasks,
+                                self.dependency_default_after)
+
     def task_blockers(self, task: Task, tasks: dict[str, Task] | None = None) -> list[str]:
         """Resolve dependency blockers with the task's effective project stack policy."""
         from ..graph import blockers
 
         task_map = self.store.tasks() if tasks is None else tasks
-        return blockers(task, task_map, stack=self.stack_enabled_for(task))
+        return blockers(task, task_map, stack=self.stack_enabled_for(task),
+                        default_after=self.dependency_default_after)
 
     def task_effective_status(self, task: Task, tasks: dict[str, Task] | None = None) -> str:
         """Return the status users see, using the same stack policy as dispatch and take."""
         from ..graph import effective_status
 
         task_map = self.store.tasks() if tasks is None else tasks
-        return effective_status(task, task_map, stack=self.stack_enabled_for(task))
+        return effective_status(task, task_map, stack=self.stack_enabled_for(task),
+                                default_after=self.dependency_default_after)
 
     def ready_tasks(self, tasks: dict[str, Task] | None = None) -> list[Task]:
         """Tasks dispatch considers dependency-ready under each project's stack policy."""

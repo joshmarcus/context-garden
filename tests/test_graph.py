@@ -52,6 +52,41 @@ def test_code_dependency_keeps_stacking_default():
     assert blockers(child, tasks, stack=True) == []
 
 
+def test_project_default_applies_after_explicit_edges_and_before_legacy_rule():
+    parent = T("A", status="in_review")
+    parent.kind = "design"
+    parent.branch, parent.pr = "branch", "https://example.test/pull/1"
+    child = T("B", ["A"])
+    explicit = T("C", ["A"])
+    explicit.dependency_after["A"] = "merge"
+    tasks = {t.id: t for t in (parent, child, explicit)}
+
+    assert dependency_after(child, "A", tasks, lambda _: "stack") == "stack"
+    assert blockers(child, tasks, stack=True, default_after=lambda _: "stack") == []
+    assert "A --> B" in mermaid(tasks, default_after=lambda _: "stack")
+    assert dependency_after(explicit, "A", tasks, lambda _: "stack") == "merge"
+    assert dependency_after(child, "A", tasks, lambda _: None) == "merge"
+
+
+def test_dependent_project_default_controls_cross_project_edge_without_bypassing_stack_gate():
+    parent = T("A", status="in_review")
+    parent.product = "parent-project"
+    parent.branch, parent.pr = "branch", "https://example.test/pull/1"
+    stacked = T("B", ["A"])
+    stacked.product = "stacked-project"
+    merged = T("C", ["A"])
+    merged.product = "merged-project"
+    tasks = {t.id: t for t in (parent, stacked, merged)}
+    defaults = {"stacked-project": "stack", "merged-project": "merge"}
+
+    def default_after(task):
+        return defaults[task.product]
+
+    assert blockers(stacked, tasks, stack=True, default_after=default_after) == []
+    assert blockers(merged, tasks, stack=True, default_after=default_after) == ["A"]
+    assert blockers(stacked, tasks, stack=False, default_after=default_after) == ["A"]
+
+
 def test_ready_sorts_by_priority_then_order_then_id():
     # Same priority band: an explicit `order` breaks ties ahead of tasks without one (which
     # fall back to id order); a lower priority band always dispatches first.
@@ -93,6 +128,24 @@ def test_svg():
     assert out.startswith("<svg") and 'href="/tasks/B-2"' in out and out.count("<circle class=\"halo\"") == 3
     assert out.count("<path d=") == 3  # A-1 rises from the ground; two dependency vines
     assert 'href="#st-fruit"' in out and 'href="#st-sprout"' in out and 'href="#st-seed"' in out
+
+
+def test_svg_status_agrees_with_ready_for_project_dependency_default():
+    from garden.graph import svg
+
+    parent = T("A", status="in_review")
+    parent.kind = "design"
+    parent.branch, parent.pr = "branch", "https://example.test/pull/1"
+    child = T("B", ["A"])
+    tasks = {t.id: t for t in (parent, child)}
+
+    def project_default(_):
+        return "stack"
+
+    assert [task.id for task in ready(tasks, stack=True, default_after=project_default)] == ["B"]
+    out = svg(tasks, stack=True, default_after=project_default)
+    assert "B: task B — ready (sprout)" in out
+    assert "B: task B — blocked" not in out
 
 
 def test_visible_ids_hides_done_and_cancelled():
