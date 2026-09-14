@@ -240,19 +240,23 @@ def test_manual_mode_api_and_task_page_share_guarded_transition(garden):
 
 def test_phase_and_task_pages_render_a_legacy_incomplete_review_without_crashing(garden):
     """Durable review state from an older or interrupted run may omit its verdict; both
-    pages must render that state without crashing or inventing a decision."""
+    pages must render that state without crashing or inventing a decision, and retain a
+    route to the original evidence."""
     state = State(garden / ".garden" / "state.json")
     state.get("DM-001")["last_review"] = {"findings": []}
+    state.get("DM-001")["last_review_run"] = "review-without-verdict"
     state.save()
 
     c = client(garden)
     phase_page = c.get("/phases/demo/p1")
     assert phase_page.status_code == 200
-    assert "incomplete" in phase_page.text
+    assert "unavailable" in phase_page.text
+    assert 'href="/runs/DM-001/review-without-verdict"' in phase_page.text
 
     task_page = c.get("/tasks/DM-001")
     assert task_page.status_code == 200
-    assert "incomplete" in task_page.text
+    assert "unavailable" in task_page.text
+    assert 'href="/runs/DM-001/review-without-verdict"' in task_page.text
 
 
 def test_task_page_back_control_keeps_a_safe_in_app_origin(garden):
@@ -4147,6 +4151,28 @@ def test_done_task_shows_accepted_completion_before_historical_reviews(garden):
     assert "source <span class=\"mono\">aaaaaaaaaaaa</span>" in page
     assert page.index("Current completion") < page.index("Historical automated reviews")
     assert "old rejection" in page
+
+
+def test_done_task_retains_a_verdictless_review_attempt(garden):
+    from garden.events import EventLog
+
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.status = Status.DONE
+    store.save(task)
+    EventLog(garden / ".garden" / "events.jsonl").emit(
+        "transition", task.id, **{"from": "in_review", "to": "done"},
+        note="PR merged: https://example.test/pull/1", base_merged=True,
+    )
+    review_dir = garden / ".garden" / "runs" / task.id / "review-usage-limit"
+    Run(task_id=task.id, run_id="review-usage-limit", dir=str(review_dir), runner="local", mode="review",
+        status="failed", error="model account usage limit", started_at="2026-09-10T12:00:00+00:00",
+        finished_at="2026-09-10T12:01:00+00:00", result={"findings": [{"summary": "partial finding"}]}).save()
+
+    page = client(garden).get(f"/tasks/{task.id}").text
+    assert "Historical automated reviews" in page
+    assert "Automated review: incomplete" in page
+    assert 'href="/runs/DM-001/review-usage-limit"' in page
 
 
 def test_done_task_labels_forced_status_completion_as_not_accepted(garden):

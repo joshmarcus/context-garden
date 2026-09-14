@@ -119,6 +119,34 @@ def test_pages_include_the_phase_and_a_task(garden):
     assert "/" in urls
 
 
+def test_phase_walkthrough_keeps_verdictless_review_evidence_visible(garden, tmp_path):
+    """A CG404-shaped result must not stop the retrospective's headless capture."""
+    store = Store(garden)
+    phase = store.phase("demo", "p1")
+
+    absent = capture(store, phase, tmp_path / "absent", screenshots=False, pages=["phase"])
+    assert absent.pages[0].status == 200
+    assert "auto:" not in (tmp_path / "absent" / "phase.html").read_text()
+
+    state = State(store.config.garden_dir / "state.json")
+    state.get("DM-001").update({
+        "last_review": {"findings": [{"summary": "partial finding"}]},
+        "last_review_run": "review-usage-limit",
+    })
+    state.get("DM-002")["last_review"] = {"verdict": "approve", "summary": "independently approved"}
+    state.save()
+    assert State(store.config.garden_dir / "state.json").get("DM-001")["last_review_run"] == "review-usage-limit"
+
+    refreshed = Store(garden)
+    captured = capture(refreshed, refreshed.phase("demo", "p1"), tmp_path / "cg404",
+                       screenshots=False, pages=["phase"])
+    assert captured.pages[0].status == 200
+    html = (tmp_path / "cg404" / "phase.html").read_text()
+    assert "unavailable" in html
+    assert "review run" in html
+    assert "approve" in html
+
+
 def test_includes_costs_backlog_retro(garden):
     specs = pages_for(Store(garden), Store(garden).phase("demo", "p1"))
     urls = {s.url for s in specs}

@@ -146,6 +146,8 @@ def test_signalled_review_with_a_parseable_fragment_cannot_replace_last_review(s
     sched.tick()  # reap work -> PR opened -> review dispatched
     task = sched.store.task("DM-001")
     st = sched.state.get(task.id)
+    st["last_review"] = {"verdict": "approve", "summary": "earlier independent review"}
+    st["last_review_run"] = "earlier-review"
     run = sched._run_by_id(task, st["review_run"])
     assert run is not None
     assert run.status == "running"
@@ -155,7 +157,7 @@ def test_signalled_review_with_a_parseable_fragment_cannot_replace_last_review(s
         "usage": {"input_tokens": 10, "output_tokens": 2},
         "cost_usd": 0.01,
         "model": run.model,
-        "error": "",
+        "error": "model account usage limit",
     }
     monkeypatch.setattr(sched, "_finished_or_timed_out", lambda *_args: True)
     monkeypatch.setattr(runner_type, "collect", lambda *_args: collected)
@@ -163,8 +165,8 @@ def test_signalled_review_with_a_parseable_fragment_cannot_replace_last_review(s
     rep = TickReport()
     assert sched.reap_review(task, rep)
 
-    assert not st.get("last_review")
-    assert not st.get("last_review_run")
+    assert st["last_review"] == {"verdict": "approve", "summary": "earlier independent review"}
+    assert st["last_review_run"] == "earlier-review"
     assert st["review_rounds"] == 1
     assert st["pending_reviews"] == [{"kind": "review", "count_round": False}]
     assert st["review_recovery"]["attempts"] == 1
@@ -173,6 +175,7 @@ def test_signalled_review_with_a_parseable_fragment_cannot_replace_last_review(s
     assert not any("approve" in c or "request_changes" in c for c in fake_github.comments)
     saved = sched._run_by_id(task, run.run_id)
     assert saved.status == "failed"
+    assert saved.error == "model account usage limit"
 
 
 def test_timed_out_review_applies_a_collected_verdict_once(sched, monkeypatch):
