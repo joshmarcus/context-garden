@@ -199,6 +199,25 @@ def test_commit_revokes_selected_legacy_worker_enrollments(garden):
     assert registry == {"hosts": []}
 
 
+def test_commit_preserves_assignments_and_revoked_installation_history(garden):
+    admin, choices = _prepared(garden)
+    registry = MemberRegistry(garden / ".garden")
+    registry.set_assignment(admin, "alice", "demo", "p1")
+    registry.issue_installation(admin, "alice", "retired-laptop")
+    registry.revoke_installation(admin, "retired-laptop")
+    migration = GardenMigration(Store(garden))
+
+    migration.commit(migration.preview(choices)["preview_id"], admin)
+
+    state = GitStateStore(garden, garden_id="garden-1").read()[1]
+    assert state["members"]["alice"]["assignment"] == {
+        "project": "demo", "phase": "p1", "generation": 1,
+        "enabled": True, "advance": False,
+    }
+    assert state["revoked_installations"] == {"retired-laptop": "alice"}
+    assert (garden / "demo/p1/tasks/DM-001-first.md").exists()
+
+
 def test_preview_rejects_shared_member_worker_bindings(garden):
     _admin, choices = _prepared(garden)
     path = _enroll_legacy_worker(garden)

@@ -15,7 +15,8 @@ from typing import Any
 
 import yaml
 
-from .coordination import PROTOCOL_VERSION, Coordinator
+from .coordination import Coordinator
+from .git_coordination import VERSION as GIT_PROTOCOL_VERSION
 from .git_coordination import GitCoordinationError, GitStateStore
 from .hosts.registry import enrolled_hosts, revoke_enrolled_hosts, worker_configuration
 from .members import MemberRegistry, Principal
@@ -176,7 +177,7 @@ class GardenMigration:
             blockers.append("configure this installation for Garden Git before cutover")
         elif installation_map.get(connection["installation_id"]) != connection["member_id"]:
             blockers.append("configured Git installation must match its selected member binding")
-        plan = {"version": MIGRATION_VERSION, "protocol_version": PROTOCOL_VERSION,
+        plan = {"version": MIGRATION_VERSION, "protocol_version": GIT_PROTOCOL_VERSION,
                 "garden_id": self._garden_id(registry), "tasks": tasks, "phases": phases,
                 "installations": bindings, "unknown_owners": sorted(unknown),
                 "worker_enrollments": worker_bindings,
@@ -473,7 +474,7 @@ class GardenMigration:
     def _garden_id(registry: MemberRegistry) -> str:
         value = registry._read().get("garden_id", "")
         if not value:
-            raise MigrationRefused("enroll the coordinator administrator before previewing migration")
+            raise MigrationRefused("enroll a Garden administrator before previewing migration")
         return str(value)
 
     @staticmethod
@@ -484,4 +485,4 @@ class GardenMigration:
                 return Principal(str(state["garden_id"]), member_id, "migration-preview",
                                  "administrator", row.get("project_visibility", "all"),
                                  frozenset(row.get("projects") or ()))
-        raise MigrationRefused("an active coordinator administrator is required")
+        raise MigrationRefused("an active Garden administrator is required")
