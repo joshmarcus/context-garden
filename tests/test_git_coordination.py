@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import garden.git_coordination as git_coordination
 from garden.cli import app as cli_app
 from garden.config import Config
 from garden.git_coordination import (
@@ -323,6 +324,24 @@ def test_stalled_fetch_and_push_return_within_transport_deadline(clones, tmp_pat
     started = time.monotonic()
     with pytest.raises(GitTransportTimeout, match="push"):
         store._push("HEAD", "")
+    assert time.monotonic() - started < 2
+
+
+def test_stalled_post_transfer_validation_uses_fetch_deadline(clones, monkeypatch):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden", timeout_seconds=0.2)
+    store.read()
+    actual_run_process = git_coordination._run_process
+
+    def stall_merge_base(cwd, args, **kwargs):
+        if args[1:3] == ["merge-base", "--is-ancestor"]:
+            return actual_run_process(cwd, ["sh", "-c", "sleep 30"], **kwargs)
+        return actual_run_process(cwd, args, **kwargs)
+
+    monkeypatch.setattr(git_coordination, "_run_process", stall_merge_base)
+    started = time.monotonic()
+    with pytest.raises(GitTransportTimeout, match="timed out"):
+        store.read()
     assert time.monotonic() - started < 2
 
 

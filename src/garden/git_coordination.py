@@ -274,8 +274,7 @@ class GitStateStore:
         )
         return output.split()[0] if output else ""
 
-    def _fetch(self) -> str:
-        deadline = time.monotonic() + self.timeout_seconds
+    def _fetch(self, deadline: float) -> str:
         observed = ""
         for _ in range(3):
             before = self._remote_oid(self._remaining(deadline))
@@ -293,7 +292,12 @@ class GitStateStore:
                 timeout_seconds=self._remaining(deadline),
             )
             after = self._remote_oid(self._remaining(deadline))
-            observed = _run(self.repo, "rev-parse", "refs/garden/state-observed")
+            observed = _run(
+                self.repo,
+                "rev-parse",
+                "refs/garden/state-observed",
+                timeout_seconds=self._remaining(deadline),
+            )
             if before == after == observed:
                 break
         else:
@@ -302,44 +306,76 @@ class GitStateStore:
             prior = self.observed_path.read_text().strip()
         except OSError:
             prior = ""
-        if (
-            prior
-            and subprocess.run(
-                ["git", "merge-base", "--is-ancestor", prior, observed], cwd=self.repo
-            ).returncode
-        ):
-            self._preserve("unexpected-ref-rewrite", {"previous": prior, "observed": observed})
-            raise GitCoordinationError("coordination ref was unexpectedly rewritten")
-        self._validate_history(observed)
+        if prior:
+            ancestry = _run_process(
+                self.repo,
+                ["git", "merge-base", "--is-ancestor", prior, observed],
+                timeout_seconds=self._remaining(deadline),
+            )
+            if ancestry.returncode:
+                self._preserve(
+                    "unexpected-ref-rewrite", {"previous": prior, "observed": observed}
+                )
+                raise GitCoordinationError("coordination ref was unexpectedly rewritten")
+        self._validate_history(observed, deadline)
         self.observed_path.parent.mkdir(parents=True, exist_ok=True)
         self.observed_path.write_text(observed + "\n")
         return observed
 
-    def _validate_history(self, head: str) -> None:
-        commits = _run(self.repo, "rev-list", "--reverse", head).splitlines()
+    def _validate_history(self, head: str, deadline: float) -> None:
+        commits = _run(
+            self.repo,
+            "rev-list",
+            "--reverse",
+            head,
+            timeout_seconds=self._remaining(deadline),
+        ).splitlines()
         previous = ""
         sequence = -1
         for commit in commits:
-            parents = _run(self.repo, "show", "-s", "--format=%P", commit).split()
+            parents = _run(
+                self.repo,
+                "show",
+                "-s",
+                "--format=%P",
+                commit,
+                timeout_seconds=self._remaining(deadline),
+            ).split()
             if previous and parents != [previous]:
                 self._preserve("non-linear-history", {"commit": commit, "parents": parents})
                 raise GitCoordinationError("coordination history is not a single-parent chain")
             if not previous and parents:
                 self._preserve("rewritten-root", {"commit": commit, "parents": parents})
                 raise GitCoordinationError("coordination history has an unexpected root")
-            state = self._read(commit)
+            state = self._read(commit, deadline=deadline)
             validate_state(state, self.garden_id)
             if state["sequence"] != sequence + 1:
                 raise GitCoordinationError("coordination history sequence is corrupt")
             sequence = state["sequence"]
             previous = commit
 
-    def _read(self, commit: str) -> dict[str, Any]:
+    def _read(self, commit: str, *, deadline: float | None = None) -> dict[str, Any]:
+        def timeout() -> float:
+            return self._remaining(deadline) if deadline is not None else self.timeout_seconds
+
         try:
-            names = _run(self.repo, "ls-tree", "--name-only", commit).splitlines()
+            names = _run(
+                self.repo,
+                "ls-tree",
+                "--name-only",
+                commit,
+                timeout_seconds=timeout(),
+            ).splitlines()
             if names != ["state.json"]:
                 raise GitCoordinationError("coordination commit must contain only state.json")
-            state = json.loads(_run(self.repo, "show", f"{commit}:state.json"))
+            state = json.loads(
+                _run(
+                    self.repo,
+                    "show",
+                    f"{commit}:state.json",
+                    timeout_seconds=timeout(),
+                )
+            )
             # Version-1 refs created before acknowledged handoffs remain readable. The
             # first accepted handoff transaction materializes the additive table.
             state.setdefault("handoffs", {})
@@ -350,8 +386,9 @@ class GitStateStore:
             raise GitCoordinationError("coordination state is not valid JSON") from exc
 
     def read(self) -> tuple[str, dict[str, Any]]:
-        head = self._fetch()
-        return head, self._read(head)
+        deadline = time.monotonic() + self.timeout_seconds
+        head = self._fetch(deadline)
+        return head, self._read(head, deadline=deadline)
 
     def _commit(self, state: dict[str, Any], parent: str | None, operation_id: str) -> str:
         content = (_canonical(state) + "\n").encode()
