@@ -13,11 +13,15 @@ class GraphError(Exception):
     pass
 
 
-def dependency_after(task: Task, dep_id: str, tasks: dict[str, Task]) -> str:
-    """Return the rule for one edge: explicit rule, otherwise merge for document work."""
+def dependency_after(task: Task, dep_id: str, tasks: dict[str, Task],
+                     default_after: Callable[[Task], str | None] | None = None) -> str:
+    """Return the rule for one edge: explicit rule, project default, then legacy heuristic."""
     explicit = task.dependency_after.get(dep_id)
     if explicit:
         return explicit
+    configured = default_after(task) if default_after else None
+    if configured:
+        return configured
     dep = tasks.get(dep_id)
     if dep and (dep.kind.lower() in {"design", "spec", "document"} or
                 re.search(r"\b(design|spec|document)(?:ation)?\b", dep.title, re.I) or
@@ -68,7 +72,8 @@ def stackable(dep: Task) -> bool:
     return dep.status.has_branch and bool(dep.branch) and bool(dep.pr)
 
 
-def blockers(task: Task, tasks: dict[str, Task], stack: bool = False) -> list[str]:
+def blockers(task: Task, tasks: dict[str, Task], stack: bool = False,
+             default_after: Callable[[Task], str | None] | None = None) -> list[str]:
     """Deps that are not done (unknown deps count as blockers). With `stack`, deps whose PR is
     open count as satisfied: the task will branch from the dep's branch."""
     out = []
@@ -78,30 +83,34 @@ def blockers(task: Task, tasks: dict[str, Task], stack: bool = False) -> list[st
             if dep is None:
                 out.append(d)
             continue
-        if stack and dependency_after(task, d, tasks) == "stack" and stackable(dep):
+        if stack and dependency_after(task, d, tasks, default_after) == "stack" and stackable(dep):
             continue
         out.append(d)
     return out
 
 
-def stack_parents(task: Task, tasks: dict[str, Task]) -> list[Task]:
+def stack_parents(task: Task, tasks: dict[str, Task],
+                  default_after: Callable[[Task], str | None] | None = None) -> list[Task]:
     """Open-PR dependencies this task would stack on (in dependency order)."""
     return [tasks[d] for d in task.depends_on if d in tasks and tasks[d].status != Status.DONE
-            and dependency_after(task, d, tasks) == "stack" and stackable(tasks[d])]
+            and dependency_after(task, d, tasks, default_after) == "stack" and stackable(tasks[d])]
 
 
-def is_blocked(task: Task, tasks: dict[str, Task], stack: bool = False) -> bool:
-    return bool(blockers(task, tasks, stack))
+def is_blocked(task: Task, tasks: dict[str, Task], stack: bool = False,
+               default_after: Callable[[Task], str | None] | None = None) -> bool:
+    return bool(blockers(task, tasks, stack, default_after))
 
 
-def ready(tasks: dict[str, Task], stack: bool = False) -> list[Task]:
+def ready(tasks: dict[str, Task], stack: bool = False,
+          default_after: Callable[[Task], str | None] | None = None) -> list[Task]:
     """Tasks that can be dispatched now, best first (priority, then order, then id)."""
-    out = [t for t in tasks.values() if t.status == Status.READY and not is_blocked(t, tasks, stack)]
+    out = [t for t in tasks.values() if t.status == Status.READY and not is_blocked(t, tasks, stack, default_after)]
     return sorted(out, key=dispatch_sort_key)
 
 
-def effective_status(task: Task, tasks: dict[str, Task], stack: bool = False) -> str:
-    if task.status in (Status.READY, Status.DRAFT) and is_blocked(task, tasks, stack):
+def effective_status(task: Task, tasks: dict[str, Task], stack: bool = False,
+                     default_after: Callable[[Task], str | None] | None = None) -> str:
+    if task.status in (Status.READY, Status.DRAFT) and is_blocked(task, tasks, stack, default_after):
         return "blocked"
     return task.status.value
 
@@ -178,7 +187,8 @@ MERMAID_CLASS = {
 }
 
 
-def mermaid(tasks: dict[str, Task], direction: str = "LR", visible: set[str] | None = None) -> str:
+def mermaid(tasks: dict[str, Task], direction: str = "LR", visible: set[str] | None = None,
+            default_after: Callable[[Task], str | None] | None = None) -> str:
     vis = set(tasks) if visible is None else visible
     lines = [f"graph {direction}"]
     for tid in sorted(vis):
@@ -193,7 +203,7 @@ def mermaid(tasks: dict[str, Task], direction: str = "LR", visible: set[str] | N
             continue
         for d in t.depends_on:
             if d in tasks and d in vis:
-                label = "|after merge|" if dependency_after(t, d, tasks) == "merge" else ""
+                label = "|after merge|" if dependency_after(t, d, tasks, default_after) == "merge" else ""
                 lines.append(f"  {_mid(d)} -->{label} {_mid(t.id)}")
         if t.discovered_from in tasks and t.discovered_from in vis:
             lines.append(f"  {_mid(t.discovered_from)} -.->|discovered| {_mid(t.id)}")
@@ -240,7 +250,8 @@ def layers(tasks: dict[str, Task], visible: set[str] | None = None) -> dict[str,
 
 
 def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = False, hide_done: bool = False,
-        stack_for: Callable[[Task], bool] | None = None) -> str:
+        stack_for: Callable[[Task], bool] | None = None,
+        default_after: Callable[[Task], str | None] | None = None) -> str:
     """The trellis: a lattice with the work climbing it. Layered left to right; each task is a
     growth-stage glyph (symbols from plants.DEFS, which the page must inline) at a lattice
     crossing, dependencies as vine, discovered work as a dashed tendril. With `hide_done`, done
@@ -303,7 +314,7 @@ def svg(tasks: dict[str, Task], link_prefix: str = "/tasks/", stack: bool = Fals
         title = _esc(t.title)
         short = title if len(title) <= 26 else title[:24] + "…"
         hidden_deps = [d for d in t.depends_on if d in tasks and d not in vis]
-        merge_deps = [d for d in t.depends_on if dependency_after(t, d, tasks) == "merge"]
+        merge_deps = [d for d in t.depends_on if dependency_after(t, d, tasks, default_after) == "merge"]
         rule_note = f" — after merge: {', '.join(merge_deps)}" if merge_deps else ""
         dep_note = f" — depends on hidden: {', '.join(hidden_deps)}" if hidden_deps else ""
         parts.append(

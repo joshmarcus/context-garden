@@ -202,8 +202,10 @@ def ls(
         deps = ",".join(t.depends_on)
         if eff == "blocked":
             deps = "[yellow]" + ",".join(sched.task_blockers(t, tasks)) + "[/yellow]"
-        elif sched.stack_enabled_for(t) and t.status.value in ("ready", "draft") and blockers(t, tasks, stack=False):
-            deps = "[cyan]stack:" + ",".join(blockers(t, tasks, stack=False)) + "[/cyan]"
+        elif sched.stack_enabled_for(t) and t.status.value in ("ready", "draft") and blockers(
+                t, tasks, stack=False, default_after=sched.dependency_default_after):
+            deps = "[cyan]stack:" + ",".join(blockers(
+                t, tasks, stack=False, default_after=sched.dependency_default_after)) + "[/cyan]"
         title = t.title + (" [dim](discovered)[/dim]" if t.discovered_from else "")
         table.add_row(t.id, _style(eff), task_owner or "-", priority_label(t.priority), t.difficulty, title, t.key, deps, t.pr or "")
     console.print(table)
@@ -214,7 +216,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
     """Show a task, its blockers and its runs."""
     from rich.markdown import Markdown
 
-    from ..graph import dependency_after, dependents
+    from ..graph import dependents
     from ..runs import RunStore
 
     store = _store()
@@ -228,7 +230,7 @@ def show(task_id: str, raw: bool = typer.Option(False, help="Print the file verb
     console.print(f"[bold]{t.id}[/bold] {t.title}  {_style(t.status.value)}  pri={priority_label(t.priority)}  difficulty={t.difficulty}  {t.key}  owner={owner or '-'} ({source})")
     console.print(f"file: {store.rel(t.path)}")
     if t.depends_on:
-        rules = ", ".join(f"{d} (after {dependency_after(t, d, tasks)})" for d in t.depends_on)
+        rules = ", ".join(f"{d} (after {sched.dependency_after(t, d, tasks)})" for d in t.depends_on)
         console.print(f"depends_on: {rules}  blockers: {', '.join(sched.task_blockers(t, tasks)) or '-'}")
     deps = dependents(t.id, tasks)
     if deps:
@@ -317,7 +319,7 @@ def trellis(
     sched = _scheduler(store)
     vis = visible_ids(tasks, hide_done=open_only)
     if fmt == "mermaid":
-        print(mermaid(tasks, visible=vis))
+        print(mermaid(tasks, visible=vis, default_after=sched.dependency_default_after))
         return
     if fmt == "json":
         print(json.dumps({"nodes": [{"id": t.id, "title": t.title, "status": sched.task_effective_status(t, tasks)} for t in tasks.values() if t.id in vis],

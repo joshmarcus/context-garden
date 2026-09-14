@@ -3336,6 +3336,33 @@ def test_config_editor_covers_metadata_and_saves_global_and_project_values(garde
     assert Config.load(garden).setting("max_parallel", "demo").source == "global"
 
 
+def test_config_editor_saves_project_dependency_default(garden):
+    import re
+
+    c = client(garden)
+    page = c.get("/config?product=demo").text
+    setting = page.split('id="setting-dependencies-default_after"', 1)[1].split("</section>", 1)[0]
+    assert "Dependency default: Stack starts eligible work" in setting
+    assert "Unset keeps the legacy document-aware rule" in setting
+    token = re.search(r'name="revision" value="([^"]+)"', page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "dependencies.default_after", "value": "merge", "product": "demo", "revision": token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).setting("dependencies.default_after", "demo").value == "merge"
+    reset_page = c.get("/config?product=demo").text
+    token = re.search(r'name="revision" value="([^"]+)"', reset_page).group(1)
+    response = c.post(
+        "/config/save",
+        data={"key": "dependencies.default_after", "value": "", "product": "demo", "revision": token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert Config.load(garden).setting("dependencies.default_after", "demo").value is None
+
+
 def test_config_editor_separates_editable_value_from_masking_overlay(garden, monkeypatch):
     import re
 

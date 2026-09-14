@@ -52,6 +52,41 @@ def test_code_dependency_keeps_stacking_default():
     assert blockers(child, tasks, stack=True) == []
 
 
+def test_project_default_applies_after_explicit_edges_and_before_legacy_rule():
+    parent = T("A", status="in_review")
+    parent.kind = "design"
+    parent.branch, parent.pr = "branch", "https://example.test/pull/1"
+    child = T("B", ["A"])
+    explicit = T("C", ["A"])
+    explicit.dependency_after["A"] = "merge"
+    tasks = {t.id: t for t in (parent, child, explicit)}
+
+    assert dependency_after(child, "A", tasks, lambda _: "stack") == "stack"
+    assert blockers(child, tasks, stack=True, default_after=lambda _: "stack") == []
+    assert "A --> B" in mermaid(tasks, default_after=lambda _: "stack")
+    assert dependency_after(explicit, "A", tasks, lambda _: "stack") == "merge"
+    assert dependency_after(child, "A", tasks, lambda _: None) == "merge"
+
+
+def test_dependent_project_default_controls_cross_project_edge_without_bypassing_stack_gate():
+    parent = T("A", status="in_review")
+    parent.product = "parent-project"
+    parent.branch, parent.pr = "branch", "https://example.test/pull/1"
+    stacked = T("B", ["A"])
+    stacked.product = "stacked-project"
+    merged = T("C", ["A"])
+    merged.product = "merged-project"
+    tasks = {t.id: t for t in (parent, stacked, merged)}
+    defaults = {"stacked-project": "stack", "merged-project": "merge"}
+
+    def default_after(task):
+        return defaults[task.product]
+
+    assert blockers(stacked, tasks, stack=True, default_after=default_after) == []
+    assert blockers(merged, tasks, stack=True, default_after=default_after) == ["A"]
+    assert blockers(stacked, tasks, stack=False, default_after=default_after) == ["A"]
+
+
 def test_ready_sorts_by_priority_then_order_then_id():
     # Same priority band: an explicit `order` breaks ties ahead of tasks without one (which
     # fall back to id order); a lower priority band always dispatches first.

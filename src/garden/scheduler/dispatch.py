@@ -343,14 +343,15 @@ class DispatchMixin:
         policy = self.cfg.revision_policy()
         max_rev = 10**9 if policy["enabled"] else int(self.cfg.get("max_revisions", 3))
         candidates = [(task, mode) for task, mode in worker_candidates(
-            tasks, self.state, max_rev, True, self._edit_pending)
+            tasks, self.state, max_rev, True, self._edit_pending, self.dependency_default_after)
             if self.task_is_authorized(task)
             if (mode != "work" or not self.state.get(task.id).get("needs_human"))
             # A persisted hold may briefly precede its task-file routing after an I/O error.
             # It remains an operational stop for revise rounds as well as new work.
             and not self.state.get(task.id).get("runner_hold")
             and (mode != "work" or self.stack_enabled_for(task)
-                 or not blockers(task, tasks, stack=False))]
+                 or not blockers(task, tasks, stack=False,
+                                 default_after=self.dependency_default_after))]
         queue = [(task, mode, (
             "rebase round, goes first" if mode == "rebase" else
             f"substantive revise round {int(self.state.get(task.id).get('substantive_revisions', self.state.get(task.id).get('revisions', 0))) + 1}"
@@ -588,7 +589,8 @@ class DispatchMixin:
         tasks = self.store.tasks()
         active = {r.task_id for r in self.runs.active()}
         ready_ids = {t.id for t in tasks.values()
-                     if t in ready(tasks, stack=self.stack_enabled_for(t))}
+                     if t in ready(tasks, stack=self.stack_enabled_for(t),
+                                   default_after=self.dependency_default_after)}
         max_rev = 10**9 if self.cfg.revision_policy()["enabled"] else int(self.cfg.get("max_revisions", 3))
         for t in tasks.values():
             if t.status.terminal or t.status == Status.RUNNING:
@@ -728,9 +730,11 @@ class DispatchMixin:
             st.pop("stack_parent", None)
             st["pr_base"] = self.final_base_for(task)
             return None
-        if not self.stack_enabled_for(task) or blockers(task, self.store.tasks(), stack=False) == []:
+        if not self.stack_enabled_for(task) or blockers(
+                task, self.store.tasks(), stack=False,
+                default_after=self.dependency_default_after) == []:
             return None
-        parents = stack_parents(task, self.store.tasks())
+        parents = stack_parents(task, self.store.tasks(), self.dependency_default_after)
         if len(parents) != 1:
             return None
         p = parents[0]

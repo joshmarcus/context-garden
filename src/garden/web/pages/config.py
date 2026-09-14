@@ -80,6 +80,9 @@ def register(app: FastAPI, site: Site) -> None:
             if field.secret:
                 rendered = ""
                 display = "••••••••" if saved_value not in (None, "", [], {}) else "not set"
+            elif field.key == "dependencies.default_after" and saved_value is None:
+                rendered = ""
+                display = "unset (legacy rule)"
             else:
                 serialized = yaml.safe_dump(saved_value, default_flow_style=True, sort_keys=False).strip().removesuffix("...").strip()
                 rendered = saved_value if isinstance(saved_value, str) else serialized
