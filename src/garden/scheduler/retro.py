@@ -13,7 +13,17 @@ from .. import gitops
 from ..brief import brief_gaps
 from ..events import phase_summary
 from ..github import GitHubError
-from ..model import Phase, Status, Task, estimate_tokens, now_iso, phase_refusal, slugify
+from ..model import (
+    Phase,
+    Status,
+    Task,
+    estimate_tokens,
+    join_frontmatter,
+    now_iso,
+    phase_refusal,
+    slugify,
+    split_frontmatter,
+)
 from ..multiplayer_client import MultiplayerUnavailable
 from ..operator_spend import attributed_summary as operator_attributed_summary
 from ..operator_spend import default_path as operator_spend_path
@@ -607,11 +617,8 @@ class RetroMixin:
         if not self_prod:
             raise RuntimeError("garden retro needs a product with `self: true` (the garden's own repo) to "
                                "open the retro PR; see docs/architecture.md")
-        # The persona briefs inline the newest walkthrough. Capture it before dispatching any
-        # persona so every review sees the same page set and empty/error states.
-        probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
-                     product=phase.product, phase=phase.name)
-        self._refuse_if_phase_not_admitted(probe)
+        # This is an explicit phase-owner operation, not implementation dispatch. In
+        # particular, a closed phase remains closed while its released work is reviewed.
 
         from datetime import date
 
@@ -698,7 +705,9 @@ class RetroMixin:
         prepared: list[tuple[str, dict[str, Any]]] = []
         for name in missing[:max(0, available)]:
             run_id = f"retro-persona-{uuid.uuid4().hex}"
-            payload = self.prepare_persona_phase(phase, name, run_id=run_id, source=source)
+            payload = self.prepare_persona_phase(
+                phase, name, run_id=run_id, source=source, retrospective=True
+            )
             prepared.append((name, payload))
         waiting = ""
         if len(prepared) < len(missing):
@@ -784,7 +793,7 @@ class RetroMixin:
             }
             self.state.save()
             try:
-                run = self.dispatch_persona_phase(phase, name, run_id=run_id)
+                run = self.dispatch_persona_phase(phase, name, run_id=run_id, retrospective=True)
             except Exception as exc:  # launch races are durable waiting state, not a lost retro
                 # The durable role remains reserved. A later tick either adopts the run
                 # record created by the failed launch or retries the same run identity.
@@ -815,7 +824,7 @@ class RetroMixin:
                 continue
             run_id = f"retro-persona-{uuid.uuid4().hex}"
             payload = self.prepare_persona_phase(
-                phase, name, run_id=run_id, source=source
+                phase, name, run_id=run_id, source=source, retrospective=True
             )
             prepared.append((name, payload))
         return prepared
@@ -902,9 +911,6 @@ class RetroMixin:
         """Build one immutable reconciliation launch payload outside ``tick.lock``."""
         self.require_maintenance_running()
         phase = self.store.phase(entry["product"], entry["phase_name"])
-        admission_probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}",
-                               title="", product=phase.product, phase=phase.name)
-        self._refuse_if_phase_not_admitted(admission_probe)
         probe = Task(path=self.store.root, id=f"_retro-{phase.product}-{phase.name}", title="",
                      product=entry["self_product"], phase="")
         runner = self.runner_for(probe, "local", str(self.cfg.get("review.harness") or ""))
@@ -1402,7 +1408,14 @@ class RetroMixin:
                                                blocking=blocking, next_phase=next_phase,
                                                difficulty=run.difficulty, model=run.model, numbers=numbers,
                                                no_file=bool(entry.get("no_file"))))
-        goals_path.write_text(render_next_goals(phase, next_phase, rev, filed=filed, followups=followups))
+        goals = render_next_goals(phase, next_phase, rev, filed=filed, followups=followups)
+        # The destination may already be frozen or carry another phase policy. The retro PR
+        # adds only a draft; it must not silently alter that policy when it lands.
+        try:
+            destination_meta, _ = split_frontmatter(goals_path.read_text())
+        except (OSError, ValueError):
+            destination_meta = {}
+        goals_path.write_text(join_frontmatter(destination_meta, goals) if destination_meta else goals)
         try:
             gitops.commit_all(wt, f"garden retro: {phase.key} retrospective and {next_phase} goals draft")
         except gitops.GitError as e:

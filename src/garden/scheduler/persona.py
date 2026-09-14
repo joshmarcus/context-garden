@@ -49,24 +49,28 @@ class PersonaMixin:
         return rows
 
     def dispatch_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
-                               min_severity: str = "low", run_id: str = "") -> Run:
+                               min_severity: str = "low", run_id: str = "", *,
+                               retrospective: bool = False) -> Run:
         self.require_execution_authority()
         self.require_phase_authority(phase)
-        prepared = self.prepare_persona_phase(phase, name, file_tasks, min_severity, run_id)
+        prepared = self.prepare_persona_phase(
+            phase, name, file_tasks, min_severity, run_id, retrospective=retrospective
+        )
         self._commit_prepared_aux(prepared)
         self._launch_prepared_aux(prepared)
         return prepared["run"]
 
     def prepare_persona_phase(self, phase: Phase, name: str, file_tasks: bool = False,
                               min_severity: str = "low", run_id: str = "",
-                              source: str = "") -> dict[str, Any]:
+                              source: str = "", *, retrospective: bool = False) -> dict[str, Any]:
         """Prepare a phase persona's exact worktree and brief without launching its worker."""
         valid_name(name)
         product = phase.product
         probe = Task(path=self.store.root, id=f"_{product}-{phase.name}", title="", product=product, phase=phase.name)
-        # Explicit whole-phase review remains available on a frozen phase so its findings can
-        # be filed forward, but it must still respect sequential phase ownership.
-        if refusal := self.sequential_phase_refusal(probe):
+        # A retro is explicitly authorized by its phase operation and only produces review
+        # material and forwarded drafts. It may therefore inspect a closed phase without
+        # reopening implementation; ordinary whole-phase personas still respect phase order.
+        if not retrospective and (refusal := self.sequential_phase_refusal(probe)):
             raise RuntimeError(refusal)
         harness_name = str(self.cfg.get("review.harness") or "")
         repo = self.repo_for(probe)
