@@ -70,6 +70,16 @@ def difficulty(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) 
     sched.set_difficulty(t, tier, actor="web")
 
 
+@action("dependency-mode")
+def dependency_mode(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> str:
+    """Apply the same validated edge mutation exposed by ``garden dependency-mode``."""
+    try:
+        explicit, effective = sched.set_dependency_mode(t, applies_to.strip(), note.strip())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return f"{t.id} dependency {applies_to.strip()}: {explicit or 'project default'} (effective {effective})"
+
+
 @action("owner")
 def owner(s: Store, sched: Scheduler, t: Task, note: str, applies_to: str) -> None:
     """Change only the task's planning owner; this never affects access or approval."""
@@ -550,7 +560,7 @@ def register(app: FastAPI, site: Site) -> None:
                 sched = hub.scheduler()
                 t = sched.store.task(task_id)
                 ensure_open(t)
-                if action in {"retry", "done", "manual-mode"}:
+                if action in {"retry", "done", "manual-mode", "dependency-mode"}:
                     try:
                         sched.require_task_authority(t)
                     except PermissionError as exc:

@@ -575,6 +575,42 @@ def test_recorded_stack_parent_survives_a_dependency_default_change(sched):
     assert sched._stack_for(child)["parent_id"] == parent.id
 
 
+def test_dependency_mode_edit_preserves_an_existing_stack_and_open_pr(sched):
+    sched.cfg.data["products"]["demo"]["configuration"] = {
+        "overrides": {"dependencies.default_after": "stack"},
+    }
+    parent = sched.store.task("DM-001")
+    parent.status = Status.IN_REVIEW
+    parent.branch, parent.pr = "garden/dm-001", "https://example.test/pull/1"
+    sched.store.save(parent)
+    child = sched.store.task("DM-002")
+    assert sched._stack_for(child)["parent_id"] == parent.id
+    child.status = Status.IN_REVIEW
+    child.branch, child.pr = "garden/dm-002", "https://example.test/pull/2"
+    sched.store.save(child)
+
+    explicit, effective = sched.set_dependency_mode(child, parent.id, "merge")
+
+    saved = sched.store.task(child.id)
+    assert (explicit, effective) == ("merge", "merge")
+    assert saved.branch == "garden/dm-002" and saved.pr == "https://example.test/pull/2"
+    assert sched.state.get(child.id)["stack_parent"] == parent.id
+
+
+def test_dependency_mode_refuses_unauthorized_edits_without_saving(sched, monkeypatch):
+    child = sched.store.task("DM-002")
+    before = child.path.read_text()
+
+    def refuse(_task):
+        raise PermissionError("DM-002 is not owned by the authenticated member")
+
+    monkeypatch.setattr(sched, "require_task_authority", refuse)
+    with pytest.raises(PermissionError, match="not owned"):
+        sched.set_dependency_mode(child, "DM-001", "stack")
+
+    assert child.path.read_text() == before
+
+
 def test_design_context_is_run_scoped_and_referenced_without_dirtying_checkout(sched):
     from tests.conftest import git
 

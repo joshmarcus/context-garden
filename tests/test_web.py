@@ -1495,6 +1495,44 @@ def test_actions(garden):
     assert c.get("/api/tasks").json()[0]["status"] == "ready"
 
 
+def test_task_page_sets_dependency_mode_and_can_inherit_project_default(garden):
+    config_path = garden / "garden.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["products"]["demo"]["configuration"] = {
+        "overrides": {"dependencies.default_after": "merge"},
+    }
+    config_path.write_text(yaml.safe_dump(config))
+    c = client(garden)
+
+    page = c.get("/tasks/DM-002").text
+    assert 'action="/tasks/DM-002/dependency-mode"' in page
+    assert "Project default (merge)" in page
+
+    stacked = c.post("/tasks/DM-002/dependency-mode", data={"applies_to": "DM-001", "note": "stack"},
+                     follow_redirects=False)
+    assert stacked.status_code == 303
+    assert Store(garden).task("DM-002").dependency_after == {"DM-001": "stack"}
+    assert "after stack" in c.get("/tasks/DM-002").text
+
+    merged = c.post("/tasks/DM-002/dependency-mode", data={"applies_to": "DM-001", "note": "merge"},
+                    follow_redirects=False)
+    assert merged.status_code == 303
+    assert Store(garden).task("DM-002").dependency_after == {"DM-001": "merge"}
+
+    inherited = c.post("/tasks/DM-002/dependency-mode", data={"applies_to": "DM-001", "note": "default"},
+                       follow_redirects=False)
+    assert inherited.status_code == 303
+    saved = Store(garden).task("DM-002")
+    assert saved.depends_on == ["DM-001"]
+    assert saved.dependency_after == {}
+    assert "after merge" in c.get("/tasks/DM-002").text
+
+    before = (garden / "demo" / "p1" / "tasks" / "DM-002-second.md").read_text()
+    bad = c.post("/tasks/DM-002/dependency-mode", data={"applies_to": "DM-404", "note": "stack"})
+    assert bad.status_code == 400
+    assert (garden / "demo" / "p1" / "tasks" / "DM-002-second.md").read_text() == before
+
+
 def test_review_requires_current_automated_approval_before_it_needs_a_person(garden):
     from garden.model import Status
     from garden.store import Store

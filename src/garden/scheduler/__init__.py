@@ -587,6 +587,28 @@ class Scheduler(
                                 self.store.tasks() if tasks is None else tasks,
                                 self.dependency_default_after)
 
+    def set_dependency_mode(self, task: Task, dependency_id: str, mode: str) -> tuple[str, str]:
+        """Set one existing edge's explicit rule, or let it inherit the project default.
+
+        This intentionally changes only task frontmatter.  Dispatch records an existing stack
+        parent separately, so an edit neither restarts active work nor retargets an open PR.
+        """
+        self.require_task_authority(task)
+        if dependency_id not in task.depends_on:
+            raise ValueError(f"{dependency_id} is not an existing dependency of {task.id}")
+        if mode not in {"stack", "merge", "default"}:
+            raise ValueError("dependency mode must be stack, merge, or default")
+
+        explicit = "" if mode == "default" else mode
+        if task.dependency_after.get(dependency_id, "") == explicit:
+            return explicit, self.dependency_after(task, dependency_id)
+        if explicit:
+            task.dependency_after[dependency_id] = explicit
+        else:
+            task.dependency_after.pop(dependency_id, None)
+        self.store.save(task)
+        return explicit, self.dependency_after(task, dependency_id)
+
     def task_blockers(self, task: Task, tasks: dict[str, Task] | None = None) -> list[str]:
         """Resolve dependency blockers with the task's effective project stack policy."""
         from ..graph import blockers
