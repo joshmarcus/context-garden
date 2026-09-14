@@ -29,9 +29,42 @@ index 0000000..1111111 100644
     assert "Code walkthrough" in report
     assert "Responsibility." in report
     assert "Why this change matters." in report
-    assert "Change flow:" in report
+    assert "component inventory, not an execution flow" in report
     assert 'class="kw">' in report
     assert "conservative inferences" in report
+
+
+def test_report_explains_source_evidenced_responsibilities_and_interactions(garden):
+    task = Store(garden).task("DM-001")
+    diff = """diff --git a/core.py b/core.py
+--- a/core.py
++++ b/core.py
+@@ -0,0 +1,2 @@
++def build_report():
++    return "ready"
+diff --git a/page.py b/page.py
+--- a/page.py
++++ b/page.py
+@@ -0,0 +1,4 @@
++from .core import build_report
++@app.post("/explain")
++def explain():
++    return build_report()
+"""
+
+    report = render(task, base="main", head="a" * 40, diff=diff, sources={
+        "core.py": 'def build_report():\n    return "ready"\n',
+        "page.py": 'from .core import build_report\n@app.post("/explain")\ndef explain():\n    return build_report()\n',
+    })
+
+    assert "Defines the changed application behavior in `build_report`." in report
+    assert "Handles the HTTP endpoint `/explain`." in report
+    assert "Observable changes evidenced by additions" in report
+    assert "page.py adds the endpoint `/explain`" in report
+    assert "core.py adds `build_report`" in report
+    assert "page.py</a> → <a href=\"#file-1\">core.py" in report
+    assert "references `build_report`" in report
+    assert "delegates work to `build_report`" in report
 
 
 def test_generation_refuses_a_checkout_other_than_recorded_pr_head(garden, monkeypatch):
