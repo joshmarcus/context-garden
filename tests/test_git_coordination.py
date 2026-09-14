@@ -283,6 +283,54 @@ def test_missing_or_rewritten_ref_fails_closed_with_evidence(clones):
     assert list(store.evidence_dir.glob("*.json"))
 
 
+def test_validated_history_checkpoint_uses_fixed_reads_for_unchanged_and_new_heads(
+    clones, monkeypatch
+):
+    _, one, two = clones
+    reader = GitStateStore(one, garden_id="garden")
+    reader.read()
+
+    commands: list[list[str]] = []
+    original_run_process = git_coordination._run_process
+
+    def count_run_process(cwd, args, **kwargs):
+        commands.append(["process", *args])
+        return original_run_process(cwd, args, **kwargs)
+
+    monkeypatch.setattr(git_coordination, "_run_process", count_run_process)
+
+    reader.read()
+    assert len(commands) == 5
+    assert not any(command[1:3] == ["ls-tree", "--name-only"] for command in commands)
+
+    commands.clear()
+    GitStateStore(two, garden_id="garden").apply(
+        "advance-for-checkpoint",
+        actor="alice",
+        installation="two",
+        expected_versions={"task:CG-1": 0},
+        changes={"entities": {"task:CG-1": {"checkpoint_test": True}}},
+    )
+    commands.clear()
+    head, state = reader.read()
+
+    assert len(commands) == 8
+    assert state["entities"]["task:CG-1"]["checkpoint_test"] is True
+    assert reader._load_validated() == (head, state)
+    assert not any(command[1:4] == ["show", "-s", "--format=%P"] for command in commands)
+
+
+def test_cached_history_rejects_invalid_new_descendant(clones):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden")
+    head, state = store.read()
+    invalid = store._commit(state, head, "invalid-sequence")
+    git(one, "push", "origin", f"{invalid}:refs/heads/garden-state")
+
+    with pytest.raises(GitCoordinationError, match="sequence is corrupt"):
+        store.read()
+
+
 def test_lost_push_acknowledgement_resolves_operation_from_remote(clones, monkeypatch):
     _, one, _ = clones
     store = GitStateStore(one, garden_id="garden")
