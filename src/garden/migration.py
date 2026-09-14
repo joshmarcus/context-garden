@@ -15,7 +15,8 @@ from typing import Any
 
 import yaml
 
-from .coordination import PROTOCOL_VERSION, Conflict, Coordinator
+from .coordination import PROTOCOL_VERSION, Coordinator
+from .git_coordination import GitCoordinationError, GitStateStore
 from .hosts.registry import enrolled_hosts, revoke_enrolled_hosts, worker_configuration
 from .members import MemberRegistry, Principal
 from .model import effective_owner, now_iso
@@ -128,8 +129,7 @@ class GardenMigration:
         active = [{"task_id": run.task_id, "run_id": run.run_id, "status": run.status}
                   for run in runs.active()]
         dirty = self._dirty_paths()
-        coordinator = Coordinator(self.store.config.garden_dir / "coordination.db")
-        pending = coordinator.snapshot(self._admin_for_preview(registry), self._garden_id(registry))
+        pending = self._authority_snapshot_for_preview(registry)
         blockers = []
         if unknown:
             blockers.append("unknown legacy owners must be mapped or explicitly made unassigned")
@@ -168,9 +168,14 @@ class GardenMigration:
             blockers.append("all legacy worker enrollments must be assigned: "
                             + ", ".join(missing_workers))
         connection = self.store.config.get("multiplayer", {}) or {}
+        git_settings = connection.get("git", {}) if isinstance(connection, dict) else {}
         if (not connection.get("enabled") or connection.get("garden_id") != self._garden_id(registry)
-                or not connection.get("coordinator_url") or not connection.get("credential_env")):
-            blockers.append("connect this installation to the coordinator before cutover")
+                or not connection.get("member_id") or not connection.get("installation_id")
+                or not isinstance(git_settings, dict) or not git_settings.get("remote")
+                or not git_settings.get("state_ref")):
+            blockers.append("configure this installation for Garden Git before cutover")
+        elif installation_map.get(connection["installation_id"]) != connection["member_id"]:
+            blockers.append("configured Git installation must match its selected member binding")
         plan = {"version": MIGRATION_VERSION, "protocol_version": PROTOCOL_VERSION,
                 "garden_id": self._garden_id(registry), "tasks": tasks, "phases": phases,
                 "installations": bindings, "unknown_owners": sorted(unknown),
@@ -215,14 +220,13 @@ class GardenMigration:
         if "snapshot" not in journal:
             journal["snapshot"] = str(self._snapshot(preview_id))
             _write_json(journal_path, journal)
-        coordinator = Coordinator(self.store.config.garden_dir / "coordination.db")
         rows = [("task", row["id"], row["member_id"]) for row in plan["tasks"]]
         rows += [("phase", row["scope"], row["member_id"]) for row in plan["phases"]]
         try:
-            coordinator.initialize_authority(actor, garden_id=plan["garden_id"], rows=rows,
-                operation_id=f"migration:{preview_id}:authority",
-                protocol_version=plan["protocol_version"])
-        except Conflict as exc:
+            self._initialize_git_authority(
+                plan, actor, operation_id=f"migration:{preview_id}:authority"
+            )
+        except (GitCoordinationError, PermissionError) as exc:
             raise MigrationRefused(str(exc)) from exc
         journal["authority"] = sorted(f"{kind}:{scope}" for kind, scope, _owner in rows)
         journal["worker_revocation_pending"] = True
@@ -254,8 +258,33 @@ class GardenMigration:
             raise MigrationRefused("standalone export destination must be outside the live garden")
         if RunStore(self.store.config.garden_dir).active():
             raise MigrationRefused("active attempts must drain before standalone export")
-        coordinator_path = self.store.config.garden_dir / "coordination.db"
-        if coordinator_path.exists():
+        coordinator_path: Path | None = None
+        if standalone_fence(self.store.root) or self.store.config.get("multiplayer.enabled", False):
+            try:
+                state = self._git_store().read()[1]
+            except (GitCoordinationError, ValueError) as exc:
+                raise MigrationRefused(
+                    f"authoritative Git state is unavailable; standalone export refused: {exc}"
+                ) from exc
+            unresolved_effects = any(
+                row.get("outcome", "pending") in {"pending", "unknown"}
+                for row in state["effects"].values()
+            )
+            unresolved_permits = any(
+                row.get("status", "pending") not in {"terminal", "fenced"}
+                for row in state["permits"].values()
+            )
+            if (state["claims"] or unresolved_permits or unresolved_effects
+                    or state["reservations"] or state["handoffs"]
+                    or state["authority_changes"]):
+                raise MigrationRefused(
+                    "authoritative Git claims and effects must be quiescent before standalone export"
+                )
+        else:
+            coordinator_path = self.store.config.garden_dir / "coordination.db"
+            if not coordinator_path.exists():
+                coordinator_path = None
+        if coordinator_path:
             registry = MemberRegistry(self.store.config.garden_dir)
             snapshot = Coordinator(coordinator_path).snapshot(
                 self._admin_for_preview(registry), self._garden_id(registry))
@@ -264,6 +293,108 @@ class GardenMigration:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._archive(destination, standalone=True)
         return destination
+
+    def _authority_snapshot_for_preview(self, registry: MemberRegistry) -> dict[str, Any]:
+        """Inspect configured authority without creating either authority backend."""
+        if self.store.config.get("multiplayer.enabled", False):
+            try:
+                git_store = self._git_store()
+                if not git_store._remote_oid():
+                    return {"active_claims": [], "pending_outbox": [], "blocking_effects": []}
+                state = git_store.read()[1]
+            except (GitCoordinationError, ValueError) as exc:
+                raise MigrationRefused(f"cannot inspect Garden Git authority: {exc}") from exc
+            effects = [
+                {"operation_id": key, **row} for key, row in state["effects"].items()
+                if row.get("outcome", "pending") in {"pending", "unknown"}
+            ]
+            permits = [
+                {"operation_id": key, **row} for key, row in state["permits"].items()
+                if row.get("status", "pending") not in {"terminal", "fenced"}
+            ]
+            return {
+                "active_claims": list(state["claims"].values()),
+                "pending_outbox": permits,
+                "blocking_effects": effects,
+            }
+        coordinator_path = self.store.config.garden_dir / "coordination.db"
+        if coordinator_path.exists():
+            return Coordinator(coordinator_path).snapshot(
+                self._admin_for_preview(registry), self._garden_id(registry)
+            )
+        return {"active_claims": [], "pending_outbox": [], "blocking_effects": []}
+
+    def _git_store(self) -> GitStateStore:
+        settings = self.store.config.get("multiplayer.git", {}) or {}
+        return GitStateStore(
+            self.store.root,
+            garden_id=str(self.store.config.get("multiplayer.garden_id", "")),
+            remote=str(settings.get("remote", "origin")),
+            state_ref=str(settings.get("state_ref", "refs/heads/garden-state")),
+        )
+
+    def _initialize_git_authority(
+        self, plan: dict[str, Any], actor: Principal, *, operation_id: str
+    ) -> None:
+        registry = MemberRegistry(self.store.config.garden_dir)
+        local = registry._read()
+        actor_member = local.get("members", {}).get(actor.member_id) or {}
+        actor_installation = local.get("installations", {}).get(actor.installation_id) or {}
+        if (actor.garden_id != plan["garden_id"] or actor.role != "administrator"
+                or not actor_member.get("active")
+                or actor_installation.get("member_id") != actor.member_id
+                or actor_installation.get("revoked")):
+            raise PermissionError("an active administrator installation must commit migration")
+        members = {}
+        assignments = local.get("assignments", {})
+        for member_id, row in local.get("members", {}).items():
+            member = {
+                "active": bool(row.get("active")),
+                "role": row.get("role", "member"),
+                "project_visibility": row.get("project_visibility", "assigned"),
+                "projects": list(row.get("projects") or ()),
+            }
+            if member_id in assignments:
+                assignment = assignments[member_id]
+                member["assignment"] = {
+                    key: assignment[key]
+                    for key in ("project", "phase", "generation", "enabled", "advance")
+                    if key in assignment
+                }
+            members[member_id] = member
+        installations = {
+            row["installation_id"]: row["member_id"] for row in plan["installations"]
+        }
+        revoked_installations = {
+            installation_id: row.get("member_id", "")
+            for installation_id, row in local.get("installations", {}).items()
+            if row.get("revoked")
+        }
+        entities = {}
+        for row in plan["tasks"]:
+            entities[f"task:{row['id']}"] = {
+                "kind": "task", "project": row["project"], "scope": row["id"],
+                "owner": row["member_id"], "authority_generation": 1, "version": 0,
+            }
+        for row in plan["phases"]:
+            project = row["scope"].split("/", 1)[0]
+            entities[f"phase:{row['scope']}"] = {
+                "kind": "phase", "project": project, "scope": row["scope"],
+                "owner": row["member_id"], "authority_generation": 1, "version": 0,
+            }
+        settings = self.store.config.get("multiplayer.git", {}) or {}
+        GitStateStore.initialize_authority(
+            self.store.root, garden_id=plan["garden_id"], operation_id=operation_id,
+            members=members, installations=installations,
+            revoked_installations=revoked_installations, entities=entities,
+            remote=str(settings.get("remote", "origin")),
+            state_ref=str(settings.get("state_ref", "refs/heads/garden-state")),
+        )
+        state = self._git_store().read()[1]
+        if (state["claims"] or state["permits"] or state["effects"]
+                or state["reservations"] or state["handoffs"]
+                or state["authority_changes"]):
+            raise GitCoordinationError("claims and effects must be quiescent during migration")
 
     def _snapshot(self, preview_id: str) -> Path:
         path = self.directory / "snapshots" / f"standalone-{preview_id}.tar.gz"

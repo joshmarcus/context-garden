@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import tarfile
 
 import pytest
 import yaml
+from typer.testing import CliRunner
 
 import garden.migration as migration_module
+from garden.cli import app as cli_app
 from garden.coordination import Coordinator
+from garden.git_coordination import GitMultiplayerClient, GitStateStore
 from garden.members import MemberRegistry
 from garden.migration import GardenMigration, MigrationRefused, standalone_fence
 from garden.scheduler import MultiplayerExecutionUnavailable, Scheduler
@@ -25,10 +29,21 @@ def _prepared(garden):
     admin = registry.authenticate(token)
     assert admin is not None
     config = yaml.safe_load((garden / "garden.yaml").read_text())
+    remote = garden.parent / "garden-state.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    subprocess.run(["git", "init", "-q", str(garden)], check=True)
+    subprocess.run(["git", "config", "user.name", "Migration Test"], cwd=garden, check=True)
+    subprocess.run(["git", "config", "user.email", "migration@example.test"], cwd=garden,
+                   check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=garden, check=True)
+    (garden / ".gitignore").write_text(".garden/\ngarden.local.yaml\n")
     config["multiplayer"] = {"enabled": True, "garden_id": "garden-1",
-        "coordinator_url": "https://coordinator.test", "member_id": "alice",
-        "installation_id": "alice-laptop", "credential_env": "GARDEN_ALICE"}
+        "git": {"remote": "origin", "state_ref": "refs/heads/garden-state"},
+        "coordinator_url": "", "member_id": "alice",
+        "installation_id": "alice-laptop", "credential_env": ""}
     (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    subprocess.run(["git", "add", "."], cwd=garden, check=True)
+    subprocess.run(["git", "commit", "-qm", "seed garden"], cwd=garden, check=True)
     choices = {"owner_map": {"legacy-alice": "alice"},
                "phase_owners": {"demo/p1": "alice"},
                "installations": {"alice-laptop": "alice"}}
@@ -56,7 +71,7 @@ def test_preview_preserves_unassignment_and_separates_phase_owner(garden):
     assert plan["phases"] == [{"scope": "demo/p1", "legacy_default_owner": "legacy-alice",
                                "member_id": "alice"}]
     assert not (garden / ".garden" / "authority-mode.json").exists()
-    assert Coordinator(garden / ".garden" / "coordination.db").pending_outbox("garden-1") == []
+    assert not (garden / ".garden" / "coordination.db").exists()
 
 
 def test_preview_reports_unknown_dirty_active_and_required_setup(garden):
@@ -88,7 +103,7 @@ def test_commit_is_explicit_resumable_and_fences_legacy_scheduler(garden, monkey
     admin, choices = _prepared(garden)
     migration = GardenMigration(Store(garden))
     plan = migration.preview(choices)
-    original = Coordinator.initialize_authority
+    original = GitStateStore.initialize_authority
     calls = 0
 
     def interrupted(self, *args, **kwargs):
@@ -98,13 +113,13 @@ def test_commit_is_explicit_resumable_and_fences_legacy_scheduler(garden, monkey
             raise RuntimeError("interrupted")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(Coordinator, "initialize_authority", interrupted)
+    monkeypatch.setattr(GitStateStore, "initialize_authority", interrupted)
     with pytest.raises(RuntimeError, match="interrupted"):
         migration.commit(plan["preview_id"], admin)
     journal = json.loads((garden / ".garden" / "migration" / "cutover.json").read_text())
     assert journal["status"] == "prepared"
 
-    monkeypatch.setattr(Coordinator, "initialize_authority", original)
+    monkeypatch.setattr(GitStateStore, "initialize_authority", original)
     result = migration.commit(plan["preview_id"], admin)
     assert result["status"] == "committed"
     fence = standalone_fence(garden)
@@ -112,6 +127,9 @@ def test_commit_is_explicit_resumable_and_fences_legacy_scheduler(garden, monkey
     with tarfile.open(result["snapshot"]) as archive:
         names = archive.getnames()
         assert ".garden/members.json" not in names
+
+    # Normal startup reads the authority just accepted through the configured Git ref.
+    Scheduler(Store(garden)).require_execution_authority()
 
     config = yaml.safe_load((garden / "garden.yaml").read_text())
     config["multiplayer"] = {"enabled": False}
@@ -122,8 +140,9 @@ def test_commit_is_explicit_resumable_and_fences_legacy_scheduler(garden, monkey
 
 
 def test_standalone_export_requires_quiescence_and_is_outside_live_garden(garden, tmp_path):
-    _admin, _choices = _prepared(garden)
+    admin, choices = _prepared(garden)
     migration = GardenMigration(Store(garden))
+    migration.commit(migration.preview(choices)["preview_id"], admin)
     with pytest.raises(MigrationRefused, match="outside"):
         migration.export_standalone(garden / "export.tar.gz")
     destination = tmp_path / "standalone.tar.gz"
@@ -223,21 +242,22 @@ def test_commit_resumes_after_worker_registry_was_revoked(garden, monkeypatch):
     assert result["revoked_worker_enrollments"] == ["legacy-worker"]
 
 
-def test_active_coordinator_claim_blocks_preview_and_atomic_cutover(garden, monkeypatch):
+def test_active_git_claim_blocks_resumed_cutover(garden, monkeypatch):
     admin, choices = _prepared(garden)
     migration = GardenMigration(Store(garden))
     plan = migration.preview(choices)
-    coordinator = Coordinator(garden / ".garden" / "coordination.db")
     original_snapshot = migration._snapshot
 
     def claim_during_cutover(preview_id):
         path = original_snapshot(preview_id)
-        coordinator.set_authority(admin, garden_id="garden-1", kind="task", scope="legacy-active",
-            owner_id="alice", authority_generation=1, expected_version=0,
-            operation_id="seed-authority")
-        coordinator.claim(admin, garden_id="garden-1", kind="task", scope="legacy-active",
-            expected_version=1, accepted_owner="alice", authority_generation=1,
-            operation_id="active-claim")
+        migration._initialize_git_authority(
+            plan, admin, operation_id=f"migration:{plan['preview_id']}:authority"
+        )
+        client = GitMultiplayerClient(
+            GitStateStore(garden, garden_id="garden-1"), "alice", "alice-laptop"
+        )
+        client.claim(kind="task", scope="DM-001", owner_id="alice",
+                     authority_generation=1, expected_version=0)
         return path
 
     monkeypatch.setattr(migration, "_snapshot", claim_during_cutover)
@@ -249,13 +269,100 @@ def test_active_coordinator_claim_blocks_preview_and_atomic_cutover(garden, monk
 
 
 def test_standalone_archive_excludes_nested_host_enrollment(garden, tmp_path):
-    _admin, _choices = _prepared(garden)
+    admin, choices = _prepared(garden)
+    migration = GardenMigration(Store(garden))
+    migration.commit(migration.preview(choices)["preview_id"], admin)
     private = garden / ".garden" / "hosts" / "enrollment"
     private.mkdir(parents=True)
     (private / "credential.json").write_text('{"token":"must-not-export"}')
 
     destination = tmp_path / "standalone.tar.gz"
-    GardenMigration(Store(garden)).export_standalone(destination)
+    migration.export_standalone(destination)
 
     with tarfile.open(destination) as archive:
         assert not any(name.startswith(".garden/hosts/") for name in archive.getnames())
+
+
+def test_standalone_export_blocks_another_installations_unresolved_permit(garden, tmp_path):
+    admin, choices = _prepared(garden)
+    registry = MemberRegistry(garden / ".garden")
+    registry.issue_installation(admin, "alice", "alice-desktop")
+    choices["installations"]["alice-desktop"] = "alice"
+    migration = GardenMigration(Store(garden))
+    migration.commit(migration.preview(choices)["preview_id"], admin)
+    client = GitMultiplayerClient(
+        GitStateStore(garden, garden_id="garden-1"), "alice", "alice-desktop"
+    )
+    claim = client.claim(
+        kind="task", scope="DM-001", owner_id="alice", authority_generation=1,
+        expected_version=0,
+    )
+    client.store.apply(
+        "desktop-permit", actor="alice", installation="alice-desktop",
+        expected_versions={}, changes={"permits": {"desktop-permit": {
+            "claim": claim["operation_id"], "status": "pending",
+        }}},
+    )
+
+    with pytest.raises(MigrationRefused, match="Git claims and effects must be quiescent"):
+        migration.export_standalone(tmp_path / "blocked.tar.gz")
+
+
+def test_standalone_export_refuses_unavailable_git_authority(garden, tmp_path):
+    admin, choices = _prepared(garden)
+    migration = GardenMigration(Store(garden))
+    migration.commit(migration.preview(choices)["preview_id"], admin)
+    subprocess.run(
+        ["git", "--git-dir", str(garden.parent / "garden-state.git"), "update-ref", "-d",
+         "refs/heads/garden-state"], check=True,
+    )
+
+    with pytest.raises(MigrationRefused, match="unavailable; standalone export refused"):
+        migration.export_standalone(tmp_path / "uncertain.tar.gz")
+
+
+def test_migration_cli_commits_git_authority_and_starts_normally(
+    garden, tmp_path, monkeypatch,
+):
+    admin, choices = _prepared(garden)
+    choice_path = tmp_path / "migration-choices.json"
+    choice_path.write_text(json.dumps(choices))
+    monkeypatch.chdir(garden)
+    monkeypatch.setattr("garden.cli.migration._actor", lambda _credential_env: admin)
+
+    preview = CliRunner().invoke(
+        cli_app, ["migration", "preview", "--choices", str(choice_path)]
+    )
+    assert preview.exit_code == 0, preview.output
+    preview_id = json.loads(preview.output)["preview_id"]
+    committed = CliRunner().invoke(
+        cli_app,
+        ["migration", "commit", "--preview-id", preview_id,
+         "--credential-env", "TEST_ADMIN"],
+    )
+    assert committed.exit_code == 0, committed.output
+    status = CliRunner().invoke(cli_app, ["members", "status"])
+    assert status.exit_code == 0, status.output
+    assert "mode: multiplayer Git" in status.output
+    assert "Git: synchronized at" in status.output
+
+
+def test_legacy_sqlite_obligation_still_blocks_standalone_export(garden, tmp_path):
+    admin, _choices = _prepared(garden)
+    config = yaml.safe_load((garden / "garden.yaml").read_text())
+    config["multiplayer"] = {"enabled": False}
+    (garden / "garden.yaml").write_text(yaml.safe_dump(config))
+    coordinator = Coordinator(garden / ".garden" / "coordination.db")
+    coordinator.set_authority(
+        admin, garden_id="garden-1", kind="task", scope="legacy-active",
+        owner_id="alice", authority_generation=1, expected_version=0,
+        operation_id="seed-authority",
+    )
+    coordinator.claim(
+        admin, garden_id="garden-1", kind="task", scope="legacy-active",
+        expected_version=1, accepted_owner="alice", authority_generation=1,
+        operation_id="active-claim",
+    )
+
+    with pytest.raises(MigrationRefused, match="claims and effects must be quiescent"):
+        GardenMigration(Store(garden)).export_standalone(tmp_path / "legacy-blocked.tar.gz")
