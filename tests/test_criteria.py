@@ -248,20 +248,30 @@ def test_normalize_verified_rejects_empty_malformed_or_non_done_attestations_and
     assert len(normalized[0]["evidence"]) == 1000
 
 
-def test_verification_markdown_keeps_unmatched_evidence_out_of_public_body():
-    criteria = ["A renders.", "B returns 200."]
+def test_verification_markdown_distinguishes_unmapped_narrative_evidence_from_a_missing_row():
+    """CG-682: preserve CG-628-shaped narrative evidence without claiming a row mapping."""
+    criteria = ["A renders.", "B returns 200.", "C remains accessible."]
     verified = [{"criterion": "A renders.", "evidence": "test_a"},
-                {"criterion": "B returns two hundred.", "evidence": "test_b"}]
+                {"criterion": "B returns two hundred.",
+                 "evidence": "Accepted narrative: focused endpoint test passed."},
+                {"criterion": "C remains accessible.", "not_done": True,
+                 "reason": "the accessibility check failed"}]
     rows = reconcile(criteria, verified)
     unmatched = unmatched_worker_entries(criteria, verified)
     md = verification_markdown(rows, unmatched)
-    assert "- ⚠️ **B returns 200.** — no evidence given" in md
-    assert "Reconciliation notes" not in md
-    assert "test_b" not in md
-    # Passing diagnostics is intentionally equivalent to omitting them from the public body.
-    assert md == verification_markdown(rows)
+    assert "- ⚠️ **B returns 200.** — no mapped evidence given" in md
+    assert "### Reported evidence not mapped to an acceptance row" in md
+    assert "B returns two hundred." in md
+    assert "Accepted narrative: focused endpoint test passed." in md
+    # A genuine failed outcome stays visible and does not get softened by narrative evidence.
+    assert "- 🚧 **C remains accessible.** — not done: the accessibility check failed" in md
+    # Omitted rows without an unmatched narrative remain honestly missing.
+    assert "no evidence given" in verification_markdown(
+        reconcile(["D is documented."], [])
+    )
     body = apply_verification("## What\n\nA change.\n", criteria, verified)
-    assert "Reconciliation notes" not in body and "test_b" not in body
+    assert "Reported evidence not mapped" in body
+    assert "Accepted narrative: focused endpoint test passed." in body
 
 
 def test_criteria_counts():
