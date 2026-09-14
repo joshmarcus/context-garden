@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import math
 import os
 import re
 import tempfile
@@ -250,7 +251,11 @@ DEFAULTS: dict[str, Any] = {
     # Membership records and credential verifiers live in .garden/members.json, never here.
     "multiplayer": {
         "enabled": False,
-        "git": {"remote": "origin", "state_ref": "refs/heads/garden-state"},
+        "git": {
+            "remote": "origin",
+            "state_ref": "refs/heads/garden-state",
+            "timeout_seconds": 30,
+        },
         # Enrollment belongs in garden.local.yaml. The secret itself stays in the named
         # environment variable, outside both shared context and Config.
         "garden_id": "",
@@ -514,6 +519,7 @@ class Config:
             raise ValueError("multiplayer.git must be a mapping")
         remote = git_settings.get("remote", "origin")
         state_ref = git_settings.get("state_ref", "refs/heads/garden-state")
+        timeout_seconds = git_settings.get("timeout_seconds", 30)
         if not isinstance(remote, str) or not remote.strip():
             raise ValueError("multiplayer.git.remote must be a non-empty remote alias")
         if (
@@ -522,6 +528,13 @@ class Config:
             or any(character.isspace() for character in state_ref)
         ):
             raise ValueError("multiplayer.git.state_ref must be a full branch ref")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("multiplayer.git.timeout_seconds must be positive")
         _normalize_review_count_policy(data)
         return cls(root=root, data=data, sources=sources, env=env, source_documents=documents)
 

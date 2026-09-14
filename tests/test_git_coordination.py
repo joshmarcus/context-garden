@@ -3,11 +3,13 @@ from __future__ import annotations
 import multiprocessing
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import garden.git_coordination as git_coordination
 from garden.cli import app as cli_app
 from garden.config import Config
 from garden.git_coordination import (
@@ -15,6 +17,8 @@ from garden.git_coordination import (
     GitCoordinationError,
     GitMultiplayerClient,
     GitStateStore,
+    GitTransportTimeout,
+    _run,
 )
 from garden.multiplayer_client import MultiplayerUnavailable, ProjectionConflict
 
@@ -300,6 +304,131 @@ def test_lost_push_acknowledgement_resolves_operation_from_remote(clones, monkey
     )
     assert accepted.replayed
     assert GitStateStore(one, garden_id="garden").read()[1]["operations"]["lost-ack"]
+
+
+def test_stalled_fetch_and_push_return_within_transport_deadline(clones, tmp_path, monkeypatch):
+    _, one, _ = clones
+    helper = tmp_path / "git-remote-stall"
+    helper.write_text("#!/bin/sh\nsleep 30\n")
+    helper.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    store = GitStateStore(
+        one, garden_id="garden", remote="stall::remote", timeout_seconds=0.1
+    )
+
+    started = time.monotonic()
+    with pytest.raises(GitTransportTimeout, match="ls-remote"):
+        store.read()
+    assert time.monotonic() - started < 2
+
+    started = time.monotonic()
+    with pytest.raises(GitTransportTimeout, match="push"):
+        store._push("HEAD", "")
+    assert time.monotonic() - started < 2
+
+
+def test_stalled_post_transfer_validation_uses_fetch_deadline(clones, monkeypatch):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden", timeout_seconds=0.2)
+    store.read()
+    actual_run_process = git_coordination._run_process
+
+    def stall_merge_base(cwd, args, **kwargs):
+        if args[1:3] == ["merge-base", "--is-ancestor"]:
+            return actual_run_process(cwd, ["sh", "-c", "sleep 30"], **kwargs)
+        return actual_run_process(cwd, args, **kwargs)
+
+    monkeypatch.setattr(git_coordination, "_run_process", stall_merge_base)
+    started = time.monotonic()
+    with pytest.raises(GitTransportTimeout, match="timed out"):
+        store.read()
+    assert time.monotonic() - started < 2
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, ".inf"])
+def test_transport_deadline_configuration_must_be_positive_and_finite(tmp_path, timeout):
+    (tmp_path / "garden.yaml").write_text(
+        f"multiplayer:\n  git:\n    timeout_seconds: {str(timeout).lower()}\n"
+    )
+    with pytest.raises(ValueError, match="timeout_seconds must be positive"):
+        Config.load(tmp_path)
+
+
+def test_stalled_credential_helper_is_noninteractive_and_descendants_are_cleaned(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init")
+    observed = tmp_path / "credential-environment"
+    child_pid = tmp_path / "credential-child-pid"
+    helper = tmp_path / "credential-helper"
+    helper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s %s' \"$GIT_TERMINAL_PROMPT\" \"$GCM_INTERACTIVE\" > {observed}\n"
+        f"sleep 30 & echo $! > {child_pid}\n"
+        "wait\n"
+    )
+    helper.chmod(0o755)
+
+    started = time.monotonic()
+    with pytest.raises(GitTransportTimeout, match="credential"):
+        _run(
+            repo,
+            "-c",
+            f"credential.helper={helper}",
+            "credential",
+            "fill",
+            input_text="protocol=https\nhost=example.test\n\n",
+            timeout_seconds=0.1,
+        )
+    assert time.monotonic() - started < 2
+    assert observed.read_text() == "0 Never"
+    pid = int(child_pid.read_text())
+    status = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], text=True, capture_output=True
+    ).stdout.strip()
+    assert not status or status.startswith("Z")
+
+
+def test_ambiguous_push_obligation_survives_failed_reconciliation(clones, monkeypatch):
+    _, one, _ = clones
+    store = GitStateStore(one, garden_id="garden", timeout_seconds=0.1)
+    actual_read = store.read
+    reads = 0
+
+    def fail_push(commit: str, expected: str) -> None:
+        raise GitTransportTimeout("push timed out")
+
+    def fail_reconciliation():
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            raise GitTransportTimeout("fetch timed out")
+        return actual_read()
+
+    monkeypatch.setattr(store, "_push", fail_push)
+    monkeypatch.setattr(store, "read", fail_reconciliation)
+    changes = {
+        "reservations": {
+            "workers:ambiguous": {"pool": "workers", "units": 1, "spend_micros": 10}
+        }
+    }
+    with pytest.raises(GitTransportTimeout, match="fetch"):
+        store.apply(
+            "ambiguous", actor="alice", installation="one",
+            expected_versions={}, changes=changes,
+        )
+    assert store._obligation_path("ambiguous").exists()
+
+    monkeypatch.setattr(store, "read", actual_read)
+    monkeypatch.setattr(store, "_push", GitStateStore._push.__get__(store))
+    accepted = store.apply(
+        "ambiguous", actor="alice", installation="one",
+        expected_versions={}, changes=changes,
+    )
+    assert not accepted.replayed
+    assert not store._obligation_path("ambiguous").exists()
 
 
 def test_effect_replay_never_grants_execution_twice(clones):
