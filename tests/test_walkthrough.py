@@ -775,6 +775,29 @@ def test_persona_phase_brief_refuses_an_incomplete_walkthrough(garden):
         phase_brief(store, ph, "designer", "main", [])
 
 
+def test_persona_phase_brief_labels_missing_required_phase_goals(garden):
+    store = Store(garden)
+    ph = store.phase("demo", "p1")
+    ph.goals_path.unlink()
+    store.invalidate()
+
+    with pytest.raises(
+        ValueError,
+        match=r"required phase context is unavailable:\n- \[missing\] "
+              r"`\$GARDEN_CONTEXT_DIR/context/phase-goals\.md`",
+    ):
+        phase_brief(store, store.phase("demo", "p1"), "designer", "main", [])
+
+
+def test_persona_phase_brief_labels_unreadable_required_phase_goals(garden):
+    store = Store(garden)
+    ph = store.phase("demo", "p1")
+    ph.goals_path.write_bytes(b"\xff")
+
+    with pytest.raises(ValueError, match=r"\[missing\].*phase-goals\.md"):
+        phase_brief(store, ph, "designer", "main", [])
+
+
 def test_capture_includes_a_run_page_when_a_task_has_run(garden):
     from garden.scheduler import Scheduler
     from tests.conftest import FakeGitHub

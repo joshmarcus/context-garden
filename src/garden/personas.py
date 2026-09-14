@@ -306,8 +306,14 @@ def phase_brief(store: Store, phase: Phase, name: str, base: str, prs: list[dict
     prod = store.product(phase.product)
     if prod.overview_path:
         refs["context/product.md"] = read_optional_text(prod.overview_path) + "\n"
-    if phase.goals_path:
-        refs["context/phase-goals.md"] = read_optional_text(phase.goals_path) + "\n"
+    try:
+        goals = phase.goals_path.read_text().strip() if phase.goals_path else ""
+    except (OSError, UnicodeDecodeError):
+        goals = ""
+    if not goals:
+        worker_path = "$GARDEN_CONTEXT_DIR/context/phase-goals.md"
+        raise ValueError(f"required phase context is unavailable:\n- [missing] `{worker_path}`")
+    refs["context/phase-goals.md"] = goals + "\n"
     for spec in phase.specs:
         refs[f"context/specs/{spec.name}"] = read_optional_text(spec) + "\n"
     from .walkthrough import walkthrough_section

@@ -611,6 +611,22 @@ def test_phase_persona_does_not_launch_for_incomplete_walkthrough(sched, monkeyp
     assert not launched
 
 
+def test_phase_persona_does_not_launch_without_required_phase_goals(sched, monkeypatch):
+    phase = sched.store.phase("demo", "p1")
+    phase.goals_path.unlink()
+    sched.store.invalidate()
+    launched = []
+    monkeypatch.setattr(sched, "_launch_prepared_aux", lambda prepared: launched.append(prepared))
+
+    with pytest.raises(
+        ValueError,
+        match=r"\[missing\] `\$GARDEN_CONTEXT_DIR/context/phase-goals\.md`",
+    ):
+        sched.dispatch_persona_phase(sched.store.phase("demo", "p1"), "designer")
+
+    assert not launched
+
+
 def test_persona_phase_review_writes_report_and_tasks(sched, fake_github, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_PERSONA_SEVERITY", "high")
     sched.tick()
