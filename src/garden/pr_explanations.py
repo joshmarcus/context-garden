@@ -10,7 +10,7 @@ from __future__ import annotations
 import html
 import re
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 from . import gitops
 from .model import Task, now_iso
@@ -76,7 +76,9 @@ def render(task: Task, *, base: str, head: str, diff: str) -> str:
     parsed_pr = urlsplit(task.pr) if task.pr else None
     pr_url = task.pr if parsed_pr and parsed_pr.scheme in {"http", "https"} and parsed_pr.netloc else ""
     for index, (path, lines) in enumerate(changed, 1):
-        code_url = f"{pr_url}/files#file-{quote(path, safe='')}" if pr_url else ""
+        # GitHub's per-file fragment is an implementation detail and differs by provider;
+        # the PR's stable Files view is still the corresponding authoritative code source.
+        code_url = f"{pr_url}/files" if pr_url else ""
         link = f' · <a href="{html.escape(code_url, quote=True)}">Open in PR</a>' if code_url else ""
         sections.append(
             f'<section id="file-{index}"><h2><code>{html.escape(path)}</code>{link}</h2>'
