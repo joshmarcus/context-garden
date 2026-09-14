@@ -1098,18 +1098,62 @@ def newest_walkthrough(phase: Phase) -> Path | None:
     return dirs[0] if dirs else None
 
 
-def walkthrough_section(phase: Phase) -> str:
-    """The persona-brief section pointing at (and inlining) the newest walkthrough, or ''."""
+def walkthrough_section(phase: Phase, reference_files: dict[str, str] | None = None) -> str:
+    """Describe the newest walkthrough, snapshotting it when a mapping is supplied.
+
+    Walkthroughs are produced in the controller's garden checkout, which a remote persona
+    cannot read.  Keep only the human-readable capture material (the index, HTML, and text)
+    in the immutable bundle; screenshots remain optional and are deliberately not copied.
+    A partial capture is a deterministic missing input, so reject it before a persona can be
+    launched with a misleading controller-local path.
+    """
     d = newest_walkthrough(phase)
     if not d:
         return ""
-    index = (d / "index.md").read_text().strip()
+
+    # Kickoff runs against an isolated checkout that already contains the phase capture;
+    # unlike remote persona runs, it does not materialize a reference snapshot. Preserve
+    # that controller-readable contract without claiming nonexistent worker paths or
+    # imposing the persona snapshot's HTML/text completeness requirement.
+    if reference_files is None:
+        index = (d / "index.md").read_text().strip()
+        return ("## Walkthrough of the live web app\n\n"
+                f"A capture of the running web app for this phase is on disk at `{d}` "
+                "(the served HTML and plain-text rendering of every page, with screenshots when a "
+                "browser was available). Read the index below, then open the page files there before "
+                "you judge the UI; quote what a person would actually see, not what a template could "
+                "show.\n\n" + index)
+
+    files = [d / "index.md", *sorted(d.glob("*.html")), *sorted(d.glob("*.txt"))]
+    missing: list[str] = []
+    if len(files) == 1:
+        missing.append("HTML and plain-text page captures")
+    elif not any(path.suffix == ".html" for path in files):
+        missing.append("HTML page captures")
+    elif not any(path.suffix == ".txt" for path in files):
+        missing.append("plain-text page captures")
+
+    readable: dict[str, str] = {}
+    for path in files:
+        try:
+            readable[path.name] = path.read_text()
+        except (OSError, UnicodeDecodeError):
+            missing.append(path.name)
+    if missing:
+        labels = ", ".join(f"[missing] {item}" for item in missing)
+        raise ValueError(f"walkthrough reference snapshot is incomplete: {labels}")
+
+    snapshot_root = f"context/walkthrough/{d.name}"
+    reference_files.update({f"{snapshot_root}/{name}": content for name, content in readable.items()})
+    index = readable["index.md"].strip()
+    available = ", ".join(f"[available] `$GARDEN_CONTEXT_DIR/{snapshot_root}/{name}`"
+                          for name in readable)
     return ("## Walkthrough of the live web app\n\n"
-            f"A capture of the running web app for this phase is on disk at `{d}` "
-            "(the served HTML and plain-text rendering of every page, with screenshots when a "
-            "browser was available). Read the index below, then open the page files there before "
+            "The readable walkthrough snapshot is available to this worker; screenshots remain optional. "
+            "Read the index below, then open the page files before "
             "you judge the UI; quote what a person would actually see, not what a template could "
-            "show.\n\n" + index)
+            "show.\n\n"
+            "### Reference availability\n\n" + available + "\n\n" + index)
 
 
 if __name__ == "__main__":

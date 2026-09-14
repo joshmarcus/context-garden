@@ -3095,6 +3095,37 @@ run.save()
     assert "Remote · build-1" in client.get(f"/runs/DM-001/{saved.run_id}").text
 
 
+def test_remote_phase_persona_claim_gets_only_readable_walkthrough_snapshot(
+    garden, monkeypatch, tmp_path, fake_github,
+):
+    """A remote persona receives the capture, not the controller's phase directory."""
+    client, store = remote_client(garden, monkeypatch)
+    scheduler = Scheduler(store, github=fake_github)
+    phase = store.phase("demo", "p1")
+    capture = phase.path / "docs" / "walkthrough" / "2026-09-05"
+    capture.mkdir(parents=True)
+    (capture / "index.md").write_text("# Walkthrough\n")
+    (capture / "board.html").write_text("<main>Accessible board</main>")
+    (capture / "board.txt").write_text("Accessible board token=walkthrough-secret")
+    (capture / "controller-only.png").write_bytes(b"private image")
+
+    run = scheduler.dispatch_persona_phase(phase, "designer")
+    response = client.post(
+        "/api/runs/claim",
+        json={"host": "build-1", "harnesses": ["claude"], "tiers": ["easy", "medium", "hard"]},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert response.status_code == 200
+    references = response.json()["references"]
+
+    assert references["context/walkthrough/2026-09-05/board.html"] == "<main>Accessible board</main>"
+    assert references["context/walkthrough/2026-09-05/board.txt"] == "Accessible board token=<redacted>"
+    assert "walkthrough-secret" not in "\n".join(references.values())
+    assert "controller-only.png" not in references
+    assert str(capture) not in response.json()["brief"]
+    assert run.status == "running"
+
+
 @pytest.mark.parametrize("checkout_state", ["untracked", "tracked-dirty", "unmerged"])
 def test_materialization_failure_is_preserved_and_clean_generation_retries(
     garden, monkeypatch, tmp_path, fake_github, checkout_state,

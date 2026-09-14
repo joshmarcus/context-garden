@@ -53,6 +53,21 @@ def test_kickoff_brief_includes_goals_tasks_and_cited_docs(garden):
     assert KICKOFF_MARKER in brief
 
 
+def test_kickoff_brief_keeps_index_only_walkthrough_controller_readable(garden):
+    store = Store(garden)
+    phase = store.phase("demo", "p1")
+    capture = phase.path / "docs" / "walkthrough" / "2026-09-05"
+    capture.mkdir(parents=True)
+    (capture / "index.md").write_text("# Kickoff walkthrough\n")
+
+    brief = kickoff_brief(store, phase)
+
+    assert "Kickoff walkthrough" in brief
+    assert f"on disk at `{capture}`" in brief
+    assert "$GARDEN_CONTEXT_DIR/context/walkthrough" not in brief
+    assert "[available]" not in brief
+
+
 def test_cited_doc_paths_dedupes_and_skips_missing(garden):
     store = Store(garden)
     ph = store.phase("demo", "p1")
