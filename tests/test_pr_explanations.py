@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
-from garden.pr_explanations import render
+from garden.pr_explanations import generate, render
 from garden.scheduler import State
 from garden.store import Store
 from garden.web.app import create_app
@@ -16,7 +17,7 @@ index 0000000..1111111 100644
 +++ b/demo.py
 @@ -1,2 +1,2 @@
 -old()
-+<script>alert(1)</script>
++def demo(): # <script>alert(1)</script>
  context()
 """)
 
@@ -26,6 +27,20 @@ index 0000000..1111111 100644
     assert 'class="removed"' in report
     assert "Base revision" in report
     assert "Code walkthrough" in report
+    assert "Responsibility." in report
+    assert "Why this change matters." in report
+    assert "Change flow:" in report
+    assert 'class="kw">' in report
+    assert "conservative inferences" in report
+
+
+def test_generation_refuses_a_checkout_other_than_recorded_pr_head(garden, monkeypatch):
+    task = Store(garden).task("DM-001")
+    monkeypatch.setattr("garden.pr_explanations.gitops.head_sha", lambda _repo: "b" * 40)
+
+    with pytest.raises(RuntimeError, match="source moved"):
+        generate(task, garden_dir=garden / ".garden", repo=garden, base="main",
+                 expected_head="a" * 40)
 
 
 def test_completed_report_is_inert_preview_and_download(garden):
@@ -64,3 +79,31 @@ def test_explain_button_generates_and_opens_report(garden, monkeypatch):
     assert response.status_code == 200
     assert "Open explanation" in response.text
     assert client.get("/tasks/DM-001/pr-explanation").status_code == 200
+
+
+def test_explain_button_materializes_the_recorded_pr_head(garden, monkeypatch):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.pr = "https://github.example.test/acme/demo/pull/7"
+    task.branch = "garden/dm-001"
+    store.save(task)
+    state = State(garden / ".garden" / "state.json")
+    state.get(task.id).update({"head_sha": "a" * 40, "pr_number": 7})
+    state.save()
+    seen = {}
+
+    def prepare(repo, worktree, branch, base, expected):
+        seen.update(branch=branch, base=base, expected=expected)
+        return worktree
+
+    monkeypatch.setattr("garden.gitops.prepare_review_worktree", prepare)
+    monkeypatch.setattr("garden.pr_explanations.generate", lambda *_args, **kwargs: {
+        "status": "ready", "path": str(garden / "report.html"), "base": kwargs["base"],
+        "head": kwargs["expected_head"], "generated_at": "now",
+    })
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    response = client.post(f"/tasks/{task.id}/explain-pr", headers={"Origin": "http://testserver"})
+
+    assert response.status_code == 200
+    assert seen == {"branch": task.branch, "base": "main", "expected": "a" * 40}
