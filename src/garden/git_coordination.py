@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
+import signal
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -28,6 +32,7 @@ CLAIM_IDENTITY_FIELDS = (
     "installation",
 )
 EFFECT_OUTCOMES = {"pending", "unknown", "succeeded", "failed"}
+DEFAULT_TRANSPORT_TIMEOUT_SECONDS = 30.0
 
 
 class GitCoordinationError(RuntimeError):
@@ -38,17 +43,56 @@ class GitContention(GitCoordinationError):
     """Another installation accepted a transaction first."""
 
 
+class GitTransportTimeout(GitCoordinationError):
+    """A Git operation exceeded its deadline and its process tree was stopped."""
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _run(cwd: Path, *args: str, input_text: str | None = None) -> str:
-    result = subprocess.run(
-        ["git", *args],
+def _run_process(
+    cwd: Path,
+    args: list[str],
+    *,
+    timeout_seconds: float = DEFAULT_TRANSPORT_TIMEOUT_SECONDS,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never"})
+    process = subprocess.Popen(
+        args,
         cwd=cwd,
-        input=input_text,
+        env=env,
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        capture_output=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(input_text, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+        raise GitTransportTimeout(
+            f"git operation timed out after {timeout_seconds:g} seconds: "
+            f"{' '.join(args[1:4])}"
+        ) from exc
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def _run(
+    cwd: Path,
+    *args: str,
+    input_text: str | None = None,
+    timeout_seconds: float = DEFAULT_TRANSPORT_TIMEOUT_SECONDS,
+) -> str:
+    result = _run_process(
+        cwd, ["git", *args], timeout_seconds=timeout_seconds, input_text=input_text
     )
     if result.returncode:
         raise GitCoordinationError(result.stderr.strip() or "git command failed")
@@ -126,12 +170,21 @@ class GitStateStore:
         remote: str = "origin",
         state_ref: str = "refs/heads/garden-state",
         retries: int = 5,
+        timeout_seconds: float = DEFAULT_TRANSPORT_TIMEOUT_SECONDS,
     ):
         if not state_ref.startswith("refs/heads/") or any(c.isspace() for c in state_ref):
             raise ValueError("multiplayer.git.state_ref must be a full branch ref")
         self.repo = repo.resolve()
         self.garden_id, self.remote, self.state_ref = garden_id, remote, state_ref
         self.retries = retries
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("multiplayer.git.timeout_seconds must be positive")
+        self.timeout_seconds = float(timeout_seconds)
         self.evidence_dir = self.repo / ".garden" / "coordination-recovery"
         self.observed_path = self.repo / ".garden" / "coordination-observed"
 
@@ -152,14 +205,26 @@ class GitStateStore:
         store._push(commit, "")
         return commit
 
-    def _remote_oid(self) -> str:
-        output = _run(self.repo, "ls-remote", "--refs", self.remote, self.state_ref)
+    def _remaining(self, deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GitTransportTimeout(
+                f"git operation timed out after {self.timeout_seconds:g} seconds: fetch"
+            )
+        return remaining
+
+    def _remote_oid(self, timeout_seconds: float | None = None) -> str:
+        output = _run(
+            self.repo, "ls-remote", "--refs", self.remote, self.state_ref,
+            timeout_seconds=timeout_seconds or self.timeout_seconds,
+        )
         return output.split()[0] if output else ""
 
     def _fetch(self) -> str:
+        deadline = time.monotonic() + self.timeout_seconds
         observed = ""
         for _ in range(3):
-            before = self._remote_oid()
+            before = self._remote_oid(self._remaining(deadline))
             if not before:
                 self._preserve("unexpected-ref-deletion", {"state_ref": self.state_ref})
                 raise GitCoordinationError(
@@ -171,8 +236,9 @@ class GitStateStore:
                 "--no-tags",
                 self.remote,
                 f"+{self.state_ref}:refs/garden/state-observed",
+                timeout_seconds=self._remaining(deadline),
             )
-            after = self._remote_oid()
+            after = self._remote_oid(self._remaining(deadline))
             observed = _run(self.repo, "rev-parse", "refs/garden/state-observed")
             if before == after == observed:
                 break
@@ -244,11 +310,10 @@ class GitStateStore:
 
     def _push(self, commit: str, expected: str) -> None:
         lease = f"--force-with-lease={self.state_ref}:{expected}"
-        result = subprocess.run(
+        result = _run_process(
+            self.repo,
             ["git", "push", "--porcelain", lease, self.remote, f"{commit}:{self.state_ref}"],
-            cwd=self.repo,
-            text=True,
-            capture_output=True,
+            timeout_seconds=self.timeout_seconds,
         )
         if result.returncode:
             if "stale info" in result.stderr or "rejected" in result.stdout + result.stderr:
@@ -260,6 +325,31 @@ class GitStateStore:
         payload = {"reason": reason, "detail": detail, "observed_at": time.time()}
         name = hashlib.sha256(_canonical(payload).encode()).hexdigest()[:16]
         (self.evidence_dir / f"{name}.json").write_text(_canonical(payload) + "\n")
+
+    def _obligation_path(self, operation_id: str) -> Path:
+        name = hashlib.sha256(operation_id.encode()).hexdigest()
+        return self.evidence_dir / f"pending-push-{name}.json"
+
+    def _write_obligation(
+        self, operation_id: str, fingerprint: str, commit: str, expected: str
+    ) -> None:
+        self.evidence_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "operation_id": operation_id,
+            "fingerprint": fingerprint,
+            "commit": commit,
+            "expected": expected,
+        }
+        path = self._obligation_path(operation_id)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=self.evidence_dir, prefix=f".{path.name}.", delete=False
+        ) as handle:
+            handle.write(_canonical(payload) + "\n")
+            temporary = Path(handle.name)
+        os.replace(temporary, path)
+
+    def _clear_obligation(self, operation_id: str) -> None:
+        self._obligation_path(operation_id).unlink(missing_ok=True)
 
     def transact(
         self,
@@ -279,9 +369,23 @@ class GitStateStore:
                     raise GitCoordinationError(
                         "operation ID was already used with different inputs"
                     )
+                self._clear_obligation(operation_id)
                 return AcceptedTransaction(
                     operation_id, head, deepcopy(old.get("result", {})), True
                 )
+            obligation = self._obligation_path(operation_id)
+            if obligation.exists():
+                try:
+                    pending = json.loads(obligation.read_text())
+                except (OSError, ValueError, TypeError) as exc:
+                    raise GitCoordinationError("invalid pending push obligation") from exc
+                if pending.get("fingerprint") != fingerprint:
+                    raise GitCoordinationError(
+                        "operation ID has an unresolved push with different inputs"
+                    )
+                # The successful read above established that the prior candidate was not
+                # accepted, so it is now safe to retry the same logical operation.
+                self._clear_obligation(operation_id)
             next_state = deepcopy(state)
             result = mutate(next_state)
             next_state["sequence"] += 1
@@ -295,10 +399,13 @@ class GitStateStore:
             next_state["operations"][operation_id] = record
             validate_state(next_state, self.garden_id)
             commit = self._commit(next_state, head, operation_id)
+            self._write_obligation(operation_id, fingerprint, commit, head)
             try:
                 self._push(commit, head)
+                self._clear_obligation(operation_id)
                 return AcceptedTransaction(operation_id, commit, result)
             except GitContention:
+                self._clear_obligation(operation_id)
                 if attempt + 1 == self.retries:
                     raise
                 time.sleep(min(0.01 * (2**attempt), 0.1))
@@ -308,9 +415,11 @@ class GitStateStore:
                 resolved_head, resolved = self.read()
                 accepted = resolved["operations"].get(operation_id)
                 if accepted and accepted.get("fingerprint") == fingerprint:
+                    self._clear_obligation(operation_id)
                     return AcceptedTransaction(
                         operation_id, resolved_head, deepcopy(accepted.get("result", {})), True
                     )
+                self._clear_obligation(operation_id)
                 raise
         raise GitContention("coordination contention retry limit reached")
 
@@ -1071,6 +1180,7 @@ class GitMultiplayerClient:
         remote: str = "origin",
         state_ref: str = "refs/heads/garden-state",
         authentication: str = "credential",
+        timeout_seconds: float = DEFAULT_TRANSPORT_TIMEOUT_SECONDS,
     ) -> GitMultiplayerClient:
         if authentication not in {"credential", "temporary-username"}:
             raise GitCoordinationError("unsupported multiplayer authentication mode")
@@ -1084,7 +1194,10 @@ class GitMultiplayerClient:
         if not all((remote, state_ref, garden_id, member_id, installation_id)):
             raise GitCoordinationError("multiplayer Git enrollment is incomplete")
         return cls(
-            GitStateStore(root, garden_id=garden_id, remote=remote, state_ref=state_ref),
+            GitStateStore(
+                root, garden_id=garden_id, remote=remote, state_ref=state_ref,
+                timeout_seconds=timeout_seconds,
+            ),
             member_id,
             installation_id,
         )
@@ -1099,6 +1212,7 @@ class GitMultiplayerClient:
         member = str(config.get("multiplayer.member_id", ""))
         installation = str(config.get("multiplayer.installation_id", ""))
         authentication = str(config.get("multiplayer.authentication", "credential"))
+        timeout_seconds = float(config.get("multiplayer.git.timeout_seconds", 30))
         return cls.connect(
             config.root,
             garden_id=garden_id,
@@ -1107,6 +1221,7 @@ class GitMultiplayerClient:
             remote=remote,
             state_ref=ref,
             authentication=authentication,
+            timeout_seconds=timeout_seconds,
         )
 
     def refresh(self, *, allow_stale: bool = True) -> Any:
