@@ -152,6 +152,60 @@ class GitStateStore:
         store._push(commit, "")
         return commit
 
+    @classmethod
+    def initialize_authority(
+        cls,
+        repo: Path,
+        *,
+        garden_id: str,
+        operation_id: str,
+        members: dict[str, Any],
+        installations: dict[str, str],
+        entities: dict[str, Any],
+        revoked_installations: dict[str, Any] | None = None,
+        remote: str = "origin",
+        state_ref: str = "refs/heads/garden-state",
+    ) -> AcceptedTransaction:
+        """Resumably bootstrap an empty ref with accepted migration authority."""
+        store = cls(repo, garden_id=garden_id, remote=remote, state_ref=state_ref)
+        if not store._remote_oid():
+            try:
+                cls.initialize(
+                    repo, garden_id=garden_id, remote=remote, state_ref=state_ref
+                )
+            except GitContention:
+                # Another cutover may have created the ref after our observation. The
+                # content-addressed transaction below decides whether it is ours.
+                pass
+        inputs = {
+            "members": members,
+            "installations": installations,
+            "revoked_installations": revoked_installations or {},
+            "entities": entities,
+        }
+
+        def bootstrap(state: dict[str, Any]) -> dict[str, Any]:
+            occupied = (
+                state["sequence"] != 0
+                or state["members"]
+                or state["installations"]
+                or state["entities"]
+                or state["claims"]
+                or state["permits"]
+                or state["effects"]
+            )
+            if occupied:
+                raise GitCoordinationError(
+                    "coordination authority already contains different state"
+                )
+            state["members"].update(deepcopy(members))
+            state["installations"].update(deepcopy(installations))
+            state["revoked_installations"].update(deepcopy(revoked_installations or {}))
+            state["entities"].update(deepcopy(entities))
+            return {"authority": sorted(entities)}
+
+        return store.transact(operation_id, inputs, bootstrap)
+
     def _remote_oid(self) -> str:
         output = _run(self.repo, "ls-remote", "--refs", self.remote, self.state_ref)
         return output.split()[0] if output else ""
