@@ -186,7 +186,8 @@ class GitStateStore:
 
         def bootstrap(state: dict[str, Any]) -> dict[str, Any]:
             occupied = (
-                state["members"]
+                state["sequence"] != 0
+                or state["members"]
                 or state["installations"]
                 or state["entities"]
                 or state["claims"]
