@@ -1099,7 +1099,7 @@ def newest_walkthrough(phase: Phase) -> Path | None:
 
 
 def walkthrough_section(phase: Phase, reference_files: dict[str, str] | None = None) -> str:
-    """Add the newest walkthrough's readable pages to a persona reference snapshot.
+    """Describe the newest walkthrough, snapshotting it when a mapping is supplied.
 
     Walkthroughs are produced in the controller's garden checkout, which a remote persona
     cannot read.  Keep only the human-readable capture material (the index, HTML, and text)
@@ -1110,6 +1110,19 @@ def walkthrough_section(phase: Phase, reference_files: dict[str, str] | None = N
     d = newest_walkthrough(phase)
     if not d:
         return ""
+
+    # Kickoff runs against an isolated checkout that already contains the phase capture;
+    # unlike remote persona runs, it does not materialize a reference snapshot. Preserve
+    # that controller-readable contract without claiming nonexistent worker paths or
+    # imposing the persona snapshot's HTML/text completeness requirement.
+    if reference_files is None:
+        index = (d / "index.md").read_text().strip()
+        return ("## Walkthrough of the live web app\n\n"
+                f"A capture of the running web app for this phase is on disk at `{d}` "
+                "(the served HTML and plain-text rendering of every page, with screenshots when a "
+                "browser was available). Read the index below, then open the page files there before "
+                "you judge the UI; quote what a person would actually see, not what a template could "
+                "show.\n\n" + index)
 
     files = [d / "index.md", *sorted(d.glob("*.html")), *sorted(d.glob("*.txt"))]
     missing: list[str] = []
@@ -1131,8 +1144,7 @@ def walkthrough_section(phase: Phase, reference_files: dict[str, str] | None = N
         raise ValueError(f"walkthrough reference snapshot is incomplete: {labels}")
 
     snapshot_root = f"context/walkthrough/{d.name}"
-    if reference_files is not None:
-        reference_files.update({f"{snapshot_root}/{name}": content for name, content in readable.items()})
+    reference_files.update({f"{snapshot_root}/{name}": content for name, content in readable.items()})
     index = readable["index.md"].strip()
     available = ", ".join(f"[available] `$GARDEN_CONTEXT_DIR/{snapshot_root}/{name}`"
                           for name in readable)
