@@ -19,6 +19,7 @@ multiplayer:
   git:
     remote: origin
     state_ref: refs/heads/garden-state
+    timeout_seconds: 30
 ```
 
 `remote` names an existing remote in the Garden context checkout, not a product checkout.
