@@ -211,7 +211,7 @@ def test_commit_preserves_assignments_and_revoked_installation_history(garden):
 
     state = GitStateStore(garden, garden_id="garden-1").read()[1]
     assert state["members"]["alice"]["assignment"] == {
-        "project": "demo", "phase": "p1", "generation": 1,
+        "member_id": "alice", "project": "demo", "phase": "p1", "generation": 1,
         "enabled": True, "advance": False,
     }
     assert state["revoked_installations"] == {"retired-laptop": "alice"}
