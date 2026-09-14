@@ -492,6 +492,56 @@ def test_retro_no_file_writes_only_the_judge_documents(tmp_path, fake_github, mo
     assert not store.phase("gdn", "p1").closed
 
 
+def test_closed_phase_retro_preserves_closure_and_a_frozen_destination(tmp_path, fake_github, monkeypatch):
+    """An authorized retro reviews released work without admitting another implementation cycle."""
+    monkeypatch.delenv("FAKE_CLAUDE_MODE", raising=False)
+    monkeypatch.setenv("FAKE_CLAUDE_RETRO_VERDICT", "close_with_followups")
+    repo = _garden_repo(tmp_path)
+    frozen_goals = """
+        ---
+        frozen: owner hold
+        ---
+
+        # p2
+
+        Await an explicit release.
+    """
+    repo_path = Path(repo)
+    _write(repo_path / "gdn" / "p2" / "goals.md", frozen_goals)
+    _git("add", "-A", cwd=repo_path)
+    _git("commit", "-q", "-m", "freeze p2", cwd=repo_path)
+    _git("push", "-q", cwd=repo_path)
+    root = _live_garden(tmp_path, repo=repo, work_dir=str(tmp_path / "work"))
+    _write(root / "gdn" / "p2" / "goals.md", frozen_goals)
+    store = Store(root)
+    sched = Scheduler(store, github=fake_github, log=print)
+    _register_prs(fake_github)
+    _friction_run(sched, "GD-001", "The worktree has no venv until setup runs.")
+    store.set_phase_closed(store.phase("gdn", "p1"), "2026-09-13")
+    closed = store.phase("gdn", "p1")
+
+    entry = sched.start_retro(closed, ["designer"], skip_personas=True)
+    assert entry["stage"] == "reconciling"
+    assert store.phase("gdn", "p1").closed == "2026-09-13"
+    assert store.phase("gdn", "p2").frozen == "owner hold"
+    assert sched.start_retro(closed, ["designer"], skip_personas=True)["request_id"] == entry["request_id"]
+    assert len([item for item in sched._retro_list() if item["phase"] == closed.key]) == 1
+
+    restarted = Scheduler(Store(root), github=fake_github, log=print)
+    rep = restarted.tick()
+    assert not rep.errors, rep.errors
+    assert fake_github.created
+    assert store.phase("gdn", "p1").closed == "2026-09-13"
+    assert store.phase("gdn", "p2").frozen == "owner hold"
+
+    wt = store.config.worktree_path("_retro-gdn-p1")
+    draft = (wt / "gdn" / "p2" / "tasks" / "GD-005-document-the-retro-verdict-flow.md")
+    assert draft.exists()
+    goals = (wt / "gdn" / "p2" / "goals.md").read_text()
+    assert "frozen: owner hold" in goals
+    assert "## Follow-ups carried from the retro verdict" in goals
+
+
 def test_retro_reserves_its_draft_ids_so_live_creation_before_merge_never_collides(tmp_path, fake_github, monkeypatch):
     """CG-244: the retro drafts its next-phase tasks into a worktree, invisible to the live tree
     until the PR merges. Their ids are reserved durably, so a task created live in the window
