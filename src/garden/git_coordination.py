@@ -187,6 +187,7 @@ class GitStateStore:
         self.timeout_seconds = float(timeout_seconds)
         self.evidence_dir = self.repo / ".garden" / "coordination-recovery"
         self.observed_path = self.repo / ".garden" / "coordination-observed"
+        self.validated_path = self.repo / ".garden" / "coordination-validated"
 
     @classmethod
     def initialize(
@@ -274,7 +275,36 @@ class GitStateStore:
         )
         return output.split()[0] if output else ""
 
-    def _fetch(self, deadline: float) -> str:
+    def _load_validated(self) -> tuple[str, dict[str, Any]] | None:
+        """Return a complete locally cached validation checkpoint when it is usable."""
+        try:
+            checkpoint = json.loads(self.validated_path.read_text())
+            head = checkpoint["head"]
+            state = checkpoint["state"]
+        except (OSError, KeyError, TypeError, ValueError):
+            return None
+        if not isinstance(head, str) or len(head) not in {40, 64} or any(
+            character not in "0123456789abcdef" for character in head
+        ):
+            return None
+        try:
+            validate_state(state, self.garden_id)
+        except GitCoordinationError:
+            return None
+        return head, state
+
+    def _save_validated(self, head: str, state: dict[str, Any]) -> None:
+        """Atomically retain the full accepted state at a validated immutable head."""
+        self.validated_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=self.validated_path.parent,
+            prefix=f".{self.validated_path.name}.", delete=False,
+        ) as handle:
+            handle.write(_canonical({"head": head, "state": state}) + "\n")
+            temporary = Path(handle.name)
+        os.replace(temporary, self.validated_path)
+
+    def _fetch(self, deadline: float) -> tuple[str, dict[str, Any]]:
         observed = ""
         for _ in range(3):
             before = self._remote_oid(self._remaining(deadline))
@@ -317,30 +347,52 @@ class GitStateStore:
                     "unexpected-ref-rewrite", {"previous": prior, "observed": observed}
                 )
                 raise GitCoordinationError("coordination ref was unexpectedly rewritten")
-        self._validate_history(observed, deadline)
+        checkpoint = self._load_validated()
+        if checkpoint and checkpoint[0] == observed:
+            state = checkpoint[1]
+        else:
+            if checkpoint and (not prior or prior != checkpoint[0]):
+                ancestry = _run_process(
+                    self.repo,
+                    ["git", "merge-base", "--is-ancestor", checkpoint[0], observed],
+                    timeout_seconds=self._remaining(deadline),
+                )
+                if ancestry.returncode:
+                    self._preserve(
+                        "unexpected-ref-rewrite",
+                        {"previous": checkpoint[0], "observed": observed},
+                    )
+                    raise GitCoordinationError("coordination ref was unexpectedly rewritten")
+            state = self._validate_history(observed, deadline, checkpoint)
+            self._save_validated(observed, state)
         self.observed_path.parent.mkdir(parents=True, exist_ok=True)
         self.observed_path.write_text(observed + "\n")
-        return observed
+        return observed, state
 
-    def _validate_history(self, head: str, deadline: float) -> None:
+    def _validate_history(
+        self,
+        head: str,
+        deadline: float,
+        checkpoint: tuple[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Validate only descendants of a previously accepted immutable checkpoint."""
+        start, previous, state = ("", "", None)
+        sequence = -1
+        if checkpoint:
+            start, state = checkpoint
+            previous = start
+            sequence = state["sequence"]
+        revision = f"{start}..{head}" if start else head
         commits = _run(
             self.repo,
             "rev-list",
             "--reverse",
-            head,
+            "--parents",
+            revision,
             timeout_seconds=self._remaining(deadline),
         ).splitlines()
-        previous = ""
-        sequence = -1
-        for commit in commits:
-            parents = _run(
-                self.repo,
-                "show",
-                "-s",
-                "--format=%P",
-                commit,
-                timeout_seconds=self._remaining(deadline),
-            ).split()
+        for row in commits:
+            commit, *parents = row.split()
             if previous and parents != [previous]:
                 self._preserve("non-linear-history", {"commit": commit, "parents": parents})
                 raise GitCoordinationError("coordination history is not a single-parent chain")
@@ -353,6 +405,9 @@ class GitStateStore:
                 raise GitCoordinationError("coordination history sequence is corrupt")
             sequence = state["sequence"]
             previous = commit
+        if state is None:
+            raise GitCoordinationError("coordination history is empty")
+        return state
 
     def _read(self, commit: str, *, deadline: float | None = None) -> dict[str, Any]:
         def timeout() -> float:
@@ -387,8 +442,7 @@ class GitStateStore:
 
     def read(self) -> tuple[str, dict[str, Any]]:
         deadline = time.monotonic() + self.timeout_seconds
-        head = self._fetch(deadline)
-        return head, self._read(head, deadline=deadline)
+        return self._fetch(deadline)
 
     def _commit(self, state: dict[str, Any], parent: str | None, operation_id: str) -> str:
         content = (_canonical(state) + "\n").encode()
