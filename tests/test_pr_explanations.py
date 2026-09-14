@@ -44,3 +44,23 @@ def test_completed_report_is_inert_preview_and_download(garden):
     assert preview.headers["content-disposition"].startswith("inline")
     download = client.get("/tasks/DM-001/pr-explanation?download=1")
     assert download.headers["content-disposition"].startswith("attachment")
+
+
+def test_explain_button_generates_and_opens_report(garden, monkeypatch):
+    store = Store(garden)
+    task = store.task("DM-001")
+    task.pr = "https://github.example.test/acme/demo/pull/7"
+    store.save(task)
+    report = garden / ".garden" / "pr-explanations" / "DM-001" / "abc.html"
+    report.parent.mkdir(parents=True)
+    report.write_text("<!doctype html><h1>Explanation</h1>")
+    monkeypatch.setattr("garden.pr_explanations.generate", lambda *_args, **_kwargs: {
+        "status": "ready", "path": str(report), "base": "main", "head": "abc", "generated_at": "now",
+    })
+    client = TestClient(create_app(Store(garden), watch=False, host="testserver"))
+
+    assert "Explain to me" in client.get("/tasks/DM-001").text
+    response = client.post("/tasks/DM-001/explain-pr", headers={"Origin": "http://testserver"})
+    assert response.status_code == 200
+    assert "Open explanation" in response.text
+    assert client.get("/tasks/DM-001/pr-explanation").status_code == 200
