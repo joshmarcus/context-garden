@@ -682,6 +682,147 @@ def test_failed_run_publishes_its_commits_and_keeps_its_own_diagnostic(sched, tm
     reap_collector(run)
 
 
+def test_publication_uses_exact_remote_ref_with_narrow_fetch_refspec(sched, tmp_path):
+    remote_clone = tmp_path / "remote-clone"
+    subprocess.run(
+        ["git", "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"],
+        cwd=remote_clone, check=True,
+    )
+
+    _runner, first = start(sched, tmp_path, "echo first > publication.txt")
+    wait_for(first.process_finished)
+    assert first.read_exit_code() == 0
+    first_head = subprocess.check_output(
+        ["git", "-C", str(tmp_path / "remote.git"), "rev-parse", first.branch], text=True,
+    ).strip()
+    first_log = (Path(state(first)["directory"]) / "publish.log").read_text()
+    assert "observed destination ref absent" in first_log
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{first.branch}"],
+        cwd=remote_clone,
+    ).returncode != 0
+
+    _runner, revision = start(sched, tmp_path, "echo second >> publication.txt")
+    wait_for(revision.process_finished)
+    assert revision.read_exit_code() == 0
+    revision_head = subprocess.check_output(
+        ["git", "-C", str(tmp_path / "remote.git"), "rev-parse", revision.branch], text=True,
+    ).strip()
+    revision_log = (Path(state(revision)["directory"]) / "publish.log").read_text()
+    assert f"observed destination ref at {first_head}" in revision_log
+    assert revision_head != first_head
+    assert subprocess.check_output(
+        ["git", "-C", str(tmp_path / "remote.git"), "show", f"{revision.branch}:publication.txt"],
+        text=True,
+    ) == "first\nsecond\n"
+    reap_collector(first)
+    reap_collector(revision)
+
+
+def _publication_git_wrapper(tmp_path, body):
+    wrapper_dir = tmp_path / "publication-git-wrapper"
+    wrapper_dir.mkdir()
+    wrapper = wrapper_dir / "git"
+    real_git = shutil.which("git")
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, subprocess, sys\n"
+        f"real_git = {real_git!r}\n"
+        f"{body}\n"
+        "os.execv(real_git, [real_git, *sys.argv[1:]])\n"
+    )
+    wrapper.chmod(0o755)
+    return wrapper_dir
+
+
+@pytest.mark.parametrize("reported_head", [None, "not-an-object-id"])
+def test_publication_rejects_missing_or_malformed_reported_head(
+    sched, tmp_path, monkeypatch, reported_head,
+):
+    body = (
+        f"reported_head = {reported_head!r}\n"
+        "if sys.argv[1:4] == ['rev-parse', '--verify', 'HEAD']:\n"
+        "    if reported_head is not None: print(reported_head)\n"
+        "    sys.exit(0 if reported_head is not None else 1)"
+    )
+    wrapper_dir = _publication_git_wrapper(tmp_path, body)
+    monkeypatch.setenv("PATH", str(wrapper_dir) + os.pathsep + os.environ["PATH"])
+
+    _runner, run = start(sched, tmp_path, "echo worker > worker.txt")
+    wait_for(run.process_finished)
+
+    assert run.read_exit_code() == 5
+    assert "worker-reported head is missing or malformed" in run.stderr_text()
+    assert subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{run.branch}"],
+        cwd=tmp_path / "remote.git",
+    ).returncode != 0
+    assert subprocess.check_output(
+        ["git", "show", f"{run.branch}:worker.txt"], cwd=tmp_path / "remote-clone", text=True,
+    ) == "worker\n"
+    reap_collector(run)
+
+
+def test_publication_rejects_concurrent_exact_ref_advance(sched, tmp_path, monkeypatch):
+    branch = sched.store.task("DM-001").default_branch()
+    attacker = tmp_path / "attacker"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "remote.git"), str(attacker)], check=True)
+    subprocess.run(["git", "config", "user.email", "other@example.com"], cwd=attacker, check=True)
+    subprocess.run(["git", "config", "user.name", "Other"], cwd=attacker, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", branch, "origin/main"], cwd=attacker, check=True)
+    (attacker / "concurrent.txt").write_text("other writer\n")
+    subprocess.run(["git", "add", "."], cwd=attacker, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "concurrent update"], cwd=attacker, check=True)
+    concurrent_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=attacker, text=True).strip()
+    marker = tmp_path / "advanced-once"
+    body = (
+        f"marker = {str(marker)!r}; attacker = {str(attacker)!r}; branch = {branch!r}\n"
+        "if len(sys.argv) > 1 and sys.argv[1] == 'push' and not os.path.exists(marker):\n"
+        "    open(marker, 'w').close()\n"
+        "    subprocess.run([real_git, 'push', '-q', 'origin', "
+        "f'HEAD:refs/heads/{branch}'], cwd=attacker, check=True)"
+    )
+    wrapper_dir = _publication_git_wrapper(tmp_path, body)
+    monkeypatch.setenv("PATH", str(wrapper_dir) + os.pathsep + os.environ["PATH"])
+
+    _runner, run = start(sched, tmp_path, "echo worker > worker.txt")
+    wait_for(run.process_finished)
+    assert run.read_exit_code() == 5
+    assert "explicit destination-ref lease was rejected after the ref changed" in run.stderr_text()
+    assert subprocess.check_output(
+        ["git", "-C", str(tmp_path / "remote.git"), "rev-parse", branch], text=True,
+    ).strip() == concurrent_head
+    remote_dir = Path(state(run)["directory"])
+    worker_head = json.loads((run.path / "ssh-completion.json").read_text())["head"]
+    assert worker_head != concurrent_head
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{worker_head}^{{commit}}"], cwd=tmp_path / "remote-clone",
+        check=True,
+    )
+    assert (remote_dir / "publish.log").exists()
+    reap_collector(run)
+
+
+def test_publication_accepts_lost_push_ack_when_exact_head_arrived(sched, tmp_path, monkeypatch):
+    marker = tmp_path / "lost-push-ack"
+    body = (
+        f"marker = {str(marker)!r}\n"
+        "if len(sys.argv) > 1 and sys.argv[1] == 'push' and not os.path.exists(marker):\n"
+        "    open(marker, 'w').close()\n"
+        "    completed = subprocess.run([real_git, *sys.argv[1:]])\n"
+        "    if completed.returncode == 0: sys.exit(1)"
+    )
+    wrapper_dir = _publication_git_wrapper(tmp_path, body)
+    monkeypatch.setenv("PATH", str(wrapper_dir) + os.pathsep + os.environ["PATH"])
+
+    _runner, run = start(sched, tmp_path, "echo arrived > arrived.txt")
+    wait_for(run.process_finished)
+    assert run.read_exit_code() == 0
+    publish_log = (Path(state(run)["directory"]) / "publish.log").read_text()
+    assert "push acknowledgement was lost; destination already equals worker-reported head" in publish_log
+    reap_collector(run)
+
+
 def test_acknowledged_run_directories_are_pruned_and_live_work_is_kept(sched, tmp_path):
     """Collected runs age out per checkout; an uncollected or live run keeps its artifacts."""
     _runner, first = start(sched, tmp_path, retain_runs=1)
