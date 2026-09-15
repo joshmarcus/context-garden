@@ -40,7 +40,7 @@ Issues = "https://github.com/joshmarcus/context-garden/issues"
 Source = "https://github.com/joshmarcus/context-garden"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-timeout==2.4.0", "ruff>=0.4"]
+dev = ["hatchling>=1.25", "pytest>=8.0", "pytest-timeout==2.4.0", "ruff>=0.4"]
 aws = ["boto3>=1.34"]
 plates = ["pillow>=10"]
 walkthrough = ["playwright>=1.40"]

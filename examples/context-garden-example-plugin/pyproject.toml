@@ -1,0 +1,19 @@
+[project]
+name = "context-garden-example-plugin"
+version = "0.1.0"
+description = "Organization-neutral example plugin for Context Garden"
+requires-python = ">=3.11"
+dependencies = ["context-garden>=0.4,<0.5"]
+
+[project.entry-points."garden.plugins"]
+example-tools = "context_garden_example:MANIFEST"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/context_garden_example"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/README.md", "/pyproject.toml", "/src/context_garden_example"]
