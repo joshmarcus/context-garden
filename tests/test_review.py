@@ -1131,6 +1131,116 @@ def test_attached_pr_review_materializes_exact_head_and_pins_resolved_base(
     assert gitops.head_sha(worktree) == pr_head
 
 
+def _attached_pr_with_advanced_head(sched, fake_github, garden, branch):
+    """Attach a PR at one head, then advance its remote branch without polling."""
+    repo = sched.repo_for(sched.store.task("DM-001"))
+    gitops.git("checkout", "-b", branch, cwd=repo)
+    (repo / "attached.txt").write_text("first head\n")
+    gitops.git("add", "attached.txt", cwd=repo)
+    gitops.git("commit", "-m", "create attached PR", cwd=repo)
+    initial_head = gitops.head_sha(repo)
+    gitops.git("push", "-u", "origin", branch, cwd=repo)
+
+    task = sched.store.task("DM-001")
+    pr = fake_github.create_pr("test/demo", branch, "main", "Attached", "Body")
+    pr.head_repo = "test/demo"
+    fake_github.remote = garden.parent / "remote.git"
+    sched.attach_pr(task, pr.url)
+
+    (repo / "attached.txt").write_text("advanced head\n")
+    gitops.git("add", "attached.txt", cwd=repo)
+    gitops.git("commit", "-m", "advance attached PR", cwd=repo)
+    advanced_head = gitops.head_sha(repo)
+    gitops.git("push", "origin", branch, cwd=repo)
+    gitops.git("checkout", "main", cwd=repo)
+    return sched.store.task(task.id), initial_head, advanced_head
+
+
+def test_operator_review_refreshes_an_attached_pr_head_before_materialization(
+        sched, fake_github, garden):
+    task, cached_head, advanced_head = _attached_pr_with_advanced_head(
+        sched, fake_github, garden, "operator/review-refresh"
+    )
+
+    run = sched.review_again(task)
+
+    st = sched.state.get(task.id)
+    assert cached_head != advanced_head
+    assert st["head_sha"] == advanced_head
+    assert run.env_snapshot["review_head"] == advanced_head
+    assert gitops.head_sha(sched.worktree_for(task)) == advanced_head
+
+
+def test_operator_review_rejects_a_second_head_advance_and_can_retry(
+        sched, fake_github, garden, monkeypatch):
+    task, _cached_head, first_advanced_head = _attached_pr_with_advanced_head(
+        sched, fake_github, garden, "operator/review-race"
+    )
+    repo = sched.repo_for(task)
+    branch = task.branch
+    prepare = gitops.prepare_review_worktree
+
+    def advance_again(*args, **kwargs):
+        gitops.git("checkout", branch, cwd=repo)
+        (repo / "second-advance.txt").write_text("second advance\n")
+        gitops.git("add", "second-advance.txt", cwd=repo)
+        gitops.git("commit", "-m", "advance attached PR again", cwd=repo)
+        gitops.git("push", "origin", branch, cwd=repo)
+        gitops.git("checkout", "main", cwd=repo)
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "prepare_review_worktree", advance_again)
+    with pytest.raises(RuntimeError, match="retry after the head stabilizes"):
+        sched.review_again(task)
+
+    assert sched.state.get(task.id)["head_sha"] == first_advanced_head
+    assert not sched.runs.runs_for(task.id)
+    assert "retry after the head stabilizes" in task.body
+
+    monkeypatch.setattr(gitops, "prepare_review_worktree", prepare)
+    run = sched.review_again(task)
+    assert run.env_snapshot["review_head"] != first_advanced_head
+    assert run.env_snapshot["review_head"] == gitops.head_sha(sched.worktree_for(task))
+
+
+def test_in_place_operator_review_race_closes_provisional_run_and_can_retry(
+        sched, fake_github, garden, monkeypatch):
+    task, _cached_head, first_advanced_head = _attached_pr_with_advanced_head(
+        sched, fake_github, garden, "operator/in-place-review-race"
+    )
+    repo = sched.repo_for(task)
+    sched.cfg.data["products"][task.product]["checkout"] = {
+        "strategy": "in_place", "root": str(repo),
+    }
+    branch = task.branch
+    prepare = gitops.prepare_review_worktree
+
+    def advance_again(*args, **kwargs):
+        gitops.git("checkout", branch, cwd=repo)
+        (repo / "in-place-second-advance.txt").write_text("second advance\n")
+        gitops.git("add", "in-place-second-advance.txt", cwd=repo)
+        gitops.git("commit", "-m", "advance in-place attached PR again", cwd=repo)
+        gitops.git("push", "origin", branch, cwd=repo)
+        return prepare(*args, **kwargs)
+
+    monkeypatch.setattr(gitops, "prepare_review_worktree", advance_again)
+    with pytest.raises(RuntimeError, match="retry after the head stabilizes"):
+        sched.review_again(task)
+
+    runs = sched.runs.runs_for(task.id)
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+    assert runs[0].finished_at
+    assert "before review checkout was materialized" in runs[0].error
+    assert not sched.runs.active()
+    assert sched.state.get(task.id)["head_sha"] == first_advanced_head
+
+    monkeypatch.setattr(gitops, "prepare_review_worktree", prepare)
+    run = sched.review_again(task)
+    assert run.env_snapshot["review_head"] != first_advanced_head
+    assert run.env_snapshot["review_head"] == gitops.head_sha(repo)
+
+
 def test_review_brief_requests_typed_failure_categories(garden):
     store = Store(garden)
     text = review_brief(store, store.task("DM-001"), branch="b", base="main",
