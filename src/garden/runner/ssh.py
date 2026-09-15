@@ -249,9 +249,46 @@ if [ -n "$(git status --porcelain)" ]; then
   git -c user.name=garden -c user.email=garden@localhost commit -q -m "{task}: leftover changes from run {run_id}" >>"$GARDEN_PUBLISH_LOG" 2>&1 || true
 fi
 if [ "$(git rev-list --count origin/$BASE..HEAD)" != "0" ]; then
-  if ! git push -u --force-with-lease origin "HEAD:refs/heads/$BRANCH" >>"$GARDEN_PUBLISH_LOG" 2>&1; then
-    echo "could not publish this run's commits (see $GARDEN_PUBLISH_LOG); they remain in the remote checkout for recovery" >&2
-    if [ "$RC" -eq 0 ]; then RC=5; fi
+  GARDEN_DESTINATION_REF="refs/heads/$BRANCH"
+  GARDEN_REPORTED_HEAD=$(git rev-parse --verify HEAD 2>>"$GARDEN_PUBLISH_LOG" || :)
+  if ! printf '%s\n' "$GARDEN_REPORTED_HEAD" | grep -Eq '^[0-9a-fA-F]{{40}}([0-9a-fA-F]{{24}})?$' ||
+     ! git cat-file -e "$GARDEN_REPORTED_HEAD^{{commit}}" 2>>"$GARDEN_PUBLISH_LOG"; then
+    echo "could not publish: the worker-reported head is missing or malformed; the remote checkout is preserved for recovery" >&2
+    [ "$RC" -ne 0 ] || RC=5
+  else
+    if GARDEN_REMOTE_QUERY=$(git ls-remote --refs origin "$GARDEN_DESTINATION_REF" 2>>"$GARDEN_PUBLISH_LOG"); then
+      GARDEN_REMOTE_QUERY_RC=0
+    else
+      GARDEN_REMOTE_QUERY_RC=$?
+    fi
+    GARDEN_REMOTE_HEAD=$(printf '%s\n' "$GARDEN_REMOTE_QUERY" | sed -n '1s/[[:space:]].*//p')
+    GARDEN_REMOTE_LINES=$(printf '%s\n' "$GARDEN_REMOTE_QUERY" | sed '/^$/d' | wc -l | tr -d ' ')
+    if [ "$GARDEN_REMOTE_QUERY_RC" -ne 0 ] || [ "$GARDEN_REMOTE_LINES" -gt 1 ] ||
+       {{ [ -n "$GARDEN_REMOTE_HEAD" ] && ! printf '%s\n' "$GARDEN_REMOTE_HEAD" | grep -Eq '^[0-9a-fA-F]{{40}}([0-9a-fA-F]{{24}})?$'; }}; then
+      echo "could not publish: the exact destination ref could not be read safely; the remote checkout is preserved for recovery" >&2
+      [ "$RC" -ne 0 ] || RC=5
+    else
+      if [ -n "$GARDEN_REMOTE_HEAD" ]; then
+        printf 'observed destination ref at %s\n' "$GARDEN_REMOTE_HEAD" >>"$GARDEN_PUBLISH_LOG"
+      else
+        printf 'observed destination ref absent\n' >>"$GARDEN_PUBLISH_LOG"
+      fi
+      if ! git push --force-with-lease="$GARDEN_DESTINATION_REF:$GARDEN_REMOTE_HEAD" origin \
+          "$GARDEN_REPORTED_HEAD:$GARDEN_DESTINATION_REF" >>"$GARDEN_PUBLISH_LOG" 2>&1; then
+        GARDEN_AFTER_QUERY=$(git ls-remote --refs origin "$GARDEN_DESTINATION_REF" 2>>"$GARDEN_PUBLISH_LOG" || :)
+        GARDEN_AFTER_HEAD=$(printf '%s\n' "$GARDEN_AFTER_QUERY" | sed -n '1s/[[:space:]].*//p')
+        if [ "$GARDEN_AFTER_HEAD" = "$GARDEN_REPORTED_HEAD" ]; then
+          printf 'push acknowledgement was lost; destination already equals worker-reported head\n' >>"$GARDEN_PUBLISH_LOG"
+        else
+          if [ "$GARDEN_AFTER_HEAD" != "$GARDEN_REMOTE_HEAD" ]; then
+            echo "could not publish: the explicit destination-ref lease was rejected after the ref changed; the remote checkout is preserved for recovery" >&2
+          else
+            echo "could not publish: destination does not equal the worker-reported head; the remote checkout is preserved for recovery" >&2
+          fi
+          [ "$RC" -ne 0 ] || RC=5
+        fi
+      fi
+    fi
   fi
 fi
 exit $RC
