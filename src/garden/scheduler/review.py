@@ -677,24 +677,32 @@ class ReviewMixin:
                    if runner_name == "remote" else self._new_local_run(task.id, "review", "review"))
             run.branch, run.base = branch, base
             canonical = self.prepare_canonical_run(task, run, runner, branch, base)
-        if canonical is not None:
-            wt = (gitops.prepare_review_worktree(
-                self.repo_for(task), canonical, branch, base, expected_review_head,
-            ) if expected_review_head else canonical)
-        elif run is not None:
-            self._recheck_local_materialization(run, "review checkout materialization")
-            wt = (gitops.prepare_review_worktree(
-                self.repo_for(task), self.worktree_for(task), branch, base, expected_review_head,
-            ) if expected_review_head else gitops.prepare_worktree(
-                self.repo_for(task), self.worktree_for(task), branch, base,
-            ))
-        else:
-            with self._local_staging_admission("review checkout materialization"):
+        try:
+            if canonical is not None:
+                wt = (gitops.prepare_review_worktree(
+                    self.repo_for(task), canonical, branch, base, expected_review_head,
+                ) if expected_review_head else canonical)
+            elif run is not None:
+                self._recheck_local_materialization(run, "review checkout materialization")
                 wt = (gitops.prepare_review_worktree(
                     self.repo_for(task), self.worktree_for(task), branch, base, expected_review_head,
                 ) if expected_review_head else gitops.prepare_worktree(
                     self.repo_for(task), self.worktree_for(task), branch, base,
                 ))
+            else:
+                with self._local_staging_admission("review checkout materialization"):
+                    wt = (gitops.prepare_review_worktree(
+                        self.repo_for(task), self.worktree_for(task), branch, base, expected_review_head,
+                    ) if expected_review_head else gitops.prepare_worktree(
+                        self.repo_for(task), self.worktree_for(task), branch, base,
+                    ))
+        except Exception as exc:
+            if run is not None:
+                run.status = "failed"
+                run.finished_at = now_iso()
+                run.error = f"startup failed before review checkout was materialized: {exc}"
+                run.save()
+            raise
         if run is not None:
             run.worktree = str(wt)
             run.save()
@@ -1029,9 +1037,61 @@ class ReviewMixin:
             raise RuntimeError(f"{task.id} has no PR to review")
         self._refuse_if_phase_not_admitted(task)
         st = self.state.get(task.id)
+        self._refresh_attached_pr_for_review(task)
         self._grant_one_more_review_round(st)
         st.pop("needs_human", None)
-        return self.dispatch_review(task)
+        try:
+            return self.dispatch_review(task)
+        except gitops.GitError as exc:
+            # The provider observation and the targeted fetch are intentionally separate
+            # operations.  If another push lands between them, preserve the exact-head
+            # fence but give the operator an actionable outcome rather than leaking a
+            # plumbing exception through the CLI.
+            if st.get("attached_pr"):
+                message = "pull request changed while preparing review; retry after the head stabilizes"
+                task.log(message)
+                self.store.save(task)
+                self.events.emit("review_retryable", task.id, head=str(st.get("head_sha") or ""),
+                                 reason=str(exc))
+                self.state.save()
+                raise RuntimeError(message) from exc
+            raise
+
+    def _refresh_attached_pr_for_review(self, task: Task) -> None:
+        """Bind an operator-requested review to a fresh attached-PR observation.
+
+        Routine scheduler reviews retain their existing poll-driven behavior.  An explicit
+        request is different: it may arrive before the next poll after an operator push, so
+        refresh only externally attached PRs before selecting ``state.head_sha`` for the
+        exact-head materialization fence.
+        """
+        st = self.state.get(task.id)
+        if not st.get("attached_pr"):
+            return
+        slug = self.slug_for(task)
+        number = self._pr_number(task)
+        if not slug or not number or not self.github.available:
+            raise RuntimeError("attached PR review needs an available configured source-control provider")
+        try:
+            pr = self.github.get_pr(slug, number)
+        except (GitHubError, KeyError, OSError, ValueError) as exc:
+            detail = exc.args[0] if exc.args else exc
+            raise RuntimeError(f"could not refresh attached PR before review: {detail}") from exc
+        if pr.number != number or not pr.head or not pr.head_sha or not pr.base:
+            raise RuntimeError("attached PR refresh is missing immutable head or base metadata")
+        if task.branch and pr.head != task.branch:
+            raise RuntimeError("attached PR branch changed; reattach it before requesting review")
+        st.update({
+            "pr_state": pr.state,
+            "head_sha": pr.head_sha,
+            "pr_base": pr.base,
+            "pr_draft": pr.is_draft,
+            "checks": pr.checks,
+            "failed_checks": list(pr.failed_checks),
+            "review_decision": pr.review_decision,
+            "mergeable": pr.mergeable,
+        })
+        self.state.save()
 
     def _resume_review_clarification(self, task: Task, source: Run, entries: list[str],
                                      rep: TickReport) -> bool:
