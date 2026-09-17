@@ -137,6 +137,23 @@ def test_project_values_are_isolated_and_locked_values_have_provenance(tmp_path)
     assert enforced.value is False and enforced.source == "policy:locked"
 
 
+def test_dependency_default_is_validated_and_isolated_per_project(tmp_path):
+    data = {"products": {"stacked": {}, "merged": {}}}
+    (tmp_path / "garden.yaml").write_text(yaml.safe_dump(data))
+    config = Config.load(tmp_path)
+
+    saved = config.save_changes({"dependencies.default_after": "stack"}, product="stacked")
+    saved = saved.save_changes({"dependencies.default_after": "merge"}, product="merged")
+    assert saved.setting("dependencies.default_after", "stacked").value == "stack"
+    assert saved.setting("dependencies.default_after", "merged").value == "merge"
+    assert saved.setting("dependencies.default_after", "unknown").value is None
+
+    contents = (tmp_path / "garden.yaml").read_text()
+    with pytest.raises(ValueError, match="one of stack, merge"):
+        saved.save_changes({"dependencies.default_after": "later"}, product="stacked")
+    assert (tmp_path / "garden.yaml").read_text() == contents
+
+
 def test_direct_edit_and_reset_cannot_bypass_lock_or_remove_policy():
     before = configured()
     with pytest.raises(PermissionError, match="Protect shared capacity"):

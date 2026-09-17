@@ -21,7 +21,7 @@ from ...criteria import (
     worker_verified,
 )
 from ...events import EventLog
-from ...graph import dependency_after, dependents, deps_in_later_phase
+from ...graph import dependents, deps_in_later_phase
 from ...inbox import approve_phase_options, decision_card_view, split_log
 from ...outcomes import base_acceptance
 from ...reference_snapshot import REFERENCE_DIR
@@ -169,7 +169,7 @@ def register(app: FastAPI, site: Site) -> None:
             request, page="task", personas=sorted(set(list_personas(s)) | set(DEFAULT_PERSONAS)),
             task=t, eff=sched.task_effective_status(t, tasks), blockers=blocker_labels, usage=usage,
             dependency_labels=site.dependency_labels(t, tasks),
-            dependency_after=lambda dep: dependency_after(t, dep, tasks),
+            dependency_after=lambda dep: sched.dependency_after(t, dep, tasks),
             dependents=dependents(t.id, tasks), runs=list(reversed(runs)), latest_run=latest_run, state=st,
             attach_command=(
                 attach_command(attachable_run, exact=len(attachable_runs) > 1)

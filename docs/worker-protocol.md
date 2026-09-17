@@ -363,6 +363,11 @@ have had to make:
 - **Branch and base**: the branch is `garden/<id>-<slug>` (kept across runs). The base is
   the product's base branch, or, when stacking applies, the branch of the one dependency
   whose PR is still open.
+- **Dependency mode**: an explicit `depends_on` `after:` value wins. Otherwise the dependent
+  task's project may set `dependencies.default_after` to `stack` or `merge`; when unset,
+  document/design prerequisites retain the legacy merge default and other prerequisites stack.
+  A later preference edit does not retarget an active recorded stack parent; ordinary guarded
+  reconciliation remains responsible for safe changes to open stacks.
 - **Worktree**: the local runner creates `.garden/worktrees/<id>` from `origin/<base>`
   (fetched first) or reuses it if it already exists on that branch. The `ssh` runner
   creates or reuses its host-side worktree as described in its variant below. The pull-based

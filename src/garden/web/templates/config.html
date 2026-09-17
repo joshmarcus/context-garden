@@ -34,7 +34,7 @@
   {% for row in editor_rows %}
     <section class="config-setting" id="setting-{{ row.field.key|replace('.', '-') }}">
       <div class="config-setting-head">
-        <div><h3><code>{{ row.field.key }}</code></h3><p class="muted" id="config-help-{{ loop.index }}">{{ row.field.help }}</p></div>
+        <div><h3>{% if row.field.key == "dependencies.default_after" %}Dependency default <code>{{ row.field.key }}</code>{% else %}<code>{{ row.field.key }}</code>{% endif %}</h3><p class="muted" id="config-help-{{ loop.index }}">{{ row.field.help }}</p></div>
         <span class="pill">{{ row.field.apply.value|replace('_', ' ') }}</span>
       </div>
       <p class="metadata">
@@ -56,7 +56,7 @@
         {% if row.field.value_type == "boolean" %}
         <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}"><option value="true" {% if row.rendered == 'true' %}selected{% endif %}>true</option><option value="false" {% if row.rendered == 'false' %}selected{% endif %}>false</option></select>
         {% elif row.choices %}
-        <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}">{% for choice in row.choices %}<option value="{{ choice }}" {% if row.rendered == choice|string %}selected{% endif %}>{{ choice if choice != '' else '(empty)' }}</option>{% endfor %}</select>
+        <select id="config-value-{{ loop.index }}" name="value" aria-describedby="config-help-{{ loop.index }}">{% if row.field.key == "dependencies.default_after" %}<option value="" {% if row.rendered == '' %}selected{% endif %}>Unset — legacy rule</option>{% endif %}{% for choice in row.choices %}<option value="{{ choice }}" {% if row.rendered == choice|string %}selected{% endif %}>{{ choice|capitalize if row.field.key == "dependencies.default_after" else (choice if choice != '' else '(empty)') }}</option>{% endfor %}</select>
         {% elif row.collection_kind %}
         {% set setting_index = loop.index %}
         {% if row.collection_choice %}<select {% if row.collection_kind == 'unset' %}id="config-value-{{ setting_index }}" aria-describedby="config-help-{{ setting_index }}" {% endif %}name="collection_kind" data-collection-mode aria-label="Value type for {{ row.field.key }}">{% if row.field.value_type.startswith('optional_') %}<option value="unset" {% if row.collection_kind == 'unset' %}selected{% endif %}>Unset</option>{% endif %}<option value="scalar" {% if row.collection_kind == 'scalar' %}selected{% endif %}>Single value</option><option value="list" {% if row.collection_kind == 'list' %}selected{% endif %}>List</option></select>{% endif %}

@@ -545,6 +545,36 @@ def test_design_dependency_can_explicitly_override_default_with_stack(sched):
     assert "DM-002(work)" in rep.dispatched
 
 
+def test_project_dependency_default_can_stack_on_a_design_parent(sched):
+    sched.cfg.data["stack"] = True
+    sched.cfg.data["products"]["demo"]["configuration"] = {
+        "overrides": {"dependencies.default_after": "stack"},
+    }
+    parent = sched.store.task("DM-001")
+    parent.kind = "design"
+    sched.store.save(parent)
+
+    assert sched.dependency_after(sched.store.task("DM-002"), parent.id) == "stack"
+    sched.tick()
+    rep = sched.tick()
+    assert "DM-002(work)" in rep.dispatched
+
+
+def test_recorded_stack_parent_survives_a_dependency_default_change(sched):
+    sched.cfg.data["products"]["demo"]["configuration"] = {
+        "overrides": {"dependencies.default_after": "stack"},
+    }
+    parent = sched.store.task("DM-001")
+    parent.status = Status.IN_REVIEW
+    parent.branch, parent.pr = "garden/dm-001", "https://example.test/pull/1"
+    sched.store.save(parent)
+    child = sched.store.task("DM-002")
+
+    assert sched._stack_for(child)["parent_id"] == parent.id
+    sched.cfg.data["products"]["demo"]["configuration"]["overrides"]["dependencies.default_after"] = "merge"
+    assert sched._stack_for(child)["parent_id"] == parent.id
+
+
 def test_design_context_is_run_scoped_and_referenced_without_dirtying_checkout(sched):
     from tests.conftest import git
 
