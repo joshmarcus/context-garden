@@ -10,6 +10,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from garden import __version__
 from garden.cli import app
 from garden.runs import RunStore
 from garden.store import Store
@@ -1833,7 +1834,7 @@ def test_take_on_a_good_draft_approves_then_dispatches(garden):
     assert "approved (cli)" in t.body
     admitted = RunStore(garden / ".garden").latest("DM-003")
     assert admitted.plugin_identity == {
-        "lock_version": "garden.plugin-lock/v1", "core_version": "0.4.0", "plugins": [],
+        "lock_version": "garden.plugin-lock/v1", "core_version": __version__, "plugins": [],
     }
 
 
